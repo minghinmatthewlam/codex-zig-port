@@ -25664,6 +25664,16 @@ const AppServerApprovalContext = struct {
     turn_start_response_sent: *bool,
 };
 
+const AppServerRequestPermissionsContext = struct {
+    allocator: std.mem.Allocator,
+    state: *AppServerState,
+    transport: ServerRequestTransport,
+    thread: *LoadedThread,
+    turn_id: []const u8,
+    turn_start_response_payload: []const u8,
+    turn_start_response_sent: *bool,
+};
+
 const AppServerApprovalDecision = enum {
     allow,
     allow_for_session,
@@ -26157,6 +26167,400 @@ fn renderPendingApprovalJsonRpcResponse(
     const method = object.get("method") orelse return null;
     if (method != .string) return try renderJsonRpcError(allocator, id_value, -32600, "Invalid Request");
     return try renderJsonRpcError(allocator, id_value, -32600, "cannot process request while approval is pending");
+}
+
+fn handleAppServerRequestPermissions(ctx: *anyopaque, request: session_mod.RequestPermissionsRequest) !session_mod.RequestPermissionsResult {
+    const context: *AppServerRequestPermissionsContext = @ptrCast(@alignCast(ctx));
+    try sendRequestPermissionsTurnStartResponse(context);
+
+    const request_id = try std.fmt.allocPrint(context.allocator, "permissions-{s}", .{request.call_id});
+    defer context.allocator.free(request_id);
+    const request_id_json = try std.json.Stringify.valueAlloc(context.allocator, request_id, .{});
+    defer context.allocator.free(request_id_json);
+
+    const request_json = try renderPermissionsRequestApprovalRequest(
+        context.allocator,
+        request_id,
+        context.thread.id,
+        context.turn_id,
+        request,
+    );
+    defer context.allocator.free(request_json);
+
+    try trackPendingServerRequest(context.allocator, context.state, request_json);
+    var pending_tracked = true;
+    defer if (pending_tracked) {
+        if (takePendingServerRequest(context.state, request_id_json)) |pending_request| {
+            var pending = pending_request;
+            pending.deinit(context.allocator);
+        }
+    };
+
+    const visible_request = try renderServerRequestForConnection(context.allocator, context.state.experimental_api_enabled, request_json);
+    defer context.allocator.free(visible_request);
+    try context.transport.send_payload(context.transport.ctx, visible_request);
+
+    while (true) {
+        const payload = try context.transport.read_payload(context.transport.ctx, context.allocator) orelse return error.AppServerRequestPermissionsClientClosed;
+        defer context.allocator.free(payload);
+        if (payload.len == 0) continue;
+
+        if (try requestPermissionsResultFromResponsePayload(context.allocator, payload, request_id_json, context.thread.cwd)) |parsed_result| {
+            var result = parsed_result;
+            errdefer result.deinit(context.allocator);
+            try applySessionScopedRequestPermissions(context.allocator, context.thread, result);
+            try sendServerRequestResolvedForRequest(context.allocator, context.state, context.transport, request_id_json);
+            pending_tracked = false;
+            return result;
+        }
+
+        if (try renderPendingApprovalInterruptResponse(context.allocator, payload, context.thread.id, context.turn_id)) |interrupt_response| {
+            defer context.allocator.free(interrupt_response.payload);
+            try context.transport.send_payload(context.transport.ctx, interrupt_response.payload);
+            if (interrupt_response.cancel_approval) {
+                try sendServerRequestResolvedForRequest(context.allocator, context.state, context.transport, request_id_json);
+                pending_tracked = false;
+                return emptyRequestPermissionsResult(context.allocator, "request_permissions was cancelled before receiving a response");
+            }
+            continue;
+        }
+
+        if (try renderPendingApprovalJsonRpcResponse(context.allocator, payload)) |response_payload| {
+            defer context.allocator.free(response_payload);
+            try context.transport.send_payload(context.transport.ctx, response_payload);
+        }
+    }
+}
+
+fn sendRequestPermissionsTurnStartResponse(context: *AppServerRequestPermissionsContext) !void {
+    if (context.turn_start_response_sent.*) return;
+    try context.transport.send_payload(context.transport.ctx, context.turn_start_response_payload);
+    context.turn_start_response_sent.* = true;
+}
+
+fn renderPermissionsRequestApprovalRequest(
+    allocator: std.mem.Allocator,
+    request_id: []const u8,
+    thread_id: []const u8,
+    turn_id: []const u8,
+    request: session_mod.RequestPermissionsRequest,
+) ![]const u8 {
+    var parsed = try std.json.parseFromSlice(std.json.Value, allocator, request.arguments_json, .{});
+    defer parsed.deinit();
+    if (parsed.value != .object) return error.InvalidRequestPermissions;
+    const permissions = parsed.value.object.get("permissions") orelse return error.InvalidRequestPermissions;
+    if (permissions != .object) return error.InvalidRequestPermissions;
+    const permissions_json = try renderRequestPermissionProfileJson(allocator, permissions, request.cwd);
+    defer allocator.free(permissions_json);
+
+    var out = std.ArrayList(u8).empty;
+    errdefer out.deinit(allocator);
+    try out.appendSlice(allocator, "{\"jsonrpc\":\"2.0\",\"id\":");
+    try appendJsonString(allocator, &out, request_id);
+    try out.appendSlice(allocator, ",\"method\":\"item/permissions/requestApproval\",\"params\":{\"threadId\":");
+    try appendJsonString(allocator, &out, thread_id);
+    try out.appendSlice(allocator, ",\"turnId\":");
+    try appendJsonString(allocator, &out, turn_id);
+    try out.appendSlice(allocator, ",\"itemId\":");
+    try appendJsonString(allocator, &out, request.call_id);
+    try out.appendSlice(allocator, ",\"cwd\":");
+    try appendJsonString(allocator, &out, request.cwd);
+    try out.appendSlice(allocator, ",\"reason\":");
+    try appendOptionalJsonString(allocator, &out, request.reason);
+    try out.appendSlice(allocator, ",\"permissions\":");
+    try out.appendSlice(allocator, permissions_json);
+    try out.appendSlice(allocator, "}}");
+    return out.toOwnedSlice(allocator);
+}
+
+fn renderRequestPermissionProfileJson(
+    allocator: std.mem.Allocator,
+    permissions: std.json.Value,
+    cwd: []const u8,
+) ![]const u8 {
+    if (permissions != .object) return error.InvalidRequestPermissions;
+    const network_value = permissions.object.get("network");
+    const file_system_value = permissions.object.get("fileSystem") orelse permissions.object.get("file_system");
+    const network_json = try renderRequestPermissionNetworkJson(allocator, network_value);
+    defer allocator.free(network_json);
+    const file_system_json = try renderRequestPermissionFileSystemJson(allocator, file_system_value, cwd);
+    defer allocator.free(file_system_json);
+
+    var out = std.ArrayList(u8).empty;
+    errdefer out.deinit(allocator);
+    try out.appendSlice(allocator, "{\"network\":");
+    try out.appendSlice(allocator, network_json);
+    try out.appendSlice(allocator, ",\"fileSystem\":");
+    try out.appendSlice(allocator, file_system_json);
+    try out.appendSlice(allocator, "}");
+    return out.toOwnedSlice(allocator);
+}
+
+fn renderRequestPermissionNetworkJson(
+    allocator: std.mem.Allocator,
+    network_value: ?std.json.Value,
+) ![]const u8 {
+    const network = network_value orelse return allocator.dupe(u8, "null");
+    if (network == .null) return allocator.dupe(u8, "null");
+    if (network != .object) return error.InvalidRequestPermissions;
+    var out = std.ArrayList(u8).empty;
+    errdefer out.deinit(allocator);
+    try out.appendSlice(allocator, "{\"enabled\":");
+    if (network.object.get("enabled")) |enabled| {
+        if (enabled == .bool) {
+            try out.appendSlice(allocator, if (enabled.bool) "true" else "false");
+        } else if (enabled == .null) {
+            try out.appendSlice(allocator, "null");
+        } else {
+            return error.InvalidRequestPermissions;
+        }
+    } else {
+        try out.appendSlice(allocator, "null");
+    }
+    try out.appendSlice(allocator, "}");
+    return out.toOwnedSlice(allocator);
+}
+
+fn renderRequestPermissionFileSystemJson(
+    allocator: std.mem.Allocator,
+    file_system_value: ?std.json.Value,
+    cwd: []const u8,
+) ![]const u8 {
+    const file_system = file_system_value orelse return allocator.dupe(u8, "null");
+    if (file_system == .null) return allocator.dupe(u8, "null");
+    if (file_system != .object) return error.InvalidRequestPermissions;
+
+    var read_roots = std.ArrayList([]const u8).empty;
+    defer deinitStringArrayList(allocator, &read_roots);
+    var write_roots = std.ArrayList([]const u8).empty;
+    defer deinitStringArrayList(allocator, &write_roots);
+    try appendResolvedPermissionPaths(allocator, &read_roots, file_system.object.get("read"), cwd);
+    try appendResolvedPermissionPaths(allocator, &write_roots, file_system.object.get("write"), cwd);
+
+    var out = std.ArrayList(u8).empty;
+    errdefer out.deinit(allocator);
+    try out.appendSlice(allocator, "{\"read\":");
+    try appendNullableJsonStringArray(allocator, &out, read_roots.items);
+    try out.appendSlice(allocator, ",\"write\":");
+    try appendNullableJsonStringArray(allocator, &out, write_roots.items);
+    if (file_system.object.get("globScanMaxDepth")) |depth| {
+        if (depth != .integer or depth.integer <= 0) return error.InvalidRequestPermissions;
+        try out.appendSlice(allocator, ",\"globScanMaxDepth\":");
+        const depth_json = try std.json.Stringify.valueAlloc(allocator, depth, .{});
+        defer allocator.free(depth_json);
+        try out.appendSlice(allocator, depth_json);
+    }
+    if (read_roots.items.len > 0 or write_roots.items.len > 0) {
+        try out.appendSlice(allocator, ",\"entries\":[");
+        var first = true;
+        try appendPermissionPathEntries(allocator, &out, &first, read_roots.items, "read");
+        try appendPermissionPathEntries(allocator, &out, &first, write_roots.items, "write");
+        try out.appendSlice(allocator, "]");
+    }
+    try out.appendSlice(allocator, "}");
+    return out.toOwnedSlice(allocator);
+}
+
+fn appendResolvedPermissionPaths(
+    allocator: std.mem.Allocator,
+    paths: *std.ArrayList([]const u8),
+    value: ?std.json.Value,
+    cwd: []const u8,
+) !void {
+    const array_value = value orelse return;
+    if (array_value == .null) return;
+    if (array_value != .array) return error.InvalidRequestPermissions;
+    for (array_value.array.items) |item| {
+        if (item != .string) return error.InvalidRequestPermissions;
+        const resolved = if (std.fs.path.isAbsolute(item.string))
+            try std.fs.path.resolve(allocator, &.{item.string})
+        else
+            try std.fs.path.resolve(allocator, &.{ cwd, item.string });
+        errdefer allocator.free(resolved);
+        if (stringSliceContains(paths.items, resolved)) {
+            allocator.free(resolved);
+            continue;
+        }
+        try paths.append(allocator, resolved);
+    }
+}
+
+fn appendNullableJsonStringArray(
+    allocator: std.mem.Allocator,
+    out: *std.ArrayList(u8),
+    values: []const []const u8,
+) !void {
+    if (values.len == 0) {
+        try out.appendSlice(allocator, "null");
+        return;
+    }
+    try appendJsonStringArray(allocator, out, values);
+}
+
+fn appendPermissionPathEntries(
+    allocator: std.mem.Allocator,
+    out: *std.ArrayList(u8),
+    first: *bool,
+    paths: []const []const u8,
+    access: []const u8,
+) !void {
+    for (paths) |path| {
+        if (!first.*) try out.appendSlice(allocator, ",");
+        first.* = false;
+        try out.appendSlice(allocator, "{\"path\":{\"type\":\"path\",\"path\":");
+        try appendJsonString(allocator, out, path);
+        try out.appendSlice(allocator, "},\"access\":");
+        try appendJsonString(allocator, out, access);
+        try out.appendSlice(allocator, "}");
+    }
+}
+
+fn requestPermissionsResultFromResponsePayload(
+    allocator: std.mem.Allocator,
+    payload: []const u8,
+    request_id_json: []const u8,
+    cwd: []const u8,
+) !?session_mod.RequestPermissionsResult {
+    var parsed = std.json.parseFromSlice(std.json.Value, allocator, payload, .{}) catch return null;
+    defer parsed.deinit();
+    if (parsed.value != .object) return null;
+    const object = parsed.value.object;
+    if (!isJsonRpcResponseEnvelope(object)) return null;
+    const id_value = object.get("id") orelse return null;
+    const id_json = try std.json.Stringify.valueAlloc(allocator, id_value, .{});
+    defer allocator.free(id_json);
+    if (!std.mem.eql(u8, id_json, request_id_json)) return null;
+    if (object.get("error") != null) {
+        return try emptyRequestPermissionsResult(allocator, "request_permissions client rejected request");
+    }
+    const result = object.get("result") orelse return try emptyRequestPermissionsResult(allocator, "request_permissions client returned no permissions");
+    if (result != .object) return try emptyRequestPermissionsResult(allocator, "request_permissions client returned invalid permissions");
+
+    const output_json = try std.json.Stringify.valueAlloc(allocator, result, .{});
+    errdefer allocator.free(output_json);
+    const scope = requestPermissionGrantScopeFromValue(result.object.get("scope"));
+    var writable_roots = std.ArrayList([]const u8).empty;
+    errdefer deinitStringArrayList(allocator, &writable_roots);
+    var network_enabled: ?bool = null;
+    if (result.object.get("permissions")) |permissions| {
+        if (permissions == .object) {
+            if (permissions.object.get("fileSystem") orelse permissions.object.get("file_system")) |file_system| {
+                try appendGrantedWritableRoots(allocator, &writable_roots, file_system, cwd);
+            }
+            if (permissions.object.get("network")) |network| {
+                network_enabled = grantedNetworkEnabled(network);
+            }
+        }
+    }
+    return .{
+        .output_json = output_json,
+        .scope = scope,
+        .writable_roots = try writable_roots.toOwnedSlice(allocator),
+        .network_enabled = network_enabled,
+    };
+}
+
+fn emptyRequestPermissionsResult(allocator: std.mem.Allocator, output: []const u8) !session_mod.RequestPermissionsResult {
+    return .{
+        .output_json = try allocator.dupe(u8, output),
+        .scope = .turn,
+        .writable_roots = try allocator.alloc([]const u8, 0),
+        .network_enabled = null,
+    };
+}
+
+fn requestPermissionGrantScopeFromValue(value: ?std.json.Value) session_mod.PermissionGrantScope {
+    const scope = value orelse return .turn;
+    if (scope == .string and std.mem.eql(u8, scope.string, "session")) return .session;
+    return .turn;
+}
+
+fn appendGrantedWritableRoots(
+    allocator: std.mem.Allocator,
+    roots: *std.ArrayList([]const u8),
+    file_system: std.json.Value,
+    cwd: []const u8,
+) !void {
+    if (file_system != .object) return;
+    try appendResolvedPermissionPaths(allocator, roots, file_system.object.get("write"), cwd);
+    if (file_system.object.get("entries")) |entries| {
+        if (entries != .array) return;
+        for (entries.array.items) |entry| {
+            if (entry != .object) continue;
+            const access = entry.object.get("access") orelse continue;
+            if (access != .string or !std.mem.eql(u8, access.string, "write")) continue;
+            const path_value = entry.object.get("path") orelse continue;
+            if (try permissionEntryPathString(path_value)) |path| {
+                const resolved = if (std.fs.path.isAbsolute(path))
+                    try std.fs.path.resolve(allocator, &.{path})
+                else
+                    try std.fs.path.resolve(allocator, &.{ cwd, path });
+                errdefer allocator.free(resolved);
+                if (stringSliceContains(roots.items, resolved)) {
+                    allocator.free(resolved);
+                    continue;
+                }
+                try roots.append(allocator, resolved);
+            }
+        }
+    }
+}
+
+fn permissionEntryPathString(value: std.json.Value) !?[]const u8 {
+    if (value != .object) return null;
+    const type_value = value.object.get("type") orelse return null;
+    if (type_value != .string or !std.mem.eql(u8, type_value.string, "path")) return null;
+    const path = value.object.get("path") orelse return null;
+    if (path != .string) return null;
+    return path.string;
+}
+
+fn grantedNetworkEnabled(value: std.json.Value) ?bool {
+    if (value != .object) return null;
+    const enabled = value.object.get("enabled") orelse return null;
+    if (enabled != .bool) return null;
+    return enabled.bool;
+}
+
+fn applySessionScopedRequestPermissions(
+    allocator: std.mem.Allocator,
+    thread: *LoadedThread,
+    result: session_mod.RequestPermissionsResult,
+) !void {
+    if (result.scope != .session) return;
+    for (result.writable_roots) |root| {
+        try appendLoadedThreadWritableRoot(allocator, thread, root);
+    }
+    if (result.network_enabled) |enabled| {
+        if (enabled) thread.sandbox_network_enabled = true;
+    }
+}
+
+fn appendLoadedThreadWritableRoot(
+    allocator: std.mem.Allocator,
+    thread: *LoadedThread,
+    root: []const u8,
+) !void {
+    if (stringSliceContains(thread.sandbox_writable_roots.items, root)) return;
+    const old_items = thread.sandbox_writable_roots.items;
+    const new_items = try allocator.alloc([]const u8, old_items.len + 1);
+    errdefer allocator.free(new_items);
+    @memcpy(new_items[0..old_items.len], old_items);
+    new_items[old_items.len] = try allocator.dupe(u8, root);
+    allocator.free(old_items);
+    thread.sandbox_writable_roots.items = new_items;
+}
+
+fn deinitStringArrayList(allocator: std.mem.Allocator, list: *std.ArrayList([]const u8)) void {
+    for (list.items) |item| allocator.free(item);
+    list.deinit(allocator);
+}
+
+fn stringSliceContains(values: []const []const u8, needle: []const u8) bool {
+    for (values) |value| {
+        if (std.mem.eql(u8, value, needle)) return true;
+    }
+    return false;
 }
 
 fn handleMemoryReset(allocator: std.mem.Allocator, id_value: std.json.Value) ![]const u8 {
@@ -26769,9 +27173,30 @@ fn handleTurnStart(
         };
     } else null;
 
+    var request_permissions_context: AppServerRequestPermissionsContext = undefined;
+    const request_permissions_callback: ?session_mod.RequestPermissionsCallback = if (state.server_request_transport) |transport| blk: {
+        request_permissions_context = .{
+            .allocator = allocator,
+            .state = state,
+            .transport = transport,
+            .thread = thread,
+            .turn_id = turn_id,
+            .turn_start_response_payload = response_payload,
+            .turn_start_response_sent = &turn_start_response_sent,
+        };
+        break :blk .{
+            .ctx = &request_permissions_context,
+            .on_request_permissions_requested = handleAppServerRequestPermissions,
+        };
+    } else null;
+
+    var turn_feature_overrides = try effectiveAppServerTurnFeatureOverrides(allocator, state);
+    defer turn_feature_overrides.deinit(allocator);
+
     const answer = session_mod.runTurnWithOptions(allocator, cfg, &credentials, &thread.transcript, prompt_for_turn, .{
         .prompt_for_approval = approval_callback != null,
         .approval_callback = approval_callback,
+        .request_permissions_callback = request_permissions_callback,
         .additional_writable_roots = thread.sandbox_writable_roots.items,
         .include_cwd_write_root = thread.sandbox_include_cwd_write_root,
         .network_enabled = thread.sandbox_network_enabled,
@@ -26827,6 +27252,7 @@ fn handleTurnStart(
             .ctx = &mcp_startup_status_context,
             .on_startup_status = handleSessionMcpStartupStatus,
         },
+        .feature_overrides = turn_feature_overrides,
         .workdir = thread.cwd,
         .background_terminal_owner = thread.id,
     }) catch |err| {
@@ -35577,6 +36003,18 @@ fn appServerFeatureEnabled(allocator: std.mem.Allocator, state: *const AppServer
         if (std.mem.eql(u8, feature.key, key)) return feature.default_enabled;
     }
     return false;
+}
+
+fn effectiveAppServerTurnFeatureOverrides(
+    allocator: std.mem.Allocator,
+    state: *const AppServerState,
+) !features_cmd.FeatureOverrides {
+    var overrides = features_cmd.FeatureOverrides{};
+    errdefer overrides.deinit(allocator);
+    if (try appServerFeatureEnabled(allocator, state, "request_permissions_tool")) {
+        try overrides.put(allocator, "request_permissions_tool", true);
+    }
+    return overrides;
 }
 
 fn guardianAssessmentEventIsValid(value: std.json.Value) bool {
