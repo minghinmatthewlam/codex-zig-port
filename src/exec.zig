@@ -543,6 +543,10 @@ fn parseArgs(allocator: std.mem.Allocator, args: []const []const u8) !ExecArgs {
             break;
         }
         if (!end_options and !resume_mode and prompt_parts.items.len == 0 and std.mem.eql(u8, arg, "review")) {
+            if (containsOptionHelp(args[index + 1 ..])) {
+                parsed.help = .review_cmd;
+                break;
+            }
             parsed.review_mode = true;
             index += 1;
             while (index < args.len) : (index += 1) {
@@ -588,6 +592,18 @@ fn parseHelpTopic(args: []const []const u8) !ExecHelpTopic {
     if (std.mem.eql(u8, target, "review")) return .review_cmd;
     if (std.mem.eql(u8, target, "help")) return .help_cmd;
     return error.UnknownExecHelpCommand;
+}
+
+fn containsOptionHelp(args: []const []const u8) bool {
+    var end_options = false;
+    for (args) |arg| {
+        if (!end_options and std.mem.eql(u8, arg, "--")) {
+            end_options = true;
+            continue;
+        }
+        if (!end_options and (std.mem.eql(u8, arg, "--help") or std.mem.eql(u8, arg, "-h"))) return true;
+    }
+    return false;
 }
 
 fn mergedReviewOverrides(base: config.RuntimeOverrides, parsed: ExecArgs) config.RuntimeOverrides {
@@ -953,6 +969,31 @@ test "exec args parse resume help flags" {
     const parsed_after_target = try parseArgs(allocator, after_target[0..]);
     defer parsed_after_target.deinit(allocator);
     try std.testing.expectEqual(ExecHelpTopic.resume_cmd, parsed_after_target.help.?);
+}
+
+test "exec args parse review help flags" {
+    const allocator = std.testing.allocator;
+
+    const direct = [_][]const u8{ "review", "--help" };
+    const parsed_direct = try parseArgs(allocator, direct[0..]);
+    defer parsed_direct.deinit(allocator);
+    try std.testing.expectEqual(ExecHelpTopic.review_cmd, parsed_direct.help.?);
+    try std.testing.expect(!parsed_direct.review_mode);
+
+    const after_target_flag = [_][]const u8{ "review", "--uncommitted", "-h" };
+    const parsed_after_target_flag = try parseArgs(allocator, after_target_flag[0..]);
+    defer parsed_after_target_flag.deinit(allocator);
+    try std.testing.expectEqual(ExecHelpTopic.review_cmd, parsed_after_target_flag.help.?);
+    try std.testing.expect(!parsed_after_target_flag.review_mode);
+
+    const after_end_options = [_][]const u8{ "review", "--", "--help" };
+    const parsed_after_end_options = try parseArgs(allocator, after_end_options[0..]);
+    defer parsed_after_end_options.deinit(allocator);
+    try std.testing.expect(parsed_after_end_options.help == null);
+    try std.testing.expect(parsed_after_end_options.review_mode);
+    try std.testing.expectEqual(@as(usize, 2), parsed_after_end_options.review_args.items.len);
+    try std.testing.expectEqualStrings("--", parsed_after_end_options.review_args.items[0]);
+    try std.testing.expectEqualStrings("--help", parsed_after_end_options.review_args.items[1]);
 }
 
 test "exec args reject invalid help topics" {
