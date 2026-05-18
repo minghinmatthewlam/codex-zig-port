@@ -570,6 +570,7 @@ codex-zig --disable shell_tool features list
 codex-zig exec --enable goals --disable shell_tool "say hello"
 codex-zig help exec
 codex-zig exec help resume
+codex-zig exec review --help
 codex-zig --no-alt-screen
 codex-zig --version
 codex-zig exec --version
