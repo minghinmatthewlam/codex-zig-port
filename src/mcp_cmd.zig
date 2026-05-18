@@ -7,7 +7,7 @@ const env = @import("env.zig");
 
 pub const ServerKind = enum { unknown, stdio, streamable_http };
 
-const McpOAuthCredentialsStore = enum { auto, file, keyring };
+pub const McpOAuthCredentialsStore = enum { auto, file, keyring };
 const mcp_oauth_keyring_service = "Codex MCP Credentials";
 const security_binary = "/usr/bin/security";
 
@@ -925,6 +925,51 @@ const McpOAuthTokens = struct {
     }
 };
 
+pub const McpOAuthLoginHandle = struct {
+    codex_home: []const u8,
+    store_mode: McpOAuthCredentialsStore,
+    server: McpServer,
+    callback_server: std.Io.net.Server,
+    redirect_uri: []const u8,
+    token_endpoint: []const u8,
+    registration: McpOAuthClientRegistration,
+    code_verifier: []const u8,
+    state: []const u8,
+    authorization_url: []const u8,
+
+    pub fn deinit(self: *McpOAuthLoginHandle, allocator: std.mem.Allocator) void {
+        self.callback_server.deinit(std.Io.Threaded.global_single_threaded.io());
+        allocator.free(self.codex_home);
+        self.server.deinit(allocator);
+        allocator.free(self.redirect_uri);
+        allocator.free(self.token_endpoint);
+        self.registration.deinit(allocator);
+        allocator.free(self.code_verifier);
+        allocator.free(self.state);
+        allocator.free(self.authorization_url);
+    }
+
+    pub fn waitAndSave(self: *McpOAuthLoginHandle, allocator: std.mem.Allocator) !void {
+        const server_url = self.server.url orelse return error.McpOAuthLoginRequiresHttp;
+        const code = try waitForMcpOAuthCallback(allocator, &self.callback_server, self.state);
+        defer allocator.free(code);
+
+        var tokens = try exchangeMcpOAuthCodeForTokens(
+            allocator,
+            self.server,
+            self.token_endpoint,
+            code,
+            self.redirect_uri,
+            self.registration.client_id,
+            self.registration.client_secret,
+            self.code_verifier,
+        );
+        defer tokens.deinit(allocator);
+
+        try saveMcpOAuthCredentials(allocator, self.codex_home, self.store_mode, self.server.name, server_url, self.registration.client_id, tokens);
+    }
+};
+
 const McpOAuthHttpHeaders = struct {
     headers: std.ArrayList(std.http.Header) = .empty,
     owned_values: std.ArrayList([]const u8) = .empty,
@@ -962,32 +1007,56 @@ fn performMcpOAuthLogin(
     server: McpServer,
     requested_scopes: []const []const u8,
 ) !void {
-    const server_url = server.url orelse return error.McpOAuthLoginRequiresHttp;
+    var handle = try startMcpOAuthLoginReturnUrl(allocator, codex_home, config_bytes, server, requested_scopes, true);
+    defer handle.deinit(allocator);
+
+    try printMcpOAuthPrompt(allocator, server.name, handle.authorization_url);
+    if (!try shouldSkipMcpOAuthBrowser(allocator)) {
+        openBrowser(allocator, handle.authorization_url) catch |err| {
+            std.debug.print("warning: could not open browser automatically: {s}\n", .{@errorName(err)});
+        };
+    }
+
+    try handle.waitAndSave(allocator);
+}
+
+pub fn startMcpOAuthLoginReturnUrl(
+    allocator: std.mem.Allocator,
+    codex_home: []const u8,
+    config_bytes: []const u8,
+    server: McpServer,
+    requested_scopes: []const []const u8,
+    discover_when_empty: bool,
+) !McpOAuthLoginHandle {
+    _ = server.url orelse return error.McpOAuthLoginRequiresHttp;
 
     var metadata = try discoverMcpOAuthMetadata(allocator, server);
     defer metadata.deinit(allocator);
 
-    var resolved_scopes = try resolveMcpOAuthLoginScopes(allocator, requested_scopes, metadata.scopes_supported.items);
+    var resolved_scopes = try resolveMcpOAuthLoginScopes(allocator, requested_scopes, metadata.scopes_supported.items, discover_when_empty);
     defer {
         for (resolved_scopes.items) |scope| allocator.free(scope);
         resolved_scopes.deinit(allocator);
     }
 
     var callback_server = try bindMcpOAuthCallbackServer();
-    defer callback_server.deinit(std.Io.Threaded.global_single_threaded.io());
+    errdefer callback_server.deinit(std.Io.Threaded.global_single_threaded.io());
 
     const callback_port = callback_server.socket.address.getPort();
     const redirect_uri = try std.fmt.allocPrint(allocator, "http://127.0.0.1:{d}/callback", .{callback_port});
-    defer allocator.free(redirect_uri);
+    errdefer allocator.free(redirect_uri);
 
     const registration_endpoint = metadata.registration_endpoint orelse return error.MissingMcpOAuthRegistrationEndpoint;
     var registration = try registerMcpOAuthClient(allocator, server, registration_endpoint, redirect_uri);
-    defer registration.deinit(allocator);
+    errdefer registration.deinit(allocator);
 
     var pkce = try generateMcpOAuthPkce(allocator);
     defer pkce.deinit(allocator);
+    const code_verifier = try allocator.dupe(u8, pkce.code_verifier);
+    errdefer allocator.free(code_verifier);
+
     const state = try randomUrlSafe(allocator, 32);
-    defer allocator.free(state);
+    errdefer allocator.free(state);
 
     const authorization_url = try buildMcpOAuthAuthorizationUrl(
         allocator,
@@ -999,31 +1068,27 @@ fn performMcpOAuthLogin(
         resolved_scopes.items,
         server.oauth_resource,
     );
-    defer allocator.free(authorization_url);
+    errdefer allocator.free(authorization_url);
 
-    try printMcpOAuthPrompt(allocator, server.name, authorization_url);
-    if (!try shouldSkipMcpOAuthBrowser(allocator)) {
-        openBrowser(allocator, authorization_url) catch |err| {
-            std.debug.print("warning: could not open browser automatically: {s}\n", .{@errorName(err)});
-        };
-    }
+    const token_endpoint = try allocator.dupe(u8, metadata.token_endpoint);
+    errdefer allocator.free(token_endpoint);
+    const codex_home_owned = try allocator.dupe(u8, codex_home);
+    errdefer allocator.free(codex_home_owned);
+    var server_owned = try cloneMcpServer(allocator, server);
+    errdefer server_owned.deinit(allocator);
 
-    const code = try waitForMcpOAuthCallback(allocator, &callback_server, state);
-    defer allocator.free(code);
-
-    var tokens = try exchangeMcpOAuthCodeForTokens(
-        allocator,
-        server,
-        metadata.token_endpoint,
-        code,
-        redirect_uri,
-        registration.client_id,
-        registration.client_secret,
-        pkce.code_verifier,
-    );
-    defer tokens.deinit(allocator);
-
-    try saveMcpOAuthCredentials(allocator, codex_home, parseMcpOAuthCredentialsStore(config_bytes), server.name, server_url, registration.client_id, tokens);
+    return .{
+        .codex_home = codex_home_owned,
+        .store_mode = parseMcpOAuthCredentialsStore(config_bytes),
+        .server = server_owned,
+        .callback_server = callback_server,
+        .redirect_uri = redirect_uri,
+        .token_endpoint = token_endpoint,
+        .registration = registration,
+        .code_verifier = code_verifier,
+        .state = state,
+        .authorization_url = authorization_url,
+    };
 }
 
 fn discoverMcpOAuthMetadata(allocator: std.mem.Allocator, server: McpServer) !McpOAuthMetadata {
@@ -1067,17 +1132,59 @@ fn resolveMcpOAuthLoginScopes(
     allocator: std.mem.Allocator,
     requested_scopes: []const []const u8,
     discovered_scopes: []const []const u8,
+    discover_when_empty: bool,
 ) !std.ArrayList([]const u8) {
     var resolved = std.ArrayList([]const u8).empty;
     errdefer {
         for (resolved.items) |scope| allocator.free(scope);
         resolved.deinit(allocator);
     }
-    const source = if (requested_scopes.len > 0) requested_scopes else discovered_scopes;
+    const source = if (requested_scopes.len > 0 or !discover_when_empty) requested_scopes else discovered_scopes;
     for (source) |scope| {
         try resolved.append(allocator, try allocator.dupe(u8, scope));
     }
     return resolved;
+}
+
+fn cloneMcpServer(allocator: std.mem.Allocator, server: McpServer) !McpServer {
+    var cloned = McpServer{
+        .name = try allocator.dupe(u8, server.name),
+        .kind = server.kind,
+    };
+    errdefer cloned.deinit(allocator);
+    if (server.command) |value| cloned.command = try allocator.dupe(u8, value);
+    if (server.url) |value| cloned.url = try allocator.dupe(u8, value);
+    if (server.bearer_token_env_var) |value| cloned.bearer_token_env_var = try allocator.dupe(u8, value);
+    cloned.enabled = server.enabled;
+    if (server.oauth_resource) |value| cloned.oauth_resource = try allocator.dupe(u8, value);
+    for (server.args.items) |arg| try appendClonedString(allocator, &cloned.args, arg);
+    for (server.env_vars.items) |entry| try appendClonedKeyValue(allocator, &cloned.env_vars, entry);
+    for (server.http_headers.items) |entry| try appendClonedKeyValue(allocator, &cloned.http_headers, entry);
+    for (server.env_http_headers.items) |entry| try appendClonedKeyValue(allocator, &cloned.env_http_headers, entry);
+    for (server.scopes.items) |scope| try appendClonedString(allocator, &cloned.scopes, scope);
+    return cloned;
+}
+
+fn appendClonedString(
+    allocator: std.mem.Allocator,
+    list: *std.ArrayList([]const u8),
+    value: []const u8,
+) !void {
+    const owned = try allocator.dupe(u8, value);
+    errdefer allocator.free(owned);
+    try list.append(allocator, owned);
+}
+
+fn appendClonedKeyValue(
+    allocator: std.mem.Allocator,
+    list: *std.ArrayList(KeyValue),
+    entry: KeyValue,
+) !void {
+    const key = try allocator.dupe(u8, entry.key);
+    errdefer allocator.free(key);
+    const value = try allocator.dupe(u8, entry.value);
+    errdefer allocator.free(value);
+    try list.append(allocator, .{ .key = key, .value = value });
 }
 
 fn registerMcpOAuthClient(
