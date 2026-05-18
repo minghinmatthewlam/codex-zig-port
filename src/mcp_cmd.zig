@@ -529,6 +529,54 @@ fn parseMcpOAuthCredentialsStore(config_bytes: []const u8) McpOAuthCredentialsSt
     return .auto;
 }
 
+const McpOAuthCallbackConfig = struct {
+    port: ?u16 = null,
+    url: ?[]const u8 = null,
+
+    fn deinit(self: *McpOAuthCallbackConfig, allocator: std.mem.Allocator) void {
+        if (self.url) |value| allocator.free(value);
+    }
+};
+
+fn parseMcpOAuthCallbackConfig(allocator: std.mem.Allocator, config_bytes: []const u8) !McpOAuthCallbackConfig {
+    var parsed = McpOAuthCallbackConfig{};
+    errdefer parsed.deinit(allocator);
+
+    var in_top_level = true;
+    var start: usize = 0;
+    while (start < config_bytes.len) {
+        const end = std.mem.indexOfScalarPos(u8, config_bytes, start, '\n') orelse config_bytes.len;
+        const raw_line = config_bytes[start..end];
+        start = if (end < config_bytes.len) end + 1 else config_bytes.len;
+
+        const line_without_comment = if (std.mem.indexOfScalar(u8, raw_line, '#')) |index| raw_line[0..index] else raw_line;
+        const line = std.mem.trim(u8, line_without_comment, " \t\r");
+        if (line.len == 0) continue;
+        if (line[0] == '[') {
+            in_top_level = false;
+            continue;
+        }
+        if (!in_top_level) continue;
+
+        const eq = std.mem.indexOfScalar(u8, line, '=') orelse continue;
+        const key = std.mem.trim(u8, line[0..eq], " \t");
+        const value = std.mem.trim(u8, line[eq + 1 ..], " \t");
+        if (std.mem.eql(u8, key, "mcp_oauth_callback_port")) {
+            const port = std.fmt.parseUnsigned(u16, value, 10) catch return error.InvalidMcpOAuthCallbackPort;
+            if (port == 0) return error.InvalidMcpOAuthCallbackPort;
+            parsed.port = port;
+        } else if (std.mem.eql(u8, key, "mcp_oauth_callback_url")) {
+            const url = (try parseTomlString(allocator, value)) orelse return error.InvalidMcpOAuthCallbackUrl;
+            errdefer allocator.free(url);
+            _ = std.Uri.parse(url) catch return error.InvalidMcpOAuthCallbackUrl;
+            if (parsed.url) |existing| allocator.free(existing);
+            parsed.url = url;
+        }
+    }
+
+    return parsed;
+}
+
 fn deleteMcpOAuthCredentials(
     allocator: std.mem.Allocator,
     codex_home: []const u8,
@@ -931,6 +979,7 @@ pub const McpOAuthLoginHandle = struct {
     server: McpServer,
     callback_server: std.Io.net.Server,
     redirect_uri: []const u8,
+    callback_path: []const u8,
     token_endpoint: []const u8,
     registration: McpOAuthClientRegistration,
     code_verifier: []const u8,
@@ -942,6 +991,7 @@ pub const McpOAuthLoginHandle = struct {
         allocator.free(self.codex_home);
         self.server.deinit(allocator);
         allocator.free(self.redirect_uri);
+        allocator.free(self.callback_path);
         allocator.free(self.token_endpoint);
         self.registration.deinit(allocator);
         allocator.free(self.code_verifier);
@@ -951,7 +1001,7 @@ pub const McpOAuthLoginHandle = struct {
 
     pub fn waitAndSave(self: *McpOAuthLoginHandle, allocator: std.mem.Allocator, timeout_secs: ?i64) !void {
         const server_url = self.server.url orelse return error.McpOAuthLoginRequiresHttp;
-        const code = try waitForMcpOAuthCallback(allocator, &self.callback_server, self.state, timeout_secs);
+        const code = try waitForMcpOAuthCallback(allocator, &self.callback_server, self.callback_path, self.state, timeout_secs);
         defer allocator.free(code);
 
         var tokens = try exchangeMcpOAuthCodeForTokens(
@@ -1039,12 +1089,16 @@ pub fn startMcpOAuthLoginReturnUrl(
         resolved_scopes.deinit(allocator);
     }
 
-    var callback_server = try bindMcpOAuthCallbackServer();
+    var callback_config = try parseMcpOAuthCallbackConfig(allocator, config_bytes);
+    defer callback_config.deinit(allocator);
+
+    var callback_server = try bindMcpOAuthCallbackServer(callback_config.port, callback_config.url);
     errdefer callback_server.deinit(std.Io.Threaded.global_single_threaded.io());
 
-    const callback_port = callback_server.socket.address.getPort();
-    const redirect_uri = try std.fmt.allocPrint(allocator, "http://127.0.0.1:{d}/callback", .{callback_port});
+    const redirect_uri = try mcpOAuthRedirectUri(allocator, &callback_server, callback_config.url);
     errdefer allocator.free(redirect_uri);
+    const callback_path = try mcpOAuthCallbackPathFromRedirectUri(allocator, redirect_uri);
+    errdefer allocator.free(callback_path);
 
     const registration_endpoint = metadata.registration_endpoint orelse return error.MissingMcpOAuthRegistrationEndpoint;
     var registration = try registerMcpOAuthClient(allocator, server, registration_endpoint, redirect_uri);
@@ -1083,6 +1137,7 @@ pub fn startMcpOAuthLoginReturnUrl(
         .server = server_owned,
         .callback_server = callback_server,
         .redirect_uri = redirect_uri,
+        .callback_path = callback_path,
         .token_endpoint = token_endpoint,
         .registration = registration,
         .code_verifier = code_verifier,
@@ -1487,15 +1542,54 @@ fn buildMcpOAuthHttpHeaders(
     return headers;
 }
 
-fn bindMcpOAuthCallbackServer() !std.Io.net.Server {
+fn bindMcpOAuthCallbackServer(callback_port: ?u16, callback_url: ?[]const u8) !std.Io.net.Server {
     const io = std.Io.Threaded.global_single_threaded.io();
-    var address: std.Io.net.IpAddress = .{ .ip4 = std.Io.net.Ip4Address.loopback(0) };
+    const port = callback_port orelse 0;
+    var address = try std.Io.net.IpAddress.parse(mcpOAuthCallbackBindHost(callback_url), port);
     return address.listen(io, .{ .reuse_address = true });
+}
+
+fn mcpOAuthCallbackBindHost(callback_url: ?[]const u8) []const u8 {
+    const url = callback_url orelse return "127.0.0.1";
+    const parsed = std.Uri.parse(url) catch return "127.0.0.1";
+    const host_component = parsed.host orelse return "127.0.0.1";
+    const host = uriComponentBytes(host_component);
+    if (std.ascii.eqlIgnoreCase(host, "localhost") or
+        std.mem.eql(u8, host, "127.0.0.1") or
+        std.mem.eql(u8, host, "::1"))
+    {
+        return "127.0.0.1";
+    }
+    return "0.0.0.0";
+}
+
+fn mcpOAuthRedirectUri(
+    allocator: std.mem.Allocator,
+    server: *const std.Io.net.Server,
+    callback_url: ?[]const u8,
+) ![]const u8 {
+    if (callback_url) |url| return allocator.dupe(u8, url);
+    const callback_port = server.socket.address.getPort();
+    return std.fmt.allocPrint(allocator, "http://127.0.0.1:{d}/callback", .{callback_port});
+}
+
+fn mcpOAuthCallbackPathFromRedirectUri(allocator: std.mem.Allocator, redirect_uri: []const u8) ![]const u8 {
+    const parsed = std.Uri.parse(redirect_uri) catch return error.InvalidMcpOAuthCallbackUrl;
+    const raw_path = uriComponentBytes(parsed.path);
+    if (raw_path.len == 0) return allocator.dupe(u8, "/");
+    return allocator.dupe(u8, raw_path);
+}
+
+fn uriComponentBytes(component: std.Uri.Component) []const u8 {
+    return switch (component) {
+        .raw, .percent_encoded => |value| value,
+    };
 }
 
 fn waitForMcpOAuthCallback(
     allocator: std.mem.Allocator,
     server: *std.Io.net.Server,
+    expected_path: []const u8,
     expected_state: []const u8,
     timeout_secs: ?i64,
 ) ![]const u8 {
@@ -1520,7 +1614,7 @@ fn waitForMcpOAuthCallback(
             else => return err,
         };
 
-        if (try handleMcpOAuthCallbackRequest(allocator, &request, expected_state)) |code| return code;
+        if (try handleMcpOAuthCallbackRequest(allocator, &request, expected_path, expected_state)) |code| return code;
     }
 }
 
@@ -1551,10 +1645,11 @@ fn pollMcpOAuthCallbackServer(server: *std.Io.net.Server, timeout_ms: i64) !bool
 fn handleMcpOAuthCallbackRequest(
     allocator: std.mem.Allocator,
     request: *std.http.Server.Request,
+    expected_path: []const u8,
     expected_state: []const u8,
 ) !?[]const u8 {
     const path, const query = splitTarget(request.head.target);
-    if (!std.mem.eql(u8, path, "/callback")) {
+    if (!std.mem.eql(u8, path, expected_path)) {
         try respondText(request, .not_found, "Not Found\n");
         return null;
     }
