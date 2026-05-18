@@ -7375,6 +7375,105 @@ def run_exec_streamable_http_mcp_tool_smoke(binary: Path) -> None:
         shutil.rmtree(temp_root, ignore_errors=True)
 
 
+def run_exec_plugin_mcp_tool_smoke(binary: Path) -> None:
+    temp_root = Path(tempfile.mkdtemp(prefix="codex-zig-cli-plugin-mcp-tool-", dir="/tmp"))
+    responses_server, base_url = start_exec_responses_server()
+    mcp_server, mcp_url = start_streamable_mcp_tool_server()
+    responses_server.response_payloads = [
+        function_call_response_payload(
+            "call-plugin-tool",
+            "mcp__plugin_tools__echo",
+            {"message": "hello from plugin mcp"},
+        ),
+        (
+            b'data: {"type":"response.output_text.delta","delta":"plugin mcp done"}\n\n'
+            b"data: [DONE]\n\n"
+        ),
+    ]
+    codex_home = temp_root / "codex-home"
+    plugin_root = codex_home / "plugins" / "cache" / "local-market" / "enabled-plugin" / "local"
+    try:
+        plugin_root.mkdir(parents=True)
+        (codex_home / "config.toml").write_text(
+            "\n".join(
+                [
+                    'model = "gpt-plugin-mcp-tool"',
+                    f'openai_base_url = "{base_url}"',
+                    "",
+                    "[features]",
+                    "plugins = true",
+                    "",
+                    '[plugins."enabled-plugin@local-market"]',
+                    "enabled = true",
+                    "",
+                ]
+            ),
+            encoding="utf-8",
+        )
+        (plugin_root / ".mcp.json").write_text(
+            json.dumps(
+                {
+                    "mcpServers": {
+                        "plugin-tools": {
+                            "url": mcp_url,
+                            "bearerTokenEnvVar": "PLUGIN_STREAMABLE_MCP_TOKEN",
+                        }
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+        env = os.environ.copy()
+        env["CODEX_HOME"] = str(codex_home)
+        env["OPENAI_API_KEY"] = "test-api-key"
+        env["PLUGIN_STREAMABLE_MCP_TOKEN"] = "plugin-streamable-token"
+        env.pop("CODEX_ACCESS_TOKEN", None)
+
+        result = subprocess.run(
+            [str(binary.resolve()), "exec", "--skip-git-repo-check", "use", "plugin", "mcp", "tool"],
+            cwd=temp_root,
+            env=env,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=10,
+            check=True,
+        )
+        assert result.stdout == "plugin mcp done\n"
+        assert len(responses_server.request_bodies) == 2
+        first_tools = {
+            tool.get("name")
+            for tool in responses_server.request_bodies[0]["tools"]
+            if tool.get("type") == "function"
+        }
+        assert "mcp__plugin_tools__echo" in first_tools
+        tool_output = responses_server.request_bodies[1]["input"][-1]["output"]
+        assert tool_output == "http echo: hello from plugin mcp"
+
+        assert [request["method"] for request in mcp_server.request_bodies] == [
+            "initialize",
+            "notifications/initialized",
+            "tools/list",
+            "DELETE",
+            "initialize",
+            "notifications/initialized",
+            "tools/call",
+            "DELETE",
+        ]
+        assert mcp_server.request_bodies[-2]["params"]["arguments"] == {
+            "message": "hello from plugin mcp"
+        }
+        assert mcp_server.request_headers[2]["Authorization"] == "Bearer plugin-streamable-token"
+        assert mcp_server.request_headers[3]["Authorization"] == "Bearer plugin-streamable-token"
+        assert mcp_server.request_headers[-1]["Authorization"] == "Bearer plugin-streamable-token"
+    finally:
+        responses_server.shutdown()
+        responses_server.server_close()
+        mcp_server.shutdown()
+        mcp_server.server_close()
+        shutil.rmtree(temp_root, ignore_errors=True)
+
+
 def run_exec_streamable_http_mcp_get_stream_smoke(binary: Path) -> None:
     temp_root = Path(tempfile.mkdtemp(prefix="codex-zig-cli-http-mcp-get-", dir="/tmp"))
     responses_server, base_url = start_exec_responses_server()
@@ -8886,6 +8985,7 @@ def main() -> None:
     run_exec_provider_command_auth_refresh_interval_smoke(binary)
     run_exec_mcp_resource_tools_smoke(binary)
     run_exec_streamable_http_mcp_tool_smoke(binary)
+    run_exec_plugin_mcp_tool_smoke(binary)
     run_exec_streamable_http_mcp_get_stream_smoke(binary)
     run_exec_streamable_http_mcp_keyring_oauth_smoke(binary)
     run_mcp_oauth_login_logout_smoke(binary)
@@ -8919,6 +9019,7 @@ def main() -> None:
     print("cli-exec-provider-command-auth-refresh-interval-e2e: ok")
     print("cli-exec-mcp-resource-tools-e2e: ok")
     print("cli-exec-streamable-http-mcp-tool-e2e: ok")
+    print("cli-exec-plugin-mcp-tool-e2e: ok")
     print("cli-exec-streamable-http-mcp-get-stream-e2e: ok")
     print("cli-exec-streamable-http-mcp-keyring-oauth-e2e: ok")
     print("cli-mcp-oauth-login-logout-e2e: ok")
