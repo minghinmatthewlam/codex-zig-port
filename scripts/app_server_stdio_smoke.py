@@ -6707,15 +6707,53 @@ def run_turn_project_model_controls_rpc_smoke(binary: Path) -> None:
     server, base_url = start_turn_responses_server()
     codex_home = Path(tempfile.mkdtemp(prefix="codex-zig-app-server-turn-project-controls-", dir="/tmp"))
     workspace = Path(tempfile.mkdtemp(prefix="codex-zig-app-server-turn-project-workspace-", dir="/tmp"))
+    switched_workspace = Path(
+        tempfile.mkdtemp(prefix="codex-zig-app-server-turn-project-switched-", dir="/tmp")
+    )
     try:
         codex_home.joinpath("config.toml").write_text(
-            f'openai_base_url = "{base_url}"\nmodel = "gpt-5.5"\nmodel_verbosity = "low"\n',
+            "\n".join(
+                [
+                    f'openai_base_url = "{base_url}"',
+                    'model = "gpt-5.5"',
+                    'model_verbosity = "low"',
+                    'base_instructions = "user base instructions"',
+                    'developer_instructions = "user developer instructions"',
+                    'compact_prompt = "user compact prompt"',
+                    "",
+                    "[projects]",
+                    f'[projects."{toml_quoted_key(str(switched_workspace.resolve()))}"]',
+                    'trust_level = "trusted"',
+                    "",
+                ]
+            ),
             encoding="utf-8",
         )
         project_config_dir = workspace / ".codex"
         project_config_dir.mkdir()
         project_config_dir.joinpath("config.toml").write_text(
-            'model_verbosity = "high"\n',
+            "\n".join(
+                [
+                    'model_verbosity = "high"',
+                    'base_instructions = "workspace base instructions"',
+                    'developer_instructions = "workspace developer instructions"',
+                    'compact_prompt = "workspace compact prompt"',
+                    "",
+                ]
+            ),
+            encoding="utf-8",
+        )
+        switched_config_dir = switched_workspace / ".codex"
+        switched_config_dir.mkdir()
+        switched_config_dir.joinpath("config.toml").write_text(
+            "\n".join(
+                [
+                    'base_instructions = "switched project base instructions"',
+                    'developer_instructions = "switched project developer instructions"',
+                    'compact_prompt = "switched project compact prompt"',
+                    "",
+                ]
+            ),
             encoding="utf-8",
         )
 
@@ -6788,6 +6826,69 @@ def run_turn_project_model_controls_rpc_smoke(binary: Path) -> None:
             request = server.request_bodies[0]
             assert request["model"] == "gpt-5.5"
             assert request["text"]["verbosity"] == "high", request
+            assert request["instructions"].startswith("workspace base instructions")
+            assert "workspace developer instructions" in request["instructions"]
+            assert "user base instructions" not in request["instructions"]
+            assert "user developer instructions" not in request["instructions"]
+
+            write_json_line(
+                proc,
+                {
+                    "jsonrpc": "2.0",
+                    "id": "turn-start-switched-project-model-controls",
+                    "method": "turn/start",
+                    "params": {
+                        "threadId": thread_id,
+                        "cwd": str(switched_workspace),
+                        "input": [{"type": "text", "text": "switched project controls"}],
+                    },
+                },
+            )
+            assert_turn_start_rpc_completed(
+                proc, thread_id, "turn-start-switched-project-model-controls"
+            )
+
+            assert server.request_paths == ["/responses", "/responses"]
+            switched_request = server.request_bodies[1]
+            assert switched_request["model"] == "gpt-5.5"
+            assert switched_request["instructions"].startswith(
+                "switched project base instructions"
+            )
+            assert "switched project developer instructions" in switched_request["instructions"]
+            assert "workspace base instructions" not in switched_request["instructions"]
+            assert "workspace developer instructions" not in switched_request["instructions"]
+            assert "user base instructions" not in switched_request["instructions"]
+            assert "user developer instructions" not in switched_request["instructions"]
+
+            write_json_line(
+                proc,
+                {
+                    "jsonrpc": "2.0",
+                    "id": "thread-compact-project-prompt-controls",
+                    "method": "thread/compact/start",
+                    "params": {"threadId": thread_id},
+                },
+            )
+            compact_start = read_json_line(proc, 5)
+            assert compact_start["id"] == "thread-compact-project-prompt-controls"
+            assert compact_start["result"] == {}
+            assert_thread_status_notification(read_json_line(proc, 5), thread_id, "active")
+            compact_started = read_json_line(proc, 5)
+            assert compact_started["method"] == "turn/started"
+            compact_turn_id = compact_started["params"]["turn"]["id"]
+            assert read_json_line(proc, 5)["method"] == "item/started"
+            assert read_json_line(proc, 5)["method"] == "item/completed"
+            compacted = read_json_line(proc, 5)
+            assert compacted["method"] == "thread/compacted"
+            assert compacted["params"]["threadId"] == thread_id
+            assert compacted["params"]["turnId"] == compact_turn_id
+            assert read_json_line(proc, 5)["method"] == "turn/completed"
+            assert_thread_status_notification(read_json_line(proc, 5), thread_id, "idle")
+
+            assert server.request_paths == ["/responses", "/responses", "/responses"]
+            compact_request = server.request_bodies[2]
+            compact_text = compact_request["input"][-1]["content"][0]["text"]
+            assert compact_text == "switched project compact prompt"
 
             assert proc.stdin is not None
             proc.stdin.close()
@@ -6803,6 +6904,7 @@ def run_turn_project_model_controls_rpc_smoke(binary: Path) -> None:
         server.server_close()
         shutil.rmtree(codex_home, ignore_errors=True)
         shutil.rmtree(workspace, ignore_errors=True)
+        shutil.rmtree(switched_workspace, ignore_errors=True)
 
 
 def run_turn_plan_updated_notification_smoke(binary: Path) -> None:

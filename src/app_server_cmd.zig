@@ -27411,12 +27411,21 @@ fn handleTurnStart(
     };
     defer cfg.deinit(allocator);
 
+    const thread = &state.loaded_threads.items[thread_index];
+    const project_cwd = turnContextProjectConfigCwd(allocator, thread, object) catch |err| {
+        return try renderJsonRpcErrorForFailure(allocator, id_value, "turn/start failed to resolve cwd", err);
+    };
+    defer allocator.free(project_cwd);
+
+    applyProjectLayersToConfigForCwd(allocator, &cfg, project_cwd) catch |err| {
+        return try renderJsonRpcErrorForFailure(allocator, id_value, "turn/start failed to load project config", err);
+    };
+
     var credentials = auth_mod.loadForConfig(allocator, &cfg) catch |err| {
         return try renderJsonRpcErrorForFailure(allocator, id_value, "turn/start failed to load auth", err);
     };
     defer credentials.deinit(allocator);
 
-    const thread = &state.loaded_threads.items[thread_index];
     const turn_id = try allocateNextTurnIdForThread(allocator, thread);
     defer allocator.free(turn_id);
 
@@ -29643,11 +29652,21 @@ fn applyTurnStartRuntimeOverrides(
         cfg.personality = null;
     }
 
-    if (cfg.developer_instructions) |existing| allocator.free(existing);
-    cfg.developer_instructions = null;
     if (thread.collaboration_developer_instructions) |value| {
+        if (cfg.developer_instructions) |existing| allocator.free(existing);
         cfg.developer_instructions = try allocator.dupe(u8, value);
     }
+}
+
+fn turnContextProjectConfigCwd(
+    allocator: std.mem.Allocator,
+    thread: *const LoadedThread,
+    params: std.json.ObjectMap,
+) ![]const u8 {
+    if (optionalStringParam(params, "cwd")) |cwd_raw| {
+        return realPathFileAllocPlain(allocator, cwd_raw);
+    }
+    return allocator.dupe(u8, thread.cwd);
 }
 
 const TurnStartSandboxPolicy = struct {
@@ -30136,6 +30155,15 @@ fn handleLoadedThreadCompactStart(
     defer cfg.deinit(allocator);
 
     const thread = &state.loaded_threads.items[thread_index];
+    const project_cwd = turnContextProjectConfigCwd(allocator, thread, params) catch |err| {
+        return renderJsonRpcErrorForFailure(allocator, id_value, "thread/compact/start failed to resolve cwd", err);
+    };
+    defer allocator.free(project_cwd);
+
+    applyProjectLayersToConfigForCwd(allocator, &cfg, project_cwd) catch |err| {
+        return renderJsonRpcErrorForFailure(allocator, id_value, "thread/compact/start failed to load project config", err);
+    };
+
     applyTurnStartRuntimeOverrides(allocator, &cfg, thread, params) catch |err| switch (err) {
         error.InvalidTurnContextOverride => return renderJsonRpcError(allocator, id_value, -32602, "invalid compact context override"),
         else => return err,
@@ -30157,7 +30185,8 @@ fn handleLoadedThreadCompactStart(
     var started_notification_moved = false;
     errdefer if (!started_notification_moved) allocator.free(started_notification);
 
-    const answer = session_mod.runTurnWithOptions(allocator, cfg, &credentials, &thread.transcript, APP_SERVER_COMPACT_PROMPT, .{
+    const compact_prompt = appServerCompactPromptForConfig(cfg);
+    const answer = session_mod.runTurnWithOptions(allocator, cfg, &credentials, &thread.transcript, compact_prompt, .{
         .prompt_for_approval = false,
         .additional_writable_roots = thread.sandbox_writable_roots.items,
         .include_cwd_write_root = thread.sandbox_include_cwd_write_root,
@@ -30168,7 +30197,7 @@ fn handleLoadedThreadCompactStart(
         const error_message = try std.fmt.allocPrint(allocator, "thread/compact/start failed to run compaction: {s}", .{@errorName(err)});
         defer allocator.free(error_message);
         thread.status = .system_error;
-        try refreshLoadedThreadAfterTurn(allocator, thread, APP_SERVER_COMPACT_PROMPT);
+        try refreshLoadedThreadAfterTurn(allocator, thread, compact_prompt);
         if (thread.path) |path| {
             try session_store.saveTranscript(allocator, path, &thread.transcript);
         }
@@ -30182,7 +30211,7 @@ fn handleLoadedThreadCompactStart(
     if (trimmed.len == 0) {
         const error_message = "thread/compact/start failed to produce a compaction summary";
         thread.status = .system_error;
-        try refreshLoadedThreadAfterTurn(allocator, thread, APP_SERVER_COMPACT_PROMPT);
+        try refreshLoadedThreadAfterTurn(allocator, thread, compact_prompt);
         if (thread.path) |path| {
             try session_store.saveTranscript(allocator, path, &thread.transcript);
         }
@@ -30222,6 +30251,13 @@ fn handleLoadedThreadCompactStart(
     try queueThreadStatusChangedNotification(allocator, state, thread.id, .idle);
 
     return renderJsonRpcResult(allocator, id_value, "{}");
+}
+
+fn appServerCompactPromptForConfig(cfg: config.Config) []const u8 {
+    if (cfg.compact_prompt) |prompt| {
+        if (std.mem.trim(u8, prompt, " \t\r\n").len > 0) return prompt;
+    }
+    return APP_SERVER_COMPACT_PROMPT;
 }
 
 fn handleLoadedThreadShellCommand(
@@ -32821,8 +32857,30 @@ fn applyThreadStartProjectTrustAndConfig(
         user_config_bytes = try config.readConfigTomlFile(allocator, config_path);
     }
 
-    const bytes = user_config_bytes orelse return;
-    var project_layers = try loadConfigReadProjectLayers(allocator, cwd, cfg.codex_home, bytes);
+    try applyProjectLayersToConfigFromUserBytes(allocator, cfg, cwd, user_config_bytes orelse "");
+}
+
+fn applyProjectLayersToConfigForCwd(
+    allocator: std.mem.Allocator,
+    cfg: *config.Config,
+    cwd: []const u8,
+) !void {
+    const config_path = try config.configTomlPath(allocator, cfg.codex_home);
+    defer allocator.free(config_path);
+
+    const user_config_bytes = try config.readConfigTomlFile(allocator, config_path);
+    defer if (user_config_bytes) |bytes| allocator.free(bytes);
+
+    try applyProjectLayersToConfigFromUserBytes(allocator, cfg, cwd, user_config_bytes orelse "");
+}
+
+fn applyProjectLayersToConfigFromUserBytes(
+    allocator: std.mem.Allocator,
+    cfg: *config.Config,
+    cwd: []const u8,
+    user_config_bytes: []const u8,
+) !void {
+    var project_layers = try loadConfigReadProjectLayers(allocator, cwd, cfg.codex_home, user_config_bytes);
     defer project_layers.deinit(allocator);
     try applyThreadStartProjectLayersToConfig(allocator, cfg, project_layers);
 }
@@ -32974,6 +33032,9 @@ fn applyThreadStartProjectLayersToConfig(
     if (project_layers.model()) |value| try replaceConfigOwnedString(allocator, &cfg.model, value);
     if (project_layers.modelContextWindow()) |value| cfg.model_context_window = value;
     if (project_layers.modelAutoCompactTokenLimit()) |value| cfg.model_auto_compact_token_limit = value;
+    if (project_layers.instructions()) |value| try replaceConfigOptionalString(allocator, &cfg.base_instructions, value);
+    if (project_layers.developerInstructions()) |value| try replaceConfigOptionalString(allocator, &cfg.developer_instructions, value);
+    if (project_layers.compactPrompt()) |value| try replaceConfigOptionalString(allocator, &cfg.compact_prompt, value);
     if (project_layers.approvalPolicy()) |value| cfg.approval_policy = value;
     if (project_layers.sandboxMode()) |value| cfg.sandbox_mode = value;
     if (project_layers.webSearchMode()) |value| cfg.web_search_mode = value;
