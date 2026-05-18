@@ -48,6 +48,10 @@ def header_value(headers: dict[str, str], name: str) -> Optional[str]:
     return None
 
 
+def safe_location_header(value: str) -> str:
+    return value.replace("\r", "").replace("\n", "")
+
+
 def generate_localhost_self_signed_cert(root: Path) -> tuple[Path, Path]:
     cert_path = root / "localhost.crt"
     key_path = root / "localhost.key"
@@ -1520,7 +1524,7 @@ class McpOAuthDiscoveryHandler(BaseHTTPRequestHandler):
             else:
                 location = f"{redirect_uri}?code=mock-code&state={urllib.parse.quote(state)}"
             self.send_response(302)
-            self.send_header("Location", location)
+            self.send_header("Location", safe_location_header(location))
             self.send_header("Content-Length", "0")
             self.end_headers()
             return

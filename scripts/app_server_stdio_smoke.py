@@ -67,6 +67,10 @@ GRANULAR_APPROVAL_POLICY = {
 }
 
 
+def safe_location_header(value: str) -> str:
+    return value.replace("\r", "").replace("\n", "")
+
+
 def request_input_texts_by_role(body):
     texts_by_role = {}
     for item in body.get("input", []):
@@ -423,7 +427,7 @@ class McpOAuthDiscoveryHandler(BaseHTTPRequestHandler):
             state = query["state"][0]
             location = f"{redirect_uri}?code=mock-code&state={urllib.parse.quote(state)}"
             self.send_response(302)
-            self.send_header("Location", location)
+            self.send_header("Location", safe_location_header(location))
             self.send_header("Content-Length", "0")
             self.end_headers()
             return
