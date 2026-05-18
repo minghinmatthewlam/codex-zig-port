@@ -25500,6 +25500,9 @@ def run_config_read_rpc_smoke(binary: Path) -> None:
                 'service_tier = "fast"',
                 'forced_chatgpt_workspace_id = "acct-project"',
                 'forced_login_method = "api"',
+                'base_instructions = "project base instructions"',
+                'developer_instructions = "project developer instructions"',
+                'compact_prompt = "project compact prompt"',
                 "",
                 "[sandbox_workspace_write]",
                 'writable_roots = ["/tmp/codex-zig-project-root"]',
@@ -25557,6 +25560,9 @@ def run_config_read_rpc_smoke(binary: Path) -> None:
                 "model_auto_compact_token_limit = 96000",
                 'model_verbosity = "low"',
                 'profile = "work"',
+                'base_instructions = "user base instructions"',
+                'developer_instructions = "user developer instructions"',
+                'compact_prompt = "user compact prompt"',
                 'approval_policy = "never"',
                 'sandbox_mode = "danger-full-access"',
                 'web_search = "live"',
@@ -25629,6 +25635,9 @@ def run_config_read_rpc_smoke(binary: Path) -> None:
                 'service_tier = "fast"',
                 'forced_chatgpt_workspace_id = "acct-system"',
                 'forced_login_method = "api"',
+                'base_instructions = "system base instructions"',
+                'developer_instructions = "system developer instructions"',
+                'compact_prompt = "system compact prompt"',
                 "",
                 "[sandbox_workspace_write]",
                 'writable_roots = ["/tmp/codex-zig-system-root"]',
@@ -25692,6 +25701,9 @@ def run_config_read_rpc_smoke(binary: Path) -> None:
         assert config_body["review_model"] == "gpt-user-review"
         assert config_body["model_context_window"] == 128000
         assert config_body["model_auto_compact_token_limit"] == 96000
+        assert config_body["instructions"] == "user base instructions"
+        assert config_body["developer_instructions"] == "user developer instructions"
+        assert config_body["compact_prompt"] == "user compact prompt"
         assert config_body["approval_policy"] == "never"
         assert config_body["sandbox_mode"] == "danger-full-access"
         assert config_body["sandbox_workspace_write"] == {
@@ -25769,6 +25781,9 @@ def run_config_read_rpc_smoke(binary: Path) -> None:
             "model_auto_compact_token_limit",
             "model_verbosity",
             "profile",
+            "instructions",
+            "developer_instructions",
+            "compact_prompt",
             "approval_policy",
             "sandbox_mode",
             "sandbox_workspace_write.writable_roots.0",
@@ -25823,6 +25838,9 @@ def run_config_read_rpc_smoke(binary: Path) -> None:
             "model_auto_compact_token_limit": 96000,
             "model_verbosity": "high",
             "profile": "work",
+            "instructions": "user base instructions",
+            "developer_instructions": "user developer instructions",
+            "compact_prompt": "user compact prompt",
             "approval_policy": "never",
             "sandbox_mode": "danger-full-access",
             "sandbox_workspace_write": {
@@ -25874,6 +25892,9 @@ def run_config_read_rpc_smoke(binary: Path) -> None:
         assert layers[1]["config"] == {
             "model": "gpt-system",
             "review_model": "gpt-system-review",
+            "instructions": "system base instructions",
+            "developer_instructions": "system developer instructions",
+            "compact_prompt": "system compact prompt",
             "approval_policy": "on-failure",
             "sandbox_mode": "read-only",
             "web_search": "cached",
@@ -25948,6 +25969,9 @@ def run_config_read_rpc_smoke(binary: Path) -> None:
         assert project_config_body["sandbox_mode"] == "workspace-write"
         assert project_config_body["web_search"] == "cached"
         assert project_config_body["model_reasoning_effort"] == "high"
+        assert project_config_body["instructions"] == "project base instructions"
+        assert project_config_body["developer_instructions"] == "project developer instructions"
+        assert project_config_body["compact_prompt"] == "project compact prompt"
         assert project_config_body["service_tier"] == "priority"
         assert project_config_body["forced_chatgpt_workspace_id"] == "acct-project"
         assert project_config_body["forced_login_method"] == "api"
@@ -26033,6 +26057,9 @@ def run_config_read_rpc_smoke(binary: Path) -> None:
             "sandbox_mode",
             "web_search",
             "model_reasoning_effort",
+            "instructions",
+            "developer_instructions",
+            "compact_prompt",
             "service_tier",
             "forced_chatgpt_workspace_id",
             "forced_login_method",
@@ -26089,6 +26116,9 @@ def run_config_read_rpc_smoke(binary: Path) -> None:
             "sandbox_mode": "workspace-write",
             "web_search": "cached",
             "model_reasoning_effort": "high",
+            "instructions": "project base instructions",
+            "developer_instructions": "project developer instructions",
+            "compact_prompt": "project compact prompt",
             "service_tier": "priority",
             "forced_chatgpt_workspace_id": "acct-project",
             "forced_login_method": "api",
@@ -26157,6 +26187,9 @@ def run_config_read_rpc_smoke(binary: Path) -> None:
         assert nested_config_body["sandbox_mode"] == "workspace-write"
         assert nested_config_body["web_search"] == "cached"
         assert nested_config_body["model_reasoning_effort"] == "low"
+        assert nested_config_body["instructions"] == "project base instructions"
+        assert nested_config_body["developer_instructions"] == "project developer instructions"
+        assert nested_config_body["compact_prompt"] == "project compact prompt"
         assert nested_config_body["service_tier"] == "flex"
         assert nested_config_body["forced_chatgpt_workspace_id"] == "acct-project"
         assert nested_config_body["forced_login_method"] == "api"
@@ -26195,6 +26228,9 @@ def run_config_read_rpc_smoke(binary: Path) -> None:
         assert nested_origins["tools.view_image"]["name"] == project_source
         assert nested_origins["tools.web_search.allowed_domains.0"]["name"] == child_project_source
         assert nested_origins["model_reasoning_effort"]["name"] == child_project_source
+        assert nested_origins["instructions"]["name"] == project_source
+        assert nested_origins["developer_instructions"]["name"] == project_source
+        assert nested_origins["compact_prompt"]["name"] == project_source
         assert nested_origins["service_tier"]["name"] == child_project_source
         assert nested_origins["forced_chatgpt_workspace_id"]["name"] == project_source
         assert nested_origins["forced_login_method"]["name"] == project_source
@@ -26238,6 +26274,9 @@ def run_config_read_rpc_smoke(binary: Path) -> None:
             "sandbox_mode": "workspace-write",
             "web_search": "cached",
             "model_reasoning_effort": "high",
+            "instructions": "project base instructions",
+            "developer_instructions": "project developer instructions",
+            "compact_prompt": "project compact prompt",
             "service_tier": "priority",
             "forced_chatgpt_workspace_id": "acct-project",
             "forced_login_method": "api",
@@ -26304,6 +26343,9 @@ def run_config_read_rpc_smoke(binary: Path) -> None:
                     'service_tier = "priority"',
                     'forced_chatgpt_workspace_id = "acct-managed"',
                     'forced_login_method = "api"',
+                    'base_instructions = "managed base instructions"',
+                    'developer_instructions = "managed developer instructions"',
+                    'compact_prompt = "managed compact prompt"',
                     "",
                     "[sandbox_workspace_write]",
                     'writable_roots = ["/tmp/codex-zig-managed-root"]',
@@ -26350,6 +26392,9 @@ def run_config_read_rpc_smoke(binary: Path) -> None:
         assert managed_config_body["sandbox_mode"] == "danger-full-access"
         assert managed_config_body["web_search"] == "disabled"
         assert managed_config_body["model_reasoning_effort"] == "low"
+        assert managed_config_body["instructions"] == "managed base instructions"
+        assert managed_config_body["developer_instructions"] == "managed developer instructions"
+        assert managed_config_body["compact_prompt"] == "managed compact prompt"
         assert managed_config_body["service_tier"] == "priority"
         assert managed_config_body["forced_chatgpt_workspace_id"] == "acct-managed"
         assert managed_config_body["forced_login_method"] == "api"
@@ -26433,6 +26478,9 @@ def run_config_read_rpc_smoke(binary: Path) -> None:
             "approval_policy",
             "web_search",
             "model_reasoning_effort",
+            "instructions",
+            "developer_instructions",
+            "compact_prompt",
             "service_tier",
             "forced_chatgpt_workspace_id",
             "forced_login_method",
@@ -26487,6 +26535,9 @@ def run_config_read_rpc_smoke(binary: Path) -> None:
             "approval_policy": "on-request",
             "web_search": "disabled",
             "model_reasoning_effort": "low",
+            "instructions": "managed base instructions",
+            "developer_instructions": "managed developer instructions",
+            "compact_prompt": "managed compact prompt",
             "service_tier": "priority",
             "forced_chatgpt_workspace_id": "acct-managed",
             "forced_login_method": "api",

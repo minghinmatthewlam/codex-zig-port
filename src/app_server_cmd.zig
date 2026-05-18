@@ -48374,6 +48374,18 @@ fn renderConfigReadResponse(
     const model_auto_compact_token_limit = managed_model_auto_compact_token_limit orelse project_layers.modelAutoCompactTokenLimit() orelse configReadUserOrSystemMaybeI64(cfg.model_auto_compact_token_limit, user_layer, "model_auto_compact_token_limit", system_model_auto_compact_token_limit);
     try appendJsonMaybeI64Field(allocator, &result, &first, "model_auto_compact_token_limit", model_auto_compact_token_limit);
     try appendJsonMaybeStringField(allocator, &result, &first, "profile", cfg.active_profile);
+    const system_instructions = if (system_layer) |layer| layer.instructions else null;
+    const managed_instructions = if (managed_layer) |layer| layer.instructions else null;
+    const instructions = managed_instructions orelse project_layers.instructions() orelse configReadUserOrSystemMaybeString(cfg.base_instructions, user_layer, "instructions", system_instructions);
+    try appendJsonMaybeStringField(allocator, &result, &first, "instructions", instructions);
+    const system_developer_instructions = if (system_layer) |layer| layer.developer_instructions else null;
+    const managed_developer_instructions = if (managed_layer) |layer| layer.developer_instructions else null;
+    const developer_instructions = managed_developer_instructions orelse project_layers.developerInstructions() orelse configReadUserOrSystemMaybeString(cfg.developer_instructions, user_layer, "developer_instructions", system_developer_instructions);
+    try appendJsonMaybeStringField(allocator, &result, &first, "developer_instructions", developer_instructions);
+    const system_compact_prompt = if (system_layer) |layer| layer.compact_prompt else null;
+    const managed_compact_prompt = if (managed_layer) |layer| layer.compact_prompt else null;
+    const compact_prompt = managed_compact_prompt orelse project_layers.compactPrompt() orelse configReadUserOrSystemMaybeString(cfg.compact_prompt, user_layer, "compact_prompt", system_compact_prompt);
+    try appendJsonMaybeStringField(allocator, &result, &first, "compact_prompt", compact_prompt);
     const system_approval_policy = if (system_layer) |layer| layer.approval_policy else null;
     const approval_policy = if (managed_layer) |layer| layer.approval_policy orelse project_layers.approvalPolicy() orelse configReadUserOrSystemApprovalPolicy(cfg.approval_policy, user_layer, system_approval_policy) else project_layers.approvalPolicy() orelse configReadUserOrSystemApprovalPolicy(cfg.approval_policy, user_layer, system_approval_policy);
     try appendJsonStringField(allocator, &result, &first, "approval_policy", approval_policy.label());
@@ -48430,6 +48442,9 @@ const ConfigReadManagedLayer = struct {
     review_model: ?[]const u8 = null,
     model_context_window: ?i64 = null,
     model_auto_compact_token_limit: ?i64 = null,
+    instructions: ?[]const u8 = null,
+    developer_instructions: ?[]const u8 = null,
+    compact_prompt: ?[]const u8 = null,
     approval_policy: ?config.ApprovalPolicy = null,
     sandbox_mode: ?config.SandboxMode = null,
     web_search_mode: ?config.WebSearchMode = null,
@@ -48447,6 +48462,9 @@ const ConfigReadManagedLayer = struct {
         allocator.free(self.version);
         if (self.model) |value| allocator.free(value);
         if (self.review_model) |value| allocator.free(value);
+        if (self.instructions) |value| allocator.free(value);
+        if (self.developer_instructions) |value| allocator.free(value);
+        if (self.compact_prompt) |value| allocator.free(value);
         if (self.service_tier) |value| allocator.free(value);
         if (self.forced_chatgpt_workspace_id) |value| allocator.free(value);
         for (self.origin_keys) |key| allocator.free(key);
@@ -48480,6 +48498,9 @@ const ConfigReadProjectLayer = struct {
     review_model: ?[]const u8,
     model_context_window: ?i64,
     model_auto_compact_token_limit: ?i64,
+    instructions: ?[]const u8,
+    developer_instructions: ?[]const u8,
+    compact_prompt: ?[]const u8,
     approval_policy: ?config.ApprovalPolicy,
     sandbox_mode: ?config.SandboxMode,
     web_search_mode: ?config.WebSearchMode,
@@ -48497,6 +48518,9 @@ const ConfigReadProjectLayer = struct {
         allocator.free(self.version);
         if (self.model) |value| allocator.free(value);
         if (self.review_model) |value| allocator.free(value);
+        if (self.instructions) |value| allocator.free(value);
+        if (self.developer_instructions) |value| allocator.free(value);
+        if (self.compact_prompt) |value| allocator.free(value);
         if (self.service_tier) |value| allocator.free(value);
         if (self.forced_chatgpt_workspace_id) |value| allocator.free(value);
         for (self.origin_keys) |key| allocator.free(key);
@@ -48515,6 +48539,9 @@ const ConfigReadSystemLayer = struct {
     review_model: ?[]const u8,
     model_context_window: ?i64,
     model_auto_compact_token_limit: ?i64,
+    instructions: ?[]const u8,
+    developer_instructions: ?[]const u8,
+    compact_prompt: ?[]const u8,
     approval_policy: ?config.ApprovalPolicy,
     sandbox_mode: ?config.SandboxMode,
     web_search_mode: ?config.WebSearchMode,
@@ -48532,6 +48559,9 @@ const ConfigReadSystemLayer = struct {
         allocator.free(self.version);
         if (self.model) |value| allocator.free(value);
         if (self.review_model) |value| allocator.free(value);
+        if (self.instructions) |value| allocator.free(value);
+        if (self.developer_instructions) |value| allocator.free(value);
+        if (self.compact_prompt) |value| allocator.free(value);
         if (self.service_tier) |value| allocator.free(value);
         if (self.forced_chatgpt_workspace_id) |value| allocator.free(value);
         for (self.origin_keys) |key| allocator.free(key);
@@ -48662,6 +48692,27 @@ const ConfigReadProjectLayers = struct {
     fn modelAutoCompactTokenLimit(self: ConfigReadProjectLayers) ?i64 {
         for (self.items) |layer| {
             if (layer.model_auto_compact_token_limit) |value| return value;
+        }
+        return null;
+    }
+
+    fn instructions(self: ConfigReadProjectLayers) ?[]const u8 {
+        for (self.items) |layer| {
+            if (layer.instructions) |value| return value;
+        }
+        return null;
+    }
+
+    fn developerInstructions(self: ConfigReadProjectLayers) ?[]const u8 {
+        for (self.items) |layer| {
+            if (layer.developer_instructions) |value| return value;
+        }
+        return null;
+    }
+
+    fn compactPrompt(self: ConfigReadProjectLayers) ?[]const u8 {
+        for (self.items) |layer| {
+            if (layer.compact_prompt) |value| return value;
         }
         return null;
     }
@@ -49571,6 +49622,12 @@ fn loadConfigReadManagedLayer(allocator: std.mem.Allocator) !?ConfigReadManagedL
     errdefer if (review_model) |value| allocator.free(value);
     var model_context_window: ?i64 = null;
     var model_auto_compact_token_limit: ?i64 = null;
+    var instructions: ?[]const u8 = null;
+    errdefer if (instructions) |value| allocator.free(value);
+    var developer_instructions: ?[]const u8 = null;
+    errdefer if (developer_instructions) |value| allocator.free(value);
+    var compact_prompt: ?[]const u8 = null;
+    errdefer if (compact_prompt) |value| allocator.free(value);
     var approval_policy: ?config.ApprovalPolicy = null;
     var sandbox_mode: ?config.SandboxMode = null;
     var web_search_mode: ?config.WebSearchMode = null;
@@ -49601,6 +49658,18 @@ fn loadConfigReadManagedLayer(allocator: std.mem.Allocator) !?ConfigReadManagedL
     if (try config.topLevelI64Value(payload, "model_auto_compact_token_limit")) |value| {
         model_auto_compact_token_limit = value;
         try appendUniqueOriginKey(allocator, &origin_keys, "model_auto_compact_token_limit");
+    }
+    if (try configReadTopLevelInstructionsValue(allocator, payload)) |value| {
+        instructions = value;
+        try appendUniqueOriginKey(allocator, &origin_keys, "instructions");
+    }
+    if (try config.topLevelStringValue(allocator, payload, "developer_instructions")) |value| {
+        developer_instructions = value;
+        try appendUniqueOriginKey(allocator, &origin_keys, "developer_instructions");
+    }
+    if (try config.topLevelStringValue(allocator, payload, "compact_prompt")) |value| {
+        compact_prompt = value;
+        try appendUniqueOriginKey(allocator, &origin_keys, "compact_prompt");
     }
     if (try config.topLevelStringValue(allocator, payload, "approval_policy")) |value| {
         defer allocator.free(value);
@@ -49661,6 +49730,9 @@ fn loadConfigReadManagedLayer(allocator: std.mem.Allocator) !?ConfigReadManagedL
         .review_model = review_model,
         .model_context_window = model_context_window,
         .model_auto_compact_token_limit = model_auto_compact_token_limit,
+        .instructions = instructions,
+        .developer_instructions = developer_instructions,
+        .compact_prompt = compact_prompt,
         .approval_policy = approval_policy,
         .sandbox_mode = sandbox_mode,
         .web_search_mode = web_search_mode,
@@ -49694,6 +49766,12 @@ fn loadConfigReadSystemLayer(allocator: std.mem.Allocator) !ConfigReadSystemLaye
     errdefer if (review_model) |value| allocator.free(value);
     var model_context_window: ?i64 = null;
     var model_auto_compact_token_limit: ?i64 = null;
+    var instructions: ?[]const u8 = null;
+    errdefer if (instructions) |value| allocator.free(value);
+    var developer_instructions: ?[]const u8 = null;
+    errdefer if (developer_instructions) |value| allocator.free(value);
+    var compact_prompt: ?[]const u8 = null;
+    errdefer if (compact_prompt) |value| allocator.free(value);
     var approval_policy: ?config.ApprovalPolicy = null;
     var sandbox_mode: ?config.SandboxMode = null;
     var web_search_mode: ?config.WebSearchMode = null;
@@ -49724,6 +49802,18 @@ fn loadConfigReadSystemLayer(allocator: std.mem.Allocator) !ConfigReadSystemLaye
     if (try config.topLevelI64Value(payload, "model_auto_compact_token_limit")) |value| {
         model_auto_compact_token_limit = value;
         try appendUniqueOriginKey(allocator, &origin_keys, "model_auto_compact_token_limit");
+    }
+    if (try configReadTopLevelInstructionsValue(allocator, payload)) |value| {
+        instructions = value;
+        try appendUniqueOriginKey(allocator, &origin_keys, "instructions");
+    }
+    if (try config.topLevelStringValue(allocator, payload, "developer_instructions")) |value| {
+        developer_instructions = value;
+        try appendUniqueOriginKey(allocator, &origin_keys, "developer_instructions");
+    }
+    if (try config.topLevelStringValue(allocator, payload, "compact_prompt")) |value| {
+        compact_prompt = value;
+        try appendUniqueOriginKey(allocator, &origin_keys, "compact_prompt");
     }
     if (try config.topLevelStringValue(allocator, payload, "approval_policy")) |value| {
         defer allocator.free(value);
@@ -49784,6 +49874,9 @@ fn loadConfigReadSystemLayer(allocator: std.mem.Allocator) !ConfigReadSystemLaye
         .review_model = review_model,
         .model_context_window = model_context_window,
         .model_auto_compact_token_limit = model_auto_compact_token_limit,
+        .instructions = instructions,
+        .developer_instructions = developer_instructions,
+        .compact_prompt = compact_prompt,
         .approval_policy = approval_policy,
         .sandbox_mode = sandbox_mode,
         .web_search_mode = web_search_mode,
@@ -49904,6 +49997,11 @@ fn configReadTopLevelRawValue(bytes: []const u8, key: []const u8) ?[]const u8 {
     return null;
 }
 
+fn configReadTopLevelInstructionsValue(allocator: std.mem.Allocator, bytes: []const u8) !?[]const u8 {
+    if (try config.topLevelStringValue(allocator, bytes, "instructions")) |value| return value;
+    return config.topLevelStringValue(allocator, bytes, "base_instructions");
+}
+
 const ConfigReadSection = enum {
     top_level,
     active_profile,
@@ -49939,9 +50037,9 @@ fn collectConfigReadUserOriginKeys(
 
         const eq = std.mem.indexOfScalar(u8, line, '=') orelse continue;
         const key = std.mem.trim(u8, line[0..eq], " \t");
-        if (!isConfigReadOriginField(key)) continue;
-        if (section == .active_profile and std.mem.eql(u8, key, "profile")) continue;
-        try appendUniqueOriginKey(allocator, &keys, key);
+        const origin_key = configReadPublicOriginKey(key) orelse continue;
+        if (section == .active_profile and std.mem.eql(u8, origin_key, "profile")) continue;
+        try appendUniqueOriginKey(allocator, &keys, origin_key);
     }
 
     return keys.toOwnedSlice(allocator);
@@ -50034,6 +50132,12 @@ fn loadConfigReadProjectLayer(
     errdefer if (review_model) |value| allocator.free(value);
     var model_context_window: ?i64 = null;
     var model_auto_compact_token_limit: ?i64 = null;
+    var instructions: ?[]const u8 = null;
+    errdefer if (instructions) |value| allocator.free(value);
+    var developer_instructions: ?[]const u8 = null;
+    errdefer if (developer_instructions) |value| allocator.free(value);
+    var compact_prompt: ?[]const u8 = null;
+    errdefer if (compact_prompt) |value| allocator.free(value);
     var approval_policy: ?config.ApprovalPolicy = null;
     var sandbox_mode: ?config.SandboxMode = null;
     var web_search_mode: ?config.WebSearchMode = null;
@@ -50066,6 +50170,18 @@ fn loadConfigReadProjectLayer(
         if (try config.topLevelI64Value(config_bytes, "model_auto_compact_token_limit")) |value| {
             model_auto_compact_token_limit = value;
             try appendUniqueOriginKey(allocator, &origin_keys, "model_auto_compact_token_limit");
+        }
+        if (try configReadTopLevelInstructionsValue(allocator, config_bytes)) |value| {
+            instructions = value;
+            try appendUniqueOriginKey(allocator, &origin_keys, "instructions");
+        }
+        if (try config.topLevelStringValue(allocator, config_bytes, "developer_instructions")) |value| {
+            developer_instructions = value;
+            try appendUniqueOriginKey(allocator, &origin_keys, "developer_instructions");
+        }
+        if (try config.topLevelStringValue(allocator, config_bytes, "compact_prompt")) |value| {
+            compact_prompt = value;
+            try appendUniqueOriginKey(allocator, &origin_keys, "compact_prompt");
         }
         if (try config.topLevelStringValue(allocator, config_bytes, "approval_policy")) |value| {
             defer allocator.free(value);
@@ -50124,6 +50240,9 @@ fn loadConfigReadProjectLayer(
         .review_model = review_model,
         .model_context_window = model_context_window,
         .model_auto_compact_token_limit = model_auto_compact_token_limit,
+        .instructions = instructions,
+        .developer_instructions = developer_instructions,
+        .compact_prompt = compact_prompt,
         .approval_policy = approval_policy,
         .sandbox_mode = sandbox_mode,
         .web_search_mode = web_search_mode,
@@ -50171,6 +50290,9 @@ fn isConfigReadOriginField(key: []const u8) bool {
         std.mem.eql(u8, key, "model_context_window") or
         std.mem.eql(u8, key, "model_auto_compact_token_limit") or
         std.mem.eql(u8, key, "profile") or
+        std.mem.eql(u8, key, "instructions") or
+        std.mem.eql(u8, key, "developer_instructions") or
+        std.mem.eql(u8, key, "compact_prompt") or
         std.mem.eql(u8, key, "approval_policy") or
         std.mem.eql(u8, key, "sandbox_mode") or
         std.mem.eql(u8, key, "forced_chatgpt_workspace_id") or
@@ -50182,6 +50304,12 @@ fn isConfigReadOriginField(key: []const u8) bool {
         std.mem.eql(u8, key, "oss_provider") or
         std.mem.eql(u8, key, "openai_base_url") or
         std.mem.eql(u8, key, "chatgpt_base_url");
+}
+
+fn configReadPublicOriginKey(key: []const u8) ?[]const u8 {
+    if (std.mem.eql(u8, key, "base_instructions")) return "instructions";
+    if (isConfigReadOriginField(key)) return key;
+    return null;
 }
 
 fn appendUniqueOriginKey(
@@ -51085,6 +51213,12 @@ fn appendConfigReadProjectLayerConfig(
             try appendJsonMaybeI64Field(allocator, result, &first, key, layer.model_context_window);
         } else if (std.mem.eql(u8, key, "model_auto_compact_token_limit")) {
             try appendJsonMaybeI64Field(allocator, result, &first, key, layer.model_auto_compact_token_limit);
+        } else if (std.mem.eql(u8, key, "instructions")) {
+            try appendJsonMaybeStringField(allocator, result, &first, key, layer.instructions);
+        } else if (std.mem.eql(u8, key, "developer_instructions")) {
+            try appendJsonMaybeStringField(allocator, result, &first, key, layer.developer_instructions);
+        } else if (std.mem.eql(u8, key, "compact_prompt")) {
+            try appendJsonMaybeStringField(allocator, result, &first, key, layer.compact_prompt);
         } else if (std.mem.eql(u8, key, "approval_policy")) {
             if (layer.approval_policy) |policy| try appendJsonStringField(allocator, result, &first, key, policy.label());
         } else if (std.mem.eql(u8, key, "sandbox_mode")) {
@@ -51129,6 +51263,9 @@ fn appendConfigReadManagedLayerConfig(
     if (layer.review_model) |value| try appendJsonStringField(allocator, result, &first, "review_model", value);
     if (layer.model_context_window) |value| try appendJsonMaybeI64Field(allocator, result, &first, "model_context_window", value);
     if (layer.model_auto_compact_token_limit) |value| try appendJsonMaybeI64Field(allocator, result, &first, "model_auto_compact_token_limit", value);
+    if (layer.instructions) |value| try appendJsonStringField(allocator, result, &first, "instructions", value);
+    if (layer.developer_instructions) |value| try appendJsonStringField(allocator, result, &first, "developer_instructions", value);
+    if (layer.compact_prompt) |value| try appendJsonStringField(allocator, result, &first, "compact_prompt", value);
     if (layer.approval_policy) |policy| try appendJsonStringField(allocator, result, &first, "approval_policy", policy.label());
     if (layer.sandbox_mode) |mode| try appendJsonStringField(allocator, result, &first, "sandbox_mode", mode.label());
     if (layer.forced_chatgpt_workspace_id) |value| try appendJsonStringField(allocator, result, &first, "forced_chatgpt_workspace_id", value);
@@ -51168,6 +51305,12 @@ fn appendConfigReadSystemLayerConfig(
             try appendJsonMaybeI64Field(allocator, result, &first, key, layer.model_context_window);
         } else if (std.mem.eql(u8, key, "model_auto_compact_token_limit")) {
             try appendJsonMaybeI64Field(allocator, result, &first, key, layer.model_auto_compact_token_limit);
+        } else if (std.mem.eql(u8, key, "instructions")) {
+            try appendJsonMaybeStringField(allocator, result, &first, key, layer.instructions);
+        } else if (std.mem.eql(u8, key, "developer_instructions")) {
+            try appendJsonMaybeStringField(allocator, result, &first, key, layer.developer_instructions);
+        } else if (std.mem.eql(u8, key, "compact_prompt")) {
+            try appendJsonMaybeStringField(allocator, result, &first, key, layer.compact_prompt);
         } else if (std.mem.eql(u8, key, "approval_policy")) {
             if (layer.approval_policy) |policy| try appendJsonStringField(allocator, result, &first, key, policy.label());
         } else if (std.mem.eql(u8, key, "sandbox_mode")) {
@@ -51220,6 +51363,12 @@ fn appendConfigReadUserLayerConfig(
             try appendJsonMaybeI64Field(allocator, result, &first, key, cfg.model_auto_compact_token_limit);
         } else if (std.mem.eql(u8, key, "profile")) {
             try appendJsonMaybeStringField(allocator, result, &first, key, cfg.active_profile);
+        } else if (std.mem.eql(u8, key, "instructions")) {
+            try appendJsonMaybeStringField(allocator, result, &first, key, cfg.base_instructions);
+        } else if (std.mem.eql(u8, key, "developer_instructions")) {
+            try appendJsonMaybeStringField(allocator, result, &first, key, cfg.developer_instructions);
+        } else if (std.mem.eql(u8, key, "compact_prompt")) {
+            try appendJsonMaybeStringField(allocator, result, &first, key, cfg.compact_prompt);
         } else if (std.mem.eql(u8, key, "approval_policy")) {
             try appendJsonStringField(allocator, result, &first, key, cfg.approval_policy.label());
         } else if (std.mem.eql(u8, key, "sandbox_mode")) {
@@ -53801,6 +53950,7 @@ test "config/read user origin keys include active profile scalars" {
         \\model = "base-model"
         \\profile = "work"
         \\approval_policy = "on-request"
+        \\base_instructions = "base instructions"
         \\
         \\[features]
         \\apps = false
@@ -53809,6 +53959,7 @@ test "config/read user origin keys include active profile scalars" {
         \\model = "profile-model"
         \\sandbox_mode = "danger-full-access"
         \\profile = "ignored-profile-key"
+        \\base_instructions = "profile base instructions"
         \\
         \\[profiles.work.features]
         \\goals = true
@@ -53822,11 +53973,12 @@ test "config/read user origin keys include active profile scalars" {
         allocator.free(keys);
     }
 
-    try std.testing.expectEqual(@as(usize, 4), keys.len);
+    try std.testing.expectEqual(@as(usize, 5), keys.len);
     try std.testing.expectEqualStrings("model", keys[0]);
     try std.testing.expectEqualStrings("profile", keys[1]);
     try std.testing.expectEqualStrings("approval_policy", keys[2]);
-    try std.testing.expectEqualStrings("sandbox_mode", keys[3]);
+    try std.testing.expectEqualStrings("instructions", keys[3]);
+    try std.testing.expectEqualStrings("sandbox_mode", keys[4]);
 }
 
 test "app-server config write path comparison normalizes Rust path aliases" {
