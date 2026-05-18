@@ -1406,27 +1406,27 @@ def run_help_command_smoke(
         check=True,
     )
     if (
-        "codex-zig exec [EXEC_OPTIONS] review [REVIEW_OPTIONS]"
+        "codex-zig exec review [OPTIONS] [PROMPT]"
         not in exec_review_help_result.stderr
     ):
         raise AssertionError(
             f"expected exec review help output:\n{exec_review_help_result.stderr}"
         )
-    if "-m, --model" in exec_review_help_result.stderr:
+    if "-m, --model MODEL" not in exec_review_help_result.stderr:
         raise AssertionError(
-            f"exec review help advertised unsupported post-review model option:\n{exec_review_help_result.stderr}"
+            f"exec review help omitted post-review model option:\n{exec_review_help_result.stderr}"
         )
-    if "--enable FEATURE" in exec_review_help_result.stderr:
+    if "--enable FEATURE" not in exec_review_help_result.stderr:
         raise AssertionError(
-            f"exec review help advertised unsupported post-review feature option:\n{exec_review_help_result.stderr}"
+            f"exec review help omitted post-review feature option:\n{exec_review_help_result.stderr}"
         )
-    if "--json" in exec_review_help_result.stderr:
+    if "--json" not in exec_review_help_result.stderr:
         raise AssertionError(
-            f"exec review help advertised unsupported json output:\n{exec_review_help_result.stderr}"
+            f"exec review help omitted post-review json output:\n{exec_review_help_result.stderr}"
         )
-    if "--output-last-message" in exec_review_help_result.stderr:
+    if "--output-last-message FILE" not in exec_review_help_result.stderr:
         raise AssertionError(
-            f"exec review help advertised unsupported last-message output:\n{exec_review_help_result.stderr}"
+            f"exec review help omitted post-review last-message output:\n{exec_review_help_result.stderr}"
         )
     if exec_review_help_result.stdout != "":
         raise AssertionError(

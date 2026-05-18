@@ -6160,8 +6160,12 @@ def run_exec_review_smoke(binary: Path) -> None:
             timeout=5,
             check=True,
         )
-        assert "codex-zig exec [EXEC_OPTIONS] review [REVIEW_OPTIONS]" in help_result.stderr
+        assert "codex-zig exec review [OPTIONS] [PROMPT]" in help_result.stderr
         assert "--base BRANCH" in help_result.stderr
+        assert "-m, --model MODEL" in help_result.stderr
+        assert "--enable FEATURE" in help_result.stderr
+        assert "--json" in help_result.stderr
+        assert "--output-last-message FILE" in help_result.stderr
         assert "codex-zig review --uncommitted" not in help_result.stderr
         assert help_result.stdout == ""
 
@@ -6195,6 +6199,14 @@ def run_exec_review_smoke(binary: Path) -> None:
         git(repo, "init", "--quiet")
         (repo / "review.txt").write_text("new review target\n", encoding="utf-8")
 
+        config_path = Path(env["CODEX_HOME"]) / "config.toml"
+        config_path.write_text(
+            config_path.read_text(encoding="utf-8")
+            + '\n[profiles.base]\nmodel = "gpt-base-review"\n'
+            + '\n[profiles.review]\nmodel = "gpt-profile-review"\n',
+            encoding="utf-8",
+        )
+
         reviewed = subprocess.run(
             [
                 str(binary.resolve()),
@@ -6222,17 +6234,42 @@ def run_exec_review_smoke(binary: Path) -> None:
         assert "diff --git a/review.txt b/review.txt" in prompt
         assert "+new review target" in prompt
 
+        reviewed_with_profile_override = subprocess.run(
+            [
+                str(binary.resolve()),
+                "exec",
+                "--cd",
+                str(repo),
+                "-p",
+                "base",
+                "review",
+                "-c",
+                "profile=review",
+                "--uncommitted",
+            ],
+            cwd=temp_root,
+            env=env,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=5,
+            check=True,
+        )
+        assert reviewed_with_profile_override.stdout == "stored reply\n"
+        assert len(server.request_bodies) == 2
+        assert server.request_bodies[1]["model"] == "gpt-profile-review"
+
         reviewed_without_shell = subprocess.run(
             [
                 str(binary.resolve()),
                 "exec",
-                "--disable",
-                "shell_tool",
                 "--cd",
                 str(repo),
+                "review",
                 "-c",
                 "review_model=gpt-exec-review",
-                "review",
+                "--disable",
+                "shell_tool",
                 "--uncommitted",
             ],
             cwd=temp_root,
@@ -6244,9 +6281,68 @@ def run_exec_review_smoke(binary: Path) -> None:
             check=True,
         )
         assert reviewed_without_shell.stdout == "stored reply\n"
-        assert len(server.request_bodies) == 2
-        assert server.request_bodies[1]["model"] == "gpt-exec-review"
-        assert_shell_tools_disabled(server.request_bodies[1])
+        assert len(server.request_bodies) == 3
+        assert server.request_bodies[2]["model"] == "gpt-exec-review"
+        assert_shell_tools_disabled(server.request_bodies[2])
+
+        config_path.write_text(
+            config_path.read_text(encoding="utf-8") + '\nreview_model = "gpt-config-review"\n',
+            encoding="utf-8",
+        )
+        last_message_path = repo / "last-review.txt"
+        reviewed_json = subprocess.run(
+            [
+                str(binary.resolve()),
+                "exec",
+                "--cd",
+                str(repo),
+                "review",
+                "-m",
+                "gpt-post-review",
+                "--json",
+                "-o",
+                str(last_message_path),
+                "--uncommitted",
+            ],
+            cwd=temp_root,
+            env=env,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=5,
+            check=True,
+        )
+        events = [json.loads(line) for line in reviewed_json.stdout.splitlines()]
+        assert [event["type"] for event in events] == ["turn.started", "turn.completed"]
+        assert events[-1]["message"] == "stored reply"
+        assert reviewed_json.stderr == ""
+        assert last_message_path.read_text(encoding="utf-8") == "stored reply"
+        assert len(server.request_bodies) == 4
+        assert server.request_bodies[3]["model"] == "gpt-post-review"
+
+        conflict = subprocess.run(
+            [
+                str(binary.resolve()),
+                "exec",
+                "--cd",
+                str(repo),
+                "--approval-policy",
+                "on-request",
+                "review",
+                "--dangerously-bypass-approvals-and-sandbox",
+                "--uncommitted",
+            ],
+            cwd=temp_root,
+            env=env,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=5,
+            check=False,
+        )
+        assert conflict.returncode != 0
+        assert "ConflictingExecOptions" in conflict.stderr
+        assert len(server.request_bodies) == 4
     finally:
         server.shutdown()
         server.server_close()
