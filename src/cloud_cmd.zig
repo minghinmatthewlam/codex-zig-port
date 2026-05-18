@@ -86,7 +86,7 @@ pub fn runWithOptions(allocator: std.mem.Allocator, args: *std.process.Args.Iter
     var parsed = try parseArgSlice(allocator, raw_args.items);
     defer parsed.deinit(allocator);
     if (parsed.profile == null) parsed.profile = options.profile;
-    parsed.runtime_overrides = mergeRuntimeOverrides(options.runtime_overrides, parsed.runtime_overrides);
+    parsed.runtime_overrides = config.mergeRuntimeOverrides(options.runtime_overrides, parsed.runtime_overrides);
 
     switch (parsed.command) {
         .exec => return runExec(allocator, parsed),
@@ -96,27 +96,6 @@ pub fn runWithOptions(allocator: std.mem.Allocator, args: *std.process.Args.Iter
         .diff => return runDiff(allocator, parsed),
         .tui => return runPicker(allocator, parsed),
     }
-}
-
-fn mergeRuntimeOverrides(base: config.RuntimeOverrides, command: config.RuntimeOverrides) config.RuntimeOverrides {
-    var merged = base;
-    if (command.model) |value| merged.model = value;
-    if (command.review_model) |value| merged.review_model = value;
-    if (command.model_context_window) |value| merged.model_context_window = value;
-    if (command.model_auto_compact_token_limit) |value| merged.model_auto_compact_token_limit = value;
-    if (command.openai_base_url) |value| merged.openai_base_url = value;
-    if (command.chatgpt_base_url) |value| merged.chatgpt_base_url = value;
-    if (command.oss_provider) |value| merged.oss_provider = value;
-    if (command.approval_policy) |value| merged.approval_policy = value;
-    if (command.sandbox_mode) |value| merged.sandbox_mode = value;
-    if (command.web_search_mode) |value| merged.web_search_mode = value;
-    if (command.service_tier) |value| merged.service_tier = value;
-    if (command.model_reasoning_summary) |value| merged.model_reasoning_summary = value;
-    if (command.model_verbosity) |value| merged.model_verbosity = value;
-    if (command.syntax_theme) |value| merged.syntax_theme = value;
-    if (command.personality) |value| merged.personality = value;
-    if (command.tui_alternate_screen) |value| merged.tui_alternate_screen = value;
-    return merged;
 }
 
 const TaskStatus = enum {

@@ -51,6 +51,7 @@ const ExecArgs = struct {
     review_args: std.ArrayList([]const u8) = .empty,
     prompt: ?[]const u8 = null,
     read_stdin: bool = false,
+    approval_policy_requested: bool = false,
 
     fn deinit(self: ExecArgs, allocator: std.mem.Allocator) void {
         var feature_overrides = self.feature_overrides;
@@ -82,6 +83,7 @@ pub const Options = struct {
     oss_provider: ?[]const u8 = null,
     cwd: ?[]const u8 = null,
     additional_writable_roots: []const []const u8 = &.{},
+    explicit_approval_policy: bool = false,
 };
 
 pub fn run(allocator: std.mem.Allocator, args: *std.process.Args.Iterator) !void {
@@ -118,6 +120,9 @@ pub fn runWithOptions(allocator: std.mem.Allocator, args: *std.process.Args.Iter
     if (parsed.removed_full_auto) {
         try cli_utils.writeStderr("warning: `--full-auto` is deprecated; use `--sandbox workspace-write` instead.\n");
     }
+    if (parsed.dangerously_bypass_approvals_and_sandbox and options.explicit_approval_policy) {
+        return error.ConflictingExecOptions;
+    }
 
     const effective_oss = options.oss or parsed.oss;
     const effective_oss_provider = parsed.oss_provider orelse options.oss_provider;
@@ -137,6 +142,11 @@ pub fn runWithOptions(allocator: std.mem.Allocator, args: *std.process.Args.Iter
             .oss_provider = effective_oss_provider,
             .ignore_user_config = parsed.ignore_user_config,
             .skip_git_repo_check = parsed.skip_git_repo_check or parsed.dangerously_bypass_approvals_and_sandbox,
+            .json_events = parsed.json,
+            .last_message_file = parsed.last_message_file,
+            .ephemeral = parsed.ephemeral,
+            .allow_exec_options = true,
+            .explicit_approval_policy = options.explicit_approval_policy or parsed.approval_policy_requested,
         });
         return;
     }
@@ -259,7 +269,6 @@ fn parseArgs(allocator: std.mem.Allocator, args: []const []const u8) !ExecArgs {
     var end_options = false;
     var resume_mode = false;
     var resume_target_set = false;
-    var approval_policy_requested = false;
     while (index < args.len) : (index += 1) {
         const arg = args[index];
         if (!end_options and std.mem.eql(u8, arg, "--")) {
@@ -272,7 +281,7 @@ fn parseArgs(allocator: std.mem.Allocator, args: []const []const u8) !ExecArgs {
         }
         if (!end_options and (std.mem.eql(u8, arg, "--dangerously-bypass-approvals-and-sandbox") or std.mem.eql(u8, arg, "--yolo"))) {
             if (parsed.removed_full_auto) return error.ConflictingExecOptions;
-            if (approval_policy_requested) return error.ConflictingExecOptions;
+            if (parsed.approval_policy_requested) return error.ConflictingExecOptions;
             parsed.dangerously_bypass_approvals_and_sandbox = true;
             parsed.approval_policy = .never;
             parsed.sandbox_mode = .danger_full_access;
@@ -402,7 +411,7 @@ fn parseArgs(allocator: std.mem.Allocator, args: []const []const u8) !ExecArgs {
         }
         if (!end_options and (std.mem.eql(u8, arg, "--ask-for-approval") or std.mem.eql(u8, arg, "-a"))) {
             if (parsed.dangerously_bypass_approvals_and_sandbox) return error.ConflictingExecOptions;
-            approval_policy_requested = true;
+            parsed.approval_policy_requested = true;
             index += 1;
             if (index >= args.len) return error.MissingExecOptionValue;
             parsed.approval_policy = try config.ApprovalPolicy.parse(args[index]);
@@ -410,13 +419,13 @@ fn parseArgs(allocator: std.mem.Allocator, args: []const []const u8) !ExecArgs {
         }
         if (!end_options and std.mem.startsWith(u8, arg, "--ask-for-approval=")) {
             if (parsed.dangerously_bypass_approvals_and_sandbox) return error.ConflictingExecOptions;
-            approval_policy_requested = true;
+            parsed.approval_policy_requested = true;
             parsed.approval_policy = try config.ApprovalPolicy.parse(arg["--ask-for-approval=".len..]);
             continue;
         }
         if (!end_options and std.mem.eql(u8, arg, "--approval-policy")) {
             if (parsed.dangerously_bypass_approvals_and_sandbox) return error.ConflictingExecOptions;
-            approval_policy_requested = true;
+            parsed.approval_policy_requested = true;
             index += 1;
             if (index >= args.len) return error.MissingExecOptionValue;
             parsed.approval_policy = try config.ApprovalPolicy.parse(args[index]);
@@ -424,7 +433,7 @@ fn parseArgs(allocator: std.mem.Allocator, args: []const []const u8) !ExecArgs {
         }
         if (!end_options and std.mem.startsWith(u8, arg, "--approval-policy=")) {
             if (parsed.dangerously_bypass_approvals_and_sandbox) return error.ConflictingExecOptions;
-            approval_policy_requested = true;
+            parsed.approval_policy_requested = true;
             parsed.approval_policy = try config.ApprovalPolicy.parse(arg["--approval-policy=".len..]);
             continue;
         }
@@ -607,31 +616,11 @@ fn containsOptionHelp(args: []const []const u8) bool {
 }
 
 fn mergedReviewOverrides(base: config.RuntimeOverrides, parsed: ExecArgs) config.RuntimeOverrides {
-    var merged = base;
-    mergeRuntimeOverrides(&merged, parsed.config_overrides);
+    var merged = config.mergeRuntimeOverrides(base, parsed.config_overrides);
     if (parsed.model) |model| merged.model = model;
     if (parsed.approval_policy) |approval_policy| merged.approval_policy = approval_policy;
     if (parsed.sandbox_mode) |sandbox_mode| merged.sandbox_mode = sandbox_mode;
     return merged;
-}
-
-fn mergeRuntimeOverrides(target: *config.RuntimeOverrides, source: config.RuntimeOverrides) void {
-    if (source.model) |value| target.model = value;
-    if (source.review_model) |value| target.review_model = value;
-    if (source.model_context_window) |value| target.model_context_window = value;
-    if (source.model_auto_compact_token_limit) |value| target.model_auto_compact_token_limit = value;
-    if (source.openai_base_url) |value| target.openai_base_url = value;
-    if (source.chatgpt_base_url) |value| target.chatgpt_base_url = value;
-    if (source.oss_provider) |value| target.oss_provider = value;
-    if (source.approval_policy) |value| target.approval_policy = value;
-    if (source.sandbox_mode) |value| target.sandbox_mode = value;
-    if (source.web_search_mode) |value| target.web_search_mode = value;
-    if (source.service_tier) |value| target.service_tier = value;
-    if (source.syntax_theme) |value| target.syntax_theme = value;
-    if (source.personality) |value| target.personality = value;
-    if (source.model_reasoning_summary) |value| target.model_reasoning_summary = value;
-    if (source.model_verbosity) |value| target.model_verbosity = value;
-    if (source.tui_alternate_screen) |value| target.tui_alternate_screen = value;
 }
 
 fn setResumeTarget(allocator: std.mem.Allocator, parsed: *ExecArgs, target: []const u8) !void {
@@ -811,16 +800,29 @@ fn printReviewHelp() void {
         \\Run a code review against the current repository
         \\
         \\Usage:
-        \\  codex-zig exec [EXEC_OPTIONS] review [REVIEW_OPTIONS] [PROMPT]
+        \\  codex-zig exec review [OPTIONS] [PROMPT]
         \\
         \\Arguments:
         \\  [PROMPT]                Custom review instructions; use - to read stdin
         \\
-        \\Review Options:
+        \\Options:
+        \\  -c, --config key=value  Override a supported config value
         \\  --uncommitted           Review staged, unstaged, and untracked changes
         \\  --base BRANCH           Review changes against the given base branch
+        \\  --enable FEATURE        Enable a feature for this invocation
         \\  --commit SHA            Review the changes introduced by a commit
+        \\  --disable FEATURE       Disable a feature for this invocation
+        \\  -m, --model MODEL       Override the model
         \\  --title TITLE           Optional commit title for review context
+        \\  --dangerously-bypass-approvals-and-sandbox
+        \\                          Danger: approval=never and sandbox=danger-full-access
+        \\  --skip-git-repo-check   Allow exec review outside a Git repository
+        \\  --ephemeral             Do not save a session file
+        \\  --ignore-user-config    Do not load CODEX_HOME/config.toml
+        \\  --ignore-rules          Accepted for Rust CLI compatibility
+        \\  --json                  Emit JSONL events instead of plain final text
+        \\  -o, --output-last-message FILE
+        \\                          Write final answer to FILE
         \\  -h, --help              Print help
         \\
     , .{});
@@ -1096,6 +1098,7 @@ test "exec args parse approval and sandbox options" {
     defer parsed.deinit(allocator);
 
     try std.testing.expectEqual(config.ApprovalPolicy.never, parsed.approval_policy.?);
+    try std.testing.expect(parsed.approval_policy_requested);
     try std.testing.expectEqual(config.SandboxMode.read_only, parsed.sandbox_mode.?);
     try std.testing.expectEqualStrings("last.txt", parsed.last_message_file.?);
     try std.testing.expectEqualStrings("say hello", parsed.prompt.?);
@@ -1128,8 +1131,7 @@ test "exec args parse stdin sentinel with context prompt" {
 }
 
 test "exec runtime override merge preserves model controls" {
-    var target = config.RuntimeOverrides{};
-    mergeRuntimeOverrides(&target, .{
+    const target = config.mergeRuntimeOverrides(.{}, .{
         .model_context_window = 128000,
         .model_auto_compact_token_limit = 96000,
         .model_reasoning_summary = .detailed,

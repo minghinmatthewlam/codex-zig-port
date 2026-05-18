@@ -45,6 +45,7 @@ const CliOverrides = struct {
     cwd: ?[]const u8 = null,
     additional_writable_roots: []const []const u8 = &.{},
     no_alt_screen: bool = false,
+    explicit_approval_policy: bool = false,
     remote: ?[]const u8 = null,
     remote_auth_token_env: ?[]const u8 = null,
     local_remote_control: bool = false,
@@ -214,24 +215,28 @@ fn mainInner(init: std.process.Init) !void {
         if (std.mem.eql(u8, arg, "--ask-for-approval") or std.mem.eql(u8, arg, "-a")) {
             if (dangerous_bypass_requested) return error.ConflictingCliOptions;
             approval_policy_requested = true;
+            overrides.explicit_approval_policy = true;
             overrides.runtime.approval_policy = try config.ApprovalPolicy.parse(args.next() orelse return error.MissingApprovalOptionValue);
             continue;
         }
         if (std.mem.startsWith(u8, arg, "--ask-for-approval=")) {
             if (dangerous_bypass_requested) return error.ConflictingCliOptions;
             approval_policy_requested = true;
+            overrides.explicit_approval_policy = true;
             overrides.runtime.approval_policy = try config.ApprovalPolicy.parse(arg["--ask-for-approval=".len..]);
             continue;
         }
         if (std.mem.eql(u8, arg, "--approval-policy")) {
             if (dangerous_bypass_requested) return error.ConflictingCliOptions;
             approval_policy_requested = true;
+            overrides.explicit_approval_policy = true;
             overrides.runtime.approval_policy = try config.ApprovalPolicy.parse(args.next() orelse return error.MissingApprovalOptionValue);
             continue;
         }
         if (std.mem.startsWith(u8, arg, "--approval-policy=")) {
             if (dangerous_bypass_requested) return error.ConflictingCliOptions;
             approval_policy_requested = true;
+            overrides.explicit_approval_policy = true;
             overrides.runtime.approval_policy = try config.ApprovalPolicy.parse(arg["--approval-policy=".len..]);
             continue;
         }
@@ -506,6 +511,7 @@ fn mainInner(init: std.process.Init) !void {
                 .oss_provider = overrides.oss_provider,
                 .cwd = overrides.cwd,
                 .additional_writable_roots = overrides.additional_writable_roots,
+                .explicit_approval_policy = overrides.explicit_approval_policy,
             });
             return;
         }
@@ -971,7 +977,7 @@ fn prepareSessionLaunchOptions(
         .image_files = image_files,
         .tui_options = .{
             .profile = parsed.profile orelse overrides.profile,
-            .runtime_overrides = mergeRuntimeOverrides(overrides.runtime, parsed.runtime_overrides),
+            .runtime_overrides = config.mergeRuntimeOverrides(overrides.runtime, parsed.runtime_overrides),
             .oss = overrides.oss or parsed.oss,
             .oss_provider = parsed.oss_provider orelse overrides.oss_provider,
             .additional_writable_roots = additional_writable_roots,
@@ -1192,27 +1198,6 @@ fn parseRemoteForkCommandArgs(allocator: std.mem.Allocator, args: []const []cons
         return error.MissingRemoteForkCode;
     }
     return parsed;
-}
-
-fn mergeRuntimeOverrides(base: config.RuntimeOverrides, session_overrides: config.RuntimeOverrides) config.RuntimeOverrides {
-    var merged = base;
-    if (session_overrides.model) |value| merged.model = value;
-    if (session_overrides.review_model) |value| merged.review_model = value;
-    if (session_overrides.model_context_window) |value| merged.model_context_window = value;
-    if (session_overrides.model_auto_compact_token_limit) |value| merged.model_auto_compact_token_limit = value;
-    if (session_overrides.openai_base_url) |value| merged.openai_base_url = value;
-    if (session_overrides.chatgpt_base_url) |value| merged.chatgpt_base_url = value;
-    if (session_overrides.oss_provider) |value| merged.oss_provider = value;
-    if (session_overrides.approval_policy) |value| merged.approval_policy = value;
-    if (session_overrides.sandbox_mode) |value| merged.sandbox_mode = value;
-    if (session_overrides.web_search_mode) |value| merged.web_search_mode = value;
-    if (session_overrides.service_tier) |value| merged.service_tier = value;
-    if (session_overrides.model_reasoning_summary) |value| merged.model_reasoning_summary = value;
-    if (session_overrides.model_verbosity) |value| merged.model_verbosity = value;
-    if (session_overrides.syntax_theme) |value| merged.syntax_theme = value;
-    if (session_overrides.personality) |value| merged.personality = value;
-    if (session_overrides.tui_alternate_screen) |value| merged.tui_alternate_screen = value;
-    return merged;
 }
 
 fn printHelp() !void {
@@ -1797,7 +1782,7 @@ test "removed top-level Rust commands are rejected" {
 }
 
 test "session runtime override merge preserves model controls" {
-    const merged = mergeRuntimeOverrides(.{}, .{
+    const merged = config.mergeRuntimeOverrides(.{}, .{
         .model_context_window = 128000,
         .model_auto_compact_token_limit = 96000,
         .model_reasoning_summary = .detailed,

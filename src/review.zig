@@ -15,13 +15,28 @@ const ReviewArgs = struct {
     base: ?[]const u8 = null,
     commit: ?[]const u8 = null,
     commit_title: ?[]const u8 = null,
+    config_overrides: config.RuntimeOverrides = .{},
+    config_profile: ?[]const u8 = null,
+    feature_overrides: features_cmd.FeatureOverrides = .{},
+    model: ?[]const u8 = null,
+    json: bool = false,
+    last_message_file: ?[]const u8 = null,
+    ephemeral: bool = false,
+    ignore_user_config: bool = false,
+    ignore_rules: bool = false,
+    skip_git_repo_check: bool = false,
+    dangerously_bypass_approvals_and_sandbox: bool = false,
     prompt: ?[]const u8 = null,
     read_stdin: bool = false,
 
     fn deinit(self: ReviewArgs, allocator: std.mem.Allocator) void {
+        var feature_overrides = self.feature_overrides;
+        feature_overrides.deinit(allocator);
         if (self.base) |base| allocator.free(base);
         if (self.commit) |commit| allocator.free(commit);
         if (self.commit_title) |title| allocator.free(title);
+        if (self.model) |model| allocator.free(model);
+        if (self.last_message_file) |path| allocator.free(path);
         if (self.prompt) |prompt| allocator.free(prompt);
     }
 };
@@ -34,6 +49,15 @@ pub const Options = struct {
     oss_provider: ?[]const u8 = null,
     ignore_user_config: bool = false,
     skip_git_repo_check: bool = false,
+    json_events: bool = false,
+    last_message_file: ?[]const u8 = null,
+    ephemeral: bool = false,
+    allow_exec_options: bool = false,
+    explicit_approval_policy: bool = false,
+};
+
+const ParseOptions = struct {
+    allow_exec_options: bool = false,
 };
 
 pub fn runWithOptions(allocator: std.mem.Allocator, args: *std.process.Args.Iterator, options: Options) !void {
@@ -47,31 +71,48 @@ pub fn runWithOptions(allocator: std.mem.Allocator, args: *std.process.Args.Iter
 }
 
 pub fn runRawArgsWithOptions(allocator: std.mem.Allocator, raw_args: []const []const u8, options: Options) !void {
-    var parsed = try parseArgs(allocator, raw_args);
+    var parsed = try parseArgsWithOptions(allocator, raw_args, .{
+        .allow_exec_options = options.allow_exec_options,
+    });
     defer parsed.deinit(allocator);
     if (parsed.help) {
         printHelp();
         return;
     }
-    try workdir.enforceTrustedGitRepository(allocator, options.skip_git_repo_check);
+    const effective_skip_git_repo_check = options.skip_git_repo_check or
+        parsed.skip_git_repo_check or
+        parsed.dangerously_bypass_approvals_and_sandbox;
+    try workdir.enforceTrustedGitRepository(allocator, effective_skip_git_repo_check);
 
+    const effective_ignore_user_config = options.ignore_user_config or parsed.ignore_user_config;
     var cfg = try config.loadWithOptions(allocator, .{
-        .profile = options.profile,
-        .ignore_user_config = options.ignore_user_config,
+        .profile = parsed.config_profile orelse options.profile,
+        .ignore_user_config = effective_ignore_user_config,
     });
     defer cfg.deinit(allocator);
-    try config.applyRuntimeOverrides(&cfg, allocator, options.runtime_overrides);
-    if (options.oss) {
-        try config.applyOssMode(&cfg, allocator, options.oss_provider, options.runtime_overrides.model != null);
+    var runtime_overrides = config.mergeRuntimeOverrides(options.runtime_overrides, parsed.config_overrides);
+    if (parsed.model) |model| runtime_overrides.model = model;
+    if (parsed.dangerously_bypass_approvals_and_sandbox) {
+        if (options.explicit_approval_policy) return error.ConflictingExecOptions;
+        runtime_overrides.approval_policy = .never;
+        runtime_overrides.sandbox_mode = .danger_full_access;
     }
-    try applyReviewModel(allocator, &cfg);
+    try config.applyRuntimeOverrides(&cfg, allocator, runtime_overrides);
+    if (options.oss) {
+        try config.applyOssMode(&cfg, allocator, options.oss_provider, runtime_overrides.model != null);
+    }
+    const explicit_model = options.runtime_overrides.model != null or
+        parsed.config_overrides.model != null or
+        parsed.model != null;
+    try applyReviewModel(allocator, &cfg, explicit_model);
 
     var feature_overrides = features_cmd.FeatureOverrides{};
     defer feature_overrides.deinit(allocator);
-    if (!options.ignore_user_config) {
+    if (!effective_ignore_user_config) {
         feature_overrides = try features_cmd.loadFeatureOverridesForProfile(allocator, cfg.codex_home, cfg.active_profile);
     }
     try feature_overrides.putAll(allocator, options.feature_overrides);
+    try feature_overrides.putAll(allocator, parsed.feature_overrides);
 
     var credentials = if (options.oss)
         try auth.localOssCredentials(allocator)
@@ -90,23 +131,42 @@ pub fn runRawArgsWithOptions(allocator: std.mem.Allocator, raw_args: []const []c
     var transcript = session.Transcript{};
     defer transcript.deinit(allocator);
 
-    const session_path = try session_store.createSessionPath(allocator, cfg.codex_home);
-    defer allocator.free(session_path);
+    const effective_ephemeral = options.ephemeral or parsed.ephemeral;
+    const session_path = if (effective_ephemeral)
+        null
+    else
+        try session_store.createSessionPath(allocator, cfg.codex_home);
+    defer if (session_path) |path| allocator.free(path);
 
+    const effective_json_events = options.json_events or parsed.json;
     const answer = try session.runTurnWithOptions(allocator, cfg, &credentials, &transcript, prompt, .{
         .prompt_for_approval = false,
         .feature_overrides = feature_overrides,
+        .json_events = effective_json_events,
     });
     defer allocator.free(answer);
 
-    try session_store.saveTranscript(allocator, session_path, &transcript);
-    try cli_utils.writeStdout(answer);
-    if (answer.len == 0 or answer[answer.len - 1] != '\n') {
-        try cli_utils.writeStdout("\n");
+    if (session_path) |path| {
+        try session_store.saveTranscript(allocator, path, &transcript);
+    }
+
+    if (parsed.last_message_file orelse options.last_message_file) |path| {
+        try writeFile(path, answer);
+    }
+
+    if (!effective_json_events) {
+        try cli_utils.writeStdout(answer);
+        if (answer.len == 0 or answer[answer.len - 1] != '\n') {
+            try cli_utils.writeStdout("\n");
+        }
     }
 }
 
 fn parseArgs(allocator: std.mem.Allocator, args: []const []const u8) !ReviewArgs {
+    return parseArgsWithOptions(allocator, args, .{});
+}
+
+fn parseArgsWithOptions(allocator: std.mem.Allocator, args: []const []const u8, parse_options: ParseOptions) !ReviewArgs {
     var parsed = ReviewArgs{};
     errdefer parsed.deinit(allocator);
 
@@ -123,6 +183,80 @@ fn parseArgs(allocator: std.mem.Allocator, args: []const []const u8) !ReviewArgs
         }
         if (!end_options and (std.mem.eql(u8, arg, "--help") or std.mem.eql(u8, arg, "-h"))) {
             parsed.help = true;
+            continue;
+        }
+        if (!end_options and (std.mem.eql(u8, arg, "--config") or std.mem.eql(u8, arg, "-c"))) {
+            index += 1;
+            if (index >= args.len) return error.MissingReviewOptionValue;
+            try config.applyRawConfigOverride(&parsed.config_overrides, &parsed.config_profile, args[index]);
+            continue;
+        }
+        if (!end_options and std.mem.startsWith(u8, arg, "--config=")) {
+            try config.applyRawConfigOverride(&parsed.config_overrides, &parsed.config_profile, arg["--config=".len..]);
+            continue;
+        }
+        if (!end_options and std.mem.eql(u8, arg, "--enable")) {
+            index += 1;
+            if (index >= args.len) return error.MissingFeatureName;
+            try features_cmd.putRuntimeToggle(allocator, &parsed.feature_overrides, args[index], true);
+            continue;
+        }
+        if (!end_options and std.mem.startsWith(u8, arg, "--enable=")) {
+            try features_cmd.putRuntimeToggle(allocator, &parsed.feature_overrides, arg["--enable=".len..], true);
+            continue;
+        }
+        if (!end_options and std.mem.eql(u8, arg, "--disable")) {
+            index += 1;
+            if (index >= args.len) return error.MissingFeatureName;
+            try features_cmd.putRuntimeToggle(allocator, &parsed.feature_overrides, args[index], false);
+            continue;
+        }
+        if (!end_options and std.mem.startsWith(u8, arg, "--disable=")) {
+            try features_cmd.putRuntimeToggle(allocator, &parsed.feature_overrides, arg["--disable=".len..], false);
+            continue;
+        }
+        if (!end_options and parse_options.allow_exec_options and (std.mem.eql(u8, arg, "--model") or std.mem.eql(u8, arg, "-m"))) {
+            index += 1;
+            if (index >= args.len) return error.MissingReviewOptionValue;
+            try setOwnedOption(allocator, &parsed.model, args[index]);
+            continue;
+        }
+        if (!end_options and parse_options.allow_exec_options and std.mem.startsWith(u8, arg, "--model=")) {
+            try setOwnedOption(allocator, &parsed.model, arg["--model=".len..]);
+            continue;
+        }
+        if (!end_options and parse_options.allow_exec_options and (std.mem.eql(u8, arg, "--json") or std.mem.eql(u8, arg, "--experimental-json"))) {
+            parsed.json = true;
+            continue;
+        }
+        if (!end_options and parse_options.allow_exec_options and (std.mem.eql(u8, arg, "--output-last-message") or std.mem.eql(u8, arg, "-o"))) {
+            index += 1;
+            if (index >= args.len) return error.MissingReviewOptionValue;
+            try setOwnedOption(allocator, &parsed.last_message_file, args[index]);
+            continue;
+        }
+        if (!end_options and parse_options.allow_exec_options and std.mem.startsWith(u8, arg, "--output-last-message=")) {
+            try setOwnedOption(allocator, &parsed.last_message_file, arg["--output-last-message=".len..]);
+            continue;
+        }
+        if (!end_options and parse_options.allow_exec_options and std.mem.eql(u8, arg, "--ephemeral")) {
+            parsed.ephemeral = true;
+            continue;
+        }
+        if (!end_options and parse_options.allow_exec_options and std.mem.eql(u8, arg, "--ignore-user-config")) {
+            parsed.ignore_user_config = true;
+            continue;
+        }
+        if (!end_options and parse_options.allow_exec_options and std.mem.eql(u8, arg, "--ignore-rules")) {
+            parsed.ignore_rules = true;
+            continue;
+        }
+        if (!end_options and parse_options.allow_exec_options and std.mem.eql(u8, arg, "--skip-git-repo-check")) {
+            parsed.skip_git_repo_check = true;
+            continue;
+        }
+        if (!end_options and parse_options.allow_exec_options and std.mem.eql(u8, arg, "--dangerously-bypass-approvals-and-sandbox")) {
+            parsed.dangerously_bypass_approvals_and_sandbox = true;
             continue;
         }
         if (!end_options and std.mem.eql(u8, arg, "--uncommitted")) {
@@ -233,11 +367,19 @@ fn buildPrompt(allocator: std.mem.Allocator, args: ReviewArgs) ![]const u8 {
     return buildCustomPrompt(allocator, prompt);
 }
 
-fn applyReviewModel(allocator: std.mem.Allocator, cfg: *config.Config) !void {
+fn applyReviewModel(allocator: std.mem.Allocator, cfg: *config.Config, explicit_model: bool) !void {
+    if (explicit_model) return;
     const review_model = cfg.review_model orelse return;
     const next_model = try allocator.dupe(u8, review_model);
     allocator.free(cfg.model);
     cfg.model = next_model;
+}
+
+fn writeFile(path: []const u8, bytes: []const u8) !void {
+    try std.Io.Dir.cwd().writeFile(std.Io.Threaded.global_single_threaded.io(), .{
+        .sub_path = path,
+        .data = bytes,
+    });
 }
 
 pub fn selectedModelForReview(session_model: []const u8, review_model: ?[]const u8) []const u8 {
@@ -305,9 +447,13 @@ pub fn printHelp() void {
         \\  codex-zig review -
         \\
         \\Options:
+        \\  -c, --config key=value
+        \\                    Override a supported config value
         \\  --uncommitted     Review staged, unstaged, and untracked changes
         \\  --base BRANCH     Review changes against the merge base with BRANCH
+        \\  --enable FEATURE  Enable a feature for this invocation
         \\  --commit SHA      Review the changes introduced by a commit
+        \\  --disable FEATURE Disable a feature for this invocation
         \\  --title TITLE     Optional title for --commit review context
         \\
         \\Planned:
@@ -362,6 +508,54 @@ test "review args parse base" {
     defer parsed.deinit(allocator);
 
     try std.testing.expectEqualStrings("main", parsed.base.?);
+}
+
+test "review args parse local config and feature overrides" {
+    const allocator = std.testing.allocator;
+    const argv = [_][]const u8{ "-c", "review_model=gpt-review", "--enable", "goals", "--disable=shell_tool", "--uncommitted" };
+    const parsed = try parseArgs(allocator, argv[0..]);
+    defer parsed.deinit(allocator);
+
+    try std.testing.expect(parsed.uncommitted);
+    try std.testing.expectEqualStrings("gpt-review", parsed.config_overrides.review_model.?);
+    try std.testing.expectEqual(true, parsed.feature_overrides.get("goals").?);
+    try std.testing.expectEqual(false, parsed.feature_overrides.get("shell_tool").?);
+}
+
+test "exec review args parse exec-local controls" {
+    const allocator = std.testing.allocator;
+    const argv = [_][]const u8{
+        "--json",
+        "-o",
+        "last.txt",
+        "-m",
+        "gpt-review",
+        "--ephemeral",
+        "--ignore-user-config",
+        "--ignore-rules",
+        "--skip-git-repo-check",
+        "--dangerously-bypass-approvals-and-sandbox",
+        "--uncommitted",
+    };
+    const parsed = try parseArgsWithOptions(allocator, argv[0..], .{ .allow_exec_options = true });
+    defer parsed.deinit(allocator);
+
+    try std.testing.expect(parsed.json);
+    try std.testing.expectEqualStrings("last.txt", parsed.last_message_file.?);
+    try std.testing.expectEqualStrings("gpt-review", parsed.model.?);
+    try std.testing.expect(parsed.ephemeral);
+    try std.testing.expect(parsed.ignore_user_config);
+    try std.testing.expect(parsed.ignore_rules);
+    try std.testing.expect(parsed.skip_git_repo_check);
+    try std.testing.expect(parsed.dangerously_bypass_approvals_and_sandbox);
+    try std.testing.expect(parsed.uncommitted);
+}
+
+test "review args reject exec-only controls by default" {
+    const allocator = std.testing.allocator;
+    const argv = [_][]const u8{ "--json", "--uncommitted" };
+
+    try std.testing.expectError(error.UnknownReviewOption, parseArgs(allocator, argv[0..]));
 }
 
 test "review args reject title without commit" {

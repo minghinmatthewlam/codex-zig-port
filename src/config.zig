@@ -184,6 +184,27 @@ pub const RuntimeOverrides = struct {
     tui_alternate_screen: ?AltScreenMode = null,
 };
 
+pub fn mergeRuntimeOverrides(base: RuntimeOverrides, overrides: RuntimeOverrides) RuntimeOverrides {
+    var merged = base;
+    if (overrides.model) |value| merged.model = value;
+    if (overrides.review_model) |value| merged.review_model = value;
+    if (overrides.model_context_window) |value| merged.model_context_window = value;
+    if (overrides.model_auto_compact_token_limit) |value| merged.model_auto_compact_token_limit = value;
+    if (overrides.openai_base_url) |value| merged.openai_base_url = value;
+    if (overrides.chatgpt_base_url) |value| merged.chatgpt_base_url = value;
+    if (overrides.oss_provider) |value| merged.oss_provider = value;
+    if (overrides.approval_policy) |value| merged.approval_policy = value;
+    if (overrides.sandbox_mode) |value| merged.sandbox_mode = value;
+    if (overrides.web_search_mode) |value| merged.web_search_mode = value;
+    if (overrides.service_tier) |value| merged.service_tier = value;
+    if (overrides.model_reasoning_summary) |value| merged.model_reasoning_summary = value;
+    if (overrides.model_verbosity) |value| merged.model_verbosity = value;
+    if (overrides.syntax_theme) |value| merged.syntax_theme = value;
+    if (overrides.personality) |value| merged.personality = value;
+    if (overrides.tui_alternate_screen) |value| merged.tui_alternate_screen = value;
+    return merged;
+}
+
 pub const SandboxPermissionProfile = struct {
     mode: SandboxMode,
     additional_writable_roots: StringList,
