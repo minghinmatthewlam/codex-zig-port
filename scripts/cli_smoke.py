@@ -1510,7 +1510,15 @@ class McpOAuthDiscoveryHandler(BaseHTTPRequestHandler):
             self.server.authorization_requests.append(query)
             redirect_uri = query["redirect_uri"][0]
             state = query["state"][0]
-            location = f"{redirect_uri}?code=mock-code&state={urllib.parse.quote(state)}"
+            if self.server.reject_scoped_authorization_once and "scope" in query:
+                self.server.reject_scoped_authorization_once = False
+                location = (
+                    f"{redirect_uri}?error=invalid_scope"
+                    f"&error_description=scope%20rejected"
+                    f"&state={urllib.parse.quote(state)}"
+                )
+            else:
+                location = f"{redirect_uri}?code=mock-code&state={urllib.parse.quote(state)}"
             self.send_response(302)
             self.send_header("Location", location)
             self.send_header("Content-Length", "0")
@@ -1576,6 +1584,7 @@ class McpOAuthDiscoveryServer(ThreadingHTTPServer):
     registration_requests: list[dict]
     token_requests: list[dict[str, list[str]]]
     base_url: str
+    reject_scoped_authorization_once: bool
 
 
 class StreamableMcpToolHandler(BaseHTTPRequestHandler):
@@ -1820,6 +1829,7 @@ def start_mcp_oauth_discovery_server() -> tuple[McpOAuthDiscoveryServer, str]:
     server.registration_requests = []
     server.token_requests = []
     server.base_url = f"http://127.0.0.1:{server.server_port}"
+    server.reject_scoped_authorization_once = False
     threading.Thread(target=server.serve_forever, daemon=True).start()
     return server, f"{server.base_url}/mcp"
 
@@ -7507,6 +7517,24 @@ def write_mcp_oauth_keyring_entry(account: str, payload: str) -> None:
     )
 
 
+def read_mcp_oauth_authorization_url(
+    process: subprocess.Popen[str], stdout_lines: list[str], timeout: float = 5
+) -> str:
+    assert process.stdout is not None
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        line = process.stdout.readline()
+        if line:
+            stdout_lines.append(line)
+            if line.startswith("http://"):
+                return line.strip()
+        elif process.poll() is not None:
+            break
+        else:
+            time.sleep(0.05)
+    return ""
+
+
 def run_exec_streamable_http_mcp_keyring_oauth_smoke(binary: Path) -> None:
     if not has_macos_security():
         return
@@ -7620,6 +7648,9 @@ def run_mcp_oauth_login_logout_smoke(binary: Path) -> None:
                     f'url = "{remote_url}"',
                     'http_headers = { "X-Remote-Static" = "remote-static" }',
                     'env_http_headers = { "X-Remote-Env" = "REMOTE_HEADER_ENV" }',
+                    "",
+                    "[mcp_servers.retry]",
+                    f'url = "{remote_url}"',
                     "",
                     "[mcp_servers.bearer]",
                     'url = "https://bearer.example/mcp"',
@@ -7769,6 +7800,7 @@ def run_mcp_oauth_login_logout_smoke(binary: Path) -> None:
 
         login_env = env.copy()
         login_env["CODEX_MCP_OAUTH_SKIP_BROWSER"] = "1"
+        explicit_authorization_start = len(discovery_server.authorization_requests)
         remote_login = subprocess.Popen(
             [
                 str(binary.resolve()),
@@ -7784,21 +7816,8 @@ def run_mcp_oauth_login_logout_smoke(binary: Path) -> None:
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
         )
-        assert remote_login.stdout is not None
-        authorization_url = ""
-        deadline = time.time() + 5
         stdout_lines: list[str] = []
-        while time.time() < deadline:
-            line = remote_login.stdout.readline()
-            if line:
-                stdout_lines.append(line)
-                if line.startswith("http://"):
-                    authorization_url = line.strip()
-                    break
-            elif remote_login.poll() is not None:
-                break
-            else:
-                time.sleep(0.05)
+        authorization_url = read_mcp_oauth_authorization_url(remote_login, stdout_lines)
         assert authorization_url, "".join(stdout_lines)
         with urllib.request.urlopen(authorization_url, timeout=5) as response:
             assert b"MCP login complete" in response.read()
@@ -7814,10 +7833,59 @@ def run_mcp_oauth_login_logout_smoke(binary: Path) -> None:
         assert discovery_server.registration_requests[0]["redirect_uris"][0].startswith(
             "http://127.0.0.1:"
         )
-        assert discovery_server.authorization_requests[0]["scope"] == ["read write"]
-        assert discovery_server.authorization_requests[0]["client_id"] == ["mock-client"]
+        explicit_authorization_requests = discovery_server.authorization_requests[
+            explicit_authorization_start:
+        ]
+        assert len(explicit_authorization_requests) == 1
+        assert explicit_authorization_requests[0]["scope"] == ["read write"]
+        assert explicit_authorization_requests[0]["client_id"] == ["mock-client"]
         assert discovery_server.token_requests[0]["code"] == ["mock-code"]
         assert discovery_server.token_requests[0]["client_id"] == ["mock-client"]
+
+        retry_key = mcp_oauth_store_key("retry", remote_url)
+        discovery_server.reject_scoped_authorization_once = True
+        retry_authorization_start = len(discovery_server.authorization_requests)
+        retry_login = subprocess.Popen(
+            [str(binary.resolve()), "mcp", "login", "retry"],
+            cwd=temp_root,
+            env=login_env,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+        retry_stdout_lines: list[str] = []
+        scoped_authorization_url = read_mcp_oauth_authorization_url(
+            retry_login, retry_stdout_lines
+        )
+        assert scoped_authorization_url, "".join(retry_stdout_lines)
+        try:
+            urllib.request.urlopen(scoped_authorization_url, timeout=5)
+            raise AssertionError("expected provider scope rejection")
+        except urllib.error.HTTPError as error:
+            assert error.code == 400
+            assert b"OAuth login failed: scope rejected" in error.read()
+        retry_authorization_url = read_mcp_oauth_authorization_url(
+            retry_login, retry_stdout_lines
+        )
+        assert retry_authorization_url, "".join(retry_stdout_lines)
+        with urllib.request.urlopen(retry_authorization_url, timeout=5) as response:
+            assert b"MCP login complete" in response.read()
+        retry_remaining_stdout, retry_login_stderr = retry_login.communicate(timeout=5)
+        retry_login_stdout = "".join(retry_stdout_lines) + retry_remaining_stdout
+        assert retry_login.returncode == 0, retry_login_stderr
+        assert (
+            "OAuth provider rejected discovered scopes. Retrying without scopes…"
+            in retry_login_stdout
+        )
+        assert "Successfully logged in to MCP server 'retry'." in retry_login_stdout
+        retry_authorization_requests = discovery_server.authorization_requests[
+            retry_authorization_start:
+        ]
+        assert len(retry_authorization_requests) == 2
+        assert retry_authorization_requests[0]["scope"] == ["read write"]
+        assert "scope" not in retry_authorization_requests[1]
+        credentials = json.loads((codex_home / ".credentials.json").read_text(encoding="utf-8"))
+        assert credentials[retry_key]["access_token"] == "mock-access-token"
 
         removed = subprocess.run(
             [str(binary.resolve()), "mcp", "logout", "remote"],
