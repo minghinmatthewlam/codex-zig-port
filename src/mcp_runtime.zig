@@ -1695,7 +1695,9 @@ fn mcpAuthorizationHeader(
     }
 
     const url = server.url orelse return null;
-    if (try mcp_cmd.readMcpOAuthFileAccessToken(allocator, codex_home, server.name, url)) |token| {
+    const config_bytes = try mcp_cmd.readConfigToml(allocator, codex_home);
+    defer if (config_bytes) |bytes| allocator.free(bytes);
+    if (try mcp_cmd.readMcpOAuthAccessToken(allocator, codex_home, config_bytes orelse "", server.name, url)) |token| {
         defer allocator.free(token);
         return try std.fmt.allocPrint(allocator, "Bearer {s}", .{token});
     }

@@ -706,6 +706,66 @@ pub fn readMcpOAuthFileAccessToken(allocator: std.mem.Allocator, codex_home: []c
     return try allocator.dupe(u8, access_token.string);
 }
 
+pub fn readMcpOAuthAccessToken(
+    allocator: std.mem.Allocator,
+    codex_home: []const u8,
+    config_bytes: []const u8,
+    server_name: []const u8,
+    server_url: []const u8,
+) !?[]const u8 {
+    switch (parseMcpOAuthCredentialsStore(config_bytes)) {
+        .auto => {
+            if (mcpOAuthKeyringSupported()) {
+                if (readMcpOAuthKeyringAccessToken(allocator, server_name, server_url) catch null) |token| return token;
+            }
+            return readMcpOAuthFileAccessToken(allocator, codex_home, server_name, server_url);
+        },
+        .file => return readMcpOAuthFileAccessToken(allocator, codex_home, server_name, server_url),
+        .keyring => return readMcpOAuthKeyringAccessToken(allocator, server_name, server_url),
+    }
+}
+
+fn readMcpOAuthKeyringAccessToken(allocator: std.mem.Allocator, server_name: []const u8, server_url: []const u8) !?[]const u8 {
+    if (!mcpOAuthKeyringSupported()) return error.UnsupportedMcpOAuthKeyring;
+
+    const key = try computeMcpOAuthStoreKey(allocator, server_name, server_url);
+    defer allocator.free(key);
+    const argv = [_][]const u8{ security_binary, "find-generic-password", "-w", "-s", mcp_oauth_keyring_service, "-a", key };
+    var result = try runSecurityCommand(allocator, argv[0..]);
+    defer result.deinit(allocator);
+
+    switch (result.term) {
+        .exited => |code| switch (code) {
+            0 => {
+                const serialized = std.mem.trim(u8, result.stdout, " \t\r\n");
+                if (serialized.len == 0) return null;
+                return readMcpOAuthStoredTokensAccessToken(allocator, serialized);
+            },
+            44 => return null,
+            else => return error.McpOAuthKeyringUnavailable,
+        },
+        else => return error.McpOAuthKeyringUnavailable,
+    }
+}
+
+fn readMcpOAuthStoredTokensAccessToken(allocator: std.mem.Allocator, serialized: []const u8) !?[]const u8 {
+    var parsed = std.json.parseFromSlice(std.json.Value, allocator, serialized, .{}) catch return error.InvalidMcpOAuthCredentials;
+    defer parsed.deinit();
+    if (parsed.value != .object) return error.InvalidMcpOAuthCredentials;
+
+    if (parsed.value.object.get("access_token")) |top_level_access_token| {
+        if (top_level_access_token == .string and top_level_access_token.string.len > 0) {
+            return try allocator.dupe(u8, top_level_access_token.string);
+        }
+    }
+
+    const token_response = parsed.value.object.get("token_response") orelse return null;
+    if (token_response != .object) return error.InvalidMcpOAuthCredentials;
+    const access_token = token_response.object.get("access_token") orelse return null;
+    if (access_token != .string or access_token.string.len == 0) return null;
+    return try allocator.dupe(u8, access_token.string);
+}
+
 pub fn mcpAuthStatusForServer(allocator: std.mem.Allocator, codex_home: []const u8, config_bytes: []const u8, server: McpServer) !McpAuthStatus {
     if (!server.enabled) return .unsupported;
     if (server.kind != .streamable_http) return .unsupported;
@@ -2497,6 +2557,41 @@ test "mcp oauth keyring security exit classification" {
     try std.testing.expect(try classifySecurityGenericPasswordResult(.{ .exited = 0 }));
     try std.testing.expect(!try classifySecurityGenericPasswordResult(.{ .exited = 44 }));
     try std.testing.expectError(error.McpOAuthKeyringUnavailable, classifySecurityGenericPasswordResult(.{ .exited = 1 }));
+}
+
+test "mcp oauth stored keyring tokens expose access token" {
+    const allocator = std.testing.allocator;
+    const access_token = try readMcpOAuthStoredTokensAccessToken(allocator,
+        \\{"server_name":"remote","url":"https://example.com/mcp","client_id":"client","token_response":{"access_token":"keyring-access","token_type":"Bearer"}}
+    );
+    defer if (access_token) |token| allocator.free(token);
+    try std.testing.expectEqualStrings("keyring-access", access_token.?);
+}
+
+test "mcp oauth access token auto falls back to file credentials" {
+    const allocator = std.testing.allocator;
+    var dir = std.testing.tmpDir(.{});
+    defer dir.cleanup();
+
+    const codex_home = try dir.dir.realPathFileAlloc(std.Io.Threaded.global_single_threaded.io(), ".", allocator);
+    defer allocator.free(codex_home);
+
+    const remote_key = try computeMcpOAuthStoreKey(allocator, "remote", "https://example.com/mcp");
+    defer allocator.free(remote_key);
+    const credentials = try std.fmt.allocPrint(
+        allocator,
+        "{{\"{s}\":{{\"server_name\":\"remote\",\"server_url\":\"https://example.com/mcp\",\"client_id\":\"client\",\"access_token\":\"file-access\"}}}}",
+        .{remote_key},
+    );
+    defer allocator.free(credentials);
+    try dir.dir.writeFile(std.Io.Threaded.global_single_threaded.io(), .{
+        .sub_path = ".credentials.json",
+        .data = credentials,
+    });
+
+    const access_token = try readMcpOAuthAccessToken(allocator, codex_home, "", "remote", "https://example.com/mcp");
+    defer if (access_token) |token| allocator.free(token);
+    try std.testing.expectEqualStrings("file-access", access_token.?);
 }
 
 test "mcp list auth status reports bearer and file oauth credentials" {
