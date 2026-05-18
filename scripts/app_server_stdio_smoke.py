@@ -20052,6 +20052,28 @@ def run_mcp_server_status_rpc_smoke(binary: Path) -> None:
         assert reload_response["id"] == "mcp-reload"
         assert reload_response["result"] == {}
 
+        valid_config_text = config_path.read_text(encoding="utf-8")
+        config_path.write_text(
+            '[mcp_servers.broken]\ncommand = "unterminated\n',
+            encoding="utf-8",
+        )
+        invalid_reload_config = request_stdio_app_server(
+            binary,
+            {
+                "jsonrpc": "2.0",
+                "id": "mcp-reload-invalid-config",
+                "method": "config/mcpServer/reload",
+                "params": {},
+            },
+            env,
+        )
+        assert invalid_reload_config["id"] == "mcp-reload-invalid-config"
+        assert invalid_reload_config["error"]["code"] == -32603
+        assert "config/mcpServer/reload failed to load MCP servers" in (
+            invalid_reload_config["error"]["message"]
+        )
+        config_path.write_text(valid_config_text, encoding="utf-8")
+
         oauth_invalid_params = request_stdio_app_server(
             binary,
             {
