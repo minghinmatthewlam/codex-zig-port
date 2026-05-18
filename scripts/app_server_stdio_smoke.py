@@ -7842,6 +7842,16 @@ def run_turn_mcp_status_notification_smoke(binary: Path) -> None:
                     "    elif method == 'tools/call':",
                     "        write({",
                     "            'jsonrpc': '2.0',",
+                    "            'method': 'notifications/progress',",
+                    "            'params': {",
+                    "                'progressToken': 'lookup-progress',",
+                    "                'progress': 1,",
+                    "                'total': 2,",
+                    "                'message': 'lookup running',",
+                    "            },",
+                    "        })",
+                    "        write({",
+                    "            'jsonrpc': '2.0',",
                     "            'id': request_id,",
                     "            'result': {",
                     "                'content': [{'type': 'text', 'text': 'lookup result'}],",
@@ -8017,6 +8027,14 @@ def run_turn_mcp_status_notification_smoke(binary: Path) -> None:
                     "turnId": "turn-0",
                     "itemId": "mcp-progress-call",
                     "message": "calling status_docs.lookup",
+                }
+                mcp_server_progress = read_json_line(proc, 5)
+                assert mcp_server_progress["method"] == "item/mcpToolCall/progress"
+                assert mcp_server_progress["params"] == {
+                    "threadId": thread_id,
+                    "turnId": "turn-0",
+                    "itemId": "mcp-progress-call",
+                    "message": "progress status_docs.lookup: lookup running",
                 }
                 mcp_completed = read_json_line(proc, 5)
                 assert mcp_completed["method"] == "item/mcpToolCall/progress"
