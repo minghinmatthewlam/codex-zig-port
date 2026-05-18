@@ -201,7 +201,8 @@ The first demo slice targets macOS and focuses on the interactive CLI surface:
 - run narrow non-interactive `review --uncommitted`, `review --base`, and
   `review --commit` flows, plus custom review instructions from argv or stdin,
   including Rust-compatible `exec review` dispatch with exec-level `--cd`
-  handling
+  handling, post-`review` model/config/feature overrides, JSONL events, and
+  last-message output files
 - run non-interactive `exec` prompts from argv, explicit `-`, or piped stdin,
   including prompt-plus-piped-context requests
 - enforce Rust-compatible non-interactive `exec` and `review` Git-repository
@@ -596,6 +597,7 @@ codex-zig review --uncommitted
 codex-zig review --base main
 codex-zig review --commit HEAD
 codex-zig exec review --uncommitted
+codex-zig exec review -m gpt-5.5 --json -o review.txt --uncommitted
 ```
 
 `CODEX_ZIG_PROFILE` selects a profile. `CODEX_ZIG_MODEL` overrides the model.
