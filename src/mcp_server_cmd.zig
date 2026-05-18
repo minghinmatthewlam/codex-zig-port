@@ -16,10 +16,14 @@ pub const Options = struct {
 
 const SavedSession = struct {
     id: []const u8,
+    cwd: []const u8,
+    cfg: config.Config,
     transcript: session.Transcript,
 
     fn deinit(self: *SavedSession, allocator: std.mem.Allocator) void {
         allocator.free(self.id);
+        allocator.free(self.cwd);
+        self.cfg.deinit(allocator);
         self.transcript.deinit(allocator);
     }
 };
@@ -164,10 +168,19 @@ const Server = struct {
         var transcript_moved = false;
         defer if (!transcript_moved) transcript.deinit(self.allocator);
 
-        var turn_cfg = try self.turnConfig(arguments_value);
-        defer turn_cfg.deinit(self.allocator);
+        var turn_cfg = self.turnConfig(arguments_value) catch |err| {
+            const message = try std.fmt.allocPrint(self.allocator, "Invalid Codex config override: {s}", .{@errorName(err)});
+            defer self.allocator.free(message);
+            try self.writeToolResult(id_value, "", message, true);
+            return;
+        };
+        var turn_cfg_moved = false;
+        defer if (!turn_cfg_moved) turn_cfg.deinit(self.allocator);
         const restore_cwd = try enterCallCwd(self.allocator, arguments_value);
         defer restoreCallCwd(self.allocator, restore_cwd);
+        const call_cwd = try currentWorkingDirectory(self.allocator);
+        var call_cwd_moved = false;
+        defer if (!call_cwd_moved) self.allocator.free(call_cwd);
 
         const answer = session.runTurnWithOptions(self.allocator, turn_cfg, &self.credentials, &transcript, prompt, .{
             .auto_approve = true,
@@ -183,8 +196,10 @@ const Server = struct {
 
         const thread_id = try self.nextThreadId();
         errdefer self.allocator.free(thread_id);
-        try self.sessions.append(self.allocator, .{ .id = thread_id, .transcript = transcript });
+        try self.sessions.append(self.allocator, .{ .id = thread_id, .cwd = call_cwd, .cfg = turn_cfg, .transcript = transcript });
         transcript_moved = true;
+        call_cwd_moved = true;
+        turn_cfg_moved = true;
 
         try self.writeToolResult(id_value, thread_id, answer, false);
     }
@@ -203,9 +218,14 @@ const Server = struct {
             return;
         };
 
-        var turn_cfg = try self.turnConfig(arguments_value);
+        var turn_cfg = self.replyConfig(saved.cfg, arguments_value) catch |err| {
+            const message = try std.fmt.allocPrint(self.allocator, "Invalid Codex config override: {s}", .{@errorName(err)});
+            defer self.allocator.free(message);
+            try self.writeToolResult(id_value, thread_id, message, true);
+            return;
+        };
         defer turn_cfg.deinit(self.allocator);
-        const restore_cwd = try enterCallCwd(self.allocator, arguments_value);
+        const restore_cwd = try enterReplyCwd(self.allocator, arguments_value, saved.cwd);
         defer restoreCallCwd(self.allocator, restore_cwd);
 
         const answer = session.runTurnWithOptions(self.allocator, turn_cfg, &self.credentials, &saved.transcript, prompt, .{
@@ -224,7 +244,7 @@ const Server = struct {
     }
 
     fn turnConfig(self: *Server, arguments_value: std.json.Value) !config.Config {
-        const profile = getStringField(arguments_value, "profile");
+        const profile = try getTurnProfile(arguments_value);
         var cfg = if (profile) |profile_name|
             try config.loadWithOptions(self.allocator, .{ .profile = profile_name })
         else
@@ -238,8 +258,23 @@ const Server = struct {
             }
         }
 
+        try self.applyTurnArgumentOverrides(&cfg, arguments_value);
+        return cfg;
+    }
+
+    fn replyConfig(self: *Server, saved_cfg: config.Config, arguments_value: std.json.Value) !config.Config {
+        var cfg = try cloneConfig(self.allocator, saved_cfg);
+        errdefer cfg.deinit(self.allocator);
+        try self.applyTurnArgumentOverrides(&cfg, arguments_value);
+        return cfg;
+    }
+
+    fn applyTurnArgumentOverrides(self: *Server, cfg: *config.Config, arguments_value: std.json.Value) !void {
+        if (try getConfigObject(arguments_value)) |config_object| {
+            try self.applyToolConfigObject(cfg, config_object);
+        }
         if (getStringField(arguments_value, "model")) |model| {
-            try config.applyRuntimeOverrides(&cfg, self.allocator, .{ .model = model });
+            try config.applyRuntimeOverrides(cfg, self.allocator, .{ .model = model });
         }
         if (getStringField(arguments_value, "approval-policy")) |approval_policy| {
             cfg.approval_policy = try config.ApprovalPolicy.parse(approval_policy);
@@ -247,8 +282,51 @@ const Server = struct {
         if (getStringField(arguments_value, "sandbox")) |sandbox_mode| {
             cfg.sandbox_mode = try config.SandboxMode.parse(sandbox_mode);
         }
+        if (getStringField(arguments_value, "base-instructions")) |base_instructions| {
+            try replaceOptionalOwnedString(self.allocator, &cfg.base_instructions, base_instructions);
+        }
+        if (getStringField(arguments_value, "developer-instructions")) |developer_instructions| {
+            try replaceOptionalOwnedString(self.allocator, &cfg.developer_instructions, developer_instructions);
+        }
+        if (getStringField(arguments_value, "compact-prompt")) |compact_prompt| {
+            try replaceOptionalOwnedString(self.allocator, &cfg.compact_prompt, compact_prompt);
+        }
+    }
 
-        return cfg;
+    fn applyToolConfigObject(self: *Server, cfg: *config.Config, object: std.json.ObjectMap) !void {
+        var iter = object.iterator();
+        while (iter.next()) |entry| {
+            if (std.mem.eql(u8, entry.key_ptr.*, "base_instructions")) {
+                if (entry.value_ptr.* != .string) return error.InvalidConfigOverride;
+                try replaceOptionalOwnedString(self.allocator, &cfg.base_instructions, entry.value_ptr.string);
+                continue;
+            }
+            if (std.mem.eql(u8, entry.key_ptr.*, "instructions")) {
+                if (entry.value_ptr.* != .string) return error.InvalidConfigOverride;
+                try replaceOptionalOwnedString(self.allocator, &cfg.base_instructions, entry.value_ptr.string);
+                continue;
+            }
+            if (std.mem.eql(u8, entry.key_ptr.*, "developer_instructions")) {
+                if (entry.value_ptr.* != .string) return error.InvalidConfigOverride;
+                try replaceOptionalOwnedString(self.allocator, &cfg.developer_instructions, entry.value_ptr.string);
+                continue;
+            }
+            if (std.mem.eql(u8, entry.key_ptr.*, "compact_prompt")) {
+                if (entry.value_ptr.* != .string) return error.InvalidConfigOverride;
+                try replaceOptionalOwnedString(self.allocator, &cfg.compact_prompt, entry.value_ptr.string);
+                continue;
+            }
+            if (std.mem.eql(u8, entry.key_ptr.*, "profile")) {
+                if (entry.value_ptr.* != .string) return error.InvalidConfigOverride;
+                continue;
+            }
+            const raw = try renderRawConfigOverride(self.allocator, entry.key_ptr.*, entry.value_ptr.*);
+            defer self.allocator.free(raw);
+            var runtime_overrides = config.RuntimeOverrides{};
+            var profile_override: ?[]const u8 = null;
+            try config.applyRawConfigOverride(&runtime_overrides, &profile_override, raw);
+            try config.applyRuntimeOverrides(cfg, self.allocator, runtime_overrides);
+        }
     }
 
     fn findSession(self: *Server, thread_id: []const u8) ?*SavedSession {
@@ -357,6 +435,36 @@ fn getStringField(value: std.json.Value, name: []const u8) ?[]const u8 {
     return field.string;
 }
 
+fn getConfigObject(value: std.json.Value) !?std.json.ObjectMap {
+    if (value != .object) return null;
+    const field = value.object.get("config") orelse return null;
+    if (field != .object) return error.InvalidConfigOverride;
+    return field.object;
+}
+
+fn getTurnProfile(value: std.json.Value) !?[]const u8 {
+    if (getStringField(value, "profile")) |profile| return profile;
+    const object = (try getConfigObject(value)) orelse return null;
+    const profile = object.get("profile") orelse return null;
+    if (profile != .string) return error.InvalidConfigOverride;
+    return profile.string;
+}
+
+fn replaceOptionalOwnedString(allocator: std.mem.Allocator, target: *?[]const u8, value: []const u8) !void {
+    const copy = try allocator.dupe(u8, value);
+    if (target.*) |existing| allocator.free(existing);
+    target.* = copy;
+}
+
+fn renderRawConfigOverride(allocator: std.mem.Allocator, key: []const u8, value: std.json.Value) ![]const u8 {
+    switch (value) {
+        .string => |text| return std.fmt.allocPrint(allocator, "{s}={s}", .{ key, text }),
+        .integer => |number| return std.fmt.allocPrint(allocator, "{s}={d}", .{ key, number }),
+        .bool => |flag| return std.fmt.allocPrint(allocator, "{s}={s}", .{ key, if (flag) "true" else "false" }),
+        else => return error.InvalidConfigOverride,
+    }
+}
+
 fn cloneConfig(allocator: std.mem.Allocator, source: config.Config) !config.Config {
     const codex_home = try allocator.dupe(u8, source.codex_home);
     errdefer allocator.free(codex_home);
@@ -390,8 +498,12 @@ fn cloneConfig(allocator: std.mem.Allocator, source: config.Config) !config.Conf
     errdefer if (service_tier) |value| allocator.free(value);
     const syntax_theme = if (source.syntax_theme) |value| try allocator.dupe(u8, value) else null;
     errdefer if (syntax_theme) |value| allocator.free(value);
+    const base_instructions = if (source.base_instructions) |value| try allocator.dupe(u8, value) else null;
+    errdefer if (base_instructions) |value| allocator.free(value);
     const developer_instructions = if (source.developer_instructions) |value| try allocator.dupe(u8, value) else null;
     errdefer if (developer_instructions) |value| allocator.free(value);
+    const compact_prompt = if (source.compact_prompt) |value| try allocator.dupe(u8, value) else null;
+    errdefer if (compact_prompt) |value| allocator.free(value);
     const forced_chatgpt_workspace_id = if (source.forced_chatgpt_workspace_id) |value| try allocator.dupe(u8, value) else null;
     errdefer if (forced_chatgpt_workspace_id) |value| allocator.free(value);
     var tui_status_line = if (source.tui_status_line) |value| try value.clone(allocator) else null;
@@ -426,21 +538,43 @@ fn cloneConfig(allocator: std.mem.Allocator, source: config.Config) !config.Conf
         .service_tier = service_tier,
         .syntax_theme = syntax_theme,
         .personality = source.personality,
+        .base_instructions = base_instructions,
         .developer_instructions = developer_instructions,
+        .compact_prompt = compact_prompt,
         .forced_login_method = source.forced_login_method,
         .forced_chatgpt_workspace_id = forced_chatgpt_workspace_id,
         .tui_status_line = tui_status_line,
         .tui_terminal_title = tui_terminal_title,
         .tui_alternate_screen = source.tui_alternate_screen,
+        .background_terminal_max_timeout = source.background_terminal_max_timeout,
     };
 }
 
 fn enterCallCwd(allocator: std.mem.Allocator, arguments_value: std.json.Value) !?[]const u8 {
     const cwd = getStringField(arguments_value, "cwd") orelse return null;
-    const previous = try std.Io.Dir.cwd().realPathFileAlloc(std.Io.Threaded.global_single_threaded.io(), ".", allocator);
+    return enterCwd(allocator, cwd);
+}
+
+fn enterReplyCwd(allocator: std.mem.Allocator, arguments_value: std.json.Value, saved_cwd: []const u8) !?[]const u8 {
+    const cwd = getStringField(arguments_value, "cwd") orelse saved_cwd;
+    return enterCwd(allocator, cwd);
+}
+
+fn enterCwd(allocator: std.mem.Allocator, cwd: []const u8) !?[]const u8 {
+    const previous = try realPathAllocPlain(allocator, std.Io.Dir.cwd(), ".");
     errdefer allocator.free(previous);
     try workdir.change(cwd);
     return previous;
+}
+
+fn currentWorkingDirectory(allocator: std.mem.Allocator) ![]const u8 {
+    return realPathAllocPlain(allocator, std.Io.Dir.cwd(), ".");
+}
+
+fn realPathAllocPlain(allocator: std.mem.Allocator, dir: std.Io.Dir, path: []const u8) ![]const u8 {
+    var buffer: [std.fs.max_path_bytes]u8 = undefined;
+    const len = try dir.realPathFile(std.Io.Threaded.global_single_threaded.io(), path, &buffer);
+    return allocator.dupe(u8, buffer[0..len]);
 }
 
 fn restoreCallCwd(allocator: std.mem.Allocator, restore_cwd: ?[]const u8) void {
@@ -463,7 +597,7 @@ fn renderInitializeResult(allocator: std.mem.Allocator, protocol_version: []cons
 
 fn renderToolsList(allocator: std.mem.Allocator) ![]const u8 {
     return allocator.dupe(u8,
-        \\{"tools":[{"name":"codex","title":"Codex","description":"Run a Codex session.","inputSchema":{"type":"object","properties":{"approval-policy":{"description":"Approval policy for shell commands generated by the model: `untrusted`, `on-failure`, `on-request`, `never`.","enum":["untrusted","on-failure","on-request","never"],"type":"string"},"cwd":{"description":"Working directory for the session. If relative, it is resolved against the server process's current working directory.","type":"string"},"model":{"description":"Optional override for the model name.","type":"string"},"profile":{"description":"Configuration profile from config.toml to specify default options.","type":"string"},"prompt":{"description":"The initial user prompt to start the Codex conversation.","type":"string"},"sandbox":{"description":"Sandbox mode: `read-only`, `workspace-write`, or `danger-full-access`.","enum":["read-only","workspace-write","danger-full-access"],"type":"string"}},"required":["prompt"]},"outputSchema":{"type":"object","properties":{"threadId":{"type":"string"},"content":{"type":"string"}},"required":["threadId","content"]}},{"name":"codex-reply","title":"Codex Reply","description":"Continue a Codex conversation by providing the thread id and prompt.","inputSchema":{"type":"object","properties":{"conversationId":{"description":"Deprecated alias for threadId.","type":"string"},"cwd":{"description":"Working directory for the reply turn.","type":"string"},"model":{"description":"Optional override for the model name.","type":"string"},"prompt":{"description":"The next user prompt to continue the Codex conversation.","type":"string"},"threadId":{"description":"The thread id for this Codex session.","type":"string"}},"required":["prompt"]},"outputSchema":{"type":"object","properties":{"threadId":{"type":"string"},"content":{"type":"string"}},"required":["threadId","content"]}}]}
+        \\{"tools":[{"name":"codex","title":"Codex","description":"Run a Codex session. Accepts configuration parameters matching the Codex Config struct.","inputSchema":{"type":"object","properties":{"approval-policy":{"description":"Approval policy for shell commands generated by the model: `untrusted`, `on-failure`, `on-request`, `never`.","enum":["untrusted","on-failure","on-request","never"],"type":"string"},"base-instructions":{"description":"The set of instructions to use instead of the default ones.","type":"string"},"compact-prompt":{"description":"Prompt used when compacting the conversation.","type":"string"},"config":{"additionalProperties":true,"description":"Individual config settings that will override what is in CODEX_HOME/config.toml.","type":"object"},"cwd":{"description":"Working directory for the session. If relative, it is resolved against the server process's current working directory.","type":"string"},"developer-instructions":{"description":"Developer instructions that should be injected as a developer role message.","type":"string"},"model":{"description":"Optional override for the model name (e.g. 'gpt-5.2', 'gpt-5.2-codex').","type":"string"},"profile":{"description":"Configuration profile from config.toml to specify default options.","type":"string"},"prompt":{"description":"The *initial user prompt* to start the Codex conversation.","type":"string"},"sandbox":{"description":"Sandbox mode: `read-only`, `workspace-write`, or `danger-full-access`.","enum":["read-only","workspace-write","danger-full-access"],"type":"string"}},"required":["prompt"]},"outputSchema":{"type":"object","properties":{"content":{"type":"string"},"threadId":{"type":"string"}},"required":["threadId","content"]}},{"name":"codex-reply","title":"Codex Reply","description":"Continue a Codex conversation by providing the thread id and prompt.","inputSchema":{"type":"object","properties":{"conversationId":{"description":"DEPRECATED: use threadId instead.","type":"string"},"prompt":{"description":"The *next user prompt* to continue the Codex conversation.","type":"string"},"threadId":{"description":"The thread id for this Codex session. This field is required, but we keep it optional here for backward compatibility for clients that still use conversationId.","type":"string"}},"required":["prompt"]},"outputSchema":{"type":"object","properties":{"content":{"type":"string"},"threadId":{"type":"string"}},"required":["threadId","content"]}}]}
     );
 }
 
@@ -507,9 +641,29 @@ test "mcp server tools list exposes codex tools" {
     const result = try renderToolsList(allocator);
     defer allocator.free(result);
 
-    try std.testing.expect(std.mem.indexOf(u8, result, "\"name\":\"codex\"") != null);
-    try std.testing.expect(std.mem.indexOf(u8, result, "\"name\":\"codex-reply\"") != null);
-    try std.testing.expect(std.mem.indexOf(u8, result, "\"required\":[\"prompt\"]") != null);
+    var parsed = try std.json.parseFromSlice(std.json.Value, allocator, result, .{});
+    defer parsed.deinit();
+    const tools = parsed.value.object.get("tools").?.array.items;
+    try std.testing.expectEqual(@as(usize, 2), tools.len);
+    const codex_tool = tools[0].object;
+    const codex_properties = codex_tool.get("inputSchema").?.object.get("properties").?.object;
+    try std.testing.expectEqualStrings("codex", codex_tool.get("name").?.string);
+    try std.testing.expect(codex_properties.get("base-instructions") != null);
+    try std.testing.expect(codex_properties.get("compact-prompt") != null);
+    try std.testing.expect(codex_properties.get("config") != null);
+    try std.testing.expect(codex_properties.get("developer-instructions") != null);
+    try std.testing.expectEqualStrings(
+        "Run a Codex session. Accepts configuration parameters matching the Codex Config struct.",
+        codex_tool.get("description").?.string,
+    );
+    const reply_tool = tools[1].object;
+    const reply_properties = reply_tool.get("inputSchema").?.object.get("properties").?.object;
+    try std.testing.expectEqualStrings("codex-reply", reply_tool.get("name").?.string);
+    try std.testing.expect(reply_properties.get("conversationId") != null);
+    try std.testing.expect(reply_properties.get("threadId") != null);
+    try std.testing.expect(reply_properties.get("prompt") != null);
+    try std.testing.expect(reply_properties.get("cwd") == null);
+    try std.testing.expect(reply_properties.get("model") == null);
 }
 
 test "mcp server tool result includes text and structured content" {
@@ -558,7 +712,7 @@ test "mcp server turn config applies direct call overrides" {
     var parsed = try std.json.parseFromSlice(
         std.json.Value,
         allocator,
-        "{\"model\":\"call-model\",\"approval-policy\":\"never\",\"sandbox\":\"read-only\"}",
+        "{\"model\":\"call-model\",\"approval-policy\":\"never\",\"sandbox\":\"read-only\",\"base-instructions\":\"base override\",\"developer-instructions\":\"developer override\",\"compact-prompt\":\"compact override\",\"config\":{\"model\":\"config-model\",\"model_auto_compact_token_limit\":96000,\"service_tier\":\"priority\",\"instructions\":\"config base\",\"developer_instructions\":\"config developer\"}}",
         .{},
     );
     defer parsed.deinit();
@@ -569,4 +723,142 @@ test "mcp server turn config applies direct call overrides" {
     try std.testing.expectEqualStrings("call-model", cfg.model);
     try std.testing.expectEqual(config.ApprovalPolicy.never, cfg.approval_policy);
     try std.testing.expectEqual(config.SandboxMode.read_only, cfg.sandbox_mode);
+    try std.testing.expectEqual(@as(?i64, 96000), cfg.model_auto_compact_token_limit);
+    try std.testing.expectEqualStrings("priority", cfg.service_tier.?);
+    try std.testing.expectEqualStrings("base override", cfg.base_instructions.?);
+    try std.testing.expectEqualStrings("developer override", cfg.developer_instructions.?);
+    try std.testing.expectEqualStrings("compact override", cfg.compact_prompt.?);
+}
+
+test "mcp server turn profile reads config object before loading" {
+    const allocator = std.testing.allocator;
+    var parsed_config_profile = try std.json.parseFromSlice(
+        std.json.Value,
+        allocator,
+        "{\"config\":{\"profile\":\"work\"}}",
+        .{},
+    );
+    defer parsed_config_profile.deinit();
+    try std.testing.expectEqualStrings("work", (try getTurnProfile(parsed_config_profile.value)).?);
+
+    var parsed_top_level_profile = try std.json.parseFromSlice(
+        std.json.Value,
+        allocator,
+        "{\"profile\":\"direct\",\"config\":{\"profile\":\"work\"}}",
+        .{},
+    );
+    defer parsed_top_level_profile.deinit();
+    try std.testing.expectEqualStrings("direct", (try getTurnProfile(parsed_top_level_profile.value)).?);
+
+    var parsed_invalid_config = try std.json.parseFromSlice(
+        std.json.Value,
+        allocator,
+        "{\"config\":\"profile=work\"}",
+        .{},
+    );
+    defer parsed_invalid_config.deinit();
+    try std.testing.expectError(error.InvalidConfigOverride, getTurnProfile(parsed_invalid_config.value));
+}
+
+test "mcp server reply config preserves saved instruction overrides" {
+    const allocator = std.testing.allocator;
+    const source = config.Config{
+        .codex_home = ".",
+        .active_profile = null,
+        .model = "base-model",
+        .openai_base_url = "https://example.invalid/v1",
+        .chatgpt_base_url = "https://example.invalid/backend-api/codex",
+        .oss_provider = null,
+        .installation_id = "install-test",
+        .approval_policy = .on_request,
+        .sandbox_mode = .workspace_write,
+        .web_search_mode = null,
+        .model_reasoning_effort = null,
+        .service_tier = null,
+        .syntax_theme = null,
+        .personality = null,
+        .base_instructions = "session base",
+        .developer_instructions = "session developer",
+        .compact_prompt = "session compact",
+        .tui_status_line = null,
+        .tui_terminal_title = null,
+        .tui_alternate_screen = .auto,
+    };
+    var credentials = try auth.localOssCredentials(allocator);
+    defer credentials.deinit(allocator);
+    var server = Server{
+        .allocator = allocator,
+        .cfg = source,
+        .credentials = credentials,
+        .runtime_overrides = .{},
+        .oss = false,
+        .oss_provider = null,
+        .additional_writable_roots = &.{},
+    };
+    var parsed = try std.json.parseFromSlice(
+        std.json.Value,
+        allocator,
+        "{\"prompt\":\"continue\",\"threadId\":\"zig-1\"}",
+        .{},
+    );
+    defer parsed.deinit();
+
+    var cfg = try server.replyConfig(source, parsed.value);
+    defer cfg.deinit(allocator);
+
+    try std.testing.expectEqualStrings("session base", cfg.base_instructions.?);
+    try std.testing.expectEqualStrings("session developer", cfg.developer_instructions.?);
+    try std.testing.expectEqualStrings("session compact", cfg.compact_prompt.?);
+}
+
+test "mcp server clone config preserves background timeout" {
+    const allocator = std.testing.allocator;
+    const source = config.Config{
+        .codex_home = ".",
+        .active_profile = null,
+        .model = "base-model",
+        .openai_base_url = "https://example.invalid/v1",
+        .chatgpt_base_url = "https://example.invalid/backend-api/codex",
+        .oss_provider = null,
+        .installation_id = "install-test",
+        .approval_policy = .on_request,
+        .sandbox_mode = .workspace_write,
+        .web_search_mode = null,
+        .model_reasoning_effort = null,
+        .service_tier = null,
+        .syntax_theme = null,
+        .personality = null,
+        .tui_status_line = null,
+        .tui_terminal_title = null,
+        .tui_alternate_screen = .auto,
+        .background_terminal_max_timeout = 42_000,
+    };
+
+    var cloned = try cloneConfig(allocator, source);
+    defer cloned.deinit(allocator);
+
+    try std.testing.expectEqual(@as(u64, 42_000), cloned.background_terminal_max_timeout);
+}
+
+test "mcp server reply cwd defaults to saved session cwd" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var dir = std.testing.tmpDir(.{});
+    defer dir.cleanup();
+
+    try dir.dir.createDirPath(io, "saved");
+    const temp_root = try realPathAllocPlain(allocator, dir.dir, ".");
+    defer allocator.free(temp_root);
+    const saved_cwd = try std.fs.path.join(allocator, &.{ temp_root, "saved" });
+    defer allocator.free(saved_cwd);
+
+    var parsed = try std.json.parseFromSlice(std.json.Value, allocator, "{}", .{});
+    defer parsed.deinit();
+
+    const restore_cwd = try enterReplyCwd(allocator, parsed.value, saved_cwd);
+    defer restoreCallCwd(allocator, restore_cwd);
+
+    const current = try currentWorkingDirectory(allocator);
+    defer allocator.free(current);
+    try std.testing.expectEqualStrings(saved_cwd, current);
 }
