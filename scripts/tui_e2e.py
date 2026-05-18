@@ -1341,6 +1341,124 @@ def run_help_command_smoke(
             f"exec resume --version printed parent version:\n{exec_resume_version_result.stdout}"
         )
 
+    exec_help_command_result = subprocess.run(
+        [str(binary), "exec", "help"],
+        cwd=workspace,
+        env=env,
+        text=True,
+        capture_output=True,
+        check=True,
+    )
+    if "codex-zig exec [OPTIONS] [PROMPT]" not in exec_help_command_result.stderr:
+        raise AssertionError(
+            f"expected exec help command output:\n{exec_help_command_result.stderr}"
+        )
+    if exec_help_command_result.stdout != "":
+        raise AssertionError(
+            f"expected no exec help command stdout:\n{exec_help_command_result.stdout}"
+        )
+
+    exec_resume_help_result = subprocess.run(
+        [str(binary), "exec", "resume", "--help"],
+        cwd=workspace,
+        env=env,
+        text=True,
+        capture_output=True,
+        check=True,
+    )
+    if "codex-zig exec resume [OPTIONS]" not in exec_resume_help_result.stderr:
+        raise AssertionError(
+            f"expected exec resume help output:\n{exec_resume_help_result.stderr}"
+        )
+    if "Session id, rollout path, or last" not in exec_resume_help_result.stderr:
+        raise AssertionError(
+            f"expected exec resume help arguments:\n{exec_resume_help_result.stderr}"
+        )
+    if exec_resume_help_result.stdout != "":
+        raise AssertionError(
+            f"expected no exec resume help stdout:\n{exec_resume_help_result.stdout}"
+        )
+
+    exec_help_resume_result = subprocess.run(
+        [str(binary), "exec", "help", "resume"],
+        cwd=workspace,
+        env=env,
+        text=True,
+        capture_output=True,
+        check=True,
+    )
+    if exec_help_resume_result.stderr != exec_resume_help_result.stderr:
+        raise AssertionError(
+            "expected exec help resume to match exec resume --help:\n"
+            f"{exec_help_resume_result.stderr}"
+        )
+    if exec_help_resume_result.stdout != "":
+        raise AssertionError(
+            f"expected no exec help resume stdout:\n{exec_help_resume_result.stdout}"
+        )
+
+    exec_review_help_result = subprocess.run(
+        [str(binary), "exec", "help", "review"],
+        cwd=workspace,
+        env=env,
+        text=True,
+        capture_output=True,
+        check=True,
+    )
+    if (
+        "codex-zig exec [EXEC_OPTIONS] review [REVIEW_OPTIONS]"
+        not in exec_review_help_result.stderr
+    ):
+        raise AssertionError(
+            f"expected exec review help output:\n{exec_review_help_result.stderr}"
+        )
+    if "-m, --model" in exec_review_help_result.stderr:
+        raise AssertionError(
+            f"exec review help advertised unsupported post-review model option:\n{exec_review_help_result.stderr}"
+        )
+    if "--enable FEATURE" in exec_review_help_result.stderr:
+        raise AssertionError(
+            f"exec review help advertised unsupported post-review feature option:\n{exec_review_help_result.stderr}"
+        )
+    if "--json" in exec_review_help_result.stderr:
+        raise AssertionError(
+            f"exec review help advertised unsupported json output:\n{exec_review_help_result.stderr}"
+        )
+    if "--output-last-message" in exec_review_help_result.stderr:
+        raise AssertionError(
+            f"exec review help advertised unsupported last-message output:\n{exec_review_help_result.stderr}"
+        )
+    if exec_review_help_result.stdout != "":
+        raise AssertionError(
+            f"expected no exec review help stdout:\n{exec_review_help_result.stdout}"
+        )
+
+    exec_help_help_result = subprocess.run(
+        [str(binary), "exec", "help", "help"],
+        cwd=workspace,
+        env=env,
+        text=True,
+        capture_output=True,
+        check=True,
+    )
+    exec_help_flag_result = subprocess.run(
+        [str(binary), "exec", "help", "--help"],
+        cwd=workspace,
+        env=env,
+        text=True,
+        capture_output=True,
+        check=True,
+    )
+    if exec_help_flag_result.stderr != exec_help_help_result.stderr:
+        raise AssertionError(
+            "expected exec help --help to match exec help help:\n"
+            f"{exec_help_flag_result.stderr}"
+        )
+    if exec_help_flag_result.stdout != "":
+        raise AssertionError(
+            f"expected no exec help --help stdout:\n{exec_help_flag_result.stdout}"
+        )
+
     apply_result = subprocess.run(
         [str(binary), "help", "apply"],
         cwd=workspace,
