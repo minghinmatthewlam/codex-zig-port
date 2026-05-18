@@ -21075,9 +21075,11 @@ def run_mcp_tool_call_rpc_smoke(binary: Path) -> None:
     codex_home = Path(tempfile.mkdtemp(prefix="codex-zig-app-server-mcp-tool-", dir="/tmp"))
     config_path = codex_home / "config.toml"
     server_path = codex_home / "tool_server.py"
+    plugin_root = codex_home / "plugins" / "cache" / "local-market" / "enabled-plugin" / "local"
     streamable_server, streamable_url = start_streamable_mcp_server(sse=True)
     streamable_key = mcp_oauth_credential_key("remote_tool_docs", streamable_url)
     try:
+        plugin_root.mkdir(parents=True)
         server_path.write_text(
             "\n".join(
                 [
@@ -21161,6 +21163,12 @@ def run_mcp_tool_call_rpc_smoke(binary: Path) -> None:
                 [
                     'mcp_oauth_credentials_store = "file"',
                     "",
+                    "[features]",
+                    "plugins = true",
+                    "",
+                    '[plugins."enabled-plugin@local-market"]',
+                    "enabled = true",
+                    "",
                     "[mcp_servers.tool_docs]",
                     f"command = {json.dumps(sys.executable)}",
                     f"args = [{json.dumps(str(server_path))}]",
@@ -21174,6 +21182,20 @@ def run_mcp_tool_call_rpc_smoke(binary: Path) -> None:
                     f"url = {json.dumps(streamable_url)}",
                     "",
                 ]
+            ),
+            encoding="utf-8",
+        )
+        (plugin_root / ".mcp.json").write_text(
+            json.dumps(
+                {
+                    "mcpServers": {
+                        "plugin_tool_docs": {
+                            "command": sys.executable,
+                            "args": [str(server_path)],
+                        }
+                    }
+                },
+                separators=(",", ":"),
             ),
             encoding="utf-8",
         )
@@ -21259,6 +21281,34 @@ def run_mcp_tool_call_rpc_smoke(binary: Path) -> None:
                     "echoed": "hello from app",
                     "threadId": thread_id,
                     "source": "mcp-app",
+                },
+                "isError": False,
+                "_meta": {"calledBy": "tool-smoke", "threadId": thread_id},
+            }
+
+            write_json_line(
+                proc,
+                {
+                    "jsonrpc": "2.0",
+                    "id": "mcp-plugin-tool-call",
+                    "method": "mcpServer/tool/call",
+                    "params": {
+                        "threadId": thread_id,
+                        "server": "plugin_tool_docs",
+                        "tool": "echo",
+                        "arguments": {"message": "hello from plugin app"},
+                        "_meta": {"source": "mcp-plugin-app"},
+                    },
+                },
+            )
+            plugin_tool_call = read_json_line(proc, 5)
+            assert plugin_tool_call["id"] == "mcp-plugin-tool-call"
+            assert plugin_tool_call["result"] == {
+                "content": [{"type": "text", "text": "echo: hello from plugin app"}],
+                "structuredContent": {
+                    "echoed": "hello from plugin app",
+                    "threadId": thread_id,
+                    "source": "mcp-plugin-app",
                 },
                 "isError": False,
                 "_meta": {"calledBy": "tool-smoke", "threadId": thread_id},
