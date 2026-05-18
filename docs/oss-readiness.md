@@ -19,22 +19,29 @@ parity tracker; implementation parity remains tracked in `docs/parity.md`.
   non-provider pattern scanning and secret validity checks as disabled.
   `SECURITY.md` is exposed through the repository security-policy URL. CodeQL
   Python code scanning is configured; the latest completed CodeQL run
-  `26033671712` passed on pushed head
-  `2045956fb61d0fb25a289e1a7c30c72e55d26fe9`. Open-alert queries for
-  CodeQL, Dependabot, and secret scanning returned empty arrays. Historical
-  CodeQL alerts remain visible through the API as fixed.
+  `26050958768` passed on pushed head
+  `26dc306c365591d2e23faf07bfa04d39be3a00d0`. Open-alert queries for
+  CodeQL, Dependabot, and secret scanning returned empty arrays after the OAuth
+  smoke redirect-header fix. Historical CodeQL alerts remain visible through
+  the API as fixed.
 - Repository rules: the branch-protection API reports `main` is unprotected and
   the repository rulesets API returns zero rulesets.
 - CI: GitHub Actions runs formatting, Python smoke-script compilation, unit
   tests, and product-surface smoke tests on macOS with a direct Zig 0.16.0
   install from `ziglang.org` rather than a deprecated Node-based setup action.
-  Checked push run `26033671740` passed on pushed head
-  `2045956fb61d0fb25a289e1a7c30c72e55d26fe9`. Local pre-push verification for
-  the current MCP reload-validation slice included `zig fmt
-  src/app_server_cmd.zig`, `python3 -m py_compile
-  scripts/app_server_stdio_smoke.py`, `zig build`, focused
-  `run_mcp_server_status_rpc_smoke` against `zig-out/bin/codex-zig`, `git diff
-  --check`, `zig build test --summary all`, and `zig build e2e --summary all`.
+  Checked push run `26050958792` passed on pushed head
+  `26dc306c365591d2e23faf07bfa04d39be3a00d0`. Local pre-push verification for
+  the latest OAuth and OSS-readiness slices included `python3 -m py_compile
+  scripts/app_server_stdio_smoke.py scripts/cli_smoke.py scripts/tui_e2e.py`,
+  `zig build`, focused CLI MCP OAuth login/logout smoke, focused app-server MCP
+  status smoke repeated five times, `git diff --check`, `zig build test
+  --summary all`, and `zig build e2e --summary all`.
+- Fresh public clone proof: a clean HTTPS clone from
+  `https://github.com/minghinmatthewlam/codex-zig-port` at pushed head
+  `26dc306c365591d2e23faf07bfa04d39be3a00d0` passed `python3 -m py_compile
+  scripts/app_server_stdio_smoke.py scripts/cli_smoke.py scripts/tui_e2e.py`,
+  `zig build`, `zig build test --summary all`, and `zig build e2e --summary
+  all`.
 - Source hygiene: current tracked-file and hidden working-tree scans found no
   high-confidence OpenAI, GitHub, AWS, Google, or Slack token patterns and no
   private-key blocks. Broad secret-word matches are limited to source variable
