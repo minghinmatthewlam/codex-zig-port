@@ -746,8 +746,19 @@ fn runToolCall(
 
     if (mcp_catalog.find(call.name)) |mcp_tool| {
         try reportMcpToolCallProgress(allocator, options, call.call_id, "calling", mcp_tool.server_name, mcp_tool.raw_tool_name, null);
+        var mcp_progress_context = McpRuntimeProgressContext{
+            .allocator = allocator,
+            .callback = options.mcp_tool_call_progress_callback,
+            .item_id = call.call_id,
+            .server_name = mcp_tool.server_name,
+            .tool_name = mcp_tool.raw_tool_name,
+        };
         var output = mcp_runtime.callToolWithOptions(allocator, cfg.codex_home, mcp_tool, call.arguments, .{
             .elicitation_callback = options.mcp_elicitation_callback,
+            .progress_callback = if (options.mcp_tool_call_progress_callback != null) .{
+                .ctx = &mcp_progress_context,
+                .on_progress = handleMcpRuntimeProgress,
+            } else null,
         }) catch |err| {
             try reportMcpToolCallProgress(allocator, options, call.call_id, "failed", mcp_tool.server_name, mcp_tool.raw_tool_name, @errorName(err));
             return .{
@@ -798,6 +809,63 @@ fn runToolCall(
     }
 
     return tool_result;
+}
+
+const McpRuntimeProgressContext = struct {
+    allocator: std.mem.Allocator,
+    callback: ?McpToolCallProgressCallback,
+    item_id: []const u8,
+    server_name: []const u8,
+    tool_name: []const u8,
+};
+
+fn handleMcpRuntimeProgress(ctx: *anyopaque, notification: mcp_runtime.ProgressNotification) !void {
+    const context: *McpRuntimeProgressContext = @ptrCast(@alignCast(ctx));
+    const callback = context.callback orelse return;
+    const detail = try formatMcpRuntimeProgressDetail(context.allocator, notification.params_json);
+    defer context.allocator.free(detail);
+    const message = try std.fmt.allocPrint(
+        context.allocator,
+        "progress {s}.{s}: {s}",
+        .{ context.server_name, context.tool_name, detail },
+    );
+    defer context.allocator.free(message);
+    try callback.on_mcp_tool_call_progress(callback.ctx, context.item_id, message);
+}
+
+fn formatMcpRuntimeProgressDetail(allocator: std.mem.Allocator, params_json: []const u8) ![]const u8 {
+    var parsed = std.json.parseFromSlice(std.json.Value, allocator, params_json, .{}) catch {
+        return allocator.dupe(u8, "update");
+    };
+    defer parsed.deinit();
+    if (parsed.value != .object) return allocator.dupe(u8, "update");
+    const object = parsed.value.object;
+
+    if (object.get("message")) |message| {
+        if (message == .string and message.string.len > 0) {
+            return allocator.dupe(u8, message.string);
+        }
+    }
+
+    const progress_json = if (object.get("progress")) |progress|
+        try std.json.Stringify.valueAlloc(allocator, progress, .{})
+    else
+        null;
+    defer if (progress_json) |json| allocator.free(json);
+    const total_json = if (object.get("total")) |total|
+        try std.json.Stringify.valueAlloc(allocator, total, .{})
+    else
+        null;
+    defer if (total_json) |json| allocator.free(json);
+
+    if (progress_json) |progress| {
+        if (total_json) |total| {
+            return std.fmt.allocPrint(allocator, "{s}/{s}", .{ progress, total });
+        }
+        return allocator.dupe(u8, progress);
+    }
+
+    return allocator.dupe(u8, "update");
 }
 
 fn runRequestUserInputToolCall(

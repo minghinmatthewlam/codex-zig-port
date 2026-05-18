@@ -88,8 +88,19 @@ pub const ElicitationCallback = struct {
     on_elicitation_requested: *const fn (ctx: *anyopaque, request: ElicitationRequest) anyerror!ElicitationResponse,
 };
 
+pub const ProgressNotification = struct {
+    server_name: []const u8,
+    params_json: []const u8,
+};
+
+pub const ProgressCallback = struct {
+    ctx: *anyopaque,
+    on_progress: *const fn (ctx: *anyopaque, notification: ProgressNotification) anyerror!void,
+};
+
 pub const CallToolOptions = struct {
     elicitation_callback: ?ElicitationCallback = null,
+    progress_callback: ?ProgressCallback = null,
 };
 
 pub const McpJsonRpcErrorPayload = struct {
@@ -916,7 +927,10 @@ fn callServerTool(
     arguments_json: []const u8,
     options: CallToolOptions,
 ) !CallOutput {
-    var client = try StdioClient.startWithOptions(allocator, server, .{ .elicitation_callback = options.elicitation_callback });
+    var client = try StdioClient.startWithOptions(allocator, server, .{
+        .elicitation_callback = options.elicitation_callback,
+        .progress_callback = options.progress_callback,
+    });
     defer client.deinit();
 
     try client.initialize();
@@ -952,7 +966,10 @@ fn callHttpServerTool(
     arguments_json: []const u8,
     options: CallToolOptions,
 ) !CallOutput {
-    var client = try HttpClient.startWithOptions(allocator, codex_home, server, .{ .elicitation_callback = options.elicitation_callback });
+    var client = try HttpClient.startWithOptions(allocator, codex_home, server, .{
+        .elicitation_callback = options.elicitation_callback,
+        .progress_callback = options.progress_callback,
+    });
     defer client.close();
 
     try client.initialize();
@@ -1026,7 +1043,10 @@ fn callServerToolJsonRpc(
     meta_json: ?[]const u8,
     options: CallToolOptions,
 ) !JsonRpcMethodResult {
-    var client = try StdioClient.startWithOptions(allocator, server, .{ .elicitation_callback = options.elicitation_callback });
+    var client = try StdioClient.startWithOptions(allocator, server, .{
+        .elicitation_callback = options.elicitation_callback,
+        .progress_callback = options.progress_callback,
+    });
     defer client.deinit();
 
     try client.initialize();
@@ -1065,7 +1085,10 @@ fn callHttpServerToolJsonRpc(
     meta_json: ?[]const u8,
     options: CallToolOptions,
 ) !JsonRpcMethodResult {
-    var client = try HttpClient.startWithOptions(allocator, codex_home, server, .{ .elicitation_callback = options.elicitation_callback });
+    var client = try HttpClient.startWithOptions(allocator, codex_home, server, .{
+        .elicitation_callback = options.elicitation_callback,
+        .progress_callback = options.progress_callback,
+    });
     defer client.close();
 
     try client.initialize();
@@ -1086,9 +1109,11 @@ const StdioClient = struct {
     stdout_file: std.Io.File,
     argv: SpawnArgv,
     elicitation_callback: ?ElicitationCallback,
+    progress_callback: ?ProgressCallback,
 
     const Options = struct {
         elicitation_callback: ?ElicitationCallback = null,
+        progress_callback: ?ProgressCallback = null,
     };
 
     fn start(allocator: std.mem.Allocator, server: mcp_cmd.McpServer) !StdioClient {
@@ -1119,6 +1144,7 @@ const StdioClient = struct {
             .stdout_file = child.stdout.?,
             .argv = argv,
             .elicitation_callback = options.elicitation_callback,
+            .progress_callback = options.progress_callback,
         };
     }
 
@@ -1185,6 +1211,7 @@ const StdioClient = struct {
     }
 
     fn handleServerRequest(self: *StdioClient, value: std.json.Value) !bool {
+        if (try handleServerNotification(self.allocator, self.server_name, self.progress_callback, value)) return true;
         const response = (try buildServerRequestResponsePayload(self.allocator, self.server_name, self.elicitation_callback, value)) orelse return false;
         defer self.allocator.free(response);
         try self.writeLine(response);
@@ -1259,6 +1286,33 @@ fn buildServerRequestResponsePayload(
     return try buildErrorPayloadWithIdJson(allocator, id_json, -32601, "Method not found");
 }
 
+fn handleServerNotification(
+    allocator: std.mem.Allocator,
+    server_name: []const u8,
+    progress_callback: ?ProgressCallback,
+    value: std.json.Value,
+) !bool {
+    if (value != .object) return false;
+    const object = value.object;
+    if (object.get("id") != null) return false;
+    const method_value = object.get("method") orelse return false;
+    if (method_value != .string) return false;
+    if (!std.mem.eql(u8, method_value.string, "notifications/progress")) return false;
+
+    if (progress_callback) |callback| {
+        const params_json = if (object.get("params")) |params_value|
+            try std.json.Stringify.valueAlloc(allocator, params_value, .{})
+        else
+            try allocator.dupe(u8, "{}");
+        defer allocator.free(params_json);
+        try callback.on_progress(callback.ctx, .{
+            .server_name = server_name,
+            .params_json = params_json,
+        });
+    }
+    return true;
+}
+
 const HttpClient = struct {
     allocator: std.mem.Allocator,
     server_name: []const u8,
@@ -1267,9 +1321,11 @@ const HttpClient = struct {
     extra_headers: std.ArrayList(mcp_cmd.KeyValue),
     session_id: ?[]const u8,
     elicitation_callback: ?ElicitationCallback,
+    progress_callback: ?ProgressCallback,
 
     const Options = struct {
         elicitation_callback: ?ElicitationCallback = null,
+        progress_callback: ?ProgressCallback = null,
     };
 
     const Response = struct {
@@ -1308,6 +1364,7 @@ const HttpClient = struct {
             .extra_headers = extra_headers,
             .session_id = null,
             .elicitation_callback = options.elicitation_callback,
+            .progress_callback = options.progress_callback,
         };
     }
 
@@ -1436,6 +1493,7 @@ const HttpClient = struct {
     }
 
     fn handleServerRequest(self: *HttpClient, value: std.json.Value) !bool {
+        if (try handleServerNotification(self.allocator, self.server_name, self.progress_callback, value)) return true;
         const response = (try buildServerRequestResponsePayload(self.allocator, self.server_name, self.elicitation_callback, value)) orelse return false;
         defer self.allocator.free(response);
         try self.postJsonRpcResponse(response);
@@ -2453,6 +2511,62 @@ test "mcp http stream parser waits for matching SSE JSON-RPC id" {
     defer allocator.free(rendered);
     try std.testing.expectEqualStrings(
         "{\"content\":[{\"type\":\"text\",\"text\":\"from get\"}]}",
+        rendered,
+    );
+}
+
+test "mcp http stream parser handles progress notifications before final response" {
+    const allocator = std.testing.allocator;
+    const Capture = struct {
+        seen: bool = false,
+
+        fn onProgress(ctx: *anyopaque, notification: ProgressNotification) !void {
+            const capture: *@This() = @ptrCast(@alignCast(ctx));
+            try std.testing.expectEqualStrings("remote", notification.server_name);
+            try std.testing.expectEqualStrings(
+                "{\"message\":\"warming up\",\"progress\":1,\"total\":2}",
+                notification.params_json,
+            );
+            capture.seen = true;
+        }
+    };
+    const Handler = struct {
+        allocator: std.mem.Allocator,
+        callback: ProgressCallback,
+
+        fn handle(ctx: *anyopaque, value: std.json.Value) !bool {
+            const handler: *@This() = @ptrCast(@alignCast(ctx));
+            return handleServerNotification(handler.allocator, "remote", handler.callback, value);
+        }
+    };
+
+    var capture = Capture{};
+    var handler = Handler{
+        .allocator = allocator,
+        .callback = .{
+            .ctx = &capture,
+            .on_progress = Capture.onProgress,
+        },
+    };
+    var reader: std.Io.Reader = .fixed(
+        "event: message\n" ++
+            "data: {\"jsonrpc\":\"2.0\",\"method\":\"notifications/progress\",\"params\":{\"message\":\"warming up\",\"progress\":1,\"total\":2}}\n\n" ++
+            "event: message\n" ++
+            "data: {\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"content\":[{\"type\":\"text\",\"text\":\"done\"}]}}\n\n",
+    );
+    var parsed = try parseSseResponseFromReaderWithHandler(allocator, &reader, 2, .{
+        .ctx = &handler,
+        .handle = Handler.handle,
+    });
+    defer parsed.deinit();
+
+    try std.testing.expect(capture.seen);
+    const result = parsed.value.object.get("result").?;
+    try std.testing.expect(result == .object);
+    const rendered = try renderToolCallResult(allocator, result);
+    defer allocator.free(rendered);
+    try std.testing.expectEqualStrings(
+        "{\"content\":[{\"type\":\"text\",\"text\":\"done\"}]}",
         rendered,
     );
 }
