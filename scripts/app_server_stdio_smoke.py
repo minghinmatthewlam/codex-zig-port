@@ -20259,6 +20259,47 @@ def run_mcp_server_status_rpc_smoke(binary: Path) -> None:
         assert credentials_after_login[oauth_discovery_key]["refresh_token"] == "mock-refresh-token"
         assert credentials_after_login[oauth_discovery_key]["scopes"] == ["read", "write"]
 
+        timeout_proc = subprocess.Popen(
+            [str(binary), "app-server"],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            env=env,
+        )
+        try:
+            write_json_line(
+                timeout_proc,
+                {
+                    "jsonrpc": "2.0",
+                    "id": "mcp-oauth-timeout",
+                    "method": "mcpServer/oauth/login",
+                    "params": {"name": "oauth_discovery", "timeoutSecs": 1},
+                },
+            )
+            oauth_timeout = read_json_line(timeout_proc, 5)
+            assert oauth_timeout["id"] == "mcp-oauth-timeout"
+            assert oauth_timeout["result"]["authorizationUrl"].startswith(
+                f"{discovery_server.base_url}/oauth/authorize?"
+            )
+            oauth_timeout_completed = read_json_line(timeout_proc, 5)
+            assert oauth_timeout_completed["method"] == "mcpServer/oauthLogin/completed"
+            assert oauth_timeout_completed["params"] == {
+                "name": "oauth_discovery",
+                "success": False,
+                "error": "McpOAuthCallbackTimeout",
+            }
+        finally:
+            if timeout_proc.stdin is not None:
+                timeout_proc.stdin.close()
+            try:
+                timeout_proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                timeout_proc.kill()
+                timeout_proc.wait(timeout=5)
+        if timeout_proc.returncode != 0:
+            raise AssertionError(f"app-server exited {timeout_proc.returncode}: {timeout_proc.stderr.read()}")
+
         oauth_http_missing_discovery = request_stdio_app_server(
             binary,
             {
