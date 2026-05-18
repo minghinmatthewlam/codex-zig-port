@@ -21098,6 +21098,342 @@ def run_mcp_tool_call_rpc_smoke(binary: Path) -> None:
         shutil.rmtree(codex_home, ignore_errors=True)
 
 
+def run_mcp_elicitation_smoke(binary: Path) -> None:
+    server, base_url = start_turn_responses_server()
+    codex_home = Path(tempfile.mkdtemp(prefix="codex-zig-app-server-mcp-elicit-", dir="/tmp"))
+    mcp_server = codex_home / "elicitation_server.py"
+    try:
+        mcp_server.write_text(
+            "\n".join(
+                [
+                    "import json",
+                    "import sys",
+                    "",
+                    "REQUESTED_SCHEMA = {",
+                    "    'type': 'object',",
+                    "    'properties': {'confirmed': {'type': 'boolean', 'title': 'Confirm'}},",
+                    "    'required': ['confirmed'],",
+                    "}",
+                    "",
+                    "def write(payload):",
+                    "    sys.stdout.write(json.dumps(payload, separators=(',', ':')) + '\\n')",
+                    "    sys.stdout.flush()",
+                    "",
+                    "def read_response(response_id):",
+                    "    for response_line in sys.stdin:",
+                    "        if not response_line.strip():",
+                    "            continue",
+                    "        response = json.loads(response_line)",
+                    "        if response.get('id') == response_id:",
+                    "            return response",
+                    "    raise SystemExit(1)",
+                    "",
+                    "for line in sys.stdin:",
+                    "    if not line.strip():",
+                    "        continue",
+                    "    request = json.loads(line)",
+                    "    method = request.get('method')",
+                    "    if method == 'notifications/initialized':",
+                    "        continue",
+                    "    request_id = request.get('id')",
+                    "    if method == 'initialize':",
+                    "        write({",
+                    "            'jsonrpc': '2.0',",
+                    "            'id': request_id,",
+                    "            'result': {",
+                    "                'protocolVersion': '2025-03-26',",
+                    "                'capabilities': {'tools': {}},",
+                    "                'serverInfo': {'name': 'elicitation-smoke', 'version': '0.1.0'},",
+                    "            },",
+                    "        })",
+                    "    elif method == 'tools/list':",
+                    "        write({",
+                    "            'jsonrpc': '2.0',",
+                    "            'id': request_id,",
+                    "            'result': {",
+                    "                'tools': [",
+                    "                    {",
+                    "                        'name': 'confirm',",
+                    "                        'description': 'Ask the client to confirm an action.',",
+                    "                        'inputSchema': {'type': 'object'},",
+                    "                    }",
+                    "                ],",
+                    "                'nextCursor': None,",
+                    "            },",
+                    "        })",
+                    "    elif method == 'tools/call':",
+                    "        params = request.get('params', {})",
+                    "        if params.get('name') != 'confirm':",
+                    "            write({",
+                    "                'jsonrpc': '2.0',",
+                    "                'id': request_id,",
+                    "                'error': {'code': -32602, 'message': 'unknown tool'},",
+                    "            })",
+                    "            continue",
+                    "        write({",
+                    "            'jsonrpc': '2.0',",
+                    "            'id': 'elicitation-1',",
+                    "            'method': 'elicitation/create',",
+                    "            'params': {",
+                    "                '_meta': {'persist': ['server']},",
+                    "                'message': 'Confirm MCP tool call?',",
+                    "                'requestedSchema': REQUESTED_SCHEMA,",
+                    "            },",
+                    "        })",
+                    "        response = read_response('elicitation-1')",
+                    "        result = response.get('result', {})",
+                    "        accepted = (",
+                    "            result.get('action') == 'accept'",
+                    "            and result.get('content', {}).get('confirmed') is True",
+                    "            and result.get('_meta', {}).get('persist') == 'client'",
+                    "        )",
+                    "        text = 'accepted' if accepted else 'unexpected:' + json.dumps(result, sort_keys=True)",
+                    "        write({",
+                    "            'jsonrpc': '2.0',",
+                    "            'id': request_id,",
+                    "            'result': {",
+                    "                'content': [{'type': 'text', 'text': text}],",
+                    "                'structuredContent': {'accepted': accepted},",
+                    "                'isError': False,",
+                    "            },",
+                    "        })",
+                    "    else:",
+                    "        write({",
+                    "            'jsonrpc': '2.0',",
+                    "            'id': request_id,",
+                    "            'error': {'code': -32601, 'message': f'unknown method: {method}'},",
+                    "        })",
+                    "",
+                ]
+            ),
+            encoding="utf-8",
+        )
+        codex_home.joinpath("config.toml").write_text(
+            "\n".join(
+                [
+                    f'openai_base_url = "{base_url}"',
+                    'model = "gpt-mcp-elicit"',
+                    "",
+                    "[mcp_servers.elicitation_docs]",
+                    f"command = {json.dumps(sys.executable)}",
+                    f"args = [{json.dumps(str(mcp_server))}]",
+                    "",
+                ]
+            ),
+            encoding="utf-8",
+        )
+        env = os.environ.copy()
+        env["CODEX_HOME"] = str(codex_home)
+        env["OPENAI_API_KEY"] = "test-api-key"
+        env.pop("CODEX_ACCESS_TOKEN", None)
+
+        proc = subprocess.Popen(
+            [str(binary), "app-server"],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            env=env,
+        )
+        try:
+            write_json_line(
+                proc,
+                {
+                    "jsonrpc": "2.0",
+                    "id": "initialize",
+                    "method": "initialize",
+                    "params": {
+                        "clientInfo": {"name": "app-server-smoke", "version": "0"},
+                        "capabilities": {
+                            "optOutNotificationMethods": ["thread/started", "configWarning"],
+                        },
+                    },
+                },
+            )
+            assert read_json_line(proc, 5)["id"] == "initialize"
+
+            write_json_line(
+                proc,
+                {
+                    "jsonrpc": "2.0",
+                    "id": "thread-start-for-mcp-elicit",
+                    "method": "thread/start",
+                    "params": {"ephemeral": True},
+                },
+            )
+            thread_start = read_json_line(proc, 5)
+            assert thread_start["id"] == "thread-start-for-mcp-elicit"
+            thread_id = thread_start["result"]["thread"]["id"]
+
+            write_json_line(
+                proc,
+                {
+                    "jsonrpc": "2.0",
+                    "id": "mcp-tool-call-elicit",
+                    "method": "mcpServer/tool/call",
+                    "params": {
+                        "threadId": thread_id,
+                        "server": "elicitation_docs",
+                        "tool": "confirm",
+                        "arguments": {},
+                    },
+                },
+            )
+            standalone_request = read_json_line(proc, 5)
+            assert standalone_request["method"] == "mcpServer/elicitation/request"
+            assert standalone_request["id"] == "mcp-elicitation-elicitation_docs-elicitation-1"
+            standalone_params = standalone_request["params"]
+            assert standalone_params["threadId"] == thread_id
+            assert standalone_params["turnId"] is None
+            assert standalone_params["serverName"] == "elicitation_docs"
+            assert standalone_params["mode"] == "form"
+            assert standalone_params["_meta"] == {"persist": ["server"]}
+            assert standalone_params["message"] == "Confirm MCP tool call?"
+            assert standalone_params["requestedSchema"] == {
+                "type": "object",
+                "properties": {"confirmed": {"type": "boolean", "title": "Confirm"}},
+                "required": ["confirmed"],
+            }
+            write_json_line(
+                proc,
+                {
+                    "jsonrpc": "2.0",
+                    "id": standalone_request["id"],
+                    "result": {
+                        "action": "accept",
+                        "content": {"confirmed": True},
+                        "_meta": {"persist": "client"},
+                    },
+                },
+            )
+            standalone_resolved = read_json_line(proc, 5)
+            assert standalone_resolved["method"] == "serverRequest/resolved"
+            assert standalone_resolved["params"] == {
+                "threadId": thread_id,
+                "requestId": standalone_request["id"],
+            }
+            standalone_tool = read_json_line(proc, 5)
+            assert standalone_tool["id"] == "mcp-tool-call-elicit"
+            assert standalone_tool["result"] == {
+                "content": [{"type": "text", "text": "accepted"}],
+                "structuredContent": {"accepted": True},
+                "isError": False,
+            }
+
+            mcp_tool_event = {
+                "type": "response.output_item.done",
+                "item": {
+                    "type": "function_call",
+                    "call_id": "mcp-elicit-call",
+                    "name": "mcp__elicitation_docs__confirm",
+                    "arguments": "{}",
+                },
+            }
+            server.response_payloads.extend(
+                [
+                    (
+                        f"data: {json.dumps(mcp_tool_event, separators=(',', ':'))}\n\n"
+                        "data: [DONE]\n\n"
+                    ).encode(),
+                    (
+                        b'data: {"type":"response.output_text.delta","delta":"mcp elicitation done"}\n\n'
+                        b"data: [DONE]\n\n"
+                    ),
+                ]
+            )
+            write_json_line(
+                proc,
+                {
+                    "jsonrpc": "2.0",
+                    "id": "turn-start-mcp-elicit",
+                    "method": "turn/start",
+                    "params": {
+                        "threadId": thread_id,
+                        "input": [{"type": "text", "text": "call eliciting mcp tool"}],
+                    },
+                },
+            )
+            turn_start = read_json_line(proc, 5)
+            assert turn_start["id"] == "turn-start-mcp-elicit"
+            turn_id = turn_start["result"]["turn"]["id"]
+            turn_request = read_json_line(proc, 5)
+            assert turn_request["method"] == "mcpServer/elicitation/request"
+            turn_params = turn_request["params"]
+            assert turn_params["threadId"] == thread_id
+            assert turn_params["turnId"] == turn_id
+            assert turn_params["serverName"] == "elicitation_docs"
+            assert turn_params["mode"] == "form"
+            assert turn_params["message"] == "Confirm MCP tool call?"
+            write_json_line(
+                proc,
+                {
+                    "jsonrpc": "2.0",
+                    "id": turn_request["id"],
+                    "result": {
+                        "action": "accept",
+                        "content": {"confirmed": True},
+                        "_meta": {"persist": "client"},
+                    },
+                },
+            )
+            turn_resolved = read_json_line(proc, 5)
+            assert turn_resolved["method"] == "serverRequest/resolved"
+            assert turn_resolved["params"] == {
+                "threadId": thread_id,
+                "requestId": turn_request["id"],
+            }
+            messages = read_json_lines_until(
+                proc,
+                5,
+                lambda seen: any(
+                    message.get("method") == "turn/completed"
+                    and message["params"]["turn"]["id"] == turn_id
+                    for message in seen
+                )
+                and any(
+                    message.get("method") == "thread/status/changed"
+                    and message["params"]["status"] == {"type": "idle"}
+                    for message in seen
+                ),
+            )
+            assert any(
+                message.get("method") == "item/mcpToolCall/progress"
+                and message["params"]["message"] == "calling elicitation_docs.confirm"
+                for message in messages
+            )
+            assert any(
+                message.get("method") == "item/mcpToolCall/progress"
+                and message["params"]["message"] == "completed elicitation_docs.confirm"
+                for message in messages
+            )
+            assert any(
+                message.get("method") == "item/completed"
+                and message["params"]["item"]["type"] == "agentMessage"
+                and message["params"]["item"]["text"] == "mcp elicitation done"
+                for message in messages
+            )
+            followup_request = server.request_bodies[1]
+            assert any(
+                item.get("type") == "function_call_output"
+                and item.get("call_id") == "mcp-elicit-call"
+                and item.get("output") == "accepted"
+                for item in followup_request["input"]
+            )
+
+            proc.stdin.close()
+            proc.wait(timeout=5)
+            if proc.returncode != 0:
+                raise AssertionError(f"app-server exited {proc.returncode}: {proc.stderr.read()}")
+        finally:
+            if proc.poll() is None:
+                proc.kill()
+                proc.wait(timeout=5)
+    finally:
+        server.shutdown()
+        server.server_close()
+        shutil.rmtree(codex_home, ignore_errors=True)
+
+
 def run_filesystem_rpc_smoke(binary: Path) -> None:
     root = Path(tempfile.mkdtemp(prefix="codex-zig-app-server-fs-", dir="/tmp"))
     env = os.environ.copy()
@@ -40212,6 +40548,8 @@ def main() -> None:
     print("app-server-mcp-resource-read-rpc-e2e: ok")
     run_mcp_tool_call_rpc_smoke(binary)
     print("app-server-mcp-tool-call-rpc-e2e: ok")
+    run_mcp_elicitation_smoke(binary)
+    print("app-server-mcp-elicitation-e2e: ok")
     run_filesystem_rpc_smoke(binary)
     print("app-server-filesystem-rpc-e2e: ok")
     run_filesystem_watch_rpc_smoke(binary)
