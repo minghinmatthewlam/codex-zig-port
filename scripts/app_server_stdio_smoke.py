@@ -21119,6 +21119,8 @@ def run_mcp_elicitation_smoke(binary: Path) -> None:
                     "    sys.stdout.write(json.dumps(payload, separators=(',', ':')) + '\\n')",
                     "    sys.stdout.flush()",
                     "",
+                    "client_supports_elicitation = False",
+                    "",
                     "def read_response(response_id):",
                     "    for response_line in sys.stdin:",
                     "        if not response_line.strip():",
@@ -21137,6 +21139,16 @@ def run_mcp_elicitation_smoke(binary: Path) -> None:
                     "        continue",
                     "    request_id = request.get('id')",
                     "    if method == 'initialize':",
+                    "        protocol_version = request.get('params', {}).get('protocolVersion')",
+                    "        client_capabilities = request.get('params', {}).get('capabilities', {})",
+                    "        client_supports_elicitation = client_capabilities.get('elicitation') == {}",
+                    "        if client_supports_elicitation and protocol_version != '2025-06-18':",
+                    "            write({",
+                    "                'jsonrpc': '2.0',",
+                    "                'id': request_id,",
+                    "                'error': {'code': -32602, 'message': 'client used wrong elicitation protocol version'},",
+                    "            })",
+                    "            continue",
                     "        write({",
                     "            'jsonrpc': '2.0',",
                     "            'id': request_id,",
@@ -21170,9 +21182,17 @@ def run_mcp_elicitation_smoke(binary: Path) -> None:
                     "                'error': {'code': -32602, 'message': 'unknown tool'},",
                     "            })",
                     "            continue",
+                    "        if not client_supports_elicitation:",
+                    "            write({",
+                    "                'jsonrpc': '2.0',",
+                    "                'id': request_id,",
+                    "                'error': {'code': -32602, 'message': 'client did not advertise elicitation'},",
+                    "            })",
+                    "            continue",
+                    "        elicitation_id = request_id",
                     "        write({",
                     "            'jsonrpc': '2.0',",
-                    "            'id': 'elicitation-1',",
+                    "            'id': elicitation_id,",
                     "            'method': 'elicitation/create',",
                     "            'params': {",
                     "                '_meta': {'persist': ['server']},",
@@ -21180,7 +21200,7 @@ def run_mcp_elicitation_smoke(binary: Path) -> None:
                     "                'requestedSchema': REQUESTED_SCHEMA,",
                     "            },",
                     "        })",
-                    "        response = read_response('elicitation-1')",
+                    "        response = read_response(elicitation_id)",
                     "        result = response.get('result', {})",
                     "        accepted = (",
                     "            result.get('action') == 'accept'",
@@ -21281,7 +21301,7 @@ def run_mcp_elicitation_smoke(binary: Path) -> None:
             )
             standalone_request = read_json_line(proc, 5)
             assert standalone_request["method"] == "mcpServer/elicitation/request"
-            assert standalone_request["id"] == "mcp-elicitation-elicitation_docs-elicitation-1"
+            assert standalone_request["id"] == "mcp-elicitation-elicitation_docs-2"
             standalone_params = standalone_request["params"]
             assert standalone_params["threadId"] == thread_id
             assert standalone_params["turnId"] is None
@@ -21358,6 +21378,7 @@ def run_mcp_elicitation_smoke(binary: Path) -> None:
             turn_id = turn_start["result"]["turn"]["id"]
             turn_request = read_json_line(proc, 5)
             assert turn_request["method"] == "mcpServer/elicitation/request"
+            assert turn_request["id"] == "mcp-elicitation-elicitation_docs-2"
             turn_params = turn_request["params"]
             assert turn_params["threadId"] == thread_id
             assert turn_params["turnId"] == turn_id

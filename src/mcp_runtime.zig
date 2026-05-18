@@ -1122,7 +1122,9 @@ const StdioClient = struct {
     }
 
     fn initialize(self: *StdioClient) !void {
-        const params =
+        const params = if (self.elicitation_callback != null)
+            \\{"protocolVersion":"2025-06-18","capabilities":{"elicitation":{}},"clientInfo":{"name":"codex-zig","version":"0.0.1"}}
+        else
             \\{"protocolVersion":"2025-03-26","capabilities":{},"clientInfo":{"name":"codex-zig","version":"0.0.1"}}
         ;
         var response = try self.request(1, "initialize", params);
@@ -1164,15 +1166,13 @@ const StdioClient = struct {
 
             var parsed = std.json.parseFromSlice(std.json.Value, self.allocator, trimmed, .{}) catch continue;
             errdefer parsed.deinit();
-            if (!isResponseForId(parsed.value, id)) {
-                if (try self.handleServerRequest(parsed.value)) {
-                    parsed.deinit();
-                    continue;
-                }
+            if (try self.handleServerRequest(parsed.value)) {
                 parsed.deinit();
                 continue;
             }
-            return parsed;
+            if (isResponseForId(parsed.value, id)) return parsed;
+            parsed.deinit();
+            continue;
         }
         return error.McpResponseNotFound;
     }
@@ -1827,6 +1827,8 @@ fn isJsonRpcIdValue(value: std.json.Value) bool {
 
 fn isResponseForId(value: std.json.Value, id: i64) bool {
     if (value != .object) return false;
+    if (value.object.get("method") != null) return false;
+    if (value.object.get("result") == null and value.object.get("error") == null) return false;
     const id_value = value.object.get("id") orelse return false;
     return switch (id_value) {
         .integer => |number| number == id,
