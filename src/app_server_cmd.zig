@@ -112,6 +112,7 @@ const AppServerState = struct {
     session_command_approvals: std.ArrayList(SessionCommandApproval) = .empty,
     session_file_approvals: std.ArrayList(SessionFileApproval) = .empty,
     server_request_transport: ?ServerRequestTransport = null,
+    connection_output: ?*AppServerConnectionOutputState = null,
     active_command_execs: std.ArrayList(*ActiveCommandExecSession) = .empty,
 
     fn deinit(self: *AppServerState, allocator: std.mem.Allocator) void {
@@ -223,6 +224,15 @@ const JsonRpcTransportContext = struct {
     kind: JsonRpcTransportKind,
     reader: *std.Io.Reader,
     writer: ?*std.Io.Writer = null,
+    output: ?*AppServerConnectionOutputState = null,
+};
+
+const AppServerConnectionOutputState = struct {
+    kind: JsonRpcTransportKind,
+    socket_handle: std.posix.fd_t,
+    mutex: std.Io.Mutex = .init,
+    closed: bool = false,
+    ref_count: std.atomic.Value(usize) = .init(1),
 };
 
 const LoadedThread = struct {
@@ -24978,10 +24988,13 @@ const UnixServer = struct {
         var output_buffer: [64 * 1024]u8 = undefined;
         var reader = stream.reader(io, &input_buffer);
         var writer = stream.writer(io, &output_buffer);
+        const output_state = try createAppServerConnectionOutput(self.allocator, .stream_line, stream.socket.handle);
+        defer closeAppServerConnectionOutput(self.allocator, output_state);
         var transport_context = JsonRpcTransportContext{
             .kind = .stream_line,
             .reader = &reader.interface,
             .writer = &writer.interface,
+            .output = output_state,
         };
         state.server_request_transport = .{
             .ctx = &transport_context,
@@ -24989,6 +25002,8 @@ const UnixServer = struct {
             .read_payload = readJsonRpcTransportPayload,
         };
         defer state.server_request_transport = null;
+        state.connection_output = output_state;
+        defer state.connection_output = null;
 
         while (true) {
             const line_opt = try reader.interface.takeDelimiter('\n');
@@ -25004,7 +25019,7 @@ const UnixServer = struct {
             try writePreResponseNotificationsStream(self.allocator, state, &writer.interface);
             if (response) |payload| {
                 defer self.allocator.free(payload);
-                try writeStreamLine(&writer.interface, payload);
+                try writeStreamLineWithConnection(state.connection_output, &writer.interface, payload);
             }
             try queueExternalFsWatchNotifications(self.allocator, state);
             try writePendingNotificationsStream(self.allocator, state, &writer.interface);
@@ -25114,10 +25129,13 @@ const WebSocketServer = struct {
         );
         try writer.interface.flush();
 
+        const output_state = try createAppServerConnectionOutput(self.allocator, .websocket, stream.socket.handle);
+        defer closeAppServerConnectionOutput(self.allocator, output_state);
         var transport_context = JsonRpcTransportContext{
             .kind = .websocket,
             .reader = &reader.interface,
             .writer = &writer.interface,
+            .output = output_state,
         };
         state.server_request_transport = .{
             .ctx = &transport_context,
@@ -25125,9 +25143,11 @@ const WebSocketServer = struct {
             .read_payload = readJsonRpcTransportPayload,
         };
         defer state.server_request_transport = null;
+        state.connection_output = output_state;
+        defer state.connection_output = null;
 
         while (true) {
-            const payload = try readWebSocketTextFrame(self.allocator, &reader.interface, &writer.interface) orelse return;
+            const payload = try readWebSocketTextFrame(self.allocator, &reader.interface, &writer.interface, state.connection_output) orelse return;
             defer self.allocator.free(payload);
             const trimmed = std.mem.trim(u8, payload, " \t\r\n");
             if (trimmed.len == 0) continue;
@@ -25141,7 +25161,7 @@ const WebSocketServer = struct {
             try writePreResponseNotificationsWebSocket(self.allocator, state, &writer.interface);
             if (response) |payload_response| {
                 defer self.allocator.free(payload_response);
-                try writeWebSocketTextFrame(&writer.interface, payload_response);
+                try writeWebSocketTextFrameWithConnection(state.connection_output, &writer.interface, payload_response);
             }
             try queueExternalFsWatchNotifications(self.allocator, state);
             try writePendingNotificationsWebSocket(self.allocator, state, &writer.interface);
@@ -25338,6 +25358,7 @@ fn readWebSocketTextFrame(
     allocator: std.mem.Allocator,
     reader: *std.Io.Reader,
     writer: *std.Io.Writer,
+    output: ?*AppServerConnectionOutputState,
 ) !?[]const u8 {
     while (true) {
         const first = reader.takeByte() catch |err| switch (err) {
@@ -25369,12 +25390,12 @@ fn readWebSocketTextFrame(
         switch (opcode) {
             0x1 => return payload,
             0x8 => {
-                try writeWebSocketFrame(writer, 0x8, payload);
+                try writeWebSocketFrameWithConnection(output, writer, 0x8, payload);
                 allocator.free(payload);
                 return null;
             },
             0x9 => {
-                try writeWebSocketFrame(writer, 0xA, payload);
+                try writeWebSocketFrameWithConnection(output, writer, 0xA, payload);
                 allocator.free(payload);
                 continue;
             },
@@ -25413,8 +25434,8 @@ fn sendJsonRpcTransportPayload(ctx: *anyopaque, payload: []const u8) !void {
     const context: *JsonRpcTransportContext = @ptrCast(@alignCast(ctx));
     switch (context.kind) {
         .stdout_line => try writeStdoutLine(payload),
-        .stream_line => try writeStreamLine(context.writer orelse return error.AppServerTransportMissingWriter, payload),
-        .websocket => try writeWebSocketTextFrame(context.writer orelse return error.AppServerTransportMissingWriter, payload),
+        .stream_line => try writeStreamLineWithConnection(context.output, context.writer orelse return error.AppServerTransportMissingWriter, payload),
+        .websocket => try writeWebSocketTextFrameWithConnection(context.output, context.writer orelse return error.AppServerTransportMissingWriter, payload),
     }
 }
 
@@ -25428,7 +25449,7 @@ fn readJsonRpcTransportPayload(ctx: *anyopaque, allocator: std.mem.Allocator) !?
         },
         .websocket => {
             const writer = context.writer orelse return error.AppServerTransportMissingWriter;
-            const payload = try readWebSocketTextFrame(allocator, context.reader, writer) orelse return null;
+            const payload = try readWebSocketTextFrame(allocator, context.reader, writer, context.output) orelse return null;
             errdefer allocator.free(payload);
             const trimmed = std.mem.trim(u8, payload, " \t\r\n");
             if (trimmed.len == payload.len) return payload;
@@ -52732,10 +52753,6 @@ fn handleMcpServerOauthLogin(allocator: std.mem.Allocator, state: *AppServerStat
     };
     defer params.deinit(allocator);
 
-    if (!state.deferred_command_exec_stdio) {
-        return renderJsonRpcError(allocator, id_value, -32603, "mcpServer/oauth/login completion is currently implemented for stdio app-server transport only");
-    }
-
     const codex_home = resolveCodexHome(allocator) catch |err| {
         return renderJsonRpcErrorForFailure(allocator, id_value, "mcpServer/oauth/login failed to resolve CODEX_HOME", err);
     };
@@ -52763,18 +52780,59 @@ fn handleMcpServerOauthLogin(allocator: std.mem.Allocator, state: *AppServerStat
 
     const response = try renderMcpServerOauthLoginResponse(allocator, id_value, login_handle.authorization_url);
     errdefer allocator.free(response);
-    try spawnMcpServerOauthLoginWorker(allocator, params.name, login_handle, params.timeout_secs);
+    var completion_target = try makeMcpServerOauthLoginCompletionTarget(allocator, state.connection_output);
+    errdefer completion_target.deinit(allocator);
+    try spawnMcpServerOauthLoginWorker(allocator, params.name, login_handle, params.timeout_secs, completion_target);
     return response;
+}
+
+const McpServerOauthLoginCompletionTarget = union(enum) {
+    stdout,
+    socket: struct {
+        output: *AppServerConnectionOutputState,
+        fd: std.posix.fd_t,
+    },
+
+    fn deinit(self: *McpServerOauthLoginCompletionTarget, allocator: std.mem.Allocator) void {
+        switch (self.*) {
+            .stdout => {},
+            .socket => |target| {
+                closeFd(target.fd);
+                releaseAppServerConnectionOutput(allocator, target.output);
+            },
+        }
+        self.* = .stdout;
+    }
+
+    fn send(self: *McpServerOauthLoginCompletionTarget, payload: []const u8) !void {
+        switch (self.*) {
+            .stdout => try writeStdoutLine(payload),
+            .socket => |target| try writeMcpServerOauthLoginSocketNotification(target.output, target.fd, payload),
+        }
+    }
+};
+
+fn makeMcpServerOauthLoginCompletionTarget(
+    allocator: std.mem.Allocator,
+    output: ?*AppServerConnectionOutputState,
+) !McpServerOauthLoginCompletionTarget {
+    _ = allocator;
+    const connection_output = output orelse return .stdout;
+    const duplicated_fd = try duplicateFd(connection_output.socket_handle);
+    retainAppServerConnectionOutput(connection_output);
+    return .{ .socket = .{ .output = connection_output, .fd = duplicated_fd } };
 }
 
 const McpServerOauthLoginWorker = struct {
     name: []const u8,
     handle: mcp_cmd.McpOAuthLoginHandle,
     timeout_secs: ?i64 = null,
+    completion_target: McpServerOauthLoginCompletionTarget,
 
     fn deinit(self: *McpServerOauthLoginWorker, allocator: std.mem.Allocator) void {
         allocator.free(self.name);
         self.handle.deinit(allocator);
+        self.completion_target.deinit(allocator);
     }
 };
 
@@ -52783,27 +52841,33 @@ fn spawnMcpServerOauthLoginWorker(
     name: []const u8,
     handle: mcp_cmd.McpOAuthLoginHandle,
     timeout_secs: ?i64,
+    completion_target: McpServerOauthLoginCompletionTarget,
 ) !void {
     const worker = try allocator.create(McpServerOauthLoginWorker);
     errdefer allocator.destroy(worker);
     const name_owned = try allocator.dupe(u8, name);
     errdefer allocator.free(name_owned);
-    worker.* = .{ .name = name_owned, .handle = handle, .timeout_secs = timeout_secs };
+    worker.* = .{
+        .name = name_owned,
+        .handle = handle,
+        .timeout_secs = timeout_secs,
+        .completion_target = completion_target,
+    };
     const thread = try std.Thread.spawn(.{ .allocator = allocator }, mcpServerOauthLoginWorker, .{ allocator, worker });
     thread.detach();
 }
 
 fn mcpServerOauthLoginWorker(allocator: std.mem.Allocator, worker: *McpServerOauthLoginWorker) void {
-    const maybe_error = if (worker.handle.waitAndSave(allocator, worker.timeout_secs)) |_| null else |err| @errorName(err);
-    const notification = renderMcpServerOauthLoginCompletedNotification(allocator, worker.name, maybe_error == null, maybe_error) catch {
+    defer {
         worker.deinit(allocator);
         allocator.destroy(worker);
+    }
+    const maybe_error = if (worker.handle.waitAndSave(allocator, worker.timeout_secs)) |_| null else |err| @errorName(err);
+    const notification = renderMcpServerOauthLoginCompletedNotification(allocator, worker.name, maybe_error == null, maybe_error) catch {
         return;
     };
-    worker.deinit(allocator);
-    allocator.destroy(worker);
     defer allocator.free(notification);
-    writeStdoutLine(notification) catch {};
+    worker.completion_target.send(notification) catch {};
 }
 
 fn renderMcpServerOauthLoginResponse(
@@ -53299,10 +53363,150 @@ fn writeStdoutLine(payload: []const u8) !void {
     try cli_utils.writeStdout("\n");
 }
 
+fn createAppServerConnectionOutput(
+    allocator: std.mem.Allocator,
+    kind: JsonRpcTransportKind,
+    socket_handle: std.posix.fd_t,
+) !*AppServerConnectionOutputState {
+    const output = try allocator.create(AppServerConnectionOutputState);
+    output.* = .{ .kind = kind, .socket_handle = socket_handle };
+    return output;
+}
+
+fn retainAppServerConnectionOutput(output: *AppServerConnectionOutputState) void {
+    _ = output.ref_count.fetchAdd(1, .acq_rel);
+}
+
+fn releaseAppServerConnectionOutput(allocator: std.mem.Allocator, output: *AppServerConnectionOutputState) void {
+    if (output.ref_count.fetchSub(1, .acq_rel) == 1) allocator.destroy(output);
+}
+
+fn closeAppServerConnectionOutput(allocator: std.mem.Allocator, output: *AppServerConnectionOutputState) void {
+    const io = std.Io.Threaded.global_single_threaded.io();
+    output.mutex.lockUncancelable(io);
+    output.closed = true;
+    output.mutex.unlock(io);
+    releaseAppServerConnectionOutput(allocator, output);
+}
+
 fn writeStreamLine(writer: *std.Io.Writer, payload: []const u8) !void {
     try writer.writeAll(payload);
     try writer.writeAll("\n");
     try writer.flush();
+}
+
+fn writeStreamLineWithConnection(
+    output: ?*AppServerConnectionOutputState,
+    writer: *std.Io.Writer,
+    payload: []const u8,
+) !void {
+    if (output) |connection_output| {
+        const io = std.Io.Threaded.global_single_threaded.io();
+        connection_output.mutex.lockUncancelable(io);
+        defer connection_output.mutex.unlock(io);
+        if (connection_output.closed) return error.AppServerTransportClosed;
+        return writeStreamLine(writer, payload);
+    }
+    return writeStreamLine(writer, payload);
+}
+
+fn writeWebSocketFrameWithConnection(
+    output: ?*AppServerConnectionOutputState,
+    writer: *std.Io.Writer,
+    opcode: u8,
+    payload: []const u8,
+) !void {
+    if (output) |connection_output| {
+        const io = std.Io.Threaded.global_single_threaded.io();
+        connection_output.mutex.lockUncancelable(io);
+        defer connection_output.mutex.unlock(io);
+        if (connection_output.closed) return error.AppServerTransportClosed;
+        return writeWebSocketFrame(writer, opcode, payload);
+    }
+    return writeWebSocketFrame(writer, opcode, payload);
+}
+
+fn writeWebSocketTextFrameWithConnection(
+    output: ?*AppServerConnectionOutputState,
+    writer: *std.Io.Writer,
+    payload: []const u8,
+) !void {
+    try writeWebSocketFrameWithConnection(output, writer, 0x1, payload);
+}
+
+fn writeMcpServerOauthLoginSocketNotification(
+    output: *AppServerConnectionOutputState,
+    fd: std.posix.fd_t,
+    payload: []const u8,
+) !void {
+    const io = std.Io.Threaded.global_single_threaded.io();
+    output.mutex.lockUncancelable(io);
+    defer output.mutex.unlock(io);
+    if (output.closed) return error.AppServerTransportClosed;
+
+    switch (output.kind) {
+        .stream_line => {
+            try writeFdAll(fd, payload);
+            try writeFdAll(fd, "\n");
+        },
+        .websocket => try writeWebSocketFrameFd(fd, 0x1, payload),
+        .stdout_line => return error.AppServerTransportUnsupported,
+    }
+}
+
+fn writeWebSocketFrameFd(fd: std.posix.fd_t, opcode: u8, payload: []const u8) !void {
+    var header: [10]u8 = undefined;
+    var header_len: usize = 0;
+    header[header_len] = 0x80 | (opcode & 0x0f);
+    header_len += 1;
+    if (payload.len <= 125) {
+        header[header_len] = @intCast(payload.len);
+        header_len += 1;
+    } else if (payload.len <= std.math.maxInt(u16)) {
+        header[header_len] = 126;
+        header_len += 1;
+        std.mem.writeInt(u16, header[header_len..][0..2], @intCast(payload.len), .big);
+        header_len += 2;
+    } else {
+        header[header_len] = 127;
+        header_len += 1;
+        std.mem.writeInt(u64, header[header_len..][0..8], @intCast(payload.len), .big);
+        header_len += 8;
+    }
+    try writeFdAll(fd, header[0..header_len]);
+    try writeFdAll(fd, payload);
+}
+
+fn writeFdAll(fd: std.posix.fd_t, bytes: []const u8) !void {
+    var offset: usize = 0;
+    while (offset < bytes.len) {
+        const rc = std.c.write(fd, bytes[offset..].ptr, bytes.len - offset);
+        switch (std.c.errno(rc)) {
+            .SUCCESS => {
+                if (rc <= 0) return error.AppServerTransportWriteFailed;
+                offset += @intCast(rc);
+            },
+            .INTR => continue,
+            else => return error.AppServerTransportWriteFailed,
+        }
+    }
+}
+
+fn duplicateFd(fd: std.posix.fd_t) !std.posix.fd_t {
+    while (true) {
+        const duplicated = std.c.dup(fd);
+        switch (std.c.errno(duplicated)) {
+            .SUCCESS => return @intCast(duplicated),
+            .INTR => continue,
+            .MFILE => return error.ProcessFdQuotaExceeded,
+            .NFILE => return error.SystemFdQuotaExceeded,
+            else => return error.AppServerTransportDuplicateFailed,
+        }
+    }
+}
+
+fn closeFd(fd: std.posix.fd_t) void {
+    _ = std.c.close(fd);
 }
 
 fn writePreResponseNotificationsStdout(allocator: std.mem.Allocator, state: *AppServerState) !void {
@@ -53319,7 +53523,7 @@ fn writePreResponseNotificationsStream(allocator: std.mem.Allocator, state: *App
     state.pre_response_notifications = .empty;
     defer freePendingNotifications(allocator, &notifications);
     for (notifications.items) |payload| {
-        try writeStreamLine(writer, payload);
+        try writeStreamLineWithConnection(state.connection_output, writer, payload);
     }
 }
 
@@ -53328,7 +53532,7 @@ fn writePreResponseNotificationsWebSocket(allocator: std.mem.Allocator, state: *
     state.pre_response_notifications = .empty;
     defer freePendingNotifications(allocator, &notifications);
     for (notifications.items) |payload| {
-        try writeWebSocketTextFrame(writer, payload);
+        try writeWebSocketTextFrameWithConnection(state.connection_output, writer, payload);
     }
 }
 
@@ -53346,7 +53550,7 @@ fn writePendingNotificationsStream(allocator: std.mem.Allocator, state: *AppServ
     state.pending_notifications = .empty;
     defer freePendingNotifications(allocator, &notifications);
     for (notifications.items) |payload| {
-        try writeStreamLine(writer, payload);
+        try writeStreamLineWithConnection(state.connection_output, writer, payload);
     }
 }
 
@@ -53355,7 +53559,7 @@ fn writePendingNotificationsWebSocket(allocator: std.mem.Allocator, state: *AppS
     state.pending_notifications = .empty;
     defer freePendingNotifications(allocator, &notifications);
     for (notifications.items) |payload| {
-        try writeWebSocketTextFrame(writer, payload);
+        try writeWebSocketTextFrameWithConnection(state.connection_output, writer, payload);
     }
 }
 
