@@ -25938,6 +25938,15 @@ fn handleTurnStart(
         .turn_id = turn_id,
         .notifications = &turn_update_notifications,
     };
+    var proposed_plan_context = ProposedPlanNotificationContext{
+        .allocator = allocator,
+        .started_enabled = !notificationMethodOptedOut(state, "item/started"),
+        .delta_enabled = !notificationMethodOptedOut(state, "item/plan/delta"),
+        .completed_enabled = !notificationMethodOptedOut(state, "item/completed"),
+        .thread_id = thread.id,
+        .turn_id = turn_id,
+        .notifications = &turn_update_notifications,
+    };
     var diff_update_context = DiffUpdateNotificationContext{
         .allocator = allocator,
         .enabled = !notificationMethodOptedOut(state, "turn/diff/updated"),
@@ -26044,6 +26053,10 @@ fn handleTurnStart(
             .ctx = &plan_update_context,
             .on_plan_updated = handleSessionPlanUpdated,
         },
+        .proposed_plan_callback = .{
+            .ctx = &proposed_plan_context,
+            .on_proposed_plan = handleSessionProposedPlan,
+        },
         .diff_update_callback = .{
             .ctx = &diff_update_context,
             .on_diff_updated = handleSessionDiffUpdated,
@@ -26134,14 +26147,11 @@ fn handleTurnStart(
     }
     try movePendingTurnUpdateNotifications(allocator, state, &turn_update_notifications);
     if (latestAssistantMessageIndex(&thread.transcript, user_item_index)) |assistant_item_index| {
-        const assistant_item = thread.transcript.history.items[assistant_item_index];
-        try queueItemNotificationFromHistory(allocator, state, "item/started", thread.id, turn_id, assistant_item, assistant_item_index, "startedAtMs", started_at_ms);
-        if (assistant_item.text) |text| {
-            if (text.len > 0) {
-                try queueAgentMessageDeltaNotification(allocator, state, thread.id, turn_id, assistant_item_index, text);
-            }
+        if (answer.len > 0) {
+            try queueAgentMessageItemNotification(allocator, state, "item/started", thread.id, turn_id, assistant_item_index, answer, "startedAtMs", started_at_ms);
+            try queueAgentMessageDeltaNotification(allocator, state, thread.id, turn_id, assistant_item_index, answer);
+            try queueAgentMessageItemNotification(allocator, state, "item/completed", thread.id, turn_id, assistant_item_index, answer, "completedAtMs", completed_at_ms);
         }
-        try queueItemNotificationFromHistory(allocator, state, "item/completed", thread.id, turn_id, assistant_item, assistant_item_index, "completedAtMs", completed_at_ms);
     }
     try queueTurnNotification(allocator, state, "turn/completed", completed_notification);
     completed_notification_moved = true;
@@ -28689,6 +28699,24 @@ fn queueUserMessageItemNotification(
     notification_moved = true;
 }
 
+fn queueAgentMessageItemNotification(
+    allocator: std.mem.Allocator,
+    state: *AppServerState,
+    method: []const u8,
+    thread_id: []const u8,
+    turn_id: []const u8,
+    item_index: usize,
+    text: []const u8,
+    timestamp_field: []const u8,
+    timestamp_ms: i64,
+) !void {
+    const notification = try renderAgentMessageItemNotification(allocator, method, thread_id, turn_id, item_index, text, timestamp_field, timestamp_ms);
+    var notification_moved = false;
+    errdefer if (!notification_moved) allocator.free(notification);
+    try queueTurnNotification(allocator, state, method, notification);
+    notification_moved = true;
+}
+
 fn queueContextCompactionItemNotification(
     allocator: std.mem.Allocator,
     state: *AppServerState,
@@ -28776,6 +28804,36 @@ fn renderContextCompactionItemNotification(
     return notification.toOwnedSlice(allocator);
 }
 
+fn renderAgentMessageItemNotification(
+    allocator: std.mem.Allocator,
+    method: []const u8,
+    thread_id: []const u8,
+    turn_id: []const u8,
+    item_index: usize,
+    text: []const u8,
+    timestamp_field: []const u8,
+    timestamp_ms: i64,
+) ![]const u8 {
+    var notification = std.ArrayList(u8).empty;
+    errdefer notification.deinit(allocator);
+    try notification.appendSlice(allocator, "{\"jsonrpc\":\"2.0\",\"method\":");
+    try appendJsonString(allocator, &notification, method);
+    try notification.appendSlice(allocator, ",\"params\":{\"item\":{\"type\":\"agentMessage\",\"id\":\"item-");
+    try appendUsize(allocator, &notification, item_index);
+    try notification.appendSlice(allocator, "\",\"text\":");
+    try appendJsonString(allocator, &notification, text);
+    try notification.appendSlice(allocator, ",\"phase\":null,\"memoryCitation\":null},\"threadId\":");
+    try appendJsonString(allocator, &notification, thread_id);
+    try notification.appendSlice(allocator, ",\"turnId\":");
+    try appendJsonString(allocator, &notification, turn_id);
+    try notification.append(allocator, ',');
+    try appendJsonString(allocator, &notification, timestamp_field);
+    try notification.append(allocator, ':');
+    try appendInt(allocator, &notification, timestamp_ms);
+    try notification.appendSlice(allocator, "}}");
+    return notification.toOwnedSlice(allocator);
+}
+
 fn renderContextCompactedNotification(
     allocator: std.mem.Allocator,
     thread_id: []const u8,
@@ -28822,6 +28880,61 @@ fn renderAgentMessageDeltaNotification(
     try notification.appendSlice(allocator, ",\"itemId\":\"item-");
     try appendUsize(allocator, &notification, item_index);
     try notification.appendSlice(allocator, "\",\"delta\":");
+    try appendJsonString(allocator, &notification, delta);
+    try notification.appendSlice(allocator, "}}");
+    return notification.toOwnedSlice(allocator);
+}
+
+fn renderPlanItemNotification(
+    allocator: std.mem.Allocator,
+    method: []const u8,
+    thread_id: []const u8,
+    turn_id: []const u8,
+    text: []const u8,
+    timestamp_field: []const u8,
+    timestamp_ms: i64,
+) ![]const u8 {
+    const item_id = try std.fmt.allocPrint(allocator, "{s}-plan", .{turn_id});
+    defer allocator.free(item_id);
+
+    var notification = std.ArrayList(u8).empty;
+    errdefer notification.deinit(allocator);
+    try notification.appendSlice(allocator, "{\"jsonrpc\":\"2.0\",\"method\":");
+    try appendJsonString(allocator, &notification, method);
+    try notification.appendSlice(allocator, ",\"params\":{\"item\":{\"type\":\"plan\",\"id\":");
+    try appendJsonString(allocator, &notification, item_id);
+    try notification.appendSlice(allocator, ",\"text\":");
+    try appendJsonString(allocator, &notification, text);
+    try notification.appendSlice(allocator, "},\"threadId\":");
+    try appendJsonString(allocator, &notification, thread_id);
+    try notification.appendSlice(allocator, ",\"turnId\":");
+    try appendJsonString(allocator, &notification, turn_id);
+    try notification.append(allocator, ',');
+    try appendJsonString(allocator, &notification, timestamp_field);
+    try notification.append(allocator, ':');
+    try appendInt(allocator, &notification, timestamp_ms);
+    try notification.appendSlice(allocator, "}}");
+    return notification.toOwnedSlice(allocator);
+}
+
+fn renderPlanDeltaNotification(
+    allocator: std.mem.Allocator,
+    thread_id: []const u8,
+    turn_id: []const u8,
+    delta: []const u8,
+) ![]const u8 {
+    const item_id = try std.fmt.allocPrint(allocator, "{s}-plan", .{turn_id});
+    defer allocator.free(item_id);
+
+    var notification = std.ArrayList(u8).empty;
+    errdefer notification.deinit(allocator);
+    try notification.appendSlice(allocator, "{\"jsonrpc\":\"2.0\",\"method\":\"item/plan/delta\",\"params\":{\"threadId\":");
+    try appendJsonString(allocator, &notification, thread_id);
+    try notification.appendSlice(allocator, ",\"turnId\":");
+    try appendJsonString(allocator, &notification, turn_id);
+    try notification.appendSlice(allocator, ",\"itemId\":");
+    try appendJsonString(allocator, &notification, item_id);
+    try notification.appendSlice(allocator, ",\"delta\":");
     try appendJsonString(allocator, &notification, delta);
     try notification.appendSlice(allocator, "}}");
     return notification.toOwnedSlice(allocator);
@@ -28895,6 +29008,16 @@ fn renderTurnNotification(
 const PlanUpdateNotificationContext = struct {
     allocator: std.mem.Allocator,
     enabled: bool,
+    thread_id: []const u8,
+    turn_id: []const u8,
+    notifications: *std.ArrayList([]const u8),
+};
+
+const ProposedPlanNotificationContext = struct {
+    allocator: std.mem.Allocator,
+    started_enabled: bool,
+    delta_enabled: bool,
+    completed_enabled: bool,
     thread_id: []const u8,
     turn_id: []const u8,
     notifications: *std.ArrayList([]const u8),
@@ -28981,6 +29104,34 @@ fn handleSessionPlanUpdated(ctx: *anyopaque, plan: *const plan_tool.State) anyer
     const notification = try renderTurnPlanUpdatedNotification(context.allocator, context.thread_id, context.turn_id, plan);
     errdefer context.allocator.free(notification);
     try context.notifications.append(context.allocator, notification);
+}
+
+fn handleSessionProposedPlan(ctx: *anyopaque, plan_text: []const u8) anyerror!void {
+    const context: *ProposedPlanNotificationContext = @ptrCast(@alignCast(ctx));
+
+    if (context.started_enabled) {
+        const started = try renderPlanItemNotification(context.allocator, "item/started", context.thread_id, context.turn_id, "", "startedAtMs", currentUnixMilliseconds());
+        var started_moved = false;
+        errdefer if (!started_moved) context.allocator.free(started);
+        try context.notifications.append(context.allocator, started);
+        started_moved = true;
+    }
+
+    if (context.delta_enabled and plan_text.len > 0) {
+        const delta = try renderPlanDeltaNotification(context.allocator, context.thread_id, context.turn_id, plan_text);
+        var delta_moved = false;
+        errdefer if (!delta_moved) context.allocator.free(delta);
+        try context.notifications.append(context.allocator, delta);
+        delta_moved = true;
+    }
+
+    if (context.completed_enabled) {
+        const completed = try renderPlanItemNotification(context.allocator, "item/completed", context.thread_id, context.turn_id, plan_text, "completedAtMs", currentUnixMilliseconds());
+        var completed_moved = false;
+        errdefer if (!completed_moved) context.allocator.free(completed);
+        try context.notifications.append(context.allocator, completed);
+        completed_moved = true;
+    }
 }
 
 fn handleSessionDiffUpdated(ctx: *anyopaque) anyerror!void {
