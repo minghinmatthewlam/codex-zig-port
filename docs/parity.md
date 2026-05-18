@@ -436,7 +436,10 @@ detail params, paginated `data` / `nextCursor` responses, MCP server rows with
 HTTP resource/resource-template snapshots in full detail mode, empty
 resource/resource-template snapshots in `toolsAndAuthOnly` mode, and Rust-shaped
 `authStatus` enum values for unsupported, not-logged-in, bearer-token, and OAuth
-states. Strict live refresh and status notifications remain planned.
+states. `config/mcpServer/reload` now validates request shape, reloads the
+current config, and strictly rebuilds configured plus enabled plugin MCP server
+inventory before returning an empty Rust-shaped response object. Queued
+thread-owned MCP manager refreshes and status notifications remain planned.
 
 Additional app-server MCP resource coverage: `mcpServer/resource/read` now has
 generated TypeScript and JSON Schema artifacts for optional nullable `threadId`,
@@ -760,7 +763,12 @@ Additional app-server fuzzy-file-search runtime coverage: `fuzzyFileSearch` now 
 
 Additional app-server fuzzy-file-search generation coverage: `fuzzyFileSearch`, `fuzzyFileSearch/sessionStart`, `fuzzyFileSearch/sessionUpdate`, `fuzzyFileSearch/sessionStop`, `fuzzyFileSearch/sessionUpdated`, and `fuzzyFileSearch/sessionCompleted` are included in current TypeScript and JSON schema generation with direct result files, session params/responses, match type/item shapes, and session notification payloads until broader legacy desktop utility RPC generation parity lands.
 
-Additional app-server MCP reload generation coverage: `config/mcpServer/reload` is included in current TypeScript and JSON schema generation with optional empty-object params and an empty Rust-shaped response object until broader MCP status protocol generation parity lands.
+Additional app-server MCP reload coverage: `config/mcpServer/reload` is included
+in current TypeScript and JSON schema generation with optional empty-object
+params and an empty Rust-shaped response object. The runtime validates request
+shape, reloads current config, and strictly rebuilds configured plus enabled
+plugin MCP server inventory before returning success. Queued loaded-thread MCP
+manager refresh remains planned.
 
 Additional app-server ClientRequest TypeScript union coverage: generated
 TypeScript now includes the Rust-side `ClientRequest` methods for
