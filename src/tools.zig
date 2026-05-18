@@ -167,6 +167,7 @@ pub const ApprovalRequest = struct {
     kind: ToolKind,
     detail: []const u8,
     cwd: ?[]const u8 = null,
+    scope_key: []const u8,
 };
 
 pub const ApprovalDecision = enum {
@@ -190,7 +191,9 @@ pub fn runFunctionCall(allocator: std.mem.Allocator, call: api.FunctionCall, pol
     if (std.mem.eql(u8, call.name, "exec_command")) {
         var parsed = try std.json.parseFromSlice(ExecCommandArgs, allocator, call.arguments, .{ .ignore_unknown_fields = true });
         defer parsed.deinit();
-        if (try permissionResult(allocator, call.call_id, policy, .shell, parsed.value.cmd, parsed.value.workdir orelse policy.workdir, isTrustedShellCommand(parsed.value.cmd))) |result| return result;
+        const approval_detail = try execCommandApprovalDetail(allocator, parsed.value);
+        defer allocator.free(approval_detail);
+        if (try permissionResult(allocator, call.call_id, policy, .shell, approval_detail, parsed.value.workdir orelse policy.workdir, isTrustedExecCommand(parsed.value))) |result| return result;
         return runExecCommand(allocator, call.call_id, parsed.value, policy);
     }
 
@@ -257,11 +260,14 @@ fn promptForPermission(
     cwd: ?[]const u8,
 ) !?ToolResult {
     if (policy.approval_callback) |callback| {
+        const scope_key = try approvalScopeKey(allocator, policy);
+        defer allocator.free(scope_key);
         const request = ApprovalRequest{
             .call_id = call_id,
             .kind = kind,
             .detail = detail,
             .cwd = cwd,
+            .scope_key = scope_key,
         };
         return switch (try callback.on_approval_requested(callback.ctx, request)) {
             .allow => null,
@@ -281,6 +287,26 @@ fn decidePermission(policy: Policy, kind: ToolKind, trusted_read_only: bool) Per
         .on_request => if (policy.prompt_for_approval) .prompt else .reject,
         .untrusted => if (trusted_read_only) .allow else if (policy.prompt_for_approval) .prompt else .reject,
     };
+}
+
+fn approvalScopeKey(allocator: std.mem.Allocator, policy: Policy) ![]const u8 {
+    var out = std.ArrayList(u8).empty;
+    errdefer out.deinit(allocator);
+    try out.appendSlice(allocator, "sandbox=");
+    try out.appendSlice(allocator, policy.sandbox_mode.label());
+    try out.appendSlice(allocator, ";cwd-write=");
+    try out.appendSlice(allocator, if (policy.include_cwd_write_root) "true" else "false");
+    try out.appendSlice(allocator, ";network=");
+    try out.appendSlice(allocator, if (policy.network_enabled) "true" else "false");
+    try out.appendSlice(allocator, ";roots=[");
+    for (policy.additional_writable_roots, 0..) |root, index| {
+        if (index > 0) try out.append(allocator, ',');
+        const root_json = try std.json.Stringify.valueAlloc(allocator, root, .{});
+        defer allocator.free(root_json);
+        try out.appendSlice(allocator, root_json);
+    }
+    try out.append(allocator, ']');
+    return out.toOwnedSlice(allocator);
 }
 
 fn toolKindLabel(kind: ToolKind) []const u8 {
@@ -972,6 +998,26 @@ fn isTrustedShellCommand(command: []const u8) bool {
     const first = parts.next() orelse return false;
     const second = parts.next();
     return isTrustedCommandName(first, second);
+}
+
+fn isTrustedExecCommand(args: ExecCommandArgs) bool {
+    if (args.shell) |shell| {
+        if (!std.mem.eql(u8, shell, "/bin/zsh")) return false;
+    }
+    if (args.login orelse false) return false;
+    if (args.tty orelse false) return false;
+    return isTrustedShellCommand(args.cmd);
+}
+
+fn execCommandApprovalDetail(allocator: std.mem.Allocator, args: ExecCommandArgs) ![]const u8 {
+    const shell = args.shell orelse "/bin/zsh";
+    const login = args.login orelse false;
+    const tty = args.tty orelse false;
+    if (std.mem.eql(u8, shell, "/bin/zsh") and !login and !tty) return allocator.dupe(u8, args.cmd);
+
+    const shell_flag = if (login) "-lic" else "-lc";
+    const tty_label: []const u8 = if (tty) " tty=true" else "";
+    return std.fmt.allocPrint(allocator, "{s} {s} {s}{s}", .{ shell, shell_flag, args.cmd, tty_label });
 }
 
 fn isTrustedArgv(argv: []const []const u8) bool {
@@ -2598,6 +2644,38 @@ test "approval callback sees exec_command argument workdir" {
     try std.testing.expect(context.matched_detail);
     try std.testing.expect(context.matched_cwd);
     try std.testing.expect(std.mem.indexOf(u8, result.output, "exec-cwd") != null);
+}
+
+test "approval callback sees exec_command shell options" {
+    const allocator = std.testing.allocator;
+    var context = TestApprovalContext{
+        .decision = .reject,
+        .expected_call_id = "call-approval-exec-shell",
+        .expected_kind = .shell,
+        .expected_detail_substring = "/bin/sh -lic printf exec-shell tty=true",
+    };
+    const call = api.FunctionCall{
+        .call_id = "call-approval-exec-shell",
+        .name = "exec_command",
+        .arguments = "{\"cmd\":\"printf exec-shell\",\"shell\":\"/bin/sh\",\"login\":true,\"tty\":true}",
+    };
+
+    const result = try runFunctionCall(allocator, call, .{
+        .approval_policy = .on_request,
+        .sandbox_mode = .danger_full_access,
+        .prompt_for_approval = true,
+        .approval_callback = .{
+            .ctx = &context,
+            .on_approval_requested = recordTestApproval,
+        },
+    });
+    defer result.deinit(allocator);
+
+    try std.testing.expectEqualStrings("rejected", result.summary);
+    try std.testing.expectEqual(@as(usize, 1), context.calls);
+    try std.testing.expect(context.matched_call_id);
+    try std.testing.expect(context.matched_kind);
+    try std.testing.expect(context.matched_detail);
 }
 
 test "read-only sandbox blocks apply_patch even with auto approval" {
