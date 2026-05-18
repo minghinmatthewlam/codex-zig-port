@@ -468,6 +468,18 @@ class StreamableMcpHandler(BaseHTTPRequestHandler):
 
         method = request.get("method")
         request_id = request.get("id")
+        if method is None and request_id is not None and (
+            "result" in request or "error" in request
+        ):
+            with self.server.elicitation_condition:
+                self.server.elicitation_responses[
+                    json.dumps(request_id, separators=(",", ":"))
+                ] = request
+                self.server.elicitation_condition.notify_all()
+            self.send_response(202)
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+            return
         if method == "notifications/initialized":
             payload = b""
             self.send_response(202)
@@ -476,13 +488,34 @@ class StreamableMcpHandler(BaseHTTPRequestHandler):
             self.wfile.write(payload)
             return
         if method == "initialize":
+            client_capabilities = request.get("params", {}).get("capabilities", {})
+            client_supports_elicitation = client_capabilities.get("elicitation") == {}
+            protocol_version = request.get("params", {}).get("protocolVersion")
+            self.server.client_supports_elicitation = client_supports_elicitation
+            if client_supports_elicitation and protocol_version != "2025-06-18":
+                self.write_or_defer(
+                    method,
+                    {
+                        "jsonrpc": "2.0",
+                        "id": request_id,
+                        "error": {
+                            "code": -32602,
+                            "message": "client used wrong elicitation protocol version",
+                        },
+                    },
+                )
+                return
             self.write_or_defer(
                 method,
                 {
                     "jsonrpc": "2.0",
                     "id": request_id,
                     "result": {
-                        "protocolVersion": "2025-03-26",
+                        "protocolVersion": (
+                            "2025-06-18"
+                            if client_supports_elicitation
+                            else "2025-03-26"
+                        ),
                         "capabilities": {"tools": {}, "resources": {}},
                         "serverInfo": {"name": "streamable-smoke", "version": "0.1.0"},
                     },
@@ -490,23 +523,35 @@ class StreamableMcpHandler(BaseHTTPRequestHandler):
             )
             return
         if method == "tools/list":
+            tools = [
+                {
+                    "name": "echo",
+                    "description": "Echo a message over streamable HTTP.",
+                    "inputSchema": {
+                        "type": "object",
+                        "properties": {"message": {"type": "string"}},
+                    },
+                    "annotations": {"readOnlyHint": True},
+                }
+            ]
+            if self.server.client_supports_elicitation:
+                tools.append(
+                    {
+                        "name": "confirm",
+                        "description": "Ask for confirmation over streamable HTTP.",
+                        "inputSchema": {
+                            "type": "object",
+                            "properties": {"message": {"type": "string"}},
+                        },
+                    }
+                )
             self.write_or_defer(
                 method,
                 {
                     "jsonrpc": "2.0",
                     "id": request_id,
                     "result": {
-                        "tools": [
-                            {
-                                "name": "echo",
-                                "description": "Echo a message over streamable HTTP.",
-                                "inputSchema": {
-                                    "type": "object",
-                                    "properties": {"message": {"type": "string"}},
-                                },
-                                "annotations": {"readOnlyHint": True},
-                            }
-                        ],
+                        "tools": tools,
                         "nextCursor": None,
                     },
                 }
@@ -611,6 +656,28 @@ class StreamableMcpHandler(BaseHTTPRequestHandler):
         if method == "tools/call":
             params = request.get("params", {})
             tool_name = params.get("name")
+            if tool_name == "confirm":
+                if not self.server.client_supports_elicitation:
+                    self.write_or_defer(
+                        method,
+                        {
+                            "jsonrpc": "2.0",
+                            "id": request_id,
+                            "error": {
+                                "code": -32602,
+                                "message": "client did not advertise elicitation",
+                            },
+                        },
+                    )
+                    return
+                arguments = params.get("arguments") if "arguments" in params else {}
+                message = (
+                    arguments.get("message", "")
+                    if isinstance(arguments, dict)
+                    else ""
+                )
+                self.write_elicitation_tool_stream(request_id, message)
+                return
             if tool_name != "echo":
                 self.write_or_defer(
                     method,
@@ -661,6 +728,78 @@ class StreamableMcpHandler(BaseHTTPRequestHandler):
             }
         )
 
+    def write_elicitation_tool_stream(self, request_id: object, message: str) -> None:
+        elicitation_id = f"streamable-elicit-{request_id}"
+        request_payload = {
+            "jsonrpc": "2.0",
+            "id": elicitation_id,
+            "method": "elicitation/create",
+            "params": {
+                "message": message or "Confirm streamable HTTP action?",
+                "_meta": {"transport": "streamable_http"},
+                "requestedSchema": {
+                    "type": "object",
+                    "properties": {
+                        "answer": {
+                            "type": "string",
+                            "title": "Answer",
+                        }
+                    },
+                },
+            },
+        }
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream")
+        self.send_header("Mcp-Session-Id", self.server.session_id)
+        self.end_headers()
+        self.write_sse_event(request_payload)
+
+        response_key = json.dumps(elicitation_id, separators=(",", ":"))
+        deadline = time.monotonic() + 5
+        elicitation_response = None
+        with self.server.elicitation_condition:
+            while time.monotonic() < deadline:
+                elicitation_response = self.server.elicitation_responses.get(response_key)
+                if elicitation_response is not None:
+                    break
+                self.server.elicitation_condition.wait(timeout=0.05)
+
+        result = (
+            elicitation_response.get("result", {})
+            if isinstance(elicitation_response, dict)
+            else {}
+        )
+        content = result.get("content", {}) if isinstance(result, dict) else {}
+        answer = content.get("answer", "") if isinstance(content, dict) else ""
+        action = result.get("action", "missing") if isinstance(result, dict) else "missing"
+        self.write_sse_event(
+            {
+                "jsonrpc": "2.0",
+                "id": request_id,
+                "result": {
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": f"http elicitation {action}: {answer}",
+                        }
+                    ],
+                    "structuredContent": {
+                        "action": action,
+                        "answer": answer,
+                        "transport": "streamable_http",
+                    },
+                    "isError": False,
+                },
+            }
+        )
+
+    def write_sse_event(self, payload: dict) -> None:
+        encoded = b"event: message\ndata: " + json.dumps(
+            payload, separators=(",", ":")
+        ).encode() + b"\n\n"
+        self.wfile.write(encoded)
+        self.wfile.flush()
+
     def write_or_defer(self, method: str, payload: dict) -> None:
         if method in self.server.deferred_methods:
             self.server.pending_stream_responses.append(payload)
@@ -695,6 +834,9 @@ class StreamableMcpServer(ThreadingHTTPServer):
     request_bodies: list[dict]
     deferred_methods: set[str]
     pending_stream_responses: list[dict]
+    elicitation_responses: dict[str, dict]
+    elicitation_condition: threading.Condition
+    client_supports_elicitation: bool
     sse: bool
     session_id: str
 
@@ -747,6 +889,9 @@ def start_streamable_mcp_server(sse: bool = False) -> tuple[StreamableMcpServer,
     server.request_bodies = []
     server.deferred_methods = set()
     server.pending_stream_responses = []
+    server.elicitation_responses = {}
+    server.elicitation_condition = threading.Condition()
+    server.client_supports_elicitation = False
     server.sse = sse
     server.session_id = "streamable-session-1"
     threading.Thread(target=server.serve_forever, daemon=True).start()
@@ -21012,6 +21157,95 @@ def run_mcp_tool_call_rpc_smoke(binary: Path) -> None:
             assert streamable_server.request_headers[7]["authorization"] == "Bearer oauth-tool-token"
             assert streamable_server.request_headers[8]["authorization"] == "Bearer oauth-tool-token"
 
+            streamable_server.deferred_methods = set()
+            write_json_line(
+                proc,
+                {
+                    "jsonrpc": "2.0",
+                    "id": "mcp-tool-http-elicit",
+                    "method": "mcpServer/tool/call",
+                    "params": {
+                        "threadId": thread_id,
+                        "server": "remote_tool_docs",
+                        "tool": "confirm",
+                        "arguments": {"message": "Confirm over streamable HTTP?"},
+                    },
+                },
+            )
+            http_elicitation_request = read_json_line(proc, 5)
+            assert http_elicitation_request["method"] == "mcpServer/elicitation/request"
+            assert (
+                http_elicitation_request["id"]
+                == "mcp-elicitation-remote_tool_docs-streamable-elicit-2"
+            )
+            http_elicitation_params = http_elicitation_request["params"]
+            assert http_elicitation_params["threadId"] == thread_id
+            assert http_elicitation_params["turnId"] is None
+            assert http_elicitation_params["serverName"] == "remote_tool_docs"
+            assert http_elicitation_params["mode"] == "form"
+            assert http_elicitation_params["_meta"] == {"transport": "streamable_http"}
+            assert http_elicitation_params["message"] == "Confirm over streamable HTTP?"
+            assert http_elicitation_params["requestedSchema"] == {
+                "type": "object",
+                "properties": {"answer": {"type": "string", "title": "Answer"}},
+            }
+            write_json_line(
+                proc,
+                {
+                    "jsonrpc": "2.0",
+                    "id": http_elicitation_request["id"],
+                    "result": {
+                        "action": "accept",
+                        "content": {"answer": "approved by app-server client"},
+                    },
+                },
+            )
+            http_elicitation_resolved = read_json_line(proc, 5)
+            assert http_elicitation_resolved["method"] == "serverRequest/resolved"
+            assert http_elicitation_resolved["params"] == {
+                "threadId": thread_id,
+                "requestId": http_elicitation_request["id"],
+            }
+            http_elicitation_tool = read_json_line(proc, 5)
+            assert http_elicitation_tool["id"] == "mcp-tool-http-elicit"
+            assert http_elicitation_tool["result"] == {
+                "content": [
+                    {
+                        "type": "text",
+                        "text": "http elicitation accept: approved by app-server client",
+                    }
+                ],
+                "structuredContent": {
+                    "action": "accept",
+                    "answer": "approved by app-server client",
+                    "transport": "streamable_http",
+                },
+                "isError": False,
+            }
+            assert [
+                request.get("method")
+                for request in streamable_server.request_bodies[-5:]
+            ] == [
+                "initialize",
+                "notifications/initialized",
+                "tools/call",
+                None,
+                "DELETE",
+            ]
+            assert (
+                streamable_server.request_headers[-5]["mcp-protocol-version"]
+                == "2025-06-18"
+            )
+            assert (
+                streamable_server.request_headers[-3]["mcp-protocol-version"]
+                == "2025-06-18"
+            )
+            assert streamable_server.request_bodies[-2]["result"] == {
+                "action": "accept",
+                "content": {"answer": "approved by app-server client"},
+            }
+
+            streamable_server.deferred_methods = {"tools/call"}
             write_json_line(
                 proc,
                 {
