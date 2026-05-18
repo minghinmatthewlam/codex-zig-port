@@ -25978,7 +25978,9 @@ fn handleTurnStart(
     };
     var raw_response_item_context = RawResponseItemNotificationContext{
         .allocator = allocator,
-        .enabled = !notificationMethodOptedOut(state, "rawResponseItem/completed"),
+        .raw_enabled = !notificationMethodOptedOut(state, "rawResponseItem/completed"),
+        .item_started_enabled = !notificationMethodOptedOut(state, "item/started"),
+        .item_completed_enabled = !notificationMethodOptedOut(state, "item/completed"),
         .thread_id = thread.id,
         .turn_id = turn_id,
         .notifications = &turn_update_notifications,
@@ -29058,7 +29060,9 @@ const FileChangePatchUpdateNotificationContext = struct {
 
 const RawResponseItemNotificationContext = struct {
     allocator: std.mem.Allocator,
-    enabled: bool,
+    raw_enabled: bool,
+    item_started_enabled: bool,
+    item_completed_enabled: bool,
     thread_id: []const u8,
     turn_id: []const u8,
     notifications: *std.ArrayList([]const u8),
@@ -29185,10 +29189,14 @@ fn handleSessionFileChangePatchUpdated(ctx: *anyopaque, item_id: []const u8, arg
 
 fn handleSessionRawResponseItem(ctx: *anyopaque, item_json: []const u8) anyerror!void {
     const context: *RawResponseItemNotificationContext = @ptrCast(@alignCast(ctx));
-    if (!context.enabled) return;
-    const notification = try renderRawResponseItemCompletedNotification(context.allocator, context.thread_id, context.turn_id, item_json);
-    errdefer context.allocator.free(notification);
-    try context.notifications.append(context.allocator, notification);
+    if (context.raw_enabled) {
+        const notification = try renderRawResponseItemCompletedNotification(context.allocator, context.thread_id, context.turn_id, item_json);
+        var notification_moved = false;
+        errdefer if (!notification_moved) context.allocator.free(notification);
+        try context.notifications.append(context.allocator, notification);
+        notification_moved = true;
+    }
+    try appendWebSearchItemNotifications(context, item_json);
 }
 
 fn handleSessionReasoningEvent(ctx: *anyopaque, event: api.ReasoningEvent) anyerror!void {
@@ -29516,6 +29524,199 @@ fn renderRawResponseItemCompletedNotification(
     try notification.appendSlice(allocator, item_json);
     try notification.appendSlice(allocator, "}}");
     return notification.toOwnedSlice(allocator);
+}
+
+fn appendWebSearchItemNotifications(context: *RawResponseItemNotificationContext, item_json: []const u8) !void {
+    if (!context.item_started_enabled and !context.item_completed_enabled) return;
+
+    var parsed = std.json.parseFromSlice(std.json.Value, context.allocator, item_json, .{}) catch |err| switch (err) {
+        error.OutOfMemory => return err,
+        else => return,
+    };
+    defer parsed.deinit();
+    if (parsed.value != .object) return;
+    const item = parsed.value.object;
+    const type_value = item.get("type") orelse return;
+    if (type_value != .string or !std.mem.eql(u8, type_value.string, "web_search_call")) return;
+
+    const action_value = webSearchActionValue(item);
+    const query = try webSearchActionDetail(context.allocator, action_value);
+    defer context.allocator.free(query);
+    const item_id = webSearchItemId(item);
+
+    if (context.item_started_enabled) {
+        const started = try renderWebSearchItemNotification(context.allocator, "item/started", context.thread_id, context.turn_id, item_id, query, action_value, "startedAtMs", currentUnixMilliseconds());
+        var started_moved = false;
+        errdefer if (!started_moved) context.allocator.free(started);
+        try context.notifications.append(context.allocator, started);
+        started_moved = true;
+    }
+    if (context.item_completed_enabled) {
+        const completed = try renderWebSearchItemNotification(context.allocator, "item/completed", context.thread_id, context.turn_id, item_id, query, action_value, "completedAtMs", currentUnixMilliseconds());
+        var completed_moved = false;
+        errdefer if (!completed_moved) context.allocator.free(completed);
+        try context.notifications.append(context.allocator, completed);
+        completed_moved = true;
+    }
+}
+
+fn webSearchItemId(item: std.json.ObjectMap) []const u8 {
+    const id_value = item.get("id") orelse return "";
+    if (id_value != .string) return "";
+    return id_value.string;
+}
+
+fn webSearchActionValue(item: std.json.ObjectMap) ?std.json.Value {
+    const action_value = item.get("action") orelse return null;
+    if (action_value != .object) return null;
+    return action_value;
+}
+
+fn webSearchActionDetail(allocator: std.mem.Allocator, action_value: ?std.json.Value) ![]const u8 {
+    const action = action_value orelse return allocator.dupe(u8, "");
+    if (action != .object) return allocator.dupe(u8, "");
+    const type_value = action.object.get("type") orelse return allocator.dupe(u8, "");
+    if (type_value != .string) return allocator.dupe(u8, "");
+
+    if (std.mem.eql(u8, type_value.string, "search")) {
+        if (webSearchStringField(action.object, "query")) |query| {
+            if (query.len > 0) return allocator.dupe(u8, query);
+        }
+        return webSearchQueriesDetail(allocator, action.object.get("queries"));
+    }
+    if (std.mem.eql(u8, type_value.string, "open_page")) {
+        return allocator.dupe(u8, webSearchStringField(action.object, "url") orelse "");
+    }
+    if (std.mem.eql(u8, type_value.string, "find_in_page")) {
+        const pattern = webSearchStringField(action.object, "pattern");
+        const url = webSearchStringField(action.object, "url");
+        if (pattern) |pattern_value| {
+            if (url) |url_value| return std.fmt.allocPrint(allocator, "'{s}' in {s}", .{ pattern_value, url_value });
+            return std.fmt.allocPrint(allocator, "'{s}'", .{pattern_value});
+        }
+        return allocator.dupe(u8, url orelse "");
+    }
+    return allocator.dupe(u8, "");
+}
+
+fn webSearchQueriesDetail(allocator: std.mem.Allocator, queries_value: ?std.json.Value) ![]const u8 {
+    const queries = queries_value orelse return allocator.dupe(u8, "");
+    if (queries != .array or queries.array.items.len == 0) return allocator.dupe(u8, "");
+    const first = queries.array.items[0];
+    if (first != .string) return allocator.dupe(u8, "");
+    if (queries.array.items.len > 1 and first.string.len > 0) {
+        return std.fmt.allocPrint(allocator, "{s} ...", .{first.string});
+    }
+    return allocator.dupe(u8, first.string);
+}
+
+fn webSearchStringField(object: std.json.ObjectMap, name: []const u8) ?[]const u8 {
+    const value = object.get(name) orelse return null;
+    if (value != .string) return null;
+    return value.string;
+}
+
+fn renderWebSearchItemNotification(
+    allocator: std.mem.Allocator,
+    method: []const u8,
+    thread_id: []const u8,
+    turn_id: []const u8,
+    item_id: []const u8,
+    query: []const u8,
+    action_value: ?std.json.Value,
+    timestamp_field: []const u8,
+    timestamp_ms: i64,
+) ![]const u8 {
+    var notification = std.ArrayList(u8).empty;
+    errdefer notification.deinit(allocator);
+    try notification.appendSlice(allocator, "{\"jsonrpc\":\"2.0\",\"method\":");
+    try appendJsonString(allocator, &notification, method);
+    try notification.appendSlice(allocator, ",\"params\":{\"item\":{\"type\":\"webSearch\",\"id\":");
+    try appendJsonString(allocator, &notification, item_id);
+    try notification.appendSlice(allocator, ",\"query\":");
+    try appendJsonString(allocator, &notification, query);
+    try notification.appendSlice(allocator, ",\"action\":");
+    try appendWebSearchActionJson(allocator, &notification, action_value);
+    try notification.appendSlice(allocator, "},\"threadId\":");
+    try appendJsonString(allocator, &notification, thread_id);
+    try notification.appendSlice(allocator, ",\"turnId\":");
+    try appendJsonString(allocator, &notification, turn_id);
+    try notification.append(allocator, ',');
+    try appendJsonString(allocator, &notification, timestamp_field);
+    try notification.append(allocator, ':');
+    try appendInt(allocator, &notification, timestamp_ms);
+    try notification.appendSlice(allocator, "}}");
+    return notification.toOwnedSlice(allocator);
+}
+
+fn appendWebSearchActionJson(allocator: std.mem.Allocator, result: *std.ArrayList(u8), action_value: ?std.json.Value) !void {
+    const action = action_value orelse {
+        try result.appendSlice(allocator, "{\"type\":\"other\"}");
+        return;
+    };
+    if (action != .object) {
+        try result.appendSlice(allocator, "{\"type\":\"other\"}");
+        return;
+    }
+    const type_value = webSearchStringField(action.object, "type") orelse {
+        try result.appendSlice(allocator, "{\"type\":\"other\"}");
+        return;
+    };
+
+    if (std.mem.eql(u8, type_value, "search")) {
+        try result.appendSlice(allocator, "{\"type\":\"search\",\"query\":");
+        try appendJsonMaybeString(allocator, result, webSearchStringField(action.object, "query"));
+        try result.appendSlice(allocator, ",\"queries\":");
+        try appendWebSearchQueriesJson(allocator, result, action.object.get("queries"));
+        try result.append(allocator, '}');
+        return;
+    }
+    if (std.mem.eql(u8, type_value, "open_page")) {
+        try result.appendSlice(allocator, "{\"type\":\"openPage\",\"url\":");
+        try appendJsonMaybeString(allocator, result, webSearchStringField(action.object, "url"));
+        try result.append(allocator, '}');
+        return;
+    }
+    if (std.mem.eql(u8, type_value, "find_in_page")) {
+        try result.appendSlice(allocator, "{\"type\":\"findInPage\",\"url\":");
+        try appendJsonMaybeString(allocator, result, webSearchStringField(action.object, "url"));
+        try result.appendSlice(allocator, ",\"pattern\":");
+        try appendJsonMaybeString(allocator, result, webSearchStringField(action.object, "pattern"));
+        try result.append(allocator, '}');
+        return;
+    }
+    try result.appendSlice(allocator, "{\"type\":\"other\"}");
+}
+
+fn appendJsonMaybeString(allocator: std.mem.Allocator, result: *std.ArrayList(u8), value: ?[]const u8) !void {
+    if (value) |string| {
+        try appendJsonString(allocator, result, string);
+    } else {
+        try result.appendSlice(allocator, "null");
+    }
+}
+
+fn appendWebSearchQueriesJson(allocator: std.mem.Allocator, result: *std.ArrayList(u8), queries_value: ?std.json.Value) !void {
+    const queries = queries_value orelse {
+        try result.appendSlice(allocator, "null");
+        return;
+    };
+    if (queries != .array) {
+        try result.appendSlice(allocator, "null");
+        return;
+    }
+    const start_len = result.items.len;
+    try result.append(allocator, '[');
+    for (queries.array.items, 0..) |query, index| {
+        if (query != .string) {
+            result.items.len = start_len;
+            try result.appendSlice(allocator, "null");
+            return;
+        }
+        if (index > 0) try result.append(allocator, ',');
+        try appendJsonString(allocator, result, query.string);
+    }
+    try result.append(allocator, ']');
 }
 
 fn renderReasoningEventNotification(
