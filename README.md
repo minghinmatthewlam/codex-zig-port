@@ -559,7 +559,7 @@ after `refresh_interval_ms` before a later request, and force-refreshed once on
 ```sh
 codex-zig --profile work auth-status
 codex-zig -m gpt-5.5 -a never -s danger-full-access
-codex-zig -i screenshot.png "describe this"
+codex-zig -i screenshot.png -- "describe this"
 codex-zig --cd ~/dev/my-project
 codex-zig --add-dir ~/scratch
 codex-zig -c model=gpt-5.5
@@ -580,7 +580,7 @@ codex-zig exec --skip-git-repo-check "say hello"
 printf 'say hello' | codex-zig exec
 printf 'extra context' | codex-zig exec "summarize"
 codex-zig exec resume --all last "continue"
-codex-zig exec --image screenshot.png "describe this"
+codex-zig exec --image screenshot.png -- "describe this"
 codex-zig sandbox macos -- /bin/echo ok
 codex-zig sandbox macos --permissions-profile :workspace --cd . -- /bin/echo ok
 codex-zig sandbox macos --permissions-profile custom-profile --cd . -- /bin/echo ok
