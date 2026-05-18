@@ -27401,6 +27401,9 @@ def run_config_write_overridden_metadata_rpc_smoke(binary: Path) -> None:
                 "model_context_window = 256000",
                 "model_auto_compact_token_limit = 192000",
                 'model_verbosity = "high"',
+                'base_instructions = "managed base instructions"',
+                'developer_instructions = "managed developer instructions"',
+                'compact_prompt = "managed compact prompt"',
                 'approval_policy = "never"',
                 "",
             ]
@@ -27484,6 +27487,67 @@ def run_config_write_overridden_metadata_rpc_smoke(binary: Path) -> None:
         assert write_verbosity_overridden["result"]["status"] == "okOverridden"
         assert write_verbosity_overridden["result"]["overriddenMetadata"]["effectiveValue"] == "high"
 
+        write_instructions_overridden = rpc(
+            "config-write-managed-instructions-overridden",
+            "config/value/write",
+            {
+                "keyPath": "instructions",
+                "value": "user base instructions",
+                "mergeStrategy": "replace",
+            },
+        )
+        assert write_instructions_overridden["id"] == "config-write-managed-instructions-overridden"
+        assert write_instructions_overridden["result"]["status"] == "okOverridden"
+        assert (
+            write_instructions_overridden["result"]["overriddenMetadata"]["effectiveValue"]
+            == "managed base instructions"
+        )
+
+        write_base_alias_same = rpc(
+            "config-write-managed-base-alias-same",
+            "config/value/write",
+            {
+                "keyPath": "base_instructions",
+                "value": "managed base instructions",
+                "mergeStrategy": "replace",
+            },
+        )
+        assert write_base_alias_same["id"] == "config-write-managed-base-alias-same"
+        assert write_base_alias_same["result"]["status"] == "ok"
+        assert write_base_alias_same["result"]["overriddenMetadata"] is None
+
+        write_developer_overridden = rpc(
+            "config-write-managed-developer-overridden",
+            "config/value/write",
+            {
+                "keyPath": "developer_instructions",
+                "value": "user developer instructions",
+                "mergeStrategy": "replace",
+            },
+        )
+        assert write_developer_overridden["id"] == "config-write-managed-developer-overridden"
+        assert write_developer_overridden["result"]["status"] == "okOverridden"
+        assert (
+            write_developer_overridden["result"]["overriddenMetadata"]["effectiveValue"]
+            == "managed developer instructions"
+        )
+
+        write_compact_overridden = rpc(
+            "config-write-managed-compact-overridden",
+            "config/value/write",
+            {
+                "keyPath": "compact_prompt",
+                "value": "user compact prompt",
+                "mergeStrategy": "replace",
+            },
+        )
+        assert write_compact_overridden["id"] == "config-write-managed-compact-overridden"
+        assert write_compact_overridden["result"]["status"] == "okOverridden"
+        assert (
+            write_compact_overridden["result"]["overriddenMetadata"]["effectiveValue"]
+            == "managed compact prompt"
+        )
+
         write_overridden = rpc(
             "config-write-managed-overridden",
             "config/value/write",
@@ -27512,6 +27576,12 @@ def run_config_write_overridden_metadata_rpc_smoke(binary: Path) -> None:
         assert after_write["result"]["config"]["model_context_window"] == 256000
         assert after_write["result"]["config"]["model_auto_compact_token_limit"] == 192000
         assert after_write["result"]["config"]["model_verbosity"] == "high"
+        assert after_write["result"]["config"]["instructions"] == "managed base instructions"
+        assert (
+            after_write["result"]["config"]["developer_instructions"]
+            == "managed developer instructions"
+        )
+        assert after_write["result"]["config"]["compact_prompt"] == "managed compact prompt"
         assert after_write["result"]["config"]["approval_policy"] == "never"
 
         batch = rpc(

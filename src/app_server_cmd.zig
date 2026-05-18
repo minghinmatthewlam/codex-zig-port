@@ -48188,6 +48188,12 @@ fn renderManagedConfigWriteOverrideValueJson(
         if (layer.model_context_window) |value| return renderI64OverrideValue(allocator, value, key_path, user_config_bytes);
     } else if (std.mem.eql(u8, key_path, "model_auto_compact_token_limit")) {
         if (layer.model_auto_compact_token_limit) |value| return renderI64OverrideValue(allocator, value, key_path, user_config_bytes);
+    } else if (std.mem.eql(u8, key_path, "instructions") or std.mem.eql(u8, key_path, "base_instructions")) {
+        if (layer.instructions) |value| return renderStringOverrideValue(allocator, value, key_path, user_config_bytes);
+    } else if (std.mem.eql(u8, key_path, "developer_instructions")) {
+        if (layer.developer_instructions) |value| return renderStringOverrideValue(allocator, value, key_path, user_config_bytes);
+    } else if (std.mem.eql(u8, key_path, "compact_prompt")) {
+        if (layer.compact_prompt) |value| return renderStringOverrideValue(allocator, value, key_path, user_config_bytes);
     } else if (std.mem.eql(u8, key_path, "approval_policy")) {
         if (layer.approval_policy) |value| return renderStringOverrideValue(allocator, value.label(), key_path, user_config_bytes);
     } else if (std.mem.eql(u8, key_path, "sandbox_mode")) {
@@ -48259,6 +48265,18 @@ fn configWriteUserScalarValue(
     }
     if (std.mem.eql(u8, key_path, "review_model")) {
         return configWriteRequiredTopLevelStringValue(allocator, user_config_bytes, "review_model");
+    }
+    if (std.mem.eql(u8, key_path, "instructions")) {
+        return configWriteRequiredTopLevelStringValue(allocator, user_config_bytes, "instructions");
+    }
+    if (std.mem.eql(u8, key_path, "base_instructions")) {
+        return configWriteRequiredTopLevelStringValue(allocator, user_config_bytes, "base_instructions");
+    }
+    if (std.mem.eql(u8, key_path, "developer_instructions")) {
+        return configWriteRequiredTopLevelStringValue(allocator, user_config_bytes, "developer_instructions");
+    }
+    if (std.mem.eql(u8, key_path, "compact_prompt")) {
+        return configWriteRequiredTopLevelStringValue(allocator, user_config_bytes, "compact_prompt");
     }
     if (std.mem.eql(u8, key_path, "model_verbosity")) {
         if (try configWriteRequiredTopLevelStringValue(allocator, user_config_bytes, "model_verbosity")) |value| {
