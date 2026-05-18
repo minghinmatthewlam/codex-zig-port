@@ -52669,12 +52669,7 @@ fn handleMcpServerMethod(
     params_value: ?std.json.Value,
 ) ![]const u8 {
     if (std.mem.eql(u8, method, "config/mcpServer/reload")) {
-        if (params_value) |params| {
-            if (params != .null and params != .object) {
-                return renderJsonRpcError(allocator, id_value, -32602, "config/mcpServer/reload params must be an object, null, or omitted");
-            }
-        }
-        return renderJsonRpcResult(allocator, id_value, "{}");
+        return handleMcpServerReload(allocator, id_value, params_value);
     }
     if (std.mem.eql(u8, method, "mcpServer/oauth/login")) {
         return handleMcpServerOauthLogin(allocator, id_value, params_value);
@@ -52689,6 +52684,35 @@ fn handleMcpServerMethod(
         return handleMcpServerToolCall(allocator, state, id_value, params_value);
     }
     return renderJsonRpcError(allocator, id_value, -32601, "unknown MCP server method");
+}
+
+fn handleMcpServerReload(
+    allocator: std.mem.Allocator,
+    id_value: std.json.Value,
+    params_value: ?std.json.Value,
+) ![]const u8 {
+    if (params_value) |params| {
+        if (params != .null and params != .object) {
+            return renderJsonRpcError(allocator, id_value, -32602, "config/mcpServer/reload params must be an object, null, or omitted");
+        }
+    }
+
+    var cfg = config.load(allocator) catch |err| {
+        return renderJsonRpcErrorForFailure(allocator, id_value, "config/mcpServer/reload failed to load config", err);
+    };
+    defer cfg.deinit(allocator);
+
+    const config_bytes = mcp_cmd.readConfigToml(allocator, cfg.codex_home) catch |err| {
+        return renderJsonRpcErrorForFailure(allocator, id_value, "config/mcpServer/reload failed to load MCP config", err);
+    };
+    defer if (config_bytes) |bytes| allocator.free(bytes);
+
+    var servers = mcp_cmd.loadServersFromConfig(allocator, cfg.codex_home, config_bytes orelse "") catch |err| {
+        return renderJsonRpcErrorForFailure(allocator, id_value, "config/mcpServer/reload failed to load MCP servers", err);
+    };
+    defer servers.deinit(allocator);
+
+    return renderJsonRpcResult(allocator, id_value, "{}");
 }
 
 fn handleMcpServerOauthLogin(allocator: std.mem.Allocator, id_value: std.json.Value, params_value: ?std.json.Value) ![]const u8 {
