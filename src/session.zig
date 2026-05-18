@@ -564,6 +564,7 @@ pub fn runTurnWithOptions(
 
     var mcp_catalog = try mcp_runtime.loadCatalogWithOptions(allocator, cfg.codex_home, .{
         .startup_status_callback = options.mcp_startup_status_callback,
+        .elicitation_callback = options.mcp_elicitation_callback,
     });
     defer mcp_catalog.deinit(allocator);
 

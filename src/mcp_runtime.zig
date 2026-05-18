@@ -56,6 +56,7 @@ pub const StartupStatusCallback = struct {
 
 pub const LoadCatalogOptions = struct {
     startup_status_callback: ?StartupStatusCallback = null,
+    elicitation_callback: ?ElicitationCallback = null,
 };
 
 pub const CallOutput = struct {
@@ -218,7 +219,7 @@ pub fn loadCatalogWithOptions(
         if (options.startup_status_callback) |callback| {
             try callback.on_startup_status(callback.ctx, server.name, .starting, null);
         }
-        appendServerTools(allocator, codex_home, server, &specs) catch |err| {
+        appendServerTools(allocator, codex_home, server, &specs, options) catch |err| {
             std.debug.print("[mcp] failed to list tools for {s}: {s}\n", .{ server.name, @errorName(err) });
             if (options.startup_status_callback) |callback| {
                 try callback.on_startup_status(callback.ctx, server.name, .failed, @errorName(err));
@@ -847,10 +848,13 @@ fn appendServerTools(
     codex_home: []const u8,
     server: mcp_cmd.McpServer,
     specs: *std.ArrayList(ToolSpec),
+    options: LoadCatalogOptions,
 ) !void {
     if (server.kind == .streamable_http) return appendHttpServerTools(allocator, codex_home, server, specs);
     if (server.kind != .stdio) return error.McpServerUnavailable;
-    var client = try StdioClient.start(allocator, server);
+    var client = try StdioClient.startWithOptions(allocator, server, .{
+        .elicitation_callback = options.elicitation_callback,
+    });
     defer client.deinit();
 
     try client.initialize();
