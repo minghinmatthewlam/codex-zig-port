@@ -52639,6 +52639,7 @@ const McpServerOauthLoginParams = struct {
     name: []const u8,
     scopes: std.ArrayList([]const u8) = .empty,
     scopes_present: bool = false,
+    timeout_secs: ?i64 = null,
 
     fn deinit(self: *McpServerOauthLoginParams, allocator: std.mem.Allocator) void {
         self.scopes.deinit(allocator);
@@ -52762,13 +52763,14 @@ fn handleMcpServerOauthLogin(allocator: std.mem.Allocator, state: *AppServerStat
 
     const response = try renderMcpServerOauthLoginResponse(allocator, id_value, login_handle.authorization_url);
     errdefer allocator.free(response);
-    try spawnMcpServerOauthLoginWorker(allocator, params.name, login_handle);
+    try spawnMcpServerOauthLoginWorker(allocator, params.name, login_handle, params.timeout_secs);
     return response;
 }
 
 const McpServerOauthLoginWorker = struct {
     name: []const u8,
     handle: mcp_cmd.McpOAuthLoginHandle,
+    timeout_secs: ?i64 = null,
 
     fn deinit(self: *McpServerOauthLoginWorker, allocator: std.mem.Allocator) void {
         allocator.free(self.name);
@@ -52780,18 +52782,19 @@ fn spawnMcpServerOauthLoginWorker(
     allocator: std.mem.Allocator,
     name: []const u8,
     handle: mcp_cmd.McpOAuthLoginHandle,
+    timeout_secs: ?i64,
 ) !void {
     const worker = try allocator.create(McpServerOauthLoginWorker);
     errdefer allocator.destroy(worker);
     const name_owned = try allocator.dupe(u8, name);
     errdefer allocator.free(name_owned);
-    worker.* = .{ .name = name_owned, .handle = handle };
+    worker.* = .{ .name = name_owned, .handle = handle, .timeout_secs = timeout_secs };
     const thread = try std.Thread.spawn(.{ .allocator = allocator }, mcpServerOauthLoginWorker, .{ allocator, worker });
     thread.detach();
 }
 
 fn mcpServerOauthLoginWorker(allocator: std.mem.Allocator, worker: *McpServerOauthLoginWorker) void {
-    const maybe_error = if (worker.handle.waitAndSave(allocator)) |_| null else |err| @errorName(err);
+    const maybe_error = if (worker.handle.waitAndSave(allocator, worker.timeout_secs)) |_| null else |err| @errorName(err);
     const notification = renderMcpServerOauthLoginCompletedNotification(allocator, worker.name, maybe_error == null, maybe_error) catch {
         worker.deinit(allocator);
         allocator.destroy(worker);
@@ -53003,8 +53006,10 @@ fn parseMcpServerOauthLoginParams(allocator: std.mem.Allocator, params_value: ?s
     }
     if (params.object.get("timeoutSecs")) |timeout| {
         if (timeout != .null and timeout != .integer and timeout != .number_string) return error.InvalidMcpOauthLoginTimeout;
-        if (timeout == .number_string) {
-            _ = std.fmt.parseInt(i64, timeout.number_string, 10) catch return error.InvalidMcpOauthLoginTimeout;
+        if (timeout == .integer) {
+            parsed.timeout_secs = timeout.integer;
+        } else if (timeout == .number_string) {
+            parsed.timeout_secs = std.fmt.parseInt(i64, timeout.number_string, 10) catch return error.InvalidMcpOauthLoginTimeout;
         }
     }
     return parsed;

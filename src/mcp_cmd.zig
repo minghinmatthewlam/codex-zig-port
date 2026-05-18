@@ -949,9 +949,9 @@ pub const McpOAuthLoginHandle = struct {
         allocator.free(self.authorization_url);
     }
 
-    pub fn waitAndSave(self: *McpOAuthLoginHandle, allocator: std.mem.Allocator) !void {
+    pub fn waitAndSave(self: *McpOAuthLoginHandle, allocator: std.mem.Allocator, timeout_secs: ?i64) !void {
         const server_url = self.server.url orelse return error.McpOAuthLoginRequiresHttp;
-        const code = try waitForMcpOAuthCallback(allocator, &self.callback_server, self.state);
+        const code = try waitForMcpOAuthCallback(allocator, &self.callback_server, self.state, timeout_secs);
         defer allocator.free(code);
 
         var tokens = try exchangeMcpOAuthCodeForTokens(
@@ -1017,7 +1017,7 @@ fn performMcpOAuthLogin(
         };
     }
 
-    try handle.waitAndSave(allocator);
+    try handle.waitAndSave(allocator, null);
 }
 
 pub fn startMcpOAuthLoginReturnUrl(
@@ -1497,9 +1497,16 @@ fn waitForMcpOAuthCallback(
     allocator: std.mem.Allocator,
     server: *std.Io.net.Server,
     expected_state: []const u8,
+    timeout_secs: ?i64,
 ) ![]const u8 {
     const io = std.Io.Threaded.global_single_threaded.io();
+    const deadline_ms = mcpOAuthCallbackDeadlineMs(timeout_secs);
     while (true) {
+        if (deadline_ms) |deadline| {
+            const remaining_ms = deadline - currentUnixMilliseconds();
+            if (remaining_ms <= 0) return error.McpOAuthCallbackTimeout;
+            if (!try pollMcpOAuthCallbackServer(server, remaining_ms)) return error.McpOAuthCallbackTimeout;
+        }
         var stream = try server.accept(io);
         defer stream.close(io);
 
@@ -1515,6 +1522,30 @@ fn waitForMcpOAuthCallback(
 
         if (try handleMcpOAuthCallbackRequest(allocator, &request, expected_state)) |code| return code;
     }
+}
+
+fn mcpOAuthCallbackDeadlineMs(timeout_secs: ?i64) ?i64 {
+    const raw_secs = timeout_secs orelse return null;
+    const secs = @max(raw_secs, 1);
+    const max_secs = @divTrunc(std.math.maxInt(i64), std.time.ms_per_s);
+    if (secs >= max_secs) return std.math.maxInt(i64);
+    return currentUnixMilliseconds() + secs * std.time.ms_per_s;
+}
+
+fn pollMcpOAuthCallbackServer(server: *std.Io.net.Server, timeout_ms: i64) !bool {
+    const poll_timeout: i32 = if (timeout_ms > std.math.maxInt(i32)) std.math.maxInt(i32) else @intCast(timeout_ms);
+    var fds = [_]std.posix.pollfd{.{
+        .fd = server.socket.handle,
+        .events = @intCast(std.posix.POLL.IN | std.posix.POLL.HUP | std.posix.POLL.ERR | std.posix.POLL.NVAL),
+        .revents = 0,
+    }};
+    const ready = try std.posix.poll(&fds, poll_timeout);
+    if (ready == 0) return false;
+    const revents: u16 = @bitCast(fds[0].revents);
+    const terminal_events = @as(u16, @intCast(std.posix.POLL.HUP | std.posix.POLL.ERR | std.posix.POLL.NVAL));
+    if ((revents & terminal_events) != 0) return error.McpOAuthCallbackServerClosed;
+    const readable_events = @as(u16, @intCast(std.posix.POLL.IN));
+    return (revents & readable_events) != 0;
 }
 
 fn handleMcpOAuthCallbackRequest(
