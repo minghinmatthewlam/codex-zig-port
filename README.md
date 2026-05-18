@@ -480,8 +480,9 @@ git-diff-to-remote, fuzzy-file-search one-shot scoring/order and session notific
 account-read, get-auth-status,
 account-logout, account-login, account-login-cancel, account-rate-limits,
 account-add-credits-nudge, config-read with user origin/layer metadata, user
-sandbox workspace settings, tools/apps config including app defaults, policy
-flags, and per-app tool overrides, trusted project scalar, tool, app, and
+sandbox workspace settings, instruction/developer/compact prompt fields,
+tools/apps config including app defaults, policy flags, and per-app tool
+overrides, trusted project scalar, tool, app, and
 sandbox workspace layers, system scalar/tool/app/sandbox workspace
 precedence, required empty user/system layers, and legacy managed
 scalar/tool/app/sandbox overrides,
