@@ -13,6 +13,13 @@ const workdir = @import("workdir.zig");
 
 const version = "0.0.1";
 
+const ExecHelpTopic = enum {
+    root,
+    resume_cmd,
+    review_cmd,
+    help_cmd,
+};
+
 const ExecArgs = struct {
     auto_approve: bool = false,
     ephemeral: bool = false,
@@ -25,7 +32,7 @@ const ExecArgs = struct {
     config_overrides: config.RuntimeOverrides = .{},
     feature_overrides: features_cmd.FeatureOverrides = .{},
     config_profile: ?[]const u8 = null,
-    help: bool = false,
+    help: ?ExecHelpTopic = null,
     last_message_file: ?[]const u8 = null,
     output_schema_file: ?[]const u8 = null,
     image_files: std.ArrayList([]const u8) = .empty,
@@ -103,8 +110,8 @@ pub fn runWithOptions(allocator: std.mem.Allocator, args: *std.process.Args.Iter
         return;
     }
 
-    if (parsed.help) {
-        printHelp();
+    if (parsed.help) |topic| {
+        printHelpTopic(topic);
         return;
     }
 
@@ -506,7 +513,7 @@ fn parseArgs(allocator: std.mem.Allocator, args: []const []const u8) !ExecArgs {
             continue;
         }
         if (!end_options and (std.mem.eql(u8, arg, "--help") or std.mem.eql(u8, arg, "-h"))) {
-            parsed.help = true;
+            parsed.help = if (resume_mode) .resume_cmd else .root;
             break;
         }
         if (!end_options and !resume_mode and (std.mem.eql(u8, arg, "--version") or std.mem.eql(u8, arg, "-V"))) {
@@ -530,6 +537,10 @@ fn parseArgs(allocator: std.mem.Allocator, args: []const []const u8) !ExecArgs {
         if (!end_options and !resume_mode and prompt_parts.items.len == 0 and std.mem.eql(u8, arg, "resume")) {
             resume_mode = true;
             continue;
+        }
+        if (!end_options and !resume_mode and prompt_parts.items.len == 0 and std.mem.eql(u8, arg, "help")) {
+            parsed.help = try parseHelpTopic(args[index + 1 ..]);
+            break;
         }
         if (!end_options and !resume_mode and prompt_parts.items.len == 0 and std.mem.eql(u8, arg, "review")) {
             parsed.review_mode = true;
@@ -565,6 +576,18 @@ fn parseArgs(allocator: std.mem.Allocator, args: []const []const u8) !ExecArgs {
     }
 
     return parsed;
+}
+
+fn parseHelpTopic(args: []const []const u8) !ExecHelpTopic {
+    if (args.len == 0) return .root;
+    if (args.len > 1) return error.UnexpectedExecHelpArgument;
+    const target = args[0];
+    if (std.mem.eql(u8, target, "--help") or std.mem.eql(u8, target, "-h")) return .help_cmd;
+    if (std.mem.eql(u8, target, "exec")) return .root;
+    if (std.mem.eql(u8, target, "resume")) return .resume_cmd;
+    if (std.mem.eql(u8, target, "review")) return .review_cmd;
+    if (std.mem.eql(u8, target, "help")) return .help_cmd;
+    return error.UnknownExecHelpCommand;
 }
 
 fn mergedReviewOverrides(base: config.RuntimeOverrides, parsed: ExecArgs) config.RuntimeOverrides {
@@ -725,6 +748,81 @@ pub fn printHelp() void {
     , .{});
 }
 
+fn printHelpTopic(topic: ExecHelpTopic) void {
+    switch (topic) {
+        .root => printHelp(),
+        .resume_cmd => printResumeHelp(),
+        .review_cmd => printReviewHelp(),
+        .help_cmd => printHelpCommandHelp(),
+    }
+}
+
+fn printResumeHelp() void {
+    std.debug.print(
+        \\Resume a previous session by id or pick the most recent with --last
+        \\
+        \\Usage:
+        \\  codex-zig exec resume [OPTIONS] [SESSION_ID] [PROMPT]
+        \\
+        \\Arguments:
+        \\  [SESSION_ID]            Session id, rollout path, or last
+        \\  [PROMPT]                Prompt to send after resuming; use - to read stdin
+        \\
+        \\Options:
+        \\  -c, --config key=value  Override a supported config value
+        \\  --last                  Resume the latest saved session
+        \\  --all                   Show all sessions
+        \\  --enable FEATURE        Enable a feature for this invocation
+        \\  --disable FEATURE       Disable a feature for this invocation
+        \\  -i, --image FILE        Attach local image file(s)
+        \\  -m, --model MODEL       Override the model
+        \\  --dangerously-bypass-approvals-and-sandbox
+        \\                          Danger: approval=never and sandbox=danger-full-access
+        \\  --skip-git-repo-check   Allow exec outside a Git repository
+        \\  --ephemeral             Do not save or resume a session file
+        \\  --ignore-user-config    Do not load CODEX_HOME/config.toml
+        \\  --ignore-rules          Accepted for Rust CLI compatibility
+        \\  --json                  Emit JSONL events instead of plain final text
+        \\  -o, --output-last-message FILE
+        \\                          Write final answer to FILE
+        \\  -h, --help              Print help
+        \\
+    , .{});
+}
+
+fn printReviewHelp() void {
+    std.debug.print(
+        \\Run a code review against the current repository
+        \\
+        \\Usage:
+        \\  codex-zig exec [EXEC_OPTIONS] review [REVIEW_OPTIONS] [PROMPT]
+        \\
+        \\Arguments:
+        \\  [PROMPT]                Custom review instructions; use - to read stdin
+        \\
+        \\Review Options:
+        \\  --uncommitted           Review staged, unstaged, and untracked changes
+        \\  --base BRANCH           Review changes against the given base branch
+        \\  --commit SHA            Review the changes introduced by a commit
+        \\  --title TITLE           Optional commit title for review context
+        \\  -h, --help              Print help
+        \\
+    , .{});
+}
+
+fn printHelpCommandHelp() void {
+    std.debug.print(
+        \\Print this message or the help of the given subcommand(s)
+        \\
+        \\Usage:
+        \\  codex-zig exec help [COMMAND]
+        \\
+        \\Arguments:
+        \\  [COMMAND]               Print help for the subcommand
+        \\
+    , .{});
+}
+
 pub fn printVersion() !void {
     try cli_utils.writeStdout("codex-cli-exec " ++ version ++ "\n");
 }
@@ -784,7 +882,7 @@ test "exec args parse version before help" {
     defer parsed.deinit(allocator);
 
     try std.testing.expect(parsed.version);
-    try std.testing.expect(!parsed.help);
+    try std.testing.expect(parsed.help == null);
     try std.testing.expect(parsed.prompt == null);
 }
 
@@ -794,7 +892,7 @@ test "exec args parse help before version" {
     const parsed = try parseArgs(allocator, argv[0..]);
     defer parsed.deinit(allocator);
 
-    try std.testing.expect(parsed.help);
+    try std.testing.expectEqual(ExecHelpTopic.root, parsed.help.?);
     try std.testing.expect(!parsed.version);
     try std.testing.expect(parsed.prompt == null);
 }
@@ -807,6 +905,64 @@ test "exec args keep version literal after end options" {
 
     try std.testing.expect(!parsed.version);
     try std.testing.expectEqualStrings("say --version", parsed.prompt.?);
+}
+
+test "exec args parse help command topics" {
+    const allocator = std.testing.allocator;
+
+    const root = [_][]const u8{"help"};
+    const parsed_root = try parseArgs(allocator, root[0..]);
+    defer parsed_root.deinit(allocator);
+    try std.testing.expectEqual(ExecHelpTopic.root, parsed_root.help.?);
+
+    const resume_topic = [_][]const u8{ "help", "resume" };
+    const parsed_resume = try parseArgs(allocator, resume_topic[0..]);
+    defer parsed_resume.deinit(allocator);
+    try std.testing.expectEqual(ExecHelpTopic.resume_cmd, parsed_resume.help.?);
+
+    const review_topic = [_][]const u8{ "help", "review" };
+    const parsed_review = try parseArgs(allocator, review_topic[0..]);
+    defer parsed_review.deinit(allocator);
+    try std.testing.expectEqual(ExecHelpTopic.review_cmd, parsed_review.help.?);
+
+    const help_topic = [_][]const u8{ "help", "help" };
+    const parsed_help = try parseArgs(allocator, help_topic[0..]);
+    defer parsed_help.deinit(allocator);
+    try std.testing.expectEqual(ExecHelpTopic.help_cmd, parsed_help.help.?);
+
+    const help_flag = [_][]const u8{ "help", "--help" };
+    const parsed_help_flag = try parseArgs(allocator, help_flag[0..]);
+    defer parsed_help_flag.deinit(allocator);
+    try std.testing.expectEqual(ExecHelpTopic.help_cmd, parsed_help_flag.help.?);
+
+    const help_short_flag = [_][]const u8{ "help", "-h" };
+    const parsed_help_short_flag = try parseArgs(allocator, help_short_flag[0..]);
+    defer parsed_help_short_flag.deinit(allocator);
+    try std.testing.expectEqual(ExecHelpTopic.help_cmd, parsed_help_short_flag.help.?);
+}
+
+test "exec args parse resume help flags" {
+    const allocator = std.testing.allocator;
+
+    const missing_target = [_][]const u8{ "resume", "--help" };
+    const parsed_missing_target = try parseArgs(allocator, missing_target[0..]);
+    defer parsed_missing_target.deinit(allocator);
+    try std.testing.expectEqual(ExecHelpTopic.resume_cmd, parsed_missing_target.help.?);
+
+    const after_target = [_][]const u8{ "resume", "last", "-h" };
+    const parsed_after_target = try parseArgs(allocator, after_target[0..]);
+    defer parsed_after_target.deinit(allocator);
+    try std.testing.expectEqual(ExecHelpTopic.resume_cmd, parsed_after_target.help.?);
+}
+
+test "exec args reject invalid help topics" {
+    const allocator = std.testing.allocator;
+
+    const unknown = [_][]const u8{ "help", "nope" };
+    try std.testing.expectError(error.UnknownExecHelpCommand, parseArgs(allocator, unknown[0..]));
+
+    const extra = [_][]const u8{ "help", "resume", "extra" };
+    try std.testing.expectError(error.UnexpectedExecHelpArgument, parseArgs(allocator, extra[0..]));
 }
 
 test "exec args reject version after resume subcommand" {
