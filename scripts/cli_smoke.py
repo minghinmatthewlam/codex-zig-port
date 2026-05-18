@@ -8320,6 +8320,45 @@ def run_sandbox_permission_profile_smoke(binary: Path) -> None:
         shutil.rmtree(temp_root, ignore_errors=True)
 
 
+def run_debug_prompt_input_image_smoke(binary: Path) -> None:
+    temp_root = Path(tempfile.mkdtemp(prefix="codex-zig-debug-prompt-input-", dir="/tmp"))
+    try:
+        first_image = temp_root / "first.png"
+        second_image = temp_root / "second.png"
+        first_image.write_bytes(b"\x89PNG\r\n\x1a\nfirst")
+        second_image.write_bytes(b"\x89PNG\r\n\x1a\nsecond")
+
+        result = subprocess.run(
+            [
+                str(binary.resolve()),
+                "debug",
+                "prompt-input",
+                "--image",
+                str(first_image),
+                str(second_image),
+                "--",
+                "describe both images",
+            ],
+            cwd=temp_root,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=5,
+            check=True,
+        )
+        assert result.stderr == ""
+        payload = json.loads(result.stdout)
+        user_messages = [item for item in payload if item.get("role") == "user"]
+        assert len(user_messages) == 1
+        content = user_messages[0]["content"]
+        assert [item["type"] for item in content] == ["input_text", "input_image", "input_image"]
+        assert content[0]["text"] == "describe both images"
+        assert content[1]["image_url"].startswith("data:image/png;base64,")
+        assert content[2]["image_url"].startswith("data:image/png;base64,")
+    finally:
+        shutil.rmtree(temp_root, ignore_errors=True)
+
+
 def run_debug_app_server_send_message_smoke(binary: Path) -> None:
     temp_root = Path(tempfile.mkdtemp(prefix="codex-zig-debug-app-server-", dir="/tmp"))
     server, base_url = start_exec_responses_server()
@@ -8588,6 +8627,7 @@ def main() -> None:
     run_full_auto_compat_smoke(binary)
     run_removed_top_level_command_smoke(binary)
     run_sandbox_permission_profile_smoke(binary)
+    run_debug_prompt_input_image_smoke(binary)
     run_debug_app_server_send_message_smoke(binary)
     run_debug_trace_reduce_smoke(binary)
     print("cli-completion-snapshot-e2e: ok")
@@ -8619,6 +8659,7 @@ def main() -> None:
     print("cli-full-auto-compat-e2e: ok")
     print("cli-removed-top-level-e2e: ok")
     print("cli-sandbox-permission-profile-e2e: ok")
+    print("cli-debug-prompt-input-image-e2e: ok")
     print("cli-debug-app-server-send-message-e2e: ok")
     print("cli-debug-trace-reduce-e2e: ok")
 
