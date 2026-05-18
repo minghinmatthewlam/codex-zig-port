@@ -20689,8 +20689,10 @@ def run_mcp_resource_read_rpc_smoke(binary: Path) -> None:
     codex_home = Path(tempfile.mkdtemp(prefix="codex-zig-app-server-mcp-resource-", dir="/tmp"))
     config_path = codex_home / "config.toml"
     server_path = codex_home / "resource_server.py"
+    plugin_root = codex_home / "plugins" / "cache" / "local-market" / "enabled-plugin" / "local"
     streamable_server, streamable_url = start_streamable_mcp_server()
     try:
+        plugin_root.mkdir(parents=True)
         server_path.write_text(
             "\n".join(
                 [
@@ -20768,6 +20770,12 @@ def run_mcp_resource_read_rpc_smoke(binary: Path) -> None:
         config_path.write_text(
             "\n".join(
                 [
+                    "[features]",
+                    "plugins = true",
+                    "",
+                    '[plugins."enabled-plugin@local-market"]',
+                    "enabled = true",
+                    "",
                     "[mcp_servers.resource_docs]",
                     f"command = {json.dumps(sys.executable)}",
                     f"args = [{json.dumps(str(server_path))}]",
@@ -20782,6 +20790,20 @@ def run_mcp_resource_read_rpc_smoke(binary: Path) -> None:
                     'bearer_token_env_var = "RESOURCE_MCP_TOKEN"',
                     "",
                 ]
+            ),
+            encoding="utf-8",
+        )
+        (plugin_root / ".mcp.json").write_text(
+            json.dumps(
+                {
+                    "mcpServers": {
+                        "plugin_resource_docs": {
+                            "command": sys.executable,
+                            "args": [str(server_path)],
+                        }
+                    }
+                },
+                separators=(",", ":"),
             ),
             encoding="utf-8",
         )
@@ -20828,6 +20850,22 @@ def run_mcp_resource_read_rpc_smoke(binary: Path) -> None:
         )
         assert resource_read["id"] == "mcp-resource-read"
         assert resource_read["result"] == expected_resource_response
+
+        plugin_resource_read = request_stdio_app_server(
+            binary,
+            {
+                "jsonrpc": "2.0",
+                "id": "mcp-plugin-resource-read",
+                "method": "mcpServer/resource/read",
+                "params": {
+                    "server": "plugin_resource_docs",
+                    "uri": "test://codex/resource",
+                },
+            },
+            env,
+        )
+        assert plugin_resource_read["id"] == "mcp-plugin-resource-read"
+        assert plugin_resource_read["result"] == expected_resource_response
 
         missing_resource_error = request_stdio_app_server(
             binary,
