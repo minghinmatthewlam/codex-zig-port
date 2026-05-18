@@ -1433,6 +1433,42 @@ def run_help_command_smoke(
             f"expected no exec review help stdout:\n{exec_review_help_result.stdout}"
         )
 
+    exec_review_direct_help_result = subprocess.run(
+        [str(binary), "exec", "review", "--help"],
+        cwd=workspace,
+        env=env,
+        text=True,
+        capture_output=True,
+        check=True,
+    )
+    if exec_review_direct_help_result.stderr != exec_review_help_result.stderr:
+        raise AssertionError(
+            "expected exec review --help to match exec help review:\n"
+            f"{exec_review_direct_help_result.stderr}"
+        )
+    if exec_review_direct_help_result.stdout != "":
+        raise AssertionError(
+            f"expected no exec review --help stdout:\n{exec_review_direct_help_result.stdout}"
+        )
+
+    exec_review_late_help_result = subprocess.run(
+        [str(binary), "exec", "review", "--uncommitted", "--help"],
+        cwd=workspace,
+        env=env,
+        text=True,
+        capture_output=True,
+        check=True,
+    )
+    if exec_review_late_help_result.stderr != exec_review_help_result.stderr:
+        raise AssertionError(
+            "expected exec review --uncommitted --help to match exec help review:\n"
+            f"{exec_review_late_help_result.stderr}"
+        )
+    if exec_review_late_help_result.stdout != "":
+        raise AssertionError(
+            f"expected no exec review --uncommitted --help stdout:\n{exec_review_late_help_result.stdout}"
+        )
+
     exec_help_help_result = subprocess.run(
         [str(binary), "exec", "help", "help"],
         cwd=workspace,

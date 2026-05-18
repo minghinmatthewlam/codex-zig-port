@@ -6160,8 +6160,10 @@ def run_exec_review_smoke(binary: Path) -> None:
             timeout=5,
             check=True,
         )
-        assert "codex-zig review --uncommitted" in help_result.stderr
+        assert "codex-zig exec [EXEC_OPTIONS] review [REVIEW_OPTIONS]" in help_result.stderr
         assert "--base BRANCH" in help_result.stderr
+        assert "codex-zig review --uncommitted" not in help_result.stderr
+        assert help_result.stdout == ""
 
         exec_help_result = subprocess.run(
             [str(binary), "help", "exec"],
