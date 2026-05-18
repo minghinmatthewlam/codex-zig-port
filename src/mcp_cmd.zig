@@ -58,6 +58,7 @@ pub const McpServer = struct {
     http_headers: std.ArrayList(KeyValue) = .empty,
     env_http_headers: std.ArrayList(KeyValue) = .empty,
     scopes: std.ArrayList([]const u8) = .empty,
+    scopes_configured: bool = false,
     oauth_resource: ?[]const u8 = null,
 
     pub fn deinit(self: *McpServer, allocator: std.mem.Allocator) void {
@@ -427,7 +428,8 @@ fn runLogin(allocator: std.mem.Allocator, codex_home: []const u8, config_bytes: 
     }
 
     const resolved_scopes = if (explicit_scopes_present) explicit_scopes.items else server.scopes.items;
-    try performMcpOAuthLogin(allocator, codex_home, config_bytes, server.*, resolved_scopes);
+    const discover_when_empty = !explicit_scopes_present and !server.scopes_configured;
+    try performMcpOAuthLogin(allocator, codex_home, config_bytes, server.*, resolved_scopes, discover_when_empty);
     const message = try std.fmt.allocPrint(allocator, "Successfully logged in to MCP server '{s}'.\n", .{name});
     defer allocator.free(message);
     try cli_utils.writeStdout(message);
@@ -985,6 +987,7 @@ pub const McpOAuthLoginHandle = struct {
     code_verifier: []const u8,
     state: []const u8,
     authorization_url: []const u8,
+    scope_source: McpOAuthScopesSource,
 
     pub fn deinit(self: *McpOAuthLoginHandle, allocator: std.mem.Allocator) void {
         self.callback_server.deinit(std.Io.Threaded.global_single_threaded.io());
@@ -1050,17 +1053,45 @@ const PkceCodes = struct {
     }
 };
 
+const McpOAuthScopesSource = enum { requested, discovered, empty };
+
+const ResolvedMcpOAuthLoginScopes = struct {
+    items: std.ArrayList([]const u8) = .empty,
+    source: McpOAuthScopesSource = .empty,
+
+    fn deinit(self: *ResolvedMcpOAuthLoginScopes, allocator: std.mem.Allocator) void {
+        for (self.items.items) |scope| allocator.free(scope);
+        self.items.deinit(allocator);
+    }
+};
+
 fn performMcpOAuthLogin(
     allocator: std.mem.Allocator,
     codex_home: []const u8,
     config_bytes: []const u8,
     server: McpServer,
     requested_scopes: []const []const u8,
+    discover_when_empty: bool,
 ) !void {
-    var handle = try startMcpOAuthLoginReturnUrl(allocator, codex_home, config_bytes, server, requested_scopes, true);
-    defer handle.deinit(allocator);
+    var handle = try startMcpOAuthLoginReturnUrl(allocator, codex_home, config_bytes, server, requested_scopes, discover_when_empty);
+    const scope_source = handle.scope_source;
+    runMcpOAuthLoginHandle(allocator, server.name, &handle) catch |err| {
+        handle.deinit(allocator);
+        if (err != error.McpOAuthProviderError or scope_source != .discovered) return err;
+        try cli_utils.writeStdout("OAuth provider rejected discovered scopes. Retrying without scopes…\n");
+        var retry_handle = try startMcpOAuthLoginReturnUrl(allocator, codex_home, config_bytes, server, &.{}, false);
+        defer retry_handle.deinit(allocator);
+        return runMcpOAuthLoginHandle(allocator, server.name, &retry_handle);
+    };
+    handle.deinit(allocator);
+}
 
-    try printMcpOAuthPrompt(allocator, server.name, handle.authorization_url);
+fn runMcpOAuthLoginHandle(
+    allocator: std.mem.Allocator,
+    server_name: []const u8,
+    handle: *McpOAuthLoginHandle,
+) !void {
+    try printMcpOAuthPrompt(allocator, server_name, handle.authorization_url);
     if (!try shouldSkipMcpOAuthBrowser(allocator)) {
         openBrowser(allocator, handle.authorization_url) catch |err| {
             std.debug.print("warning: could not open browser automatically: {s}\n", .{@errorName(err)});
@@ -1084,10 +1115,7 @@ pub fn startMcpOAuthLoginReturnUrl(
     defer metadata.deinit(allocator);
 
     var resolved_scopes = try resolveMcpOAuthLoginScopes(allocator, requested_scopes, metadata.scopes_supported.items, discover_when_empty);
-    defer {
-        for (resolved_scopes.items) |scope| allocator.free(scope);
-        resolved_scopes.deinit(allocator);
-    }
+    defer resolved_scopes.deinit(allocator);
 
     var callback_config = try parseMcpOAuthCallbackConfig(allocator, config_bytes);
     defer callback_config.deinit(allocator);
@@ -1119,7 +1147,7 @@ pub fn startMcpOAuthLoginReturnUrl(
         redirect_uri,
         pkce,
         state,
-        resolved_scopes.items,
+        resolved_scopes.items.items,
         server.oauth_resource,
     );
     errdefer allocator.free(authorization_url);
@@ -1143,6 +1171,7 @@ pub fn startMcpOAuthLoginReturnUrl(
         .code_verifier = code_verifier,
         .state = state,
         .authorization_url = authorization_url,
+        .scope_source = resolved_scopes.source,
     };
 }
 
@@ -1188,15 +1217,18 @@ fn resolveMcpOAuthLoginScopes(
     requested_scopes: []const []const u8,
     discovered_scopes: []const []const u8,
     discover_when_empty: bool,
-) !std.ArrayList([]const u8) {
-    var resolved = std.ArrayList([]const u8).empty;
-    errdefer {
-        for (resolved.items) |scope| allocator.free(scope);
-        resolved.deinit(allocator);
-    }
-    const source = if (requested_scopes.len > 0 or !discover_when_empty) requested_scopes else discovered_scopes;
+) !ResolvedMcpOAuthLoginScopes {
+    var resolved = ResolvedMcpOAuthLoginScopes{};
+    errdefer resolved.deinit(allocator);
+    const source, const source_kind = if (requested_scopes.len > 0)
+        .{ requested_scopes, McpOAuthScopesSource.requested }
+    else if (discover_when_empty and discovered_scopes.len > 0)
+        .{ discovered_scopes, McpOAuthScopesSource.discovered }
+    else
+        .{ requested_scopes, McpOAuthScopesSource.empty };
+    resolved.source = source_kind;
     for (source) |scope| {
-        try resolved.append(allocator, try allocator.dupe(u8, scope));
+        try resolved.items.append(allocator, try allocator.dupe(u8, scope));
     }
     return resolved;
 }
@@ -1212,6 +1244,7 @@ fn cloneMcpServer(allocator: std.mem.Allocator, server: McpServer) !McpServer {
     if (server.bearer_token_env_var) |value| cloned.bearer_token_env_var = try allocator.dupe(u8, value);
     cloned.enabled = server.enabled;
     if (server.oauth_resource) |value| cloned.oauth_resource = try allocator.dupe(u8, value);
+    cloned.scopes_configured = server.scopes_configured;
     for (server.args.items) |arg| try appendClonedString(allocator, &cloned.args, arg);
     for (server.env_vars.items) |entry| try appendClonedKeyValue(allocator, &cloned.env_vars, entry);
     for (server.http_headers.items) |entry| try appendClonedKeyValue(allocator, &cloned.http_headers, entry);
@@ -1996,6 +2029,7 @@ fn parseServers(allocator: std.mem.Allocator, bytes: []const u8) !McpServers {
                 server.oauth_resource = resource;
             }
         } else if (std.mem.eql(u8, key, "scopes")) {
+            server.scopes_configured = true;
             try replaceTomlStringArray(allocator, &server.scopes, value);
         } else if (std.mem.eql(u8, key, "http_headers")) {
             try appendTomlInlineKeyValueTable(allocator, &server.http_headers, value);
@@ -2085,7 +2119,10 @@ fn parsePluginMcpServer(allocator: std.mem.Allocator, name: []const u8, value: s
     } else if (jsonStringField(value.object, "oauthResource")) |resource| {
         server.oauth_resource = try allocator.dupe(u8, resource);
     }
-    try appendJsonStringArray(allocator, &server.scopes, value.object.get("scopes"));
+    if (value.object.get("scopes")) |scopes_value| {
+        server.scopes_configured = true;
+        try appendJsonStringArray(allocator, &server.scopes, scopes_value);
+    }
     try appendJsonStringMap(allocator, &server.http_headers, value.object.get("http_headers"));
     try appendJsonStringMap(allocator, &server.http_headers, value.object.get("httpHeaders"));
     try appendJsonStringMap(allocator, &server.env_http_headers, value.object.get("env_http_headers"));
@@ -2287,7 +2324,7 @@ fn appendServersToml(allocator: std.mem.Allocator, output: *std.ArrayList(u8), s
             try appendTomlStringField(allocator, output, "url", server.url.?);
             if (server.bearer_token_env_var) |token_env| try appendTomlStringField(allocator, output, "bearer_token_env_var", token_env);
             if (server.oauth_resource) |resource| try appendTomlStringField(allocator, output, "oauth_resource", resource);
-            if (server.scopes.items.len > 0) {
+            if (server.scopes_configured or server.scopes.items.len > 0) {
                 try output.appendSlice(allocator, "scopes = [");
                 for (server.scopes.items, 0..) |scope, scope_index| {
                     if (scope_index > 0) try output.appendSlice(allocator, ", ");
