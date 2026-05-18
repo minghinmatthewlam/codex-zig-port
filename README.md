@@ -89,13 +89,15 @@ The first demo slice targets macOS and focuses on the interactive CLI surface:
 - bridge stdio MCP `elicitation/create` requests raised during app-server
   `mcpServer/tool/call` and model-triggered `turn/start` MCP tool calls through
   `mcpServer/elicitation/request` plus `serverRequest/resolved`
-- validate app-server MCP OAuth login requests with `mcpServer/oauth/login`,
+- complete app-server MCP OAuth login requests with `mcpServer/oauth/login`,
   including generated completion notification artifacts, Rust-shaped
-  configured-server checks, and explicit not-implemented errors for the browser
-  OAuth flow
-- validate CLI MCP OAuth login requests with `codex-zig mcp login`, including
-  configured-server, streamable HTTP, and comma-separated scope checks before
-  returning the explicit not-implemented browser-flow error
+  configured-server checks, PKCE browser callback handling, credential storage,
+  and completion notifications over stdio, Unix-socket, and websocket transports
+- complete CLI MCP OAuth login requests with `codex-zig mcp login`, including
+  configured-server, streamable HTTP, comma-separated scope checks, metadata
+  discovery, dynamic client registration, PKCE browser callback handling,
+  token exchange, fallback credential writes, and retry without scopes when a
+  provider rejects metadata-discovered scopes
 - remove file-backed and macOS keychain-backed MCP OAuth credentials for
   streamable HTTP servers with `codex-zig mcp logout`
 - report bearer-token, file-backed OAuth, macOS keychain-backed OAuth, and
@@ -442,8 +444,9 @@ model-facing stdio and streamable HTTP MCP resource
 list/template/read tool calls, verifies model-facing streamable HTTP MCP tool
 discovery and execution with bearer-token auth plus session-id and teardown
 headers and GET SSE responses after accepted POSTs, verifies
-CLI MCP OAuth login validation, file-backed MCP OAuth logout, and macOS
-keychain-backed MCP OAuth logout for streamable HTTP servers, verifies
+CLI MCP OAuth login, including provider-rejected discovered-scope retry,
+file-backed MCP OAuth logout, and macOS keychain-backed MCP OAuth logout for
+streamable HTTP servers, verifies
 CLI MCP auth-status reporting for bearer-token, file-backed OAuth, macOS
 keychain-backed OAuth, and OAuth-discovery not-logged-in servers, verifies
 exec-server filesystem read, write, metadata, directory listing, copy, remove,
