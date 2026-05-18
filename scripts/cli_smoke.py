@@ -7484,6 +7484,124 @@ def cleanup_mcp_oauth_keyring_entry(account: str) -> None:
     )
 
 
+def write_mcp_oauth_keyring_entry(account: str, payload: str) -> None:
+    subprocess.run(
+        [
+            "/usr/bin/security",
+            "add-generic-password",
+            "-U",
+            "-s",
+            "Codex MCP Credentials",
+            "-a",
+            account,
+            "-w",
+            payload,
+            "-T",
+            "/usr/bin/security",
+        ],
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        timeout=5,
+        check=True,
+    )
+
+
+def run_exec_streamable_http_mcp_keyring_oauth_smoke(binary: Path) -> None:
+    if not has_macos_security():
+        return
+
+    temp_root = Path(tempfile.mkdtemp(prefix="codex-zig-cli-http-mcp-keyring-", dir="/tmp"))
+    responses_server, base_url = start_exec_responses_server()
+    mcp_server, mcp_url = start_streamable_mcp_tool_server()
+    keyring_name = f"keyring_tools_{time.time_ns()}"
+    keyring_key = mcp_oauth_store_key(keyring_name, mcp_url)
+    cleanup_mcp_oauth_keyring_entry(keyring_key)
+    responses_server.response_payloads = [
+        function_call_response_payload(
+            "call-keyring-tool",
+            f"mcp__{keyring_name}__echo",
+            {"message": "hello from keyring oauth"},
+        ),
+        (
+            b'data: {"type":"response.output_text.delta","delta":"keyring oauth done"}\n\n'
+            b"data: [DONE]\n\n"
+        ),
+    ]
+    try:
+        write_mcp_oauth_keyring_entry(
+            keyring_key,
+            json.dumps(
+                {
+                    "server_name": keyring_name,
+                    "url": mcp_url,
+                    "client_id": "client",
+                    "token_response": {
+                        "access_token": "keyring-runtime-token",
+                        "token_type": "Bearer",
+                    },
+                },
+                separators=(",", ":"),
+            ),
+        )
+
+        codex_home = temp_root / "codex-home"
+        codex_home.mkdir()
+        (codex_home / "config.toml").write_text(
+            "\n".join(
+                [
+                    'mcp_oauth_credentials_store = "keyring"',
+                    'model = "gpt-http-mcp-keyring"',
+                    f'openai_base_url = "{base_url}"',
+                    "",
+                    f"[mcp_servers.{keyring_name}]",
+                    f"url = {json.dumps(mcp_url)}",
+                    "",
+                ]
+            ),
+            encoding="utf-8",
+        )
+        env = os.environ.copy()
+        env["CODEX_HOME"] = str(codex_home)
+        env["OPENAI_API_KEY"] = "test-api-key"
+        env.pop("CODEX_ACCESS_TOKEN", None)
+
+        result = subprocess.run(
+            [str(binary.resolve()), "exec", "--skip-git-repo-check", "use", "keyring", "mcp", "tool"],
+            cwd=temp_root,
+            env=env,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=10,
+            check=True,
+        )
+        assert result.stdout == "keyring oauth done\n"
+        assert len(responses_server.request_bodies) == 2
+        assert responses_server.request_bodies[1]["input"][-1]["output"] == (
+            "http echo: hello from keyring oauth"
+        )
+        assert [request["method"] for request in mcp_server.request_bodies] == [
+            "initialize",
+            "notifications/initialized",
+            "tools/list",
+            "DELETE",
+            "initialize",
+            "notifications/initialized",
+            "tools/call",
+            "DELETE",
+        ]
+        for headers in mcp_server.request_headers:
+            assert header_value(headers, "Authorization") == "Bearer keyring-runtime-token"
+    finally:
+        cleanup_mcp_oauth_keyring_entry(keyring_key)
+        responses_server.shutdown()
+        responses_server.server_close()
+        mcp_server.shutdown()
+        mcp_server.server_close()
+        shutil.rmtree(temp_root, ignore_errors=True)
+
+
 def run_mcp_oauth_login_logout_smoke(binary: Path) -> None:
     temp_root = Path(tempfile.mkdtemp(prefix="codex-zig-cli-mcp-oauth-", dir="/tmp"))
     discovery_server, remote_url = start_mcp_oauth_discovery_server()
@@ -7762,25 +7880,9 @@ def run_mcp_oauth_login_logout_smoke(binary: Path) -> None:
             keyring_key = mcp_oauth_store_key(keyring_name, remote_url)
             cleanup_mcp_oauth_keyring_entry(keyring_key)
             try:
-                subprocess.run(
-                    [
-                        "/usr/bin/security",
-                        "add-generic-password",
-                        "-U",
-                        "-s",
-                        "Codex MCP Credentials",
-                        "-a",
-                        keyring_key,
-                        "-w",
-                        "temporary-keyring-smoke-token",
-                        "-T",
-                        "/usr/bin/security",
-                    ],
-                    text=True,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.PIPE,
-                    timeout=5,
-                    check=True,
+                write_mcp_oauth_keyring_entry(
+                    keyring_key,
+                    "temporary-keyring-smoke-token",
                 )
 
                 keyring_home = temp_root / "keyring-home"
@@ -8713,6 +8815,7 @@ def main() -> None:
     run_exec_mcp_resource_tools_smoke(binary)
     run_exec_streamable_http_mcp_tool_smoke(binary)
     run_exec_streamable_http_mcp_get_stream_smoke(binary)
+    run_exec_streamable_http_mcp_keyring_oauth_smoke(binary)
     run_mcp_oauth_login_logout_smoke(binary)
     run_exec_git_repo_check_smoke(binary)
     run_yolo_approval_conflict_smoke(binary)
@@ -8745,6 +8848,7 @@ def main() -> None:
     print("cli-exec-mcp-resource-tools-e2e: ok")
     print("cli-exec-streamable-http-mcp-tool-e2e: ok")
     print("cli-exec-streamable-http-mcp-get-stream-e2e: ok")
+    print("cli-exec-streamable-http-mcp-keyring-oauth-e2e: ok")
     print("cli-mcp-oauth-login-logout-e2e: ok")
     print("cli-exec-git-check-e2e: ok")
     print("cli-yolo-approval-conflict-e2e: ok")
