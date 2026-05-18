@@ -9791,6 +9791,229 @@ def run_turn_request_permissions_smoke(binary: Path) -> None:
         shutil.rmtree(codex_home, ignore_errors=True)
 
 
+def run_turn_request_user_input_smoke(binary: Path) -> None:
+    server, base_url = start_turn_responses_server()
+    codex_home = Path(tempfile.mkdtemp(prefix="codex-zig-app-server-user-input-home-", dir="/tmp"))
+    try:
+        codex_home.joinpath("config.toml").write_text(
+            f'openai_base_url = "{base_url}"\nmodel = "gpt-turn-user-input"\n',
+            encoding="utf-8",
+        )
+        env = os.environ.copy()
+        env["CODEX_HOME"] = str(codex_home)
+        env["OPENAI_API_KEY"] = "test-api-key"
+        env.pop("CODEX_ACCESS_TOKEN", None)
+
+        proc = subprocess.Popen(
+            [str(binary), "app-server"],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            env=env,
+        )
+        try:
+            write_json_line(
+                proc,
+                {
+                    "jsonrpc": "2.0",
+                    "id": "initialize",
+                    "method": "initialize",
+                    "params": {
+                        "clientInfo": {"name": "app-server-smoke", "version": "0"},
+                        "capabilities": {
+                            "experimentalApi": True,
+                            "optOutNotificationMethods": ["configWarning", "warning"],
+                        },
+                    },
+                },
+            )
+            assert read_json_line(proc, 5)["id"] == "initialize"
+
+            with tempfile.TemporaryDirectory(prefix="codex-zig-turn-user-input-", dir="/tmp") as cwd:
+                write_json_line(
+                    proc,
+                    {
+                        "jsonrpc": "2.0",
+                        "id": "thread-start-for-user-input",
+                        "method": "thread/start",
+                        "params": {
+                            "cwd": cwd,
+                            "approvalPolicy": "never",
+                            "sandbox": "workspace-write",
+                        },
+                    },
+                )
+                thread_start = read_json_line(proc, 5)
+                assert thread_start["id"] == "thread-start-for-user-input"
+                thread = thread_start["result"]["thread"]
+                thread_id = thread["id"]
+                assert_thread_started_notification(read_json_line(proc, 5), thread)
+
+                request_user_input_call = {
+                    "type": "response.output_item.done",
+                    "item": {
+                        "type": "function_call",
+                        "call_id": "call-request-user-input",
+                        "name": "request_user_input",
+                        "arguments": json.dumps(
+                            {
+                                "questions": [
+                                    {
+                                        "id": "confirm_path",
+                                        "header": "Confirm",
+                                        "question": "Proceed with the plan?",
+                                        "options": [
+                                            {
+                                                "label": "Yes (Recommended)",
+                                                "description": "Continue the current plan.",
+                                            },
+                                            {
+                                                "label": "No",
+                                                "description": "Stop and revisit the approach.",
+                                            },
+                                        ],
+                                    }
+                                ]
+                            },
+                            separators=(",", ":"),
+                        ),
+                    },
+                }
+                server.response_payloads.extend(
+                    [
+                        (
+                            f"data: {json.dumps(request_user_input_call, separators=(',', ':'))}\n\n"
+                            "data: [DONE]\n\n"
+                        ).encode(),
+                        (
+                            b'data: {"type":"response.output_text.delta","delta":"user input received"}\n\n'
+                            b"data: [DONE]\n\n"
+                        ),
+                    ]
+                )
+
+                write_json_line(
+                    proc,
+                    {
+                        "jsonrpc": "2.0",
+                        "id": "turn-start-request-user-input",
+                        "method": "turn/start",
+                        "params": {
+                            "threadId": thread_id,
+                            "collaborationMode": {
+                                "mode": "plan",
+                                "settings": {
+                                    "model": "gpt-turn-user-input",
+                                    "reasoning_effort": "medium",
+                                    "developer_instructions": None,
+                                },
+                            },
+                            "input": [{"type": "text", "text": "ask for a decision"}],
+                        },
+                    },
+                )
+                turn_start = read_json_line(proc, 5)
+                assert turn_start["id"] == "turn-start-request-user-input"
+                assert "result" in turn_start, turn_start
+                turn_id = turn_start["result"]["turn"]["id"]
+                user_input_request = read_json_line(proc, 5)
+                assert user_input_request["method"] == "item/tool/requestUserInput"
+                user_input_params = user_input_request["params"]
+                assert user_input_params["threadId"] == thread_id
+                assert user_input_params["turnId"] == turn_id
+                assert user_input_params["itemId"] == "call-request-user-input"
+                assert user_input_params["questions"] == [
+                    {
+                        "id": "confirm_path",
+                        "header": "Confirm",
+                        "question": "Proceed with the plan?",
+                        "isOther": True,
+                        "isSecret": False,
+                        "options": [
+                            {
+                                "label": "Yes (Recommended)",
+                                "description": "Continue the current plan.",
+                            },
+                            {
+                                "label": "No",
+                                "description": "Stop and revisit the approach.",
+                            },
+                        ],
+                    }
+                ]
+                request_user_input_tool = next(
+                    (
+                        tool
+                        for tool in server.request_bodies[0]["tools"]
+                        if tool.get("type") == "function"
+                        and tool.get("name") == "request_user_input"
+                    ),
+                    None,
+                )
+                assert request_user_input_tool is not None
+                assert "Plan mode" in request_user_input_tool["description"]
+
+                write_json_line(
+                    proc,
+                    {
+                        "jsonrpc": "2.0",
+                        "id": user_input_request["id"],
+                        "result": {
+                            "answers": {
+                                "confirm_path": {
+                                    "answers": ["yes"],
+                                }
+                            }
+                        },
+                    },
+                )
+                user_input_resolved = read_json_line(proc, 5)
+                assert user_input_resolved["method"] == "serverRequest/resolved"
+                assert user_input_resolved["params"]["threadId"] == thread_id
+                assert user_input_resolved["params"]["requestId"] == user_input_request["id"]
+                messages = read_json_lines_until(
+                    proc,
+                    5,
+                    lambda messages: any(
+                        message.get("method") == "turn/completed"
+                        and message["params"]["turn"]["id"] == turn_id
+                        for message in messages
+                    )
+                    and any(
+                        message.get("method") == "thread/status/changed"
+                        and message["params"]["status"] == {"type": "idle"}
+                        for message in messages
+                    ),
+                )
+                assert any(
+                    message.get("method") == "item/completed"
+                    and message["params"]["item"]["type"] == "agentMessage"
+                    and message["params"]["item"]["text"] == "user input received"
+                    for message in messages
+                )
+                followup_request = server.request_bodies[1]
+                assert any(
+                    item.get("type") == "function_call_output"
+                    and item.get("call_id") == "call-request-user-input"
+                    and '"confirm_path":{"answers":["yes"]}' in item.get("output", "")
+                    for item in followup_request["input"]
+                )
+
+            proc.stdin.close()
+            proc.wait(timeout=5)
+            if proc.returncode != 0:
+                raise AssertionError(f"app-server exited {proc.returncode}: {proc.stderr.read()}")
+        finally:
+            if proc.poll() is None:
+                proc.kill()
+                proc.wait(timeout=5)
+    finally:
+        server.shutdown()
+        server.server_close()
+        shutil.rmtree(codex_home, ignore_errors=True)
+
+
 def run_turn_terminal_interaction_smoke(binary: Path) -> None:
     server, base_url = start_turn_responses_server()
     codex_home = Path(tempfile.mkdtemp(prefix="codex-zig-app-server-terminal-interaction-home-", dir="/tmp"))
@@ -39925,6 +40148,8 @@ def main() -> None:
     print("app-server-turn-command-approval-request-e2e: ok")
     run_turn_request_permissions_smoke(binary)
     print("app-server-turn-request-permissions-e2e: ok")
+    run_turn_request_user_input_smoke(binary)
+    print("app-server-turn-request-user-input-e2e: ok")
     run_turn_terminal_interaction_smoke(binary)
     print("app-server-turn-terminal-interaction-e2e: ok")
     run_app_server_experimental_api_gate_smoke(binary)
