@@ -20691,6 +20691,7 @@ def run_mcp_resource_read_rpc_smoke(binary: Path) -> None:
     server_path = codex_home / "resource_server.py"
     plugin_root = codex_home / "plugins" / "cache" / "local-market" / "enabled-plugin" / "local"
     streamable_server, streamable_url = start_streamable_mcp_server()
+    plugin_streamable_server, plugin_streamable_url = start_streamable_mcp_server()
     try:
         plugin_root.mkdir(parents=True)
         server_path.write_text(
@@ -20800,6 +20801,10 @@ def run_mcp_resource_read_rpc_smoke(binary: Path) -> None:
                         "plugin_resource_docs": {
                             "command": sys.executable,
                             "args": [str(server_path)],
+                        },
+                        "plugin_http_resource_docs": {
+                            "url": plugin_streamable_url,
+                            "bearerTokenEnvVar": "PLUGIN_RESOURCE_MCP_TOKEN",
                         }
                     }
                 },
@@ -20810,6 +20815,7 @@ def run_mcp_resource_read_rpc_smoke(binary: Path) -> None:
         env = os.environ.copy()
         env["CODEX_HOME"] = str(codex_home)
         env["RESOURCE_MCP_TOKEN"] = "resource-token"
+        env["PLUGIN_RESOURCE_MCP_TOKEN"] = "plugin-resource-token"
 
         expected_resource_response = {
             "contents": [
@@ -20866,6 +20872,48 @@ def run_mcp_resource_read_rpc_smoke(binary: Path) -> None:
         )
         assert plugin_resource_read["id"] == "mcp-plugin-resource-read"
         assert plugin_resource_read["result"] == expected_resource_response
+
+        plugin_http_resource_read = request_stdio_app_server(
+            binary,
+            {
+                "jsonrpc": "2.0",
+                "id": "mcp-plugin-http-resource-read",
+                "method": "mcpServer/resource/read",
+                "params": {
+                    "server": "plugin_http_resource_docs",
+                    "uri": "test://codex/resource",
+                },
+            },
+            env,
+        )
+        assert plugin_http_resource_read["id"] == "mcp-plugin-http-resource-read"
+        assert plugin_http_resource_read["result"] == expected_remote_resource_response
+        assert [
+            request["method"] for request in plugin_streamable_server.request_bodies
+        ] == [
+            "initialize",
+            "notifications/initialized",
+            "resources/read",
+            "DELETE",
+        ]
+        assert "mcp-session-id" not in plugin_streamable_server.request_headers[0]
+        for index in (1, 2, 3):
+            assert (
+                plugin_streamable_server.request_headers[index]["mcp-session-id"]
+                == "streamable-session-1"
+            )
+        assert (
+            plugin_streamable_server.request_bodies[-2]["params"]["uri"]
+            == "test://codex/resource"
+        )
+        assert (
+            plugin_streamable_server.request_headers[-1]["authorization"]
+            == "Bearer plugin-resource-token"
+        )
+        assert (
+            plugin_streamable_server.request_headers[-1]["mcp-protocol-version"]
+            == "2025-03-26"
+        )
 
         missing_resource_error = request_stdio_app_server(
             binary,
@@ -21106,6 +21154,8 @@ def run_mcp_resource_read_rpc_smoke(binary: Path) -> None:
     finally:
         streamable_server.shutdown()
         streamable_server.server_close()
+        plugin_streamable_server.shutdown()
+        plugin_streamable_server.server_close()
         shutil.rmtree(codex_home, ignore_errors=True)
 
 
