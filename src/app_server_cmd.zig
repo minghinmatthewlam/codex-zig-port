@@ -25684,6 +25684,16 @@ const AppServerRequestUserInputContext = struct {
     turn_start_response_sent: *bool,
 };
 
+const AppServerMcpElicitationContext = struct {
+    allocator: std.mem.Allocator,
+    state: *AppServerState,
+    transport: ServerRequestTransport,
+    thread_id: []const u8,
+    turn_id: ?[]const u8,
+    turn_start_response_payload: ?[]const u8 = null,
+    turn_start_response_sent: ?*bool = null,
+};
+
 const AppServerApprovalDecision = enum {
     allow,
     allow_for_session,
@@ -26673,6 +26683,215 @@ fn emptyRequestUserInputResult(allocator: std.mem.Allocator, output: []const u8)
     return .{ .output_json = try allocator.dupe(u8, output) };
 }
 
+fn handleAppServerMcpElicitation(ctx: *anyopaque, request: mcp_runtime.ElicitationRequest) !mcp_runtime.ElicitationResponse {
+    const context: *AppServerMcpElicitationContext = @ptrCast(@alignCast(ctx));
+    try sendMcpElicitationTurnStartResponse(context);
+
+    const request_id = try mcpElicitationAppServerRequestId(context.allocator, request.server_name, request.request_id_json);
+    defer context.allocator.free(request_id);
+    const request_id_json = try std.json.Stringify.valueAlloc(context.allocator, request_id, .{});
+    defer context.allocator.free(request_id_json);
+
+    const request_json = try renderMcpServerElicitationRequest(
+        context.allocator,
+        request_id,
+        context.thread_id,
+        context.turn_id,
+        request,
+    );
+    defer context.allocator.free(request_json);
+
+    try trackPendingServerRequest(context.allocator, context.state, request_json);
+    var pending_tracked = true;
+    defer if (pending_tracked) {
+        if (takePendingServerRequest(context.state, request_id_json)) |pending_request| {
+            var pending = pending_request;
+            pending.deinit(context.allocator);
+        }
+    };
+
+    const visible_request = try renderServerRequestForConnection(context.allocator, context.state.experimental_api_enabled, request_json);
+    defer context.allocator.free(visible_request);
+    try context.transport.send_payload(context.transport.ctx, visible_request);
+
+    while (true) {
+        const payload = try context.transport.read_payload(context.transport.ctx, context.allocator) orelse return error.AppServerMcpElicitationClientClosed;
+        defer context.allocator.free(payload);
+        if (payload.len == 0) continue;
+
+        if (try mcpElicitationResultFromResponsePayload(context.allocator, payload, request_id_json)) |result| {
+            try sendServerRequestResolvedForRequest(context.allocator, context.state, context.transport, request_id_json);
+            pending_tracked = false;
+            return result;
+        }
+
+        if (context.turn_id) |turn_id| {
+            if (try renderPendingApprovalInterruptResponse(context.allocator, payload, context.thread_id, turn_id)) |interrupt_response| {
+                defer context.allocator.free(interrupt_response.payload);
+                try context.transport.send_payload(context.transport.ctx, interrupt_response.payload);
+                if (interrupt_response.cancel_approval) {
+                    try sendServerRequestResolvedForRequest(context.allocator, context.state, context.transport, request_id_json);
+                    pending_tracked = false;
+                    return emptyMcpElicitationResult(context.allocator, "cancel");
+                }
+                continue;
+            }
+        }
+
+        if (try renderPendingApprovalJsonRpcResponse(context.allocator, payload)) |response_payload| {
+            defer context.allocator.free(response_payload);
+            try context.transport.send_payload(context.transport.ctx, response_payload);
+        }
+    }
+}
+
+fn sendMcpElicitationTurnStartResponse(context: *AppServerMcpElicitationContext) !void {
+    const sent = context.turn_start_response_sent orelse return;
+    if (sent.*) return;
+    const payload = context.turn_start_response_payload orelse return;
+    try context.transport.send_payload(context.transport.ctx, payload);
+    sent.* = true;
+}
+
+fn mcpElicitationAppServerRequestId(
+    allocator: std.mem.Allocator,
+    server_name: []const u8,
+    mcp_request_id_json: []const u8,
+) ![]const u8 {
+    var parsed = std.json.parseFromSlice(std.json.Value, allocator, mcp_request_id_json, .{}) catch {
+        return std.fmt.allocPrint(allocator, "mcp-elicitation-{s}-{s}", .{ server_name, mcp_request_id_json });
+    };
+    defer parsed.deinit();
+    const label = if (parsed.value == .string) parsed.value.string else mcp_request_id_json;
+    return std.fmt.allocPrint(allocator, "mcp-elicitation-{s}-{s}", .{ server_name, label });
+}
+
+fn renderMcpServerElicitationRequest(
+    allocator: std.mem.Allocator,
+    request_id: []const u8,
+    thread_id: []const u8,
+    turn_id: ?[]const u8,
+    request: mcp_runtime.ElicitationRequest,
+) ![]const u8 {
+    var parsed = try std.json.parseFromSlice(std.json.Value, allocator, request.params_json, .{});
+    defer parsed.deinit();
+    if (parsed.value != .object) return error.InvalidMcpElicitationRequest;
+    const object = parsed.value.object;
+    const message = requiredRequestUserInputStringField(object, "message") orelse return error.InvalidMcpElicitationRequest;
+
+    var out = std.ArrayList(u8).empty;
+    errdefer out.deinit(allocator);
+    try out.appendSlice(allocator, "{\"jsonrpc\":\"2.0\",\"id\":");
+    try appendJsonString(allocator, &out, request_id);
+    try out.appendSlice(allocator, ",\"method\":\"mcpServer/elicitation/request\",\"params\":{\"threadId\":");
+    try appendJsonString(allocator, &out, thread_id);
+    try out.appendSlice(allocator, ",\"turnId\":");
+    try appendOptionalJsonString(allocator, &out, turn_id);
+    try out.appendSlice(allocator, ",\"serverName\":");
+    try appendJsonString(allocator, &out, request.server_name);
+
+    if (object.get("url")) |url_value| {
+        if (url_value != .string) return error.InvalidMcpElicitationRequest;
+        const elicitation_id = requiredRequestUserInputStringField(object, "elicitationId") orelse return error.InvalidMcpElicitationRequest;
+        try out.appendSlice(allocator, ",\"mode\":\"url\",\"_meta\":");
+        try appendMcpElicitationMeta(allocator, &out, object);
+        try out.appendSlice(allocator, ",\"message\":");
+        try appendJsonString(allocator, &out, message);
+        try out.appendSlice(allocator, ",\"url\":");
+        try appendJsonString(allocator, &out, url_value.string);
+        try out.appendSlice(allocator, ",\"elicitationId\":");
+        try appendJsonString(allocator, &out, elicitation_id);
+        try out.appendSlice(allocator, "}}");
+        return out.toOwnedSlice(allocator);
+    }
+
+    const requested_schema = object.get("requestedSchema") orelse object.get("requested_schema") orelse return error.InvalidMcpElicitationRequest;
+    const requested_schema_json = try std.json.Stringify.valueAlloc(allocator, requested_schema, .{});
+    defer allocator.free(requested_schema_json);
+    try out.appendSlice(allocator, ",\"mode\":\"form\",\"_meta\":");
+    try appendMcpElicitationMeta(allocator, &out, object);
+    try out.appendSlice(allocator, ",\"message\":");
+    try appendJsonString(allocator, &out, message);
+    try out.appendSlice(allocator, ",\"requestedSchema\":");
+    try out.appendSlice(allocator, requested_schema_json);
+    try out.appendSlice(allocator, "}}");
+    return out.toOwnedSlice(allocator);
+}
+
+fn appendMcpElicitationMeta(
+    allocator: std.mem.Allocator,
+    out: *std.ArrayList(u8),
+    object: std.json.ObjectMap,
+) !void {
+    const meta = object.get("_meta") orelse object.get("meta") orelse {
+        try out.appendSlice(allocator, "null");
+        return;
+    };
+    const meta_json = try std.json.Stringify.valueAlloc(allocator, meta, .{});
+    defer allocator.free(meta_json);
+    try out.appendSlice(allocator, meta_json);
+}
+
+fn mcpElicitationResultFromResponsePayload(
+    allocator: std.mem.Allocator,
+    payload: []const u8,
+    request_id_json: []const u8,
+) !?mcp_runtime.ElicitationResponse {
+    var parsed = std.json.parseFromSlice(std.json.Value, allocator, payload, .{}) catch return null;
+    defer parsed.deinit();
+    if (parsed.value != .object) return null;
+    const object = parsed.value.object;
+    if (!isJsonRpcResponseEnvelope(object)) return null;
+    const id_value = object.get("id") orelse return null;
+    const id_json = try std.json.Stringify.valueAlloc(allocator, id_value, .{});
+    defer allocator.free(id_json);
+    if (!std.mem.eql(u8, id_json, request_id_json)) return null;
+
+    if (object.get("error") != null) return try emptyMcpElicitationResult(allocator, "decline");
+    const result = object.get("result") orelse return try emptyMcpElicitationResult(allocator, "decline");
+    return .{ .result_json = try renderMcpElicitationResultJson(allocator, result) };
+}
+
+fn renderMcpElicitationResultJson(allocator: std.mem.Allocator, result: std.json.Value) ![]const u8 {
+    if (result != .object) return try allocator.dupe(u8, "{\"action\":\"decline\"}");
+    const action_value = result.object.get("action") orelse return try allocator.dupe(u8, "{\"action\":\"decline\"}");
+    if (action_value != .string or !mcpElicitationActionIsValid(action_value.string)) {
+        return try allocator.dupe(u8, "{\"action\":\"decline\"}");
+    }
+
+    var out = std.ArrayList(u8).empty;
+    errdefer out.deinit(allocator);
+    try out.appendSlice(allocator, "{\"action\":");
+    try appendJsonString(allocator, &out, action_value.string);
+    if (result.object.get("content")) |content| {
+        const content_json = try std.json.Stringify.valueAlloc(allocator, content, .{});
+        defer allocator.free(content_json);
+        try out.appendSlice(allocator, ",\"content\":");
+        try out.appendSlice(allocator, content_json);
+    }
+    if (result.object.get("_meta") orelse result.object.get("meta")) |meta| {
+        const meta_json = try std.json.Stringify.valueAlloc(allocator, meta, .{});
+        defer allocator.free(meta_json);
+        try out.appendSlice(allocator, ",\"_meta\":");
+        try out.appendSlice(allocator, meta_json);
+    }
+    try out.appendSlice(allocator, "}");
+    return out.toOwnedSlice(allocator);
+}
+
+fn emptyMcpElicitationResult(allocator: std.mem.Allocator, action: []const u8) !mcp_runtime.ElicitationResponse {
+    const action_json = try std.json.Stringify.valueAlloc(allocator, action, .{});
+    defer allocator.free(action_json);
+    const result_json = try std.fmt.allocPrint(allocator, "{{\"action\":{s}}}", .{action_json});
+    return .{ .result_json = result_json };
+}
+
+fn mcpElicitationActionIsValid(action: []const u8) bool {
+    return std.mem.eql(u8, action, "accept") or
+        std.mem.eql(u8, action, "decline") or
+        std.mem.eql(u8, action, "cancel");
+}
+
 fn requestPermissionGrantScopeFromValue(value: ?std.json.Value) session_mod.PermissionGrantScope {
     const scope = value orelse return .turn;
     if (scope == .string and std.mem.eql(u8, scope.string, "session")) return .session;
@@ -27411,6 +27630,23 @@ fn handleTurnStart(
         };
     } else null;
 
+    var mcp_elicitation_context: AppServerMcpElicitationContext = undefined;
+    const mcp_elicitation_callback: ?mcp_runtime.ElicitationCallback = if (state.server_request_transport) |transport| blk: {
+        mcp_elicitation_context = .{
+            .allocator = allocator,
+            .state = state,
+            .transport = transport,
+            .thread_id = thread.id,
+            .turn_id = turn_id,
+            .turn_start_response_payload = response_payload,
+            .turn_start_response_sent = &turn_start_response_sent,
+        };
+        break :blk .{
+            .ctx = &mcp_elicitation_context,
+            .on_elicitation_requested = handleAppServerMcpElicitation,
+        };
+    } else null;
+
     var turn_feature_overrides = try effectiveAppServerTurnFeatureOverrides(allocator, state, thread.collaboration_mode);
     defer turn_feature_overrides.deinit(allocator);
 
@@ -27419,6 +27655,7 @@ fn handleTurnStart(
         .approval_callback = approval_callback,
         .request_permissions_callback = request_permissions_callback,
         .request_user_input_callback = request_user_input_callback,
+        .mcp_elicitation_callback = mcp_elicitation_callback,
         .additional_writable_roots = thread.sandbox_writable_roots.items,
         .include_cwd_write_root = thread.sandbox_include_cwd_write_root,
         .network_enabled = thread.sandbox_network_enabled,
@@ -52573,7 +52810,24 @@ fn handleMcpServerToolCall(
     };
     defer allocator.free(codex_home);
 
-    const result = mcp_runtime.callToolByNameJsonRpc(allocator, codex_home, params.server, params.tool, arguments_json, meta_json) catch |err| switch (err) {
+    var mcp_elicitation_context: AppServerMcpElicitationContext = undefined;
+    const call_options: mcp_runtime.CallToolOptions = if (state.server_request_transport) |transport| blk: {
+        mcp_elicitation_context = .{
+            .allocator = allocator,
+            .state = state,
+            .transport = transport,
+            .thread_id = params.thread_id,
+            .turn_id = null,
+        };
+        break :blk .{
+            .elicitation_callback = .{
+                .ctx = &mcp_elicitation_context,
+                .on_elicitation_requested = handleAppServerMcpElicitation,
+            },
+        };
+    } else .{};
+
+    const result = mcp_runtime.callToolByNameJsonRpcWithOptions(allocator, codex_home, params.server, params.tool, arguments_json, meta_json, call_options) catch |err| switch (err) {
         error.McpServerNotFound => return renderMcpServerNotFound(allocator, id_value, params.server),
         error.McpServerUnavailable => return renderMcpServerUnavailable(allocator, id_value, params.server),
         else => return renderJsonRpcErrorForFailure(allocator, id_value, "mcpServer/tool/call failed", err),

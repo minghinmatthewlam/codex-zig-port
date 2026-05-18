@@ -276,6 +276,7 @@ pub const TurnOptions = struct {
     approval_callback: ?tools.ApprovalCallback = null,
     request_permissions_callback: ?RequestPermissionsCallback = null,
     request_user_input_callback: ?RequestUserInputCallback = null,
+    mcp_elicitation_callback: ?mcp_runtime.ElicitationCallback = null,
     json_events: bool = false,
     stream_text: bool = false,
     additional_writable_roots: []const []const u8 = &.{},
@@ -744,7 +745,9 @@ fn runToolCall(
 
     if (mcp_catalog.find(call.name)) |mcp_tool| {
         try reportMcpToolCallProgress(allocator, options, call.call_id, "calling", mcp_tool.server_name, mcp_tool.raw_tool_name, null);
-        var output = mcp_runtime.callTool(allocator, cfg.codex_home, mcp_tool, call.arguments) catch |err| {
+        var output = mcp_runtime.callToolWithOptions(allocator, cfg.codex_home, mcp_tool, call.arguments, .{
+            .elicitation_callback = options.mcp_elicitation_callback,
+        }) catch |err| {
             try reportMcpToolCallProgress(allocator, options, call.call_id, "failed", mcp_tool.server_name, mcp_tool.raw_tool_name, @errorName(err));
             return .{
                 .call_id = try allocator.dupe(u8, call.call_id),

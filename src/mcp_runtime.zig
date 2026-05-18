@@ -68,6 +68,29 @@ pub const CallOutput = struct {
     }
 };
 
+pub const ElicitationRequest = struct {
+    server_name: []const u8,
+    request_id_json: []const u8,
+    params_json: []const u8,
+};
+
+pub const ElicitationResponse = struct {
+    result_json: []const u8,
+
+    pub fn deinit(self: ElicitationResponse, allocator: std.mem.Allocator) void {
+        allocator.free(self.result_json);
+    }
+};
+
+pub const ElicitationCallback = struct {
+    ctx: *anyopaque,
+    on_elicitation_requested: *const fn (ctx: *anyopaque, request: ElicitationRequest) anyerror!ElicitationResponse,
+};
+
+pub const CallToolOptions = struct {
+    elicitation_callback: ?ElicitationCallback = null,
+};
+
 pub const McpJsonRpcErrorPayload = struct {
     code: i64,
     message: []const u8,
@@ -216,12 +239,22 @@ pub fn callTool(
     spec: ToolSpec,
     arguments_json: []const u8,
 ) !CallOutput {
+    return callToolWithOptions(allocator, codex_home, spec, arguments_json, .{});
+}
+
+pub fn callToolWithOptions(
+    allocator: std.mem.Allocator,
+    codex_home: []const u8,
+    spec: ToolSpec,
+    arguments_json: []const u8,
+    options: CallToolOptions,
+) !CallOutput {
     var servers = try mcp_cmd.loadServers(allocator, codex_home);
     defer servers.deinit(allocator);
     const server = servers.get(spec.server_name) orelse return error.McpServerNotFound;
     if (!server.enabled) return error.McpServerUnavailable;
     return switch (server.kind) {
-        .stdio => callServerTool(allocator, server.*, spec.raw_tool_name, arguments_json),
+        .stdio => callServerTool(allocator, server.*, spec.raw_tool_name, arguments_json, options),
         .streamable_http => callHttpServerTool(allocator, codex_home, server.*, spec.raw_tool_name, arguments_json),
         else => error.McpServerUnavailable,
     };
@@ -707,12 +740,24 @@ pub fn callToolByNameJsonRpc(
     arguments_json: ?[]const u8,
     meta_json: ?[]const u8,
 ) !JsonRpcMethodResult {
+    return callToolByNameJsonRpcWithOptions(allocator, codex_home, server_name, raw_tool_name, arguments_json, meta_json, .{});
+}
+
+pub fn callToolByNameJsonRpcWithOptions(
+    allocator: std.mem.Allocator,
+    codex_home: []const u8,
+    server_name: []const u8,
+    raw_tool_name: []const u8,
+    arguments_json: ?[]const u8,
+    meta_json: ?[]const u8,
+    options: CallToolOptions,
+) !JsonRpcMethodResult {
     var servers = try mcp_cmd.loadServers(allocator, codex_home);
     defer servers.deinit(allocator);
     const server = servers.get(server_name) orelse return error.McpServerNotFound;
     if (!server.enabled) return error.McpServerUnavailable;
     return switch (server.kind) {
-        .stdio => callServerToolJsonRpc(allocator, server.*, raw_tool_name, arguments_json, meta_json),
+        .stdio => callServerToolJsonRpc(allocator, server.*, raw_tool_name, arguments_json, meta_json, options),
         .streamable_http => callHttpServerToolJsonRpc(allocator, codex_home, server.*, raw_tool_name, arguments_json, meta_json),
         else => error.McpServerUnavailable,
     };
@@ -865,8 +910,9 @@ fn callServerTool(
     server: mcp_cmd.McpServer,
     raw_tool_name: []const u8,
     arguments_json: []const u8,
+    options: CallToolOptions,
 ) !CallOutput {
-    var client = try StdioClient.start(allocator, server);
+    var client = try StdioClient.startWithOptions(allocator, server, .{ .elicitation_callback = options.elicitation_callback });
     defer client.deinit();
 
     try client.initialize();
@@ -972,8 +1018,9 @@ fn callServerToolJsonRpc(
     raw_tool_name: []const u8,
     arguments_json: ?[]const u8,
     meta_json: ?[]const u8,
+    options: CallToolOptions,
 ) !JsonRpcMethodResult {
-    var client = try StdioClient.start(allocator, server);
+    var client = try StdioClient.startWithOptions(allocator, server, .{ .elicitation_callback = options.elicitation_callback });
     defer client.deinit();
 
     try client.initialize();
@@ -1025,13 +1072,23 @@ fn callHttpServerToolJsonRpc(
 
 const StdioClient = struct {
     allocator: std.mem.Allocator,
+    server_name: []const u8,
     io_instance: std.Io.Threaded,
     child: std.process.Child,
     stdin_file: std.Io.File,
     stdout_file: std.Io.File,
     argv: SpawnArgv,
+    elicitation_callback: ?ElicitationCallback,
+
+    const Options = struct {
+        elicitation_callback: ?ElicitationCallback = null,
+    };
 
     fn start(allocator: std.mem.Allocator, server: mcp_cmd.McpServer) !StdioClient {
+        return startWithOptions(allocator, server, .{});
+    }
+
+    fn startWithOptions(allocator: std.mem.Allocator, server: mcp_cmd.McpServer, options: Options) !StdioClient {
         var io_instance: std.Io.Threaded = .init(allocator, .{});
         errdefer io_instance.deinit();
 
@@ -1048,11 +1105,13 @@ const StdioClient = struct {
 
         return .{
             .allocator = allocator,
+            .server_name = server.name,
             .io_instance = io_instance,
             .child = child,
             .stdin_file = child.stdin.?,
             .stdout_file = child.stdout.?,
             .argv = argv,
+            .elicitation_callback = options.elicitation_callback,
         };
     }
 
@@ -1106,12 +1165,56 @@ const StdioClient = struct {
             var parsed = std.json.parseFromSlice(std.json.Value, self.allocator, trimmed, .{}) catch continue;
             errdefer parsed.deinit();
             if (!isResponseForId(parsed.value, id)) {
+                if (try self.handleServerRequest(parsed.value)) {
+                    parsed.deinit();
+                    continue;
+                }
                 parsed.deinit();
                 continue;
             }
             return parsed;
         }
         return error.McpResponseNotFound;
+    }
+
+    fn handleServerRequest(self: *StdioClient, value: std.json.Value) !bool {
+        if (value != .object) return false;
+        const object = value.object;
+        const id_value = object.get("id") orelse return false;
+        if (!isJsonRpcIdValue(id_value)) return false;
+        const method_value = object.get("method") orelse return false;
+        if (method_value != .string) return false;
+
+        const id_json = try std.json.Stringify.valueAlloc(self.allocator, id_value, .{});
+        defer self.allocator.free(id_json);
+
+        if (std.mem.eql(u8, method_value.string, "elicitation/create")) {
+            const params_json = if (object.get("params")) |params_value|
+                try std.json.Stringify.valueAlloc(self.allocator, params_value, .{})
+            else
+                try self.allocator.dupe(u8, "{}");
+            defer self.allocator.free(params_json);
+
+            var result = if (self.elicitation_callback) |callback|
+                try callback.on_elicitation_requested(callback.ctx, .{
+                    .server_name = self.server_name,
+                    .request_id_json = id_json,
+                    .params_json = params_json,
+                })
+            else
+                ElicitationResponse{ .result_json = try self.allocator.dupe(u8, "{\"action\":\"decline\"}") };
+            defer result.deinit(self.allocator);
+
+            const response = try buildResponsePayloadWithIdJson(self.allocator, id_json, result.result_json);
+            defer self.allocator.free(response);
+            try self.writeLine(response);
+            return true;
+        }
+
+        const response = try buildErrorPayloadWithIdJson(self.allocator, id_json, -32601, "Method not found");
+        defer self.allocator.free(response);
+        try self.writeLine(response);
+        return true;
     }
 
     fn readLine(self: *StdioClient) ![]const u8 {
@@ -1640,6 +1743,33 @@ fn buildNotificationPayload(
     );
 }
 
+fn buildResponsePayloadWithIdJson(
+    allocator: std.mem.Allocator,
+    id_json: []const u8,
+    result_json: []const u8,
+) ![]const u8 {
+    return std.fmt.allocPrint(
+        allocator,
+        "{{\"jsonrpc\":\"2.0\",\"id\":{s},\"result\":{s}}}",
+        .{ id_json, result_json },
+    );
+}
+
+fn buildErrorPayloadWithIdJson(
+    allocator: std.mem.Allocator,
+    id_json: []const u8,
+    code: i64,
+    message: []const u8,
+) ![]const u8 {
+    const message_json = try std.json.Stringify.valueAlloc(allocator, message, .{});
+    defer allocator.free(message_json);
+    return std.fmt.allocPrint(
+        allocator,
+        "{{\"jsonrpc\":\"2.0\",\"id\":{s},\"error\":{{\"code\":{d},\"message\":{s}}}}}",
+        .{ id_json, code, message_json },
+    );
+}
+
 fn buildCallToolParams(allocator: std.mem.Allocator, raw_tool_name: []const u8, arguments_json: []const u8) ![]const u8 {
     return buildCallToolParamsWithMeta(allocator, raw_tool_name, arguments_json, null);
 }
@@ -1686,6 +1816,13 @@ fn buildCursorParams(allocator: std.mem.Allocator, cursor: []const u8) ![]const 
     const cursor_json = try std.json.Stringify.valueAlloc(allocator, cursor, .{});
     defer allocator.free(cursor_json);
     return std.fmt.allocPrint(allocator, "{{\"cursor\":{s}}}", .{cursor_json});
+}
+
+fn isJsonRpcIdValue(value: std.json.Value) bool {
+    return switch (value) {
+        .string, .integer => true,
+        else => false,
+    };
 }
 
 fn isResponseForId(value: std.json.Value, id: i64) bool {
