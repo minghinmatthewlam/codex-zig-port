@@ -25674,6 +25674,16 @@ const AppServerRequestPermissionsContext = struct {
     turn_start_response_sent: *bool,
 };
 
+const AppServerRequestUserInputContext = struct {
+    allocator: std.mem.Allocator,
+    state: *AppServerState,
+    transport: ServerRequestTransport,
+    thread_id: []const u8,
+    turn_id: []const u8,
+    turn_start_response_payload: []const u8,
+    turn_start_response_sent: *bool,
+};
+
 const AppServerApprovalDecision = enum {
     allow,
     allow_for_session,
@@ -26469,6 +26479,200 @@ fn emptyRequestPermissionsResult(allocator: std.mem.Allocator, output: []const u
     };
 }
 
+fn handleAppServerRequestUserInput(ctx: *anyopaque, request: session_mod.RequestUserInputRequest) !session_mod.RequestUserInputResult {
+    const context: *AppServerRequestUserInputContext = @ptrCast(@alignCast(ctx));
+    try sendRequestUserInputTurnStartResponse(context);
+
+    const request_id = try std.fmt.allocPrint(context.allocator, "user-input-{s}", .{request.call_id});
+    defer context.allocator.free(request_id);
+    const request_id_json = try std.json.Stringify.valueAlloc(context.allocator, request_id, .{});
+    defer context.allocator.free(request_id_json);
+
+    const request_json = try renderToolRequestUserInputRequest(
+        context.allocator,
+        request_id,
+        context.thread_id,
+        context.turn_id,
+        request,
+    );
+    defer context.allocator.free(request_json);
+
+    try trackPendingServerRequest(context.allocator, context.state, request_json);
+    var pending_tracked = true;
+    defer if (pending_tracked) {
+        if (takePendingServerRequest(context.state, request_id_json)) |pending_request| {
+            var pending = pending_request;
+            pending.deinit(context.allocator);
+        }
+    };
+
+    const visible_request = try renderServerRequestForConnection(context.allocator, context.state.experimental_api_enabled, request_json);
+    defer context.allocator.free(visible_request);
+    try context.transport.send_payload(context.transport.ctx, visible_request);
+
+    while (true) {
+        const payload = try context.transport.read_payload(context.transport.ctx, context.allocator) orelse return error.AppServerRequestUserInputClientClosed;
+        defer context.allocator.free(payload);
+        if (payload.len == 0) continue;
+
+        if (try requestUserInputResultFromResponsePayload(context.allocator, payload, request_id_json)) |parsed_result| {
+            try sendServerRequestResolvedForRequest(context.allocator, context.state, context.transport, request_id_json);
+            pending_tracked = false;
+            return parsed_result;
+        }
+
+        if (try renderPendingApprovalInterruptResponse(context.allocator, payload, context.thread_id, context.turn_id)) |interrupt_response| {
+            defer context.allocator.free(interrupt_response.payload);
+            try context.transport.send_payload(context.transport.ctx, interrupt_response.payload);
+            if (interrupt_response.cancel_approval) {
+                try sendServerRequestResolvedForRequest(context.allocator, context.state, context.transport, request_id_json);
+                pending_tracked = false;
+                return emptyRequestUserInputResult(context.allocator, "request_user_input was cancelled before receiving a response");
+            }
+            continue;
+        }
+
+        if (try renderPendingApprovalJsonRpcResponse(context.allocator, payload)) |response_payload| {
+            defer context.allocator.free(response_payload);
+            try context.transport.send_payload(context.transport.ctx, response_payload);
+        }
+    }
+}
+
+fn sendRequestUserInputTurnStartResponse(context: *AppServerRequestUserInputContext) !void {
+    if (context.turn_start_response_sent.*) return;
+    try context.transport.send_payload(context.transport.ctx, context.turn_start_response_payload);
+    context.turn_start_response_sent.* = true;
+}
+
+fn renderToolRequestUserInputRequest(
+    allocator: std.mem.Allocator,
+    request_id: []const u8,
+    thread_id: []const u8,
+    turn_id: []const u8,
+    request: session_mod.RequestUserInputRequest,
+) ![]const u8 {
+    var parsed = try std.json.parseFromSlice(std.json.Value, allocator, request.arguments_json, .{});
+    defer parsed.deinit();
+    if (parsed.value != .object) return error.InvalidRequestUserInput;
+    const questions = parsed.value.object.get("questions") orelse return error.InvalidRequestUserInput;
+    const questions_json = try renderRequestUserInputQuestionsJson(allocator, questions);
+    defer allocator.free(questions_json);
+
+    var out = std.ArrayList(u8).empty;
+    errdefer out.deinit(allocator);
+    try out.appendSlice(allocator, "{\"jsonrpc\":\"2.0\",\"id\":");
+    try appendJsonString(allocator, &out, request_id);
+    try out.appendSlice(allocator, ",\"method\":\"item/tool/requestUserInput\",\"params\":{\"threadId\":");
+    try appendJsonString(allocator, &out, thread_id);
+    try out.appendSlice(allocator, ",\"turnId\":");
+    try appendJsonString(allocator, &out, turn_id);
+    try out.appendSlice(allocator, ",\"itemId\":");
+    try appendJsonString(allocator, &out, request.call_id);
+    try out.appendSlice(allocator, ",\"questions\":");
+    try out.appendSlice(allocator, questions_json);
+    try out.appendSlice(allocator, "}}");
+    return out.toOwnedSlice(allocator);
+}
+
+fn renderRequestUserInputQuestionsJson(
+    allocator: std.mem.Allocator,
+    questions: std.json.Value,
+) ![]const u8 {
+    if (questions != .array) return error.InvalidRequestUserInput;
+    if (questions.array.items.len == 0) return error.InvalidRequestUserInput;
+
+    var out = std.ArrayList(u8).empty;
+    errdefer out.deinit(allocator);
+    try out.appendSlice(allocator, "[");
+    for (questions.array.items, 0..) |question, index| {
+        if (question != .object) return error.InvalidRequestUserInput;
+        if (index > 0) try out.appendSlice(allocator, ",");
+        try out.appendSlice(allocator, "{\"id\":");
+        try appendJsonString(allocator, &out, requiredRequestUserInputStringField(question.object, "id") orelse return error.InvalidRequestUserInput);
+        try out.appendSlice(allocator, ",\"header\":");
+        try appendJsonString(allocator, &out, requiredRequestUserInputStringField(question.object, "header") orelse return error.InvalidRequestUserInput);
+        try out.appendSlice(allocator, ",\"question\":");
+        try appendJsonString(allocator, &out, requiredRequestUserInputStringField(question.object, "question") orelse return error.InvalidRequestUserInput);
+        try out.appendSlice(allocator, ",\"isOther\":true,\"isSecret\":false,\"options\":");
+        try renderRequestUserInputOptionsJson(allocator, &out, question.object.get("options") orelse return error.InvalidRequestUserInput);
+        try out.appendSlice(allocator, "}");
+    }
+    try out.appendSlice(allocator, "]");
+    return out.toOwnedSlice(allocator);
+}
+
+fn renderRequestUserInputOptionsJson(
+    allocator: std.mem.Allocator,
+    out: *std.ArrayList(u8),
+    options: std.json.Value,
+) !void {
+    if (options != .array) return error.InvalidRequestUserInput;
+    if (options.array.items.len == 0) return error.InvalidRequestUserInput;
+    try out.appendSlice(allocator, "[");
+    for (options.array.items, 0..) |option, index| {
+        if (option != .object) return error.InvalidRequestUserInput;
+        if (index > 0) try out.appendSlice(allocator, ",");
+        try out.appendSlice(allocator, "{\"label\":");
+        try appendJsonString(allocator, out, requiredRequestUserInputStringField(option.object, "label") orelse return error.InvalidRequestUserInput);
+        try out.appendSlice(allocator, ",\"description\":");
+        try appendJsonString(allocator, out, requiredRequestUserInputStringField(option.object, "description") orelse return error.InvalidRequestUserInput);
+        try out.appendSlice(allocator, "}");
+    }
+    try out.appendSlice(allocator, "]");
+}
+
+fn requiredRequestUserInputStringField(object: std.json.ObjectMap, name: []const u8) ?[]const u8 {
+    const value = object.get(name) orelse return null;
+    if (value != .string) return null;
+    return value.string;
+}
+
+fn requestUserInputResultFromResponsePayload(
+    allocator: std.mem.Allocator,
+    payload: []const u8,
+    request_id_json: []const u8,
+) !?session_mod.RequestUserInputResult {
+    var parsed = std.json.parseFromSlice(std.json.Value, allocator, payload, .{}) catch return null;
+    defer parsed.deinit();
+    if (parsed.value != .object) return null;
+    const object = parsed.value.object;
+    if (!isJsonRpcResponseEnvelope(object)) return null;
+    const id_value = object.get("id") orelse return null;
+    const id_json = try std.json.Stringify.valueAlloc(allocator, id_value, .{});
+    defer allocator.free(id_json);
+    if (!std.mem.eql(u8, id_json, request_id_json)) return null;
+    if (object.get("error") != null) return try emptyRequestUserInputAnswersResult(allocator);
+    const result = object.get("result") orelse return try emptyRequestUserInputAnswersResult(allocator);
+    if (!requestUserInputResponseIsValid(result)) return try emptyRequestUserInputAnswersResult(allocator);
+    return .{ .output_json = try std.json.Stringify.valueAlloc(allocator, result, .{}) };
+}
+
+fn requestUserInputResponseIsValid(value: std.json.Value) bool {
+    if (value != .object) return false;
+    const answers = value.object.get("answers") orelse return false;
+    if (answers != .object) return false;
+    var iterator = answers.object.iterator();
+    while (iterator.next()) |entry| {
+        const answer = entry.value_ptr.*;
+        if (answer != .object) return false;
+        const choices = answer.object.get("answers") orelse return false;
+        if (choices != .array) return false;
+        for (choices.array.items) |choice| {
+            if (choice != .string) return false;
+        }
+    }
+    return true;
+}
+
+fn emptyRequestUserInputAnswersResult(allocator: std.mem.Allocator) !session_mod.RequestUserInputResult {
+    return .{ .output_json = try allocator.dupe(u8, "{\"answers\":{}}") };
+}
+
+fn emptyRequestUserInputResult(allocator: std.mem.Allocator, output: []const u8) !session_mod.RequestUserInputResult {
+    return .{ .output_json = try allocator.dupe(u8, output) };
+}
+
 fn requestPermissionGrantScopeFromValue(value: ?std.json.Value) session_mod.PermissionGrantScope {
     const scope = value orelse return .turn;
     if (scope == .string and std.mem.eql(u8, scope.string, "session")) return .session;
@@ -27190,13 +27394,31 @@ fn handleTurnStart(
         };
     } else null;
 
-    var turn_feature_overrides = try effectiveAppServerTurnFeatureOverrides(allocator, state);
+    var request_user_input_context: AppServerRequestUserInputContext = undefined;
+    const request_user_input_callback: ?session_mod.RequestUserInputCallback = if (state.server_request_transport) |transport| blk: {
+        request_user_input_context = .{
+            .allocator = allocator,
+            .state = state,
+            .transport = transport,
+            .thread_id = thread.id,
+            .turn_id = turn_id,
+            .turn_start_response_payload = response_payload,
+            .turn_start_response_sent = &turn_start_response_sent,
+        };
+        break :blk .{
+            .ctx = &request_user_input_context,
+            .on_request_user_input_requested = handleAppServerRequestUserInput,
+        };
+    } else null;
+
+    var turn_feature_overrides = try effectiveAppServerTurnFeatureOverrides(allocator, state, thread.collaboration_mode);
     defer turn_feature_overrides.deinit(allocator);
 
     const answer = session_mod.runTurnWithOptions(allocator, cfg, &credentials, &thread.transcript, prompt_for_turn, .{
         .prompt_for_approval = approval_callback != null,
         .approval_callback = approval_callback,
         .request_permissions_callback = request_permissions_callback,
+        .request_user_input_callback = request_user_input_callback,
         .additional_writable_roots = thread.sandbox_writable_roots.items,
         .include_cwd_write_root = thread.sandbox_include_cwd_write_root,
         .network_enabled = thread.sandbox_network_enabled,
@@ -36008,11 +36230,19 @@ fn appServerFeatureEnabled(allocator: std.mem.Allocator, state: *const AppServer
 fn effectiveAppServerTurnFeatureOverrides(
     allocator: std.mem.Allocator,
     state: *const AppServerState,
+    collaboration_mode: []const u8,
 ) !features_cmd.FeatureOverrides {
     var overrides = features_cmd.FeatureOverrides{};
     errdefer overrides.deinit(allocator);
     if (try appServerFeatureEnabled(allocator, state, "request_permissions_tool")) {
         try overrides.put(allocator, "request_permissions_tool", true);
+    }
+    const default_mode_request_user_input_enabled = try appServerFeatureEnabled(allocator, state, "default_mode_request_user_input");
+    if (default_mode_request_user_input_enabled) {
+        try overrides.put(allocator, "default_mode_request_user_input", true);
+    }
+    if (std.mem.eql(u8, collaboration_mode, "plan") or default_mode_request_user_input_enabled) {
+        try overrides.put(allocator, "request_user_input_tool", true);
     }
     return overrides;
 }
