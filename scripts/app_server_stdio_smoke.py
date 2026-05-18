@@ -16,6 +16,8 @@ import tarfile
 import tempfile
 import threading
 import time
+import urllib.parse
+import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Callable
@@ -402,7 +404,63 @@ class McpOAuthDiscoveryHandler(BaseHTTPRequestHandler):
                 {
                     "authorization_endpoint": f"{self.server.base_url}/oauth/authorize",
                     "token_endpoint": f"{self.server.base_url}/oauth/token",
+                    "registration_endpoint": f"{self.server.base_url}/oauth/register",
                     "scopes_supported": ["read", "write"],
+                },
+                separators=(",", ":"),
+            ).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(payload)))
+            self.end_headers()
+            self.wfile.write(payload)
+            return
+        if self.path.startswith("/oauth/authorize?"):
+            parsed = urllib.parse.urlparse(self.path)
+            query = urllib.parse.parse_qs(parsed.query)
+            self.server.authorization_requests.append(query)
+            redirect_uri = query["redirect_uri"][0]
+            state = query["state"][0]
+            location = f"{redirect_uri}?code=mock-code&state={urllib.parse.quote(state)}"
+            self.send_response(302)
+            self.send_header("Location", location)
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+            return
+        payload = b"not found"
+        self.send_response(404)
+        self.send_header("Content-Type", "text/plain")
+        self.send_header("Content-Length", str(len(payload)))
+        self.end_headers()
+        self.wfile.write(payload)
+
+    def do_POST(self) -> None:
+        self.server.request_paths.append(self.path)
+        length = int(self.headers.get("Content-Length", "0"))
+        raw_body = self.rfile.read(length)
+        if self.path == "/oauth/register":
+            body = json.loads(raw_body.decode() or "{}")
+            self.server.registration_requests.append(body)
+            payload = json.dumps(
+                {"client_id": "mock-client"},
+                separators=(",", ":"),
+            ).encode()
+            self.send_response(201)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(payload)))
+            self.end_headers()
+            self.wfile.write(payload)
+            return
+        if self.path == "/oauth/token":
+            body = urllib.parse.parse_qs(raw_body.decode())
+            self.server.token_requests.append(body)
+            payload = json.dumps(
+                {
+                    "access_token": "mock-access-token",
+                    "token_type": "Bearer",
+                    "expires_in": 3600,
+                    "refresh_token": "mock-refresh-token",
+                    "scope": "read write",
                 },
                 separators=(",", ":"),
             ).encode()
@@ -425,6 +483,9 @@ class McpOAuthDiscoveryHandler(BaseHTTPRequestHandler):
 
 class McpOAuthDiscoveryServer(ThreadingHTTPServer):
     request_paths: list[str]
+    authorization_requests: list[dict[str, list[str]]]
+    registration_requests: list[dict]
+    token_requests: list[dict[str, list[str]]]
     base_url: str
 
 
@@ -877,6 +938,9 @@ def start_turn_responses_server() -> tuple[TurnResponsesServer, str]:
 def start_mcp_oauth_discovery_server() -> tuple[McpOAuthDiscoveryServer, str]:
     server = McpOAuthDiscoveryServer(("127.0.0.1", 0), McpOAuthDiscoveryHandler)
     server.request_paths = []
+    server.authorization_requests = []
+    server.registration_requests = []
+    server.token_requests = []
     server.base_url = f"http://127.0.0.1:{server.server_port}"
     threading.Thread(target=server.serve_forever, daemon=True).start()
     return server, f"{server.base_url}/mcp"
@@ -20134,24 +20198,85 @@ def run_mcp_server_status_rpc_smoke(binary: Path) -> None:
             oauth_stdio_server["error"]["message"]
         )
 
-        oauth_http_server = request_stdio_app_server(
+        oauth_proc = subprocess.Popen(
+            [str(binary), "app-server"],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            env=env,
+        )
+        try:
+            write_json_line(
+                oauth_proc,
+                {
+                    "jsonrpc": "2.0",
+                    "id": "mcp-oauth-http-server",
+                    "method": "mcpServer/oauth/login",
+                    "params": {
+                        "name": "oauth_discovery",
+                        "scopes": ["read", "write"],
+                        "timeoutSecs": 1,
+                    },
+                },
+            )
+            oauth_http_server = read_json_line(oauth_proc, 5)
+            assert oauth_http_server["id"] == "mcp-oauth-http-server"
+            authorization_url = oauth_http_server["result"]["authorizationUrl"]
+            assert authorization_url.startswith(f"{discovery_server.base_url}/oauth/authorize?")
+            with urllib.request.urlopen(authorization_url, timeout=5) as response:
+                assert response.status == 200
+                assert b"MCP login complete" in response.read()
+            oauth_completed = read_json_line(oauth_proc, 5)
+            assert oauth_completed["method"] == "mcpServer/oauthLogin/completed"
+            assert oauth_completed["params"] == {
+                "name": "oauth_discovery",
+                "success": True,
+                "error": None,
+            }
+        finally:
+            if oauth_proc.stdin is not None:
+                oauth_proc.stdin.close()
+            try:
+                oauth_proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                oauth_proc.kill()
+                oauth_proc.wait(timeout=5)
+        if oauth_proc.returncode != 0:
+            raise AssertionError(f"app-server exited {oauth_proc.returncode}: {oauth_proc.stderr.read()}")
+
+        assert discovery_server.registration_requests
+        assert discovery_server.authorization_requests
+        auth_query = discovery_server.authorization_requests[-1]
+        assert auth_query["scope"] == ["read write"]
+        assert discovery_server.token_requests
+        token_body = discovery_server.token_requests[-1]
+        assert token_body["grant_type"] == ["authorization_code"]
+        assert token_body["code"] == ["mock-code"]
+        oauth_discovery_key = mcp_oauth_credential_key("oauth_discovery", discovery_url)
+        credentials_after_login = json.loads((codex_home / ".credentials.json").read_text(encoding="utf-8"))
+        assert credentials_after_login[oauth_discovery_key]["access_token"] == "mock-access-token"
+        assert credentials_after_login[oauth_discovery_key]["refresh_token"] == "mock-refresh-token"
+        assert credentials_after_login[oauth_discovery_key]["scopes"] == ["read", "write"]
+
+        oauth_http_missing_discovery = request_stdio_app_server(
             binary,
             {
                 "jsonrpc": "2.0",
-                "id": "mcp-oauth-http-server",
+                "id": "mcp-oauth-http-server-missing-discovery",
                 "method": "mcpServer/oauth/login",
                 "params": {
-                    "name": "remote",
+                    "name": "oauth",
                     "scopes": ["read", "write"],
                     "timeoutSecs": 1,
                 },
             },
             env,
         )
-        assert oauth_http_server["id"] == "mcp-oauth-http-server"
-        assert oauth_http_server["error"]["code"] == -32603
-        assert "MCP OAuth login is not implemented" in (
-            oauth_http_server["error"]["message"]
+        assert oauth_http_missing_discovery["id"] == "mcp-oauth-http-server-missing-discovery"
+        assert oauth_http_missing_discovery["error"]["code"] == -32603
+        assert "failed to start OAuth login" in (
+            oauth_http_missing_discovery["error"]["message"]
         )
 
         full_inventory = request_stdio_app_server(
@@ -20245,7 +20370,7 @@ def run_mcp_server_status_rpc_smoke(binary: Path) -> None:
         assert second_entries[0]["tools"] == {}
         assert second_entries[0]["resources"] == []
         assert second_entries[0]["resourceTemplates"] == []
-        assert second_entries[1]["authStatus"] == "notLoggedIn"
+        assert second_entries[1]["authStatus"] == "oAuth"
         assert second_entries[1]["tools"] == {}
         assert second_entries[1]["resources"] == []
         assert second_entries[1]["resourceTemplates"] == []
