@@ -52637,6 +52637,12 @@ const McpStatusDetail = enum {
 
 const McpServerOauthLoginParams = struct {
     name: []const u8,
+    scopes: std.ArrayList([]const u8) = .empty,
+    scopes_present: bool = false,
+
+    fn deinit(self: *McpServerOauthLoginParams, allocator: std.mem.Allocator) void {
+        self.scopes.deinit(allocator);
+    }
 };
 
 const McpResourceReadParams = struct {
@@ -52672,7 +52678,7 @@ fn handleMcpServerMethod(
         return handleMcpServerReload(allocator, id_value, params_value);
     }
     if (std.mem.eql(u8, method, "mcpServer/oauth/login")) {
-        return handleMcpServerOauthLogin(allocator, id_value, params_value);
+        return handleMcpServerOauthLogin(allocator, state, id_value, params_value);
     }
     if (std.mem.eql(u8, method, "mcpServerStatus/list")) {
         return handleMcpServerStatusList(allocator, id_value, params_value);
@@ -52715,13 +52721,19 @@ fn handleMcpServerReload(
     return renderJsonRpcResult(allocator, id_value, "{}");
 }
 
-fn handleMcpServerOauthLogin(allocator: std.mem.Allocator, id_value: std.json.Value, params_value: ?std.json.Value) ![]const u8 {
-    const params = parseMcpServerOauthLoginParams(params_value) catch |err| switch (err) {
+fn handleMcpServerOauthLogin(allocator: std.mem.Allocator, state: *AppServerState, id_value: std.json.Value, params_value: ?std.json.Value) ![]const u8 {
+    var params = parseMcpServerOauthLoginParams(allocator, params_value) catch |err| switch (err) {
         error.InvalidMcpOauthLoginParams => return renderJsonRpcError(allocator, id_value, -32602, "mcpServer/oauth/login params must be an object"),
         error.InvalidMcpOauthLoginName => return renderJsonRpcError(allocator, id_value, -32602, "name must be a string"),
         error.InvalidMcpOauthLoginScopes => return renderJsonRpcError(allocator, id_value, -32602, "scopes must be an array of strings or null"),
         error.InvalidMcpOauthLoginTimeout => return renderJsonRpcError(allocator, id_value, -32602, "timeoutSecs must be an integer or null"),
+        else => return err,
     };
+    defer params.deinit(allocator);
+
+    if (!state.deferred_command_exec_stdio) {
+        return renderJsonRpcError(allocator, id_value, -32603, "mcpServer/oauth/login completion is currently implemented for stdio app-server transport only");
+    }
 
     const codex_home = resolveCodexHome(allocator) catch |err| {
         return renderJsonRpcErrorForFailure(allocator, id_value, "mcpServer/oauth/login failed to resolve CODEX_HOME", err);
@@ -52741,7 +52753,85 @@ fn handleMcpServerOauthLogin(allocator: std.mem.Allocator, id_value: std.json.Va
     if (server.kind != .streamable_http or server.url == null) {
         return renderJsonRpcError(allocator, id_value, -32600, "OAuth login is only supported for streamable HTTP servers.");
     }
-    return renderJsonRpcError(allocator, id_value, -32603, "MCP OAuth login is not implemented in the Zig port yet.");
+
+    const requested_scopes = if (params.scopes_present) params.scopes.items else server.scopes.items;
+    var login_handle = mcp_cmd.startMcpOAuthLoginReturnUrl(allocator, codex_home, config_bytes orelse "", server.*, requested_scopes, !params.scopes_present) catch |err| {
+        return renderJsonRpcErrorForFailure(allocator, id_value, "mcpServer/oauth/login failed to start OAuth login", err);
+    };
+    errdefer login_handle.deinit(allocator);
+
+    const response = try renderMcpServerOauthLoginResponse(allocator, id_value, login_handle.authorization_url);
+    errdefer allocator.free(response);
+    try spawnMcpServerOauthLoginWorker(allocator, params.name, login_handle);
+    return response;
+}
+
+const McpServerOauthLoginWorker = struct {
+    name: []const u8,
+    handle: mcp_cmd.McpOAuthLoginHandle,
+
+    fn deinit(self: *McpServerOauthLoginWorker, allocator: std.mem.Allocator) void {
+        allocator.free(self.name);
+        self.handle.deinit(allocator);
+    }
+};
+
+fn spawnMcpServerOauthLoginWorker(
+    allocator: std.mem.Allocator,
+    name: []const u8,
+    handle: mcp_cmd.McpOAuthLoginHandle,
+) !void {
+    const worker = try allocator.create(McpServerOauthLoginWorker);
+    errdefer allocator.destroy(worker);
+    const name_owned = try allocator.dupe(u8, name);
+    errdefer allocator.free(name_owned);
+    worker.* = .{ .name = name_owned, .handle = handle };
+    const thread = try std.Thread.spawn(.{ .allocator = allocator }, mcpServerOauthLoginWorker, .{ allocator, worker });
+    thread.detach();
+}
+
+fn mcpServerOauthLoginWorker(allocator: std.mem.Allocator, worker: *McpServerOauthLoginWorker) void {
+    const maybe_error = if (worker.handle.waitAndSave(allocator)) |_| null else |err| @errorName(err);
+    const notification = renderMcpServerOauthLoginCompletedNotification(allocator, worker.name, maybe_error == null, maybe_error) catch {
+        worker.deinit(allocator);
+        allocator.destroy(worker);
+        return;
+    };
+    worker.deinit(allocator);
+    allocator.destroy(worker);
+    defer allocator.free(notification);
+    writeStdoutLine(notification) catch {};
+}
+
+fn renderMcpServerOauthLoginResponse(
+    allocator: std.mem.Allocator,
+    id_value: std.json.Value,
+    authorization_url: []const u8,
+) ![]const u8 {
+    var result = std.ArrayList(u8).empty;
+    defer result.deinit(allocator);
+    try result.appendSlice(allocator, "{\"authorizationUrl\":");
+    try appendJsonString(allocator, &result, authorization_url);
+    try result.append(allocator, '}');
+    return renderJsonRpcResult(allocator, id_value, result.items);
+}
+
+fn renderMcpServerOauthLoginCompletedNotification(
+    allocator: std.mem.Allocator,
+    name: []const u8,
+    success: bool,
+    error_message: ?[]const u8,
+) ![]const u8 {
+    var notification = std.ArrayList(u8).empty;
+    errdefer notification.deinit(allocator);
+    try notification.appendSlice(allocator, "{\"jsonrpc\":\"2.0\",\"method\":\"mcpServer/oauthLogin/completed\",\"params\":{\"name\":");
+    try appendJsonString(allocator, &notification, name);
+    try notification.appendSlice(allocator, ",\"success\":");
+    try notification.appendSlice(allocator, if (success) "true" else "false");
+    try notification.appendSlice(allocator, ",\"error\":");
+    try appendOptionalJsonString(allocator, &notification, error_message);
+    try notification.appendSlice(allocator, "}}");
+    return notification.toOwnedSlice(allocator);
 }
 
 fn handleMcpServerStatusList(allocator: std.mem.Allocator, id_value: std.json.Value, params_value: ?std.json.Value) ![]const u8 {
@@ -52892,18 +52982,22 @@ fn mcpServerNameLessThan(_: void, lhs: mcp_cmd.McpServer, rhs: mcp_cmd.McpServer
     return std.mem.lessThan(u8, lhs.name, rhs.name);
 }
 
-fn parseMcpServerOauthLoginParams(params_value: ?std.json.Value) !McpServerOauthLoginParams {
+fn parseMcpServerOauthLoginParams(allocator: std.mem.Allocator, params_value: ?std.json.Value) !McpServerOauthLoginParams {
     const params = params_value orelse return error.InvalidMcpOauthLoginParams;
     if (params != .object) return error.InvalidMcpOauthLoginParams;
 
     const name = params.object.get("name") orelse return error.InvalidMcpOauthLoginName;
     if (name != .string or name.string.len == 0) return error.InvalidMcpOauthLoginName;
 
+    var parsed = McpServerOauthLoginParams{ .name = name.string };
+    errdefer parsed.deinit(allocator);
     if (params.object.get("scopes")) |scopes| {
         if (scopes != .null) {
             if (scopes != .array) return error.InvalidMcpOauthLoginScopes;
+            parsed.scopes_present = true;
             for (scopes.array.items) |scope| {
                 if (scope != .string) return error.InvalidMcpOauthLoginScopes;
+                try parsed.scopes.append(allocator, scope.string);
             }
         }
     }
@@ -52913,7 +53007,7 @@ fn parseMcpServerOauthLoginParams(params_value: ?std.json.Value) !McpServerOauth
             _ = std.fmt.parseInt(i64, timeout.number_string, 10) catch return error.InvalidMcpOauthLoginTimeout;
         }
     }
-    return .{ .name = name.string };
+    return parsed;
 }
 
 fn parseMcpStatusParams(params_value: ?std.json.Value) !McpStatusParams {
