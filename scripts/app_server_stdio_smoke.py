@@ -1452,7 +1452,12 @@ def read_json_lines_until(
         remaining = deadline - time.monotonic()
         if remaining <= 0:
             raise AssertionError(f"timed out waiting for app-server messages: {messages!r}")
-        messages.append(read_json_line(proc, remaining))
+        try:
+            messages.append(read_json_line(proc, remaining))
+        except AssertionError as exc:
+            raise AssertionError(
+                f"timed out waiting for app-server messages: {messages!r}"
+            ) from exc
         if predicate(messages):
             return messages
 
@@ -8132,6 +8137,1347 @@ def run_turn_tool_cwd_smoke(binary: Path) -> None:
         server.shutdown()
         server.server_close()
         repo_leak_path.unlink(missing_ok=True)
+        shutil.rmtree(codex_home, ignore_errors=True)
+
+
+def run_turn_command_approval_request_smoke(binary: Path) -> None:
+    server, base_url = start_turn_responses_server()
+    codex_home = Path(tempfile.mkdtemp(prefix="codex-zig-app-server-approval-home-", dir="/tmp"))
+    try:
+        codex_home.joinpath("config.toml").write_text(
+            f'openai_base_url = "{base_url}"\nmodel = "gpt-turn-approval"\n',
+            encoding="utf-8",
+        )
+        env = os.environ.copy()
+        env["CODEX_HOME"] = str(codex_home)
+        env["OPENAI_API_KEY"] = "test-api-key"
+        env.pop("CODEX_ACCESS_TOKEN", None)
+
+        proc = subprocess.Popen(
+            [str(binary), "app-server"],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            env=env,
+        )
+        try:
+            write_json_line(
+                proc,
+                {
+                    "jsonrpc": "2.0",
+                    "id": "initialize",
+                    "method": "initialize",
+                    "params": {
+                        "clientInfo": {"name": "app-server-smoke", "version": "0"},
+                        "capabilities": {},
+                    },
+                },
+            )
+            assert read_json_line(proc, 5)["id"] == "initialize"
+
+            with tempfile.TemporaryDirectory(prefix="codex-zig-turn-approval-", dir="/tmp") as cwd:
+                cwd_path = Path(cwd)
+                write_json_line(
+                    proc,
+                    {
+                        "jsonrpc": "2.0",
+                        "id": "thread-start-for-approval",
+                        "method": "thread/start",
+                        "params": {
+                            "cwd": cwd,
+                            "approvalPolicy": "on-request",
+                            "sandbox": "danger-full-access",
+                        },
+                    },
+                )
+                thread_start = read_json_line(proc, 5)
+                assert thread_start["id"] == "thread-start-for-approval"
+                thread = thread_start["result"]["thread"]
+                thread_id = thread["id"]
+                assert_thread_started_notification(read_json_line(proc, 5), thread)
+
+                accept_file = cwd_path / "approval-accepted.txt"
+                accept_call = {
+                    "type": "response.output_item.done",
+                    "item": {
+                        "type": "function_call",
+                        "call_id": "call-approval-accept",
+                        "name": "exec_command",
+                        "arguments": json.dumps(
+                            {
+                                "cmd": "printf approval-accepted > approval-accepted.txt; printf approval-accepted",
+                                "workdir": cwd,
+                                "shell": "/bin/sh",
+                            },
+                            separators=(",", ":"),
+                        ),
+                    },
+                }
+                server.response_payloads.append(
+                    (
+                        f"data: {json.dumps(accept_call, separators=(',', ':'))}\n\n"
+                        "data: [DONE]\n\n"
+                    ).encode()
+                )
+
+                write_json_line(
+                    proc,
+                    {
+                        "jsonrpc": "2.0",
+                        "id": "turn-start-approval-accept",
+                        "method": "turn/start",
+                        "params": {
+                            "threadId": thread_id,
+                            "input": [{"type": "text", "text": "run approved command"}],
+                        },
+                    },
+                )
+                accept_turn = read_json_line(proc, 5)
+                assert accept_turn["id"] == "turn-start-approval-accept"
+                accept_turn_id = accept_turn["result"]["turn"]["id"]
+                accept_request = read_json_line(proc, 5)
+                assert accept_request["method"] == "item/commandExecution/requestApproval"
+                accept_params = accept_request["params"]
+                assert accept_params["threadId"] == thread_id
+                assert accept_params["turnId"] == accept_turn_id
+                assert accept_params["itemId"] == "call-approval-accept"
+                assert accept_params["approvalId"] is None
+                assert accept_params["command"] == (
+                    "/bin/sh -lc printf approval-accepted > approval-accepted.txt; printf approval-accepted"
+                )
+                assert accept_params["cwd"] == cwd
+                assert accept_params["commandActions"] is None
+
+                write_json_line(
+                    proc,
+                    {
+                        "jsonrpc": "2.0",
+                        "id": accept_request["id"],
+                        "result": {"decision": "accept"},
+                    },
+                )
+                accept_resolved = read_json_line(proc, 5)
+                assert accept_resolved["method"] == "serverRequest/resolved"
+                assert accept_resolved["params"]["threadId"] == thread_id
+                assert accept_resolved["params"]["requestId"] == accept_request["id"]
+                accept_messages = read_json_lines_until(
+                    proc,
+                    5,
+                    lambda messages: any(
+                        message.get("method") == "turn/completed"
+                        and message["params"]["turn"]["id"] == accept_turn_id
+                        for message in messages
+                    )
+                    and any(
+                        message.get("method") == "thread/status/changed"
+                        and message["params"]["status"] == {"type": "idle"}
+                        for message in messages
+                    ),
+                )
+                assert any(
+                    message.get("method") == "item/commandExecution/outputDelta"
+                    and message["params"]["itemId"] == "call-approval-accept"
+                    and "approval-accepted" in message["params"]["delta"]
+                    for message in accept_messages
+                )
+                assert accept_file.read_text(encoding="utf-8") == "approval-accepted"
+                assert len(server.request_bodies) == 2
+                accept_followup = server.request_bodies[1]
+                assert any(
+                    item.get("type") == "function_call_output"
+                    and item.get("call_id") == "call-approval-accept"
+                    and "approval-accepted" in item.get("output", "")
+                    for item in accept_followup["input"]
+                )
+
+                amendment_file = cwd_path / "approval-amendment.txt"
+                amendment_call = {
+                    "type": "response.output_item.done",
+                    "item": {
+                        "type": "function_call",
+                        "call_id": "call-approval-amendment",
+                        "name": "exec_command",
+                        "arguments": json.dumps(
+                            {
+                                "cmd": "printf approval-amendment > approval-amendment.txt; printf approval-amendment",
+                                "workdir": cwd,
+                            },
+                            separators=(",", ":"),
+                        ),
+                    },
+                }
+                server.response_payloads.append(
+                    (
+                        f"data: {json.dumps(amendment_call, separators=(',', ':'))}\n\n"
+                        "data: [DONE]\n\n"
+                    ).encode()
+                )
+
+                write_json_line(
+                    proc,
+                    {
+                        "jsonrpc": "2.0",
+                        "id": "turn-start-approval-amendment",
+                        "method": "turn/start",
+                        "params": {
+                            "threadId": thread_id,
+                            "input": [{"type": "text", "text": "run amended command"}],
+                        },
+                    },
+                )
+                amendment_turn = read_json_line(proc, 5)
+                assert amendment_turn["id"] == "turn-start-approval-amendment"
+                amendment_turn_id = amendment_turn["result"]["turn"]["id"]
+                amendment_request = read_json_line(proc, 5)
+                assert amendment_request["method"] == "item/commandExecution/requestApproval"
+                assert amendment_request["params"]["threadId"] == thread_id
+                assert amendment_request["params"]["turnId"] == amendment_turn_id
+                assert amendment_request["params"]["itemId"] == "call-approval-amendment"
+                assert amendment_request["params"]["cwd"] == cwd
+
+                write_json_line(
+                    proc,
+                    {
+                        "jsonrpc": "2.0",
+                        "id": amendment_request["id"],
+                        "result": {
+                            "decision": {
+                                "acceptWithExecpolicyAmendment": {
+                                    "execpolicy_amendment": [],
+                                },
+                            },
+                        },
+                    },
+                )
+                amendment_resolved = read_json_line(proc, 5)
+                assert amendment_resolved["method"] == "serverRequest/resolved"
+                assert amendment_resolved["params"]["requestId"] == amendment_request["id"]
+                amendment_messages = read_json_lines_until(
+                    proc,
+                    5,
+                    lambda messages: any(
+                        message.get("method") == "turn/completed"
+                        and message["params"]["turn"]["id"] == amendment_turn_id
+                        for message in messages
+                    )
+                    and any(
+                        message.get("method") == "thread/status/changed"
+                        and message["params"]["status"] == {"type": "idle"}
+                        for message in messages
+                    ),
+                )
+                assert any(
+                    message.get("method") == "item/commandExecution/outputDelta"
+                    and message["params"]["itemId"] == "call-approval-amendment"
+                    and "approval-amendment" in message["params"]["delta"]
+                    for message in amendment_messages
+                )
+                assert amendment_file.read_text(encoding="utf-8") == "approval-amendment"
+                assert len(server.request_bodies) == 4
+                amendment_followup = server.request_bodies[3]
+                assert any(
+                    item.get("type") == "function_call_output"
+                    and item.get("call_id") == "call-approval-amendment"
+                    and "approval-amendment" in item.get("output", "")
+                    for item in amendment_followup["input"]
+                )
+
+                decline_file = cwd_path / "approval-declined.txt"
+                decline_call = {
+                    "type": "response.output_item.done",
+                    "item": {
+                        "type": "function_call",
+                        "call_id": "call-approval-decline",
+                        "name": "exec_command",
+                        "arguments": json.dumps(
+                            {
+                                "cmd": "printf approval-declined > approval-declined.txt",
+                                "workdir": cwd,
+                            },
+                            separators=(",", ":"),
+                        ),
+                    },
+                }
+                server.response_payloads.append(
+                    (
+                        f"data: {json.dumps(decline_call, separators=(',', ':'))}\n\n"
+                        "data: [DONE]\n\n"
+                    ).encode()
+                )
+
+                write_json_line(
+                    proc,
+                    {
+                        "jsonrpc": "2.0",
+                        "id": "turn-start-approval-decline",
+                        "method": "turn/start",
+                        "params": {
+                            "threadId": thread_id,
+                            "input": [{"type": "text", "text": "run declined command"}],
+                        },
+                    },
+                )
+                decline_turn = read_json_line(proc, 5)
+                assert decline_turn["id"] == "turn-start-approval-decline"
+                decline_turn_id = decline_turn["result"]["turn"]["id"]
+                decline_request = read_json_line(proc, 5)
+                assert decline_request["method"] == "item/commandExecution/requestApproval"
+                assert decline_request["params"]["threadId"] == thread_id
+                assert decline_request["params"]["turnId"] == decline_turn_id
+                assert decline_request["params"]["itemId"] == "call-approval-decline"
+                assert decline_request["params"]["cwd"] == cwd
+
+                write_json_line(
+                    proc,
+                    {
+                        "jsonrpc": "2.0",
+                        "id": decline_request["id"],
+                        "result": {"decision": "decline"},
+                    },
+                )
+                decline_resolved = read_json_line(proc, 5)
+                assert decline_resolved["method"] == "serverRequest/resolved"
+                assert decline_resolved["params"]["requestId"] == decline_request["id"]
+                read_json_lines_until(
+                    proc,
+                    5,
+                    lambda messages: any(
+                        message.get("method") == "turn/completed"
+                        and message["params"]["turn"]["id"] == decline_turn_id
+                        for message in messages
+                    )
+                    and any(
+                        message.get("method") == "thread/status/changed"
+                        and message["params"]["status"] == {"type": "idle"}
+                        for message in messages
+                    ),
+                )
+                assert not decline_file.exists()
+                assert len(server.request_bodies) == 6
+                decline_followup = server.request_bodies[5]
+                assert any(
+                    item.get("type") == "function_call_output"
+                    and item.get("call_id") == "call-approval-decline"
+                    and item.get("output") == "user rejected tool execution"
+                    for item in decline_followup["input"]
+                )
+
+                cancel_file = cwd_path / "approval-cancelled.txt"
+                cancel_call = {
+                    "type": "response.output_item.done",
+                    "item": {
+                        "type": "function_call",
+                        "call_id": "call-approval-cancel",
+                        "name": "exec_command",
+                        "arguments": json.dumps(
+                            {
+                                "cmd": "printf approval-cancelled > approval-cancelled.txt",
+                                "workdir": cwd,
+                            },
+                            separators=(",", ":"),
+                        ),
+                    },
+                }
+                server.response_payloads.append(
+                    (
+                        f"data: {json.dumps(cancel_call, separators=(',', ':'))}\n\n"
+                        "data: [DONE]\n\n"
+                    ).encode()
+                )
+
+                write_json_line(
+                    proc,
+                    {
+                        "jsonrpc": "2.0",
+                        "id": "turn-start-approval-cancel",
+                        "method": "turn/start",
+                        "params": {
+                            "threadId": thread_id,
+                            "input": [{"type": "text", "text": "cancel command"}],
+                        },
+                    },
+                )
+                cancel_turn = read_json_line(proc, 5)
+                assert cancel_turn["id"] == "turn-start-approval-cancel"
+                cancel_turn_id = cancel_turn["result"]["turn"]["id"]
+                cancel_request = read_json_line(proc, 5)
+                assert cancel_request["method"] == "item/commandExecution/requestApproval"
+                assert cancel_request["params"]["threadId"] == thread_id
+                assert cancel_request["params"]["turnId"] == cancel_turn_id
+                assert cancel_request["params"]["itemId"] == "call-approval-cancel"
+                assert cancel_request["params"]["cwd"] == cwd
+
+                write_json_line(
+                    proc,
+                    {
+                        "jsonrpc": "2.0",
+                        "id": cancel_request["id"],
+                        "result": {"decision": "cancel"},
+                    },
+                )
+                cancel_resolved = read_json_line(proc, 5)
+                assert cancel_resolved["method"] == "serverRequest/resolved"
+                assert cancel_resolved["params"]["requestId"] == cancel_request["id"]
+                cancel_messages = read_json_lines_until(
+                    proc,
+                    5,
+                    lambda messages: any(
+                        message.get("method") == "turn/completed"
+                        and message["params"]["turn"]["id"] == cancel_turn_id
+                        for message in messages
+                    )
+                    and any(
+                        message.get("method") == "thread/status/changed"
+                        and message["params"]["status"] == {"type": "idle"}
+                        for message in messages
+                    ),
+                )
+                cancel_completed = [
+                    message
+                    for message in cancel_messages
+                    if message.get("method") == "turn/completed"
+                    and message["params"]["turn"]["id"] == cancel_turn_id
+                ][-1]
+                assert cancel_completed["params"]["turn"]["status"] == "interrupted"
+                assert not cancel_file.exists()
+                assert len(server.request_bodies) == 7
+
+                archive_race_file = cwd_path / "approval-archive-race.txt"
+                archive_race_call = {
+                    "type": "response.output_item.done",
+                    "item": {
+                        "type": "function_call",
+                        "call_id": "call-approval-archive-race",
+                        "name": "exec_command",
+                        "arguments": json.dumps(
+                            {
+                                "cmd": "printf archive-race > approval-archive-race.txt; printf archive-race",
+                                "workdir": cwd,
+                            },
+                            separators=(",", ":"),
+                        ),
+                    },
+                }
+                server.response_payloads.append(
+                    (
+                        f"data: {json.dumps(archive_race_call, separators=(',', ':'))}\n\n"
+                        "data: [DONE]\n\n"
+                    ).encode()
+                )
+
+                write_json_line(
+                    proc,
+                    {
+                        "jsonrpc": "2.0",
+                        "id": "turn-start-approval-archive-race",
+                        "method": "turn/start",
+                        "params": {
+                            "threadId": thread_id,
+                            "input": [{"type": "text", "text": "run while archiving"}],
+                        },
+                    },
+                )
+                archive_race_turn = read_json_line(proc, 5)
+                assert archive_race_turn["id"] == "turn-start-approval-archive-race"
+                archive_race_turn_id = archive_race_turn["result"]["turn"]["id"]
+                archive_race_request = read_json_line(proc, 5)
+                assert archive_race_request["method"] == "item/commandExecution/requestApproval"
+                assert archive_race_request["params"]["threadId"] == thread_id
+                assert archive_race_request["params"]["turnId"] == archive_race_turn_id
+                assert archive_race_request["params"]["itemId"] == "call-approval-archive-race"
+
+                write_json_line(
+                    proc,
+                    {
+                        "jsonrpc": "2.0",
+                        "id": "archive-during-approval",
+                        "method": "thread/archive",
+                        "params": {"threadId": thread_id},
+                    },
+                )
+                archive_rejected = read_json_line(proc, 5)
+                assert archive_rejected["id"] == "archive-during-approval"
+                assert archive_rejected["error"]["code"] == -32600
+                assert "approval is pending" in archive_rejected["error"]["message"]
+
+                write_json_line(
+                    proc,
+                    {
+                        "jsonrpc": "2.0",
+                        "id": archive_race_request["id"],
+                        "result": {"decision": "accept"},
+                    },
+                )
+                archive_race_resolved = read_json_line(proc, 5)
+                assert archive_race_resolved["method"] == "serverRequest/resolved"
+                assert archive_race_resolved["params"]["requestId"] == archive_race_request["id"]
+                archive_race_messages = read_json_lines_until(
+                    proc,
+                    5,
+                    lambda messages: any(
+                        message.get("method") == "turn/completed"
+                        and message["params"]["turn"]["id"] == archive_race_turn_id
+                        for message in messages
+                    )
+                    and any(
+                        message.get("method") == "thread/status/changed"
+                        and message["params"]["status"] == {"type": "idle"}
+                        for message in messages
+                    ),
+                )
+                assert any(
+                    message.get("method") == "item/commandExecution/outputDelta"
+                    and message["params"]["itemId"] == "call-approval-archive-race"
+                    and "archive-race" in message["params"]["delta"]
+                    for message in archive_race_messages
+                )
+                assert archive_race_file.read_text(encoding="utf-8") == "archive-race"
+                assert len(server.request_bodies) == 9
+
+                session_file = cwd_path / "approval-session.txt"
+                session_command = "sleep 1; printf approval-session > approval-session.txt; printf approval-session"
+                session_first_call = {
+                    "type": "response.output_item.done",
+                    "item": {
+                        "type": "function_call",
+                        "call_id": "call-approval-session-first",
+                        "name": "exec_command",
+                        "arguments": json.dumps(
+                            {
+                                "cmd": session_command,
+                                "workdir": cwd,
+                            },
+                            separators=(",", ":"),
+                        ),
+                    },
+                }
+                server.response_payloads.append(
+                    (
+                        f"data: {json.dumps(session_first_call, separators=(',', ':'))}\n\n"
+                        "data: [DONE]\n\n"
+                    ).encode()
+                )
+
+                write_json_line(
+                    proc,
+                    {
+                        "jsonrpc": "2.0",
+                        "id": "turn-start-approval-session-first",
+                        "method": "turn/start",
+                        "params": {
+                            "threadId": thread_id,
+                            "input": [{"type": "text", "text": "remember this approval"}],
+                        },
+                    },
+                )
+                session_first_turn = read_json_line(proc, 5)
+                assert session_first_turn["id"] == "turn-start-approval-session-first"
+                session_first_turn_id = session_first_turn["result"]["turn"]["id"]
+                session_first_request = read_json_line(proc, 5)
+                assert session_first_request["method"] == "item/commandExecution/requestApproval"
+                assert session_first_request["params"]["threadId"] == thread_id
+                assert session_first_request["params"]["turnId"] == session_first_turn_id
+                assert session_first_request["params"]["itemId"] == "call-approval-session-first"
+                assert session_first_request["params"]["command"] == session_command
+                assert session_first_request["params"]["cwd"] == cwd
+
+                write_json_line(
+                    proc,
+                    {
+                        "jsonrpc": "2.0",
+                        "id": session_first_request["id"],
+                        "result": {"decision": "acceptForSession"},
+                    },
+                )
+                session_first_resolved = read_json_line(proc, 5)
+                assert session_first_resolved["method"] == "serverRequest/resolved"
+                assert session_first_resolved["params"]["requestId"] == session_first_request["id"]
+                session_first_messages = read_json_lines_until(
+                    proc,
+                    5,
+                    lambda messages: any(
+                        message.get("method") == "turn/completed"
+                        and message["params"]["turn"]["id"] == session_first_turn_id
+                        for message in messages
+                    )
+                    and any(
+                        message.get("method") == "thread/status/changed"
+                        and message["params"]["status"] == {"type": "idle"}
+                        for message in messages
+                    ),
+                )
+                assert any(
+                    message.get("method") == "item/commandExecution/outputDelta"
+                    and message["params"]["itemId"] == "call-approval-session-first"
+                    and "approval-session" in message["params"]["delta"]
+                    for message in session_first_messages
+                )
+                assert session_file.read_text(encoding="utf-8") == "approval-session"
+                assert len(server.request_bodies) == 11
+
+                session_file.unlink()
+                session_second_call = {
+                    "type": "response.output_item.done",
+                    "item": {
+                        "type": "function_call",
+                        "call_id": "call-approval-session-second",
+                        "name": "exec_command",
+                        "arguments": json.dumps(
+                            {
+                                "cmd": session_command,
+                                "workdir": cwd,
+                            },
+                            separators=(",", ":"),
+                        ),
+                    },
+                }
+                server.response_payloads.append(
+                    (
+                        f"data: {json.dumps(session_second_call, separators=(',', ':'))}\n\n"
+                        "data: [DONE]\n\n"
+                    ).encode()
+                )
+
+                write_json_line(
+                    proc,
+                    {
+                        "jsonrpc": "2.0",
+                        "id": "turn-start-approval-session-second",
+                        "method": "turn/start",
+                        "params": {
+                            "threadId": thread_id,
+                            "input": [{"type": "text", "text": "run remembered approval"}],
+                        },
+                    },
+                )
+                session_second_turn = read_json_line(proc, 5)
+                assert session_second_turn["id"] == "turn-start-approval-session-second"
+                session_second_turn_id = session_second_turn["result"]["turn"]["id"]
+                assert not session_file.exists()
+                session_second_messages = read_json_lines_until(
+                    proc,
+                    5,
+                    lambda messages: any(
+                        message.get("method") == "item/commandExecution/requestApproval"
+                        for message in messages
+                    )
+                    or (
+                        any(
+                            message.get("method") == "turn/completed"
+                            and message["params"]["turn"]["id"] == session_second_turn_id
+                            for message in messages
+                        )
+                        and any(
+                            message.get("method") == "thread/status/changed"
+                            and message["params"]["status"] == {"type": "idle"}
+                            for message in messages
+                        )
+                    ),
+                )
+                assert not any(
+                    message.get("method") == "item/commandExecution/requestApproval"
+                    for message in session_second_messages
+                )
+                assert any(
+                    message.get("method") == "item/commandExecution/outputDelta"
+                    and message["params"]["itemId"] == "call-approval-session-second"
+                    and "approval-session" in message["params"]["delta"]
+                    for message in session_second_messages
+                )
+                assert session_file.read_text(encoding="utf-8") == "approval-session"
+                assert len(server.request_bodies) == 13
+
+                scoped_session_command = "printf approval-scope"
+                scoped_session_first_call = {
+                    "type": "response.output_item.done",
+                    "item": {
+                        "type": "function_call",
+                        "call_id": "call-approval-scope-workspace",
+                        "name": "exec_command",
+                        "arguments": json.dumps(
+                            {
+                                "cmd": scoped_session_command,
+                                "workdir": cwd,
+                            },
+                            separators=(",", ":"),
+                        ),
+                    },
+                }
+                server.response_payloads.append(
+                    (
+                        f"data: {json.dumps(scoped_session_first_call, separators=(',', ':'))}\n\n"
+                        "data: [DONE]\n\n"
+                    ).encode()
+                )
+
+                write_json_line(
+                    proc,
+                    {
+                        "jsonrpc": "2.0",
+                        "id": "turn-start-approval-scope-workspace",
+                        "method": "turn/start",
+                        "params": {
+                            "threadId": thread_id,
+                            "sandbox": "workspace-write",
+                            "input": [
+                                {
+                                    "type": "text",
+                                    "text": "remember scoped workspace approval",
+                                }
+                            ],
+                        },
+                    },
+                )
+                scoped_session_first_turn = read_json_line(proc, 5)
+                assert scoped_session_first_turn["id"] == "turn-start-approval-scope-workspace"
+                scoped_session_first_turn_id = scoped_session_first_turn["result"]["turn"]["id"]
+                scoped_session_first_request = read_json_line(proc, 5)
+                assert (
+                    scoped_session_first_request["method"]
+                    == "item/commandExecution/requestApproval"
+                )
+                assert scoped_session_first_request["params"]["threadId"] == thread_id
+                assert (
+                    scoped_session_first_request["params"]["turnId"]
+                    == scoped_session_first_turn_id
+                )
+                assert (
+                    scoped_session_first_request["params"]["itemId"]
+                    == "call-approval-scope-workspace"
+                )
+                assert (
+                    scoped_session_first_request["params"]["command"]
+                    == scoped_session_command
+                )
+                assert scoped_session_first_request["params"]["cwd"] == cwd
+
+                write_json_line(
+                    proc,
+                    {
+                        "jsonrpc": "2.0",
+                        "id": scoped_session_first_request["id"],
+                        "result": {"decision": "acceptForSession"},
+                    },
+                )
+                scoped_session_first_resolved = read_json_line(proc, 5)
+                assert scoped_session_first_resolved["method"] == "serverRequest/resolved"
+                assert (
+                    scoped_session_first_resolved["params"]["requestId"]
+                    == scoped_session_first_request["id"]
+                )
+                scoped_session_first_messages = read_json_lines_until(
+                    proc,
+                    5,
+                    lambda messages: any(
+                        message.get("method") == "turn/completed"
+                        and message["params"]["turn"]["id"] == scoped_session_first_turn_id
+                        for message in messages
+                    )
+                    and any(
+                        message.get("method") == "thread/status/changed"
+                        and message["params"]["status"] == {"type": "idle"}
+                        for message in messages
+                    ),
+                )
+                assert any(
+                    message.get("method") == "item/commandExecution/outputDelta"
+                    and message["params"]["itemId"] == "call-approval-scope-workspace"
+                    and "approval-scope" in message["params"]["delta"]
+                    for message in scoped_session_first_messages
+                )
+                assert len(server.request_bodies) == 15
+
+                scoped_session_danger_call = {
+                    "type": "response.output_item.done",
+                    "item": {
+                        "type": "function_call",
+                        "call_id": "call-approval-scope-danger",
+                        "name": "exec_command",
+                        "arguments": json.dumps(
+                            {
+                                "cmd": scoped_session_command,
+                                "workdir": cwd,
+                            },
+                            separators=(",", ":"),
+                        ),
+                    },
+                }
+                server.response_payloads.append(
+                    (
+                        f"data: {json.dumps(scoped_session_danger_call, separators=(',', ':'))}\n\n"
+                        "data: [DONE]\n\n"
+                    ).encode()
+                )
+
+                write_json_line(
+                    proc,
+                    {
+                        "jsonrpc": "2.0",
+                        "id": "turn-start-approval-scope-danger",
+                        "method": "turn/start",
+                        "params": {
+                            "threadId": thread_id,
+                            "sandbox": "danger-full-access",
+                            "input": [
+                                {
+                                    "type": "text",
+                                    "text": "do not reuse weaker sandbox approval",
+                                }
+                            ],
+                        },
+                    },
+                )
+                scoped_session_danger_turn = read_json_line(proc, 5)
+                assert scoped_session_danger_turn["id"] == "turn-start-approval-scope-danger"
+                scoped_session_danger_turn_id = scoped_session_danger_turn["result"]["turn"]["id"]
+                scoped_session_danger_request = read_json_line(proc, 5)
+                assert (
+                    scoped_session_danger_request["method"]
+                    == "item/commandExecution/requestApproval"
+                )
+                assert scoped_session_danger_request["params"]["threadId"] == thread_id
+                assert (
+                    scoped_session_danger_request["params"]["turnId"]
+                    == scoped_session_danger_turn_id
+                )
+                assert (
+                    scoped_session_danger_request["params"]["itemId"]
+                    == "call-approval-scope-danger"
+                )
+                assert (
+                    scoped_session_danger_request["params"]["command"]
+                    == scoped_session_command
+                )
+                assert scoped_session_danger_request["params"]["cwd"] == cwd
+
+                write_json_line(
+                    proc,
+                    {
+                        "jsonrpc": "2.0",
+                        "id": scoped_session_danger_request["id"],
+                        "result": {"decision": "accept"},
+                    },
+                )
+                scoped_session_danger_resolved = read_json_line(proc, 5)
+                assert scoped_session_danger_resolved["method"] == "serverRequest/resolved"
+                assert (
+                    scoped_session_danger_resolved["params"]["requestId"]
+                    == scoped_session_danger_request["id"]
+                )
+                scoped_session_danger_messages = read_json_lines_until(
+                    proc,
+                    5,
+                    lambda messages: any(
+                        message.get("method") == "turn/completed"
+                        and message["params"]["turn"]["id"] == scoped_session_danger_turn_id
+                        for message in messages
+                    )
+                    and any(
+                        message.get("method") == "thread/status/changed"
+                        and message["params"]["status"] == {"type": "idle"}
+                        for message in messages
+                    ),
+                )
+                assert any(
+                    message.get("method") == "item/commandExecution/outputDelta"
+                    and message["params"]["itemId"] == "call-approval-scope-danger"
+                    and "approval-scope" in message["params"]["delta"]
+                    for message in scoped_session_danger_messages
+                )
+                assert len(server.request_bodies) == 17
+
+                interrupt_file = cwd_path / "approval-interrupted.txt"
+                interrupt_call = {
+                    "type": "response.output_item.done",
+                    "item": {
+                        "type": "function_call",
+                        "call_id": "call-approval-interrupt",
+                        "name": "exec_command",
+                        "arguments": json.dumps(
+                            {
+                                "cmd": "printf approval-interrupted > approval-interrupted.txt",
+                                "workdir": cwd,
+                            },
+                            separators=(",", ":"),
+                        ),
+                    },
+                }
+                server.response_payloads.append(
+                    (
+                        f"data: {json.dumps(interrupt_call, separators=(',', ':'))}\n\n"
+                        "data: [DONE]\n\n"
+                    ).encode()
+                )
+
+                write_json_line(
+                    proc,
+                    {
+                        "jsonrpc": "2.0",
+                        "id": "turn-start-approval-interrupt",
+                        "method": "turn/start",
+                        "params": {
+                            "threadId": thread_id,
+                            "input": [{"type": "text", "text": "interrupt approval"}],
+                        },
+                    },
+                )
+                interrupt_turn = read_json_line(proc, 5)
+                assert interrupt_turn["id"] == "turn-start-approval-interrupt"
+                interrupt_turn_id = interrupt_turn["result"]["turn"]["id"]
+                interrupt_request = read_json_line(proc, 5)
+                assert interrupt_request["method"] == "item/commandExecution/requestApproval"
+                assert interrupt_request["params"]["threadId"] == thread_id
+                assert interrupt_request["params"]["turnId"] == interrupt_turn_id
+                assert interrupt_request["params"]["itemId"] == "call-approval-interrupt"
+
+                write_json_line(
+                    proc,
+                    {
+                        "jsonrpc": "2.0",
+                        "id": "wrong-interrupt-during-approval",
+                        "method": "turn/interrupt",
+                        "params": {
+                            "threadId": thread_id,
+                            "turnId": "turn-does-not-match",
+                        },
+                    },
+                )
+                wrong_interrupt_response = read_json_line(proc, 5)
+                assert wrong_interrupt_response["id"] == "wrong-interrupt-during-approval"
+                assert wrong_interrupt_response["error"]["code"] == -32600
+                assert "no active turn" in wrong_interrupt_response["error"]["message"]
+
+                write_json_line(
+                    proc,
+                    {
+                        "jsonrpc": "2.0",
+                        "id": "interrupt-during-approval",
+                        "method": "turn/interrupt",
+                        "params": {
+                            "threadId": thread_id,
+                            "turnId": interrupt_turn_id,
+                        },
+                    },
+                )
+                interrupt_response = read_json_line(proc, 5)
+                assert interrupt_response["id"] == "interrupt-during-approval"
+                assert interrupt_response["result"] == {}
+                interrupt_resolved = read_json_line(proc, 5)
+                assert interrupt_resolved["method"] == "serverRequest/resolved"
+                assert interrupt_resolved["params"]["threadId"] == thread_id
+                assert interrupt_resolved["params"]["requestId"] == interrupt_request["id"]
+                interrupt_messages = read_json_lines_until(
+                    proc,
+                    5,
+                    lambda messages: any(
+                        message.get("method") == "turn/completed"
+                        and message["params"]["turn"]["id"] == interrupt_turn_id
+                        for message in messages
+                    )
+                    and any(
+                        message.get("method") == "thread/status/changed"
+                        and message["params"]["status"] == {"type": "idle"}
+                        for message in messages
+                    ),
+                )
+                interrupt_completed = [
+                    message
+                    for message in interrupt_messages
+                    if message.get("method") == "turn/completed"
+                    and message["params"]["turn"]["id"] == interrupt_turn_id
+                ][-1]
+                assert interrupt_completed["params"]["turn"]["status"] == "interrupted"
+                assert not interrupt_file.exists()
+                assert len(server.request_bodies) == 18
+
+                patch_file = cwd_path / "approval-patched.txt"
+                patch_text = (
+                    "*** Begin Patch\n"
+                    "*** Add File: approval-patched.txt\n"
+                    "+approval-patched\n"
+                    "*** End Patch\n"
+                )
+                patch_call = {
+                    "type": "response.output_item.done",
+                    "item": {
+                        "type": "function_call",
+                        "call_id": "call-approval-patch",
+                        "name": "apply_patch",
+                        "arguments": json.dumps(
+                            {"patch": patch_text},
+                            separators=(",", ":"),
+                        ),
+                    },
+                }
+                server.response_payloads.append(
+                    (
+                        f"data: {json.dumps(patch_call, separators=(',', ':'))}\n\n"
+                        "data: [DONE]\n\n"
+                    ).encode()
+                )
+
+                write_json_line(
+                    proc,
+                    {
+                        "jsonrpc": "2.0",
+                        "id": "turn-start-approval-patch",
+                        "method": "turn/start",
+                        "params": {
+                            "threadId": thread_id,
+                            "input": [{"type": "text", "text": "apply approved patch"}],
+                        },
+                    },
+                )
+                patch_turn = read_json_line(proc, 5)
+                assert patch_turn["id"] == "turn-start-approval-patch"
+                patch_turn_id = patch_turn["result"]["turn"]["id"]
+                patch_request = read_json_line(proc, 5)
+                assert patch_request["method"] == "item/fileChange/requestApproval"
+                assert patch_request["params"]["threadId"] == thread_id
+                assert patch_request["params"]["turnId"] == patch_turn_id
+                assert patch_request["params"]["itemId"] == "call-approval-patch"
+                assert patch_request["params"]["reason"] == patch_text
+                assert patch_request["params"]["grantRoot"] == str(cwd_path.resolve())
+
+                write_json_line(
+                    proc,
+                    {
+                        "jsonrpc": "2.0",
+                        "id": patch_request["id"],
+                        "result": {"decision": "acceptForSession"},
+                    },
+                )
+                patch_resolved = read_json_line(proc, 5)
+                assert patch_resolved["method"] == "serverRequest/resolved"
+                assert patch_resolved["params"]["threadId"] == thread_id
+                assert patch_resolved["params"]["requestId"] == patch_request["id"]
+                patch_messages = read_json_lines_until(
+                    proc,
+                    5,
+                    lambda messages: any(
+                        message.get("method") == "turn/completed"
+                        and message["params"]["turn"]["id"] == patch_turn_id
+                        for message in messages
+                    )
+                    and any(
+                        message.get("method") == "thread/status/changed"
+                        and message["params"]["status"] == {"type": "idle"}
+                        for message in messages
+                    ),
+                )
+                assert any(
+                    message.get("method") == "item/fileChange/patchUpdated"
+                    and message["params"]["itemId"] == "call-approval-patch"
+                    and message["params"]["changes"]
+                    == [
+                        {
+                            "path": "approval-patched.txt",
+                            "kind": {"type": "add"},
+                            "diff": "approval-patched\n",
+                        }
+                    ]
+                    for message in patch_messages
+                )
+                assert patch_file.read_text(encoding="utf-8") == "approval-patched\n"
+                assert len(server.request_bodies) == 20
+                patch_followup = server.request_bodies[19]
+                assert any(
+                    item.get("type") == "function_call_output"
+                    and item.get("call_id") == "call-approval-patch"
+                    and "applied patch" in item.get("output", "")
+                    for item in patch_followup["input"]
+                )
+
+                patch_session_text = (
+                    "*** Begin Patch\n"
+                    "*** Update File: approval-patched.txt\n"
+                    "@@\n"
+                    "-approval-patched\n"
+                    "+approval-patched-session\n"
+                    "*** End Patch\n"
+                )
+                patch_session_call = {
+                    "type": "response.output_item.done",
+                    "item": {
+                        "type": "function_call",
+                        "call_id": "call-approval-patch-session",
+                        "name": "apply_patch",
+                        "arguments": json.dumps(
+                            {"patch": patch_session_text},
+                            separators=(",", ":"),
+                        ),
+                    },
+                }
+                server.response_payloads.append(
+                    (
+                        f"data: {json.dumps(patch_session_call, separators=(',', ':'))}\n\n"
+                        "data: [DONE]\n\n"
+                    ).encode()
+                )
+
+                write_json_line(
+                    proc,
+                    {
+                        "jsonrpc": "2.0",
+                        "id": "turn-start-approval-patch-session",
+                        "method": "turn/start",
+                        "params": {
+                            "threadId": thread_id,
+                            "input": [{"type": "text", "text": "apply remembered patch"}],
+                        },
+                    },
+                )
+                patch_session_turn = read_json_line(proc, 5)
+                assert patch_session_turn["id"] == "turn-start-approval-patch-session"
+                patch_session_turn_id = patch_session_turn["result"]["turn"]["id"]
+                patch_session_messages = read_json_lines_until(
+                    proc,
+                    5,
+                    lambda messages: any(
+                        message.get("method") == "item/fileChange/requestApproval"
+                        for message in messages
+                    )
+                    or (
+                        any(
+                            message.get("method") == "turn/completed"
+                            and message["params"]["turn"]["id"] == patch_session_turn_id
+                            for message in messages
+                        )
+                        and any(
+                            message.get("method") == "thread/status/changed"
+                            and message["params"]["status"] == {"type": "idle"}
+                            for message in messages
+                        )
+                    ),
+                )
+                assert not any(
+                    message.get("method") == "item/fileChange/requestApproval"
+                    for message in patch_session_messages
+                )
+                assert any(
+                    message.get("method") == "item/fileChange/patchUpdated"
+                    and message["params"]["itemId"] == "call-approval-patch-session"
+                    for message in patch_session_messages
+                )
+                assert patch_file.read_text(encoding="utf-8") == "approval-patched-session\n"
+                assert len(server.request_bodies) == 22
+                patch_session_followup = server.request_bodies[21]
+                assert any(
+                    item.get("type") == "function_call_output"
+                    and item.get("call_id") == "call-approval-patch-session"
+                    and "applied patch" in item.get("output", "")
+                    for item in patch_session_followup["input"]
+                )
+
+                write_json_line(
+                    proc,
+                    {
+                        "jsonrpc": "2.0",
+                        "id": "initialize-opt-out-resolved",
+                        "method": "initialize",
+                        "params": {
+                            "clientInfo": {"name": "app-server-smoke", "version": "0"},
+                            "capabilities": {
+                                "optOutNotificationMethods": [
+                                    "configWarning",
+                                    "serverRequest/resolved",
+                                ],
+                            },
+                        },
+                    },
+                )
+                opt_out_initialize = read_json_line(proc, 5)
+                assert opt_out_initialize["id"] == "initialize-opt-out-resolved"
+
+                opt_out_file = cwd_path / "approval-opt-out.txt"
+                opt_out_call = {
+                    "type": "response.output_item.done",
+                    "item": {
+                        "type": "function_call",
+                        "call_id": "call-approval-opt-out",
+                        "name": "exec_command",
+                        "arguments": json.dumps(
+                            {
+                                "cmd": "printf approval-opt-out > approval-opt-out.txt; printf approval-opt-out",
+                                "workdir": cwd,
+                            },
+                            separators=(",", ":"),
+                        ),
+                    },
+                }
+                server.response_payloads.append(
+                    (
+                        f"data: {json.dumps(opt_out_call, separators=(',', ':'))}\n\n"
+                        "data: [DONE]\n\n"
+                    ).encode()
+                )
+
+                write_json_line(
+                    proc,
+                    {
+                        "jsonrpc": "2.0",
+                        "id": "turn-start-approval-opt-out",
+                        "method": "turn/start",
+                        "params": {
+                            "threadId": thread_id,
+                            "input": [{"type": "text", "text": "run opt-out command"}],
+                        },
+                    },
+                )
+                opt_out_turn = read_json_line(proc, 5)
+                assert opt_out_turn["id"] == "turn-start-approval-opt-out"
+                opt_out_turn_id = opt_out_turn["result"]["turn"]["id"]
+                opt_out_request = read_json_line(proc, 5)
+                assert opt_out_request["method"] == "item/commandExecution/requestApproval"
+                assert opt_out_request["params"]["threadId"] == thread_id
+                assert opt_out_request["params"]["turnId"] == opt_out_turn_id
+                assert opt_out_request["params"]["itemId"] == "call-approval-opt-out"
+                assert opt_out_request["params"]["approvalId"] is None
+
+                write_json_line(
+                    proc,
+                    {
+                        "jsonrpc": "2.0",
+                        "id": opt_out_request["id"],
+                        "result": {"decision": "accept"},
+                    },
+                )
+                opt_out_messages = read_json_lines_until(
+                    proc,
+                    5,
+                    lambda messages: any(
+                        message.get("method") == "turn/completed"
+                        and message["params"]["turn"]["id"] == opt_out_turn_id
+                        for message in messages
+                    )
+                    and any(
+                        message.get("method") == "thread/status/changed"
+                        and message["params"]["status"] == {"type": "idle"}
+                        for message in messages
+                    ),
+                )
+                assert not any(
+                    message.get("method") == "serverRequest/resolved"
+                    for message in opt_out_messages
+                )
+                assert any(
+                    message.get("method") == "item/commandExecution/outputDelta"
+                    and message["params"]["itemId"] == "call-approval-opt-out"
+                    and "approval-opt-out" in message["params"]["delta"]
+                    for message in opt_out_messages
+                )
+                assert opt_out_file.read_text(encoding="utf-8") == "approval-opt-out"
+                assert len(server.request_bodies) == 24
+
+                failed_after_ack_file = cwd_path / "approval-failed-after-ack.txt"
+                failed_after_ack_patch = (
+                    "*** Begin Patch\n"
+                    "*** Add File: approval-failed-after-ack.txt\n"
+                    "+should-not-run\n"
+                )
+                failed_after_ack_call = {
+                    "type": "response.output_item.done",
+                    "item": {
+                        "type": "function_call",
+                        "call_id": "call-approval-failed-after-ack",
+                        "name": "apply_patch",
+                        "arguments": json.dumps(
+                            {"patch": failed_after_ack_patch},
+                            separators=(",", ":"),
+                        ),
+                    },
+                }
+                server.response_payloads.append(
+                    (
+                        f"data: {json.dumps(failed_after_ack_call, separators=(',', ':'))}\n\n"
+                        "data: [DONE]\n\n"
+                    ).encode()
+                )
+
+                write_json_line(
+                    proc,
+                    {
+                        "jsonrpc": "2.0",
+                        "id": "turn-start-approval-failed-after-ack",
+                        "method": "turn/start",
+                        "params": {
+                            "threadId": thread_id,
+                            "input": [
+                                {
+                                    "type": "text",
+                                    "text": "fail after approved command",
+                                }
+                            ],
+                        },
+                    },
+                )
+                failed_after_ack_turn = read_json_line(proc, 5)
+                assert failed_after_ack_turn["id"] == "turn-start-approval-failed-after-ack"
+                failed_after_ack_turn_id = failed_after_ack_turn["result"]["turn"]["id"]
+                failed_after_ack_request = read_json_line(proc, 5)
+                assert (
+                    failed_after_ack_request["method"]
+                    == "item/fileChange/requestApproval"
+                )
+                assert failed_after_ack_request["params"]["threadId"] == thread_id
+                assert failed_after_ack_request["params"]["turnId"] == failed_after_ack_turn_id
+                assert (
+                    failed_after_ack_request["params"]["itemId"]
+                    == "call-approval-failed-after-ack"
+                )
+                assert failed_after_ack_request["params"]["reason"] == failed_after_ack_patch
+                assert failed_after_ack_request["params"]["grantRoot"] == str(cwd_path.resolve())
+
+                write_json_line(
+                    proc,
+                    {
+                        "jsonrpc": "2.0",
+                        "id": failed_after_ack_request["id"],
+                        "result": {"decision": "accept"},
+                    },
+                )
+                failed_after_ack_messages = read_json_lines_until(
+                    proc,
+                    5,
+                    lambda messages: any(
+                        message.get("method") == "turn/completed"
+                        and message["params"]["turn"]["id"] == failed_after_ack_turn_id
+                        for message in messages
+                    )
+                    and any(
+                        message.get("method") == "thread/status/changed"
+                        and message["params"]["status"] == {"type": "systemError"}
+                        for message in messages
+                    ),
+                )
+                failed_after_ack_completed = [
+                    message
+                    for message in failed_after_ack_messages
+                    if message.get("method") == "turn/completed"
+                    and message["params"]["turn"]["id"] == failed_after_ack_turn_id
+                ][-1]
+                assert failed_after_ack_completed["params"]["turn"]["status"] == "failed"
+                assert any(
+                    message.get("method") == "error"
+                    and message["params"]["threadId"] == thread_id
+                    and message["params"]["turnId"] == failed_after_ack_turn_id
+                    for message in failed_after_ack_messages
+                )
+                assert not failed_after_ack_file.exists()
+                assert len(server.request_bodies) == 25
+
+            proc.stdin.close()
+            proc.wait(timeout=5)
+            if proc.returncode != 0:
+                raise AssertionError(f"app-server exited {proc.returncode}: {proc.stderr.read()}")
+        finally:
+            if proc.poll() is None:
+                proc.kill()
+                proc.wait(timeout=5)
+    finally:
+        server.shutdown()
+        server.server_close()
         shutil.rmtree(codex_home, ignore_errors=True)
 
 
@@ -38265,6 +39611,8 @@ def main() -> None:
     print("app-server-turn-mcp-status-notification-e2e: ok")
     run_turn_tool_cwd_smoke(binary)
     print("app-server-turn-tool-cwd-e2e: ok")
+    run_turn_command_approval_request_smoke(binary)
+    print("app-server-turn-command-approval-request-e2e: ok")
     run_turn_terminal_interaction_smoke(binary)
     print("app-server-turn-terminal-interaction-e2e: ok")
     run_app_server_experimental_api_gate_smoke(binary)

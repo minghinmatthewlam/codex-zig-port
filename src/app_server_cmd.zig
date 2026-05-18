@@ -109,6 +109,9 @@ const AppServerState = struct {
     pre_response_notifications: std.ArrayList([]const u8) = .empty,
     pending_notifications: std.ArrayList([]const u8) = .empty,
     pending_server_requests: std.ArrayList(PendingServerRequest) = .empty,
+    session_command_approvals: std.ArrayList(SessionCommandApproval) = .empty,
+    session_file_approvals: std.ArrayList(SessionFileApproval) = .empty,
+    server_request_transport: ?ServerRequestTransport = null,
     active_command_execs: std.ArrayList(*ActiveCommandExecSession) = .empty,
 
     fn deinit(self: *AppServerState, allocator: std.mem.Allocator) void {
@@ -127,6 +130,10 @@ const AppServerState = struct {
         self.pending_notifications.deinit(allocator);
         for (self.pending_server_requests.items) |*request| request.deinit(allocator);
         self.pending_server_requests.deinit(allocator);
+        for (self.session_command_approvals.items) |*approval| approval.deinit(allocator);
+        self.session_command_approvals.deinit(allocator);
+        for (self.session_file_approvals.items) |*approval| approval.deinit(allocator);
+        self.session_file_approvals.deinit(allocator);
         self.active_command_execs.deinit(allocator);
     }
 };
@@ -174,6 +181,48 @@ const PendingServerRequest = struct {
         allocator.free(self.request_id_json);
         allocator.free(self.thread_id);
     }
+};
+
+const SessionCommandApproval = struct {
+    thread_id: []const u8,
+    detail: []const u8,
+    cwd: ?[]const u8,
+    scope_key: []const u8,
+
+    fn deinit(self: *SessionCommandApproval, allocator: std.mem.Allocator) void {
+        allocator.free(self.thread_id);
+        allocator.free(self.detail);
+        if (self.cwd) |cwd| allocator.free(cwd);
+        allocator.free(self.scope_key);
+    }
+};
+
+const SessionFileApproval = struct {
+    thread_id: []const u8,
+    path: []const u8,
+
+    fn deinit(self: *SessionFileApproval, allocator: std.mem.Allocator) void {
+        allocator.free(self.thread_id);
+        allocator.free(self.path);
+    }
+};
+
+const ServerRequestTransport = struct {
+    ctx: *anyopaque,
+    send_payload: *const fn (ctx: *anyopaque, payload: []const u8) anyerror!void,
+    read_payload: *const fn (ctx: *anyopaque, allocator: std.mem.Allocator) anyerror!?[]const u8,
+};
+
+const JsonRpcTransportKind = enum {
+    stdout_line,
+    stream_line,
+    websocket,
+};
+
+const JsonRpcTransportContext = struct {
+    kind: JsonRpcTransportKind,
+    reader: *std.Io.Reader,
+    writer: ?*std.Io.Writer = null,
 };
 
 const LoadedThread = struct {
@@ -24844,6 +24893,15 @@ const StdioServer = struct {
 
         var input_buffer: [64 * 1024]u8 = undefined;
         var stdin_reader = std.Io.File.stdin().reader(std.Io.Threaded.global_single_threaded.io(), &input_buffer);
+        var transport_context = JsonRpcTransportContext{
+            .kind = .stdout_line,
+            .reader = &stdin_reader.interface,
+        };
+        state.server_request_transport = .{
+            .ctx = &transport_context,
+            .send_payload = sendJsonRpcTransportPayload,
+            .read_payload = readJsonRpcTransportPayload,
+        };
 
         while (true) {
             const line_opt = try stdin_reader.interface.takeDelimiter('\n');
@@ -24920,6 +24978,17 @@ const UnixServer = struct {
         var output_buffer: [64 * 1024]u8 = undefined;
         var reader = stream.reader(io, &input_buffer);
         var writer = stream.writer(io, &output_buffer);
+        var transport_context = JsonRpcTransportContext{
+            .kind = .stream_line,
+            .reader = &reader.interface,
+            .writer = &writer.interface,
+        };
+        state.server_request_transport = .{
+            .ctx = &transport_context,
+            .send_payload = sendJsonRpcTransportPayload,
+            .read_payload = readJsonRpcTransportPayload,
+        };
+        defer state.server_request_transport = null;
 
         while (true) {
             const line_opt = try reader.interface.takeDelimiter('\n');
@@ -25044,6 +25113,18 @@ const WebSocketServer = struct {
             .{accept},
         );
         try writer.interface.flush();
+
+        var transport_context = JsonRpcTransportContext{
+            .kind = .websocket,
+            .reader = &reader.interface,
+            .writer = &writer.interface,
+        };
+        state.server_request_transport = .{
+            .ctx = &transport_context,
+            .send_payload = sendJsonRpcTransportPayload,
+            .read_payload = readJsonRpcTransportPayload,
+        };
+        defer state.server_request_transport = null;
 
         while (true) {
             const payload = try readWebSocketTextFrame(self.allocator, &reader.interface, &writer.interface) orelse return;
@@ -25328,6 +25409,36 @@ fn writeWebSocketFrame(writer: *std.Io.Writer, opcode: u8, payload: []const u8) 
     try writer.flush();
 }
 
+fn sendJsonRpcTransportPayload(ctx: *anyopaque, payload: []const u8) !void {
+    const context: *JsonRpcTransportContext = @ptrCast(@alignCast(ctx));
+    switch (context.kind) {
+        .stdout_line => try writeStdoutLine(payload),
+        .stream_line => try writeStreamLine(context.writer orelse return error.AppServerTransportMissingWriter, payload),
+        .websocket => try writeWebSocketTextFrame(context.writer orelse return error.AppServerTransportMissingWriter, payload),
+    }
+}
+
+fn readJsonRpcTransportPayload(ctx: *anyopaque, allocator: std.mem.Allocator) !?[]const u8 {
+    const context: *JsonRpcTransportContext = @ptrCast(@alignCast(ctx));
+    switch (context.kind) {
+        .stdout_line, .stream_line => {
+            const line = try context.reader.takeDelimiter('\n') orelse return null;
+            const trimmed = std.mem.trim(u8, line, " \t\r\n");
+            return try allocator.dupe(u8, trimmed);
+        },
+        .websocket => {
+            const writer = context.writer orelse return error.AppServerTransportMissingWriter;
+            const payload = try readWebSocketTextFrame(allocator, context.reader, writer) orelse return null;
+            errdefer allocator.free(payload);
+            const trimmed = std.mem.trim(u8, payload, " \t\r\n");
+            if (trimmed.len == payload.len) return payload;
+            const owned = try allocator.dupe(u8, trimmed);
+            allocator.free(payload);
+            return owned;
+        },
+    }
+}
+
 fn handleJsonRpcLine(allocator: std.mem.Allocator, state: *AppServerState, line: []const u8) !?[]const u8 {
     var parsed = std.json.parseFromSlice(std.json.Value, allocator, line, .{}) catch {
         return try renderJsonRpcError(allocator, null, -32700, "Parse error");
@@ -25541,6 +25652,511 @@ fn renderServerRequestResolvedNotification(
     try notification.appendSlice(allocator, request_id_json);
     try notification.appendSlice(allocator, "}}");
     return notification.toOwnedSlice(allocator);
+}
+
+const AppServerApprovalContext = struct {
+    allocator: std.mem.Allocator,
+    state: *AppServerState,
+    transport: ServerRequestTransport,
+    thread_id: []const u8,
+    turn_id: []const u8,
+    turn_start_response_payload: []const u8,
+    turn_start_response_sent: *bool,
+};
+
+const AppServerApprovalDecision = enum {
+    allow,
+    allow_for_session,
+    reject,
+    cancel,
+};
+
+const PendingApprovalInterruptResponse = struct {
+    payload: []const u8,
+    cancel_approval: bool,
+};
+
+fn handleAppServerApprovalRequest(ctx: *anyopaque, request: tool_runner.ApprovalRequest) !tool_runner.ApprovalDecision {
+    const context: *AppServerApprovalContext = @ptrCast(@alignCast(ctx));
+    switch (request.kind) {
+        .shell => if (sessionCommandApprovalMatches(context.state, context.thread_id, request)) {
+            try sendApprovalTurnStartResponse(context);
+            return .allow;
+        },
+        .apply_patch => if (try sessionFileApprovalMatches(context.allocator, context.state, context.thread_id, request)) {
+            try sendApprovalTurnStartResponse(context);
+            return .allow;
+        },
+    }
+
+    try sendApprovalTurnStartResponse(context);
+
+    const request_id = try std.fmt.allocPrint(context.allocator, "approval-{s}", .{request.call_id});
+    defer context.allocator.free(request_id);
+    const request_id_json = try std.json.Stringify.valueAlloc(context.allocator, request_id, .{});
+    defer context.allocator.free(request_id_json);
+
+    const request_json = switch (request.kind) {
+        .shell => try renderCommandExecutionRequestApprovalRequest(
+            context.allocator,
+            request_id,
+            context.thread_id,
+            context.turn_id,
+            request,
+        ),
+        .apply_patch => try renderFileChangeRequestApprovalRequest(
+            context.allocator,
+            request_id,
+            context.thread_id,
+            context.turn_id,
+            request,
+        ),
+    };
+    defer context.allocator.free(request_json);
+
+    try trackPendingServerRequest(context.allocator, context.state, request_json);
+    var pending_tracked = true;
+    defer if (pending_tracked) {
+        if (takePendingServerRequest(context.state, request_id_json)) |pending_request| {
+            var pending = pending_request;
+            pending.deinit(context.allocator);
+        }
+    };
+
+    const visible_request = try renderServerRequestForConnection(context.allocator, context.state.experimental_api_enabled, request_json);
+    defer context.allocator.free(visible_request);
+    try context.transport.send_payload(context.transport.ctx, visible_request);
+
+    while (true) {
+        const payload = try context.transport.read_payload(context.transport.ctx, context.allocator) orelse return error.AppServerApprovalClientClosed;
+        defer context.allocator.free(payload);
+        if (payload.len == 0) continue;
+
+        if (try approvalDecisionFromResponsePayload(context.allocator, payload, request_id_json, request.kind)) |decision| {
+            if (decision == .allow_for_session) {
+                switch (request.kind) {
+                    .shell => try rememberSessionCommandApproval(context.allocator, context.state, context.thread_id, request),
+                    .apply_patch => try rememberSessionFileApproval(context.allocator, context.state, context.thread_id, request),
+                }
+            }
+            try sendServerRequestResolvedForRequest(context.allocator, context.state, context.transport, request_id_json);
+            pending_tracked = false;
+            return switch (decision) {
+                .allow => .allow,
+                .allow_for_session => .allow,
+                .reject => .reject,
+                .cancel => error.AppServerApprovalCanceled,
+            };
+        }
+
+        if (try renderPendingApprovalInterruptResponse(context.allocator, payload, context.thread_id, context.turn_id)) |interrupt_response| {
+            defer context.allocator.free(interrupt_response.payload);
+            try context.transport.send_payload(context.transport.ctx, interrupt_response.payload);
+            if (interrupt_response.cancel_approval) {
+                try sendServerRequestResolvedForRequest(context.allocator, context.state, context.transport, request_id_json);
+                pending_tracked = false;
+                return error.AppServerApprovalCanceled;
+            }
+            continue;
+        }
+
+        if (try renderPendingApprovalJsonRpcResponse(context.allocator, payload)) |response_payload| {
+            defer context.allocator.free(response_payload);
+            try context.transport.send_payload(context.transport.ctx, response_payload);
+        }
+    }
+}
+
+fn sendApprovalTurnStartResponse(context: *AppServerApprovalContext) !void {
+    if (context.turn_start_response_sent.*) return;
+    try context.transport.send_payload(context.transport.ctx, context.turn_start_response_payload);
+    context.turn_start_response_sent.* = true;
+}
+
+fn renderCommandExecutionRequestApprovalRequest(
+    allocator: std.mem.Allocator,
+    request_id: []const u8,
+    thread_id: []const u8,
+    turn_id: []const u8,
+    request: tool_runner.ApprovalRequest,
+) ![]const u8 {
+    var out = std.ArrayList(u8).empty;
+    errdefer out.deinit(allocator);
+    try out.appendSlice(allocator, "{\"jsonrpc\":\"2.0\",\"id\":");
+    try appendJsonString(allocator, &out, request_id);
+    try out.appendSlice(allocator, ",\"method\":\"item/commandExecution/requestApproval\",\"params\":{\"threadId\":");
+    try appendJsonString(allocator, &out, thread_id);
+    try out.appendSlice(allocator, ",\"turnId\":");
+    try appendJsonString(allocator, &out, turn_id);
+    try out.appendSlice(allocator, ",\"itemId\":");
+    try appendJsonString(allocator, &out, request.call_id);
+    try out.appendSlice(allocator, ",\"approvalId\":null");
+    try out.appendSlice(allocator, ",\"reason\":null,\"networkApprovalContext\":null,\"command\":");
+    try appendJsonString(allocator, &out, request.detail);
+    try out.appendSlice(allocator, ",\"cwd\":");
+    try appendOptionalJsonString(allocator, &out, request.cwd);
+    try out.appendSlice(allocator, ",\"commandActions\":null}}");
+    return out.toOwnedSlice(allocator);
+}
+
+fn renderFileChangeRequestApprovalRequest(
+    allocator: std.mem.Allocator,
+    request_id: []const u8,
+    thread_id: []const u8,
+    turn_id: []const u8,
+    request: tool_runner.ApprovalRequest,
+) ![]const u8 {
+    var out = std.ArrayList(u8).empty;
+    errdefer out.deinit(allocator);
+    try out.appendSlice(allocator, "{\"jsonrpc\":\"2.0\",\"id\":");
+    try appendJsonString(allocator, &out, request_id);
+    try out.appendSlice(allocator, ",\"method\":\"item/fileChange/requestApproval\",\"params\":{\"threadId\":");
+    try appendJsonString(allocator, &out, thread_id);
+    try out.appendSlice(allocator, ",\"turnId\":");
+    try appendJsonString(allocator, &out, turn_id);
+    try out.appendSlice(allocator, ",\"itemId\":");
+    try appendJsonString(allocator, &out, request.call_id);
+    try out.appendSlice(allocator, ",\"reason\":");
+    try appendJsonString(allocator, &out, request.detail);
+    try out.appendSlice(allocator, ",\"grantRoot\":");
+    try appendOptionalJsonString(allocator, &out, request.cwd);
+    try out.appendSlice(allocator, "}}");
+    return out.toOwnedSlice(allocator);
+}
+
+fn approvalDecisionFromResponsePayload(
+    allocator: std.mem.Allocator,
+    payload: []const u8,
+    request_id_json: []const u8,
+    request_kind: tool_runner.ToolKind,
+) !?AppServerApprovalDecision {
+    var parsed = std.json.parseFromSlice(std.json.Value, allocator, payload, .{}) catch return null;
+    defer parsed.deinit();
+    if (parsed.value != .object) return null;
+    const object = parsed.value.object;
+    if (!isJsonRpcResponseEnvelope(object)) return null;
+    const id_value = object.get("id") orelse return null;
+    const id_json = try std.json.Stringify.valueAlloc(allocator, id_value, .{});
+    defer allocator.free(id_json);
+    if (!std.mem.eql(u8, id_json, request_id_json)) return null;
+
+    if (object.get("error") != null) return .reject;
+    const result = object.get("result") orelse return .reject;
+    if (result != .object) return .reject;
+    const decision_value = result.object.get("decision") orelse return .reject;
+    return switch (request_kind) {
+        .shell => commandApprovalDecisionFromValue(decision_value),
+        .apply_patch => fileChangeApprovalDecisionFromValue(decision_value),
+    };
+}
+
+fn commandApprovalDecisionFromValue(decision_value: std.json.Value) AppServerApprovalDecision {
+    switch (decision_value) {
+        .string => |decision| {
+            if (std.mem.eql(u8, decision, "accept") or
+                std.mem.eql(u8, decision, "approved"))
+            {
+                return .allow;
+            }
+            if (std.mem.eql(u8, decision, "acceptForSession") or
+                std.mem.eql(u8, decision, "approved_for_session"))
+            {
+                return .allow_for_session;
+            }
+            if (std.mem.eql(u8, decision, "cancel")) return .cancel;
+            return .reject;
+        },
+        .object => |decision_object| {
+            if (decision_object.get("acceptWithExecpolicyAmendment")) |amendment| {
+                if (amendment != .object) return .reject;
+                if (amendment.object.get("execpolicy_amendment") == null) return .reject;
+                return .allow;
+            }
+            if (decision_object.get("applyNetworkPolicyAmendment")) |amendment| {
+                return approvalDecisionFromNetworkPolicyAmendment(amendment);
+            }
+            return .reject;
+        },
+        else => return .reject,
+    }
+}
+
+fn fileChangeApprovalDecisionFromValue(decision_value: std.json.Value) AppServerApprovalDecision {
+    if (decision_value != .string) return .reject;
+    const decision = decision_value.string;
+    if (std.mem.eql(u8, decision, "accept")) return .allow;
+    if (std.mem.eql(u8, decision, "acceptForSession")) return .allow_for_session;
+    if (std.mem.eql(u8, decision, "cancel")) return .cancel;
+    return .reject;
+}
+
+fn approvalDecisionFromNetworkPolicyAmendment(value: std.json.Value) AppServerApprovalDecision {
+    if (value != .object) return .reject;
+    const amendment = value.object.get("network_policy_amendment") orelse return .reject;
+    if (amendment != .object) return .reject;
+    const action = amendment.object.get("action") orelse return .reject;
+    if (action != .string) return .reject;
+    if (std.mem.eql(u8, action.string, "allow")) return .allow;
+    return .reject;
+}
+
+fn sessionCommandApprovalMatches(
+    state: *const AppServerState,
+    thread_id: []const u8,
+    request: tool_runner.ApprovalRequest,
+) bool {
+    for (state.session_command_approvals.items) |approval| {
+        if (std.mem.eql(u8, approval.thread_id, thread_id) and
+            std.mem.eql(u8, approval.detail, request.detail) and
+            optionalStringEql(approval.cwd, request.cwd) and
+            std.mem.eql(u8, approval.scope_key, request.scope_key))
+        {
+            return true;
+        }
+    }
+    return false;
+}
+
+fn rememberSessionCommandApproval(
+    allocator: std.mem.Allocator,
+    state: *AppServerState,
+    thread_id: []const u8,
+    request: tool_runner.ApprovalRequest,
+) !void {
+    if (sessionCommandApprovalMatches(state, thread_id, request)) return;
+
+    const owned_thread_id = try allocator.dupe(u8, thread_id);
+    errdefer allocator.free(owned_thread_id);
+    const owned_detail = try allocator.dupe(u8, request.detail);
+    errdefer allocator.free(owned_detail);
+    var owned_cwd: ?[]const u8 = null;
+    errdefer if (owned_cwd) |cwd| allocator.free(cwd);
+    if (request.cwd) |cwd| owned_cwd = try allocator.dupe(u8, cwd);
+    const owned_scope_key = try allocator.dupe(u8, request.scope_key);
+    errdefer allocator.free(owned_scope_key);
+
+    try state.session_command_approvals.append(allocator, .{
+        .thread_id = owned_thread_id,
+        .detail = owned_detail,
+        .cwd = owned_cwd,
+        .scope_key = owned_scope_key,
+    });
+}
+
+fn sessionFileApprovalMatches(
+    allocator: std.mem.Allocator,
+    state: *const AppServerState,
+    thread_id: []const u8,
+    request: tool_runner.ApprovalRequest,
+) !bool {
+    var paths = try patchApprovalPaths(allocator, request);
+    defer deinitPatchApprovalPaths(allocator, &paths);
+    if (paths.items.len == 0) return false;
+
+    for (paths.items) |path| {
+        if (!sessionFileApprovalContains(state, thread_id, path)) return false;
+    }
+    return true;
+}
+
+fn rememberSessionFileApproval(
+    allocator: std.mem.Allocator,
+    state: *AppServerState,
+    thread_id: []const u8,
+    request: tool_runner.ApprovalRequest,
+) !void {
+    var paths = try patchApprovalPaths(allocator, request);
+    defer deinitPatchApprovalPaths(allocator, &paths);
+
+    for (paths.items) |path| {
+        if (sessionFileApprovalContains(state, thread_id, path)) continue;
+        const owned_thread_id = try allocator.dupe(u8, thread_id);
+        errdefer allocator.free(owned_thread_id);
+        const owned_path = try allocator.dupe(u8, path);
+        errdefer allocator.free(owned_path);
+        try state.session_file_approvals.append(allocator, .{
+            .thread_id = owned_thread_id,
+            .path = owned_path,
+        });
+    }
+}
+
+fn sessionFileApprovalContains(state: *const AppServerState, thread_id: []const u8, path: []const u8) bool {
+    for (state.session_file_approvals.items) |approval| {
+        if (std.mem.eql(u8, approval.thread_id, thread_id) and
+            std.mem.eql(u8, approval.path, path))
+        {
+            return true;
+        }
+    }
+    return false;
+}
+
+fn patchApprovalPaths(allocator: std.mem.Allocator, request: tool_runner.ApprovalRequest) !std.ArrayList([]const u8) {
+    var paths = std.ArrayList([]const u8).empty;
+    errdefer deinitPatchApprovalPaths(allocator, &paths);
+    const cwd = request.cwd orelse return paths;
+
+    const patch_text = normalizeAppServerPatchText(request.detail);
+    var raw_lines = std.mem.splitScalar(u8, patch_text, '\n');
+    while (raw_lines.next()) |raw_line| {
+        const line = appServerPatchDirective(std.mem.trimEnd(u8, raw_line, "\r"));
+        if (std.mem.startsWith(u8, line, "*** Add File: ")) {
+            try appendPatchApprovalPath(allocator, &paths, cwd, line["*** Add File: ".len..]);
+            continue;
+        }
+        if (std.mem.startsWith(u8, line, "*** Update File: ")) {
+            try appendPatchApprovalPath(allocator, &paths, cwd, line["*** Update File: ".len..]);
+            continue;
+        }
+        if (std.mem.startsWith(u8, line, "*** Delete File: ")) {
+            try appendPatchApprovalPath(allocator, &paths, cwd, line["*** Delete File: ".len..]);
+            continue;
+        }
+        if (std.mem.startsWith(u8, line, "*** Move to: ")) {
+            try appendPatchApprovalPath(allocator, &paths, cwd, line["*** Move to: ".len..]);
+        }
+    }
+    return paths;
+}
+
+fn appendPatchApprovalPath(
+    allocator: std.mem.Allocator,
+    paths: *std.ArrayList([]const u8),
+    cwd: []const u8,
+    raw_path: []const u8,
+) !void {
+    const normalized = if (std.fs.path.isAbsolute(raw_path))
+        try std.fs.path.resolve(allocator, &.{raw_path})
+    else
+        try std.fs.path.resolve(allocator, &.{ cwd, raw_path });
+    errdefer allocator.free(normalized);
+    for (paths.items) |path| {
+        if (std.mem.eql(u8, path, normalized)) {
+            allocator.free(normalized);
+            return;
+        }
+    }
+    try paths.append(allocator, normalized);
+}
+
+fn deinitPatchApprovalPaths(allocator: std.mem.Allocator, paths: *std.ArrayList([]const u8)) void {
+    for (paths.items) |path| allocator.free(path);
+    paths.deinit(allocator);
+}
+
+fn normalizeAppServerPatchText(patch: []const u8) []const u8 {
+    const trimmed = std.mem.trim(u8, patch, " \t\r\n");
+    const first_newline = std.mem.indexOfScalar(u8, trimmed, '\n') orelse return trimmed;
+    const last_newline = std.mem.lastIndexOfScalar(u8, trimmed, '\n') orelse return trimmed;
+    if (first_newline >= last_newline) return trimmed;
+
+    const first_line = std.mem.trimEnd(u8, trimmed[0..first_newline], "\r");
+    if (!isAppServerPatchHeredocStart(first_line)) return trimmed;
+
+    const last_line = std.mem.trimEnd(u8, trimmed[last_newline + 1 ..], "\r");
+    if (!std.mem.endsWith(u8, last_line, "EOF")) return trimmed;
+
+    return std.mem.trim(u8, trimmed[first_newline + 1 .. last_newline], " \t\r\n");
+}
+
+fn isAppServerPatchHeredocStart(line: []const u8) bool {
+    return std.mem.eql(u8, line, "<<EOF") or
+        std.mem.eql(u8, line, "<<'EOF'") or
+        std.mem.eql(u8, line, "<<\"EOF\"");
+}
+
+fn appServerPatchDirective(line: []const u8) []const u8 {
+    return std.mem.trim(u8, line, " \t");
+}
+
+fn optionalStringEql(a: ?[]const u8, b: ?[]const u8) bool {
+    if (a) |left| {
+        if (b) |right| return std.mem.eql(u8, left, right);
+        return false;
+    }
+    return b == null;
+}
+
+fn renderPendingApprovalInterruptResponse(
+    allocator: std.mem.Allocator,
+    payload: []const u8,
+    thread_id: []const u8,
+    turn_id: []const u8,
+) !?PendingApprovalInterruptResponse {
+    var parsed = std.json.parseFromSlice(std.json.Value, allocator, payload, .{}) catch return null;
+    defer parsed.deinit();
+    if (parsed.value != .object) return null;
+    const object = parsed.value.object;
+    const id_value = object.get("id") orelse return null;
+    const method = object.get("method") orelse return null;
+    if (method != .string or !std.mem.eql(u8, method.string, "turn/interrupt")) return null;
+
+    const params = object.get("params") orelse return .{
+        .payload = try renderJsonRpcError(allocator, id_value, -32602, "turn/interrupt params must be an object"),
+        .cancel_approval = false,
+    };
+    if (params != .object) return .{
+        .payload = try renderJsonRpcError(allocator, id_value, -32602, "turn/interrupt params must be an object"),
+        .cancel_approval = false,
+    };
+    const interrupt_thread_id = requiredThreadIdParam(params.object) catch |err| switch (err) {
+        error.MissingThreadId => return .{
+            .payload = try renderJsonRpcError(allocator, id_value, -32602, "threadId must be a string"),
+            .cancel_approval = false,
+        },
+    };
+    const interrupt_turn_id = params.object.get("turnId") orelse return .{
+        .payload = try renderJsonRpcError(allocator, id_value, -32602, "turnId must be a string"),
+        .cancel_approval = false,
+    };
+    if (interrupt_turn_id != .string) return .{
+        .payload = try renderJsonRpcError(allocator, id_value, -32602, "turnId must be a string"),
+        .cancel_approval = false,
+    };
+    if (!std.mem.eql(u8, interrupt_thread_id, thread_id) or
+        !std.mem.eql(u8, interrupt_turn_id.string, turn_id))
+    {
+        return .{
+            .payload = try renderJsonRpcError(allocator, id_value, -32600, "no active turn to interrupt"),
+            .cancel_approval = false,
+        };
+    }
+    return .{
+        .payload = try renderJsonRpcResult(allocator, id_value, "{}"),
+        .cancel_approval = true,
+    };
+}
+
+fn sendServerRequestResolvedForRequest(
+    allocator: std.mem.Allocator,
+    state: *AppServerState,
+    transport: ServerRequestTransport,
+    request_id_json: []const u8,
+) !void {
+    var pending = takePendingServerRequest(state, request_id_json) orelse return;
+    defer pending.deinit(allocator);
+    if (serverNotificationShouldBeDropped(state, "serverRequest/resolved")) return;
+    const notification = try renderServerRequestResolvedNotification(allocator, pending.thread_id, pending.request_id_json);
+    defer allocator.free(notification);
+    try transport.send_payload(transport.ctx, notification);
+}
+
+fn renderPendingApprovalJsonRpcResponse(
+    allocator: std.mem.Allocator,
+    payload: []const u8,
+) !?[]const u8 {
+    var parsed = std.json.parseFromSlice(std.json.Value, allocator, payload, .{}) catch {
+        return try renderJsonRpcError(allocator, null, -32700, "Parse error");
+    };
+    defer parsed.deinit();
+    if (parsed.value != .object) return try renderJsonRpcError(allocator, null, -32600, "Invalid Request");
+    const object = parsed.value.object;
+    const id_value = object.get("id") orelse return null;
+    if (!isJsonRpcRequestIdValue(id_value)) return try renderJsonRpcError(allocator, null, -32600, "Invalid Request");
+    const method = object.get("method") orelse return null;
+    if (method != .string) return try renderJsonRpcError(allocator, id_value, -32600, "Invalid Request");
+    return try renderJsonRpcError(allocator, id_value, -32600, "cannot process request while approval is pending");
 }
 
 fn handleMemoryReset(allocator: std.mem.Allocator, id_value: std.json.Value) ![]const u8 {
@@ -25899,17 +26515,17 @@ fn handleTurnMethod(
     id_value: std.json.Value,
     method: []const u8,
     params_value: ?std.json.Value,
-) ![]const u8 {
+) !?[]const u8 {
     if (std.mem.eql(u8, method, "turn/start")) {
-        return handleTurnStart(allocator, state, id_value, params_value);
+        return try handleTurnStart(allocator, state, id_value, params_value);
     }
     if (std.mem.eql(u8, method, "turn/steer")) {
-        return handleTurnSteer(allocator, state, id_value, params_value);
+        return try handleTurnSteer(allocator, state, id_value, params_value);
     }
     if (std.mem.eql(u8, method, "turn/interrupt")) {
-        return handleTurnInterrupt(allocator, state, id_value, params_value);
+        return try handleTurnInterrupt(allocator, state, id_value, params_value);
     }
-    return renderParsedButNotImplemented(allocator, id_value, method);
+    return try renderParsedButNotImplemented(allocator, id_value, method);
 }
 
 fn handleTurnStart(
@@ -25917,36 +26533,36 @@ fn handleTurnStart(
     state: *AppServerState,
     id_value: std.json.Value,
     params_value: ?std.json.Value,
-) ![]const u8 {
-    const params = params_value orelse return renderJsonRpcError(allocator, id_value, -32602, "turn/start params must be an object");
-    if (params != .object) return renderJsonRpcError(allocator, id_value, -32602, "turn/start params must be an object");
+) !?[]const u8 {
+    const params = params_value orelse return try renderJsonRpcError(allocator, id_value, -32602, "turn/start params must be an object");
+    if (params != .object) return try renderJsonRpcError(allocator, id_value, -32602, "turn/start params must be an object");
     const object = params.object;
 
     const thread_id = requiredThreadIdParam(object) catch |err| switch (err) {
-        error.MissingThreadId => return renderJsonRpcError(allocator, id_value, -32602, "threadId must be a string"),
+        error.MissingThreadId => return try renderJsonRpcError(allocator, id_value, -32602, "threadId must be a string"),
     };
     if (!isUuidString(thread_id)) {
-        return renderInvalidThreadId(allocator, id_value, thread_id);
+        return try renderInvalidThreadId(allocator, id_value, thread_id);
     }
     const thread_index = findLoadedThreadIndex(state, thread_id) orelse {
-        return renderThreadNotFound(allocator, id_value, thread_id);
+        return try renderThreadNotFound(allocator, id_value, thread_id);
     };
 
     var input = parseTurnStartInput(allocator, object) catch |err| switch (err) {
-        error.InvalidTurnInput => return renderJsonRpcError(allocator, id_value, -32602, "input must be an array of supported user input items"),
-        error.EmptyTurnInput => return renderJsonRpcError(allocator, id_value, -32600, "input must include text or image"),
-        error.UnsupportedTurnInput => return renderJsonRpcError(allocator, id_value, -32600, "only text, image, localImage, skill, and mention turn/start input is implemented"),
+        error.InvalidTurnInput => return try renderJsonRpcError(allocator, id_value, -32602, "input must be an array of supported user input items"),
+        error.EmptyTurnInput => return try renderJsonRpcError(allocator, id_value, -32600, "input must include text or image"),
+        error.UnsupportedTurnInput => return try renderJsonRpcError(allocator, id_value, -32600, "only text, image, localImage, skill, and mention turn/start input is implemented"),
         else => return err,
     };
     defer input.deinit(allocator);
 
     var cfg = config.load(allocator) catch |err| {
-        return renderJsonRpcErrorForFailure(allocator, id_value, "turn/start failed to load config", err);
+        return try renderJsonRpcErrorForFailure(allocator, id_value, "turn/start failed to load config", err);
     };
     defer cfg.deinit(allocator);
 
     var credentials = auth_mod.loadForConfig(allocator, &cfg) catch |err| {
-        return renderJsonRpcErrorForFailure(allocator, id_value, "turn/start failed to load auth", err);
+        return try renderJsonRpcErrorForFailure(allocator, id_value, "turn/start failed to load auth", err);
     };
     defer credentials.deinit(allocator);
 
@@ -25955,7 +26571,7 @@ fn handleTurnStart(
     defer allocator.free(turn_id);
 
     applyTurnStartRuntimeOverrides(allocator, &cfg, thread, object) catch |err| switch (err) {
-        error.InvalidTurnContextOverride => return renderJsonRpcError(allocator, id_value, -32602, "invalid turn context override"),
+        error.InvalidTurnContextOverride => return try renderJsonRpcError(allocator, id_value, -32602, "invalid turn context override"),
         else => return err,
     };
 
@@ -26010,6 +26626,10 @@ fn handleTurnStart(
 
     const response = try renderTurnStartResponse(allocator, turn_id);
     defer allocator.free(response);
+    const response_payload = try renderJsonRpcResult(allocator, id_value, response);
+    var response_payload_moved = false;
+    defer if (!response_payload_moved) allocator.free(response_payload);
+    var turn_start_response_sent = false;
     const user_item_index = thread.transcript.history.items.len;
     const started_notification = try renderTurnNotification(allocator, "turn/started", thread.id, turn_id, "inProgress", started_at, null);
     var started_notification_moved = false;
@@ -26127,11 +26747,31 @@ fn handleTurnStart(
         thread.status = .idle;
         try queueThreadStatusChangedNotification(allocator, state, thread.id, .idle);
 
-        return renderJsonRpcResult(allocator, id_value, response);
+        if (turn_start_response_sent) return null;
+        response_payload_moved = true;
+        return response_payload;
     }
 
+    var approval_context: AppServerApprovalContext = undefined;
+    const approval_callback: ?tool_runner.ApprovalCallback = if (state.server_request_transport) |transport| blk: {
+        approval_context = .{
+            .allocator = allocator,
+            .state = state,
+            .transport = transport,
+            .thread_id = thread.id,
+            .turn_id = turn_id,
+            .turn_start_response_payload = response_payload,
+            .turn_start_response_sent = &turn_start_response_sent,
+        };
+        break :blk .{
+            .ctx = &approval_context,
+            .on_approval_requested = handleAppServerApprovalRequest,
+        };
+    } else null;
+
     const answer = session_mod.runTurnWithOptions(allocator, cfg, &credentials, &thread.transcript, prompt_for_turn, .{
-        .prompt_for_approval = false,
+        .prompt_for_approval = approval_callback != null,
+        .approval_callback = approval_callback,
         .additional_writable_roots = thread.sandbox_writable_roots.items,
         .include_cwd_write_root = thread.sandbox_include_cwd_write_root,
         .network_enabled = thread.sandbox_network_enabled,
@@ -26190,15 +26830,62 @@ fn handleTurnStart(
         .workdir = thread.cwd,
         .background_terminal_owner = thread.id,
     }) catch |err| {
-        const error_message = try std.fmt.allocPrint(allocator, "turn/start failed to run turn: {s}", .{@errorName(err)});
-        defer allocator.free(error_message);
-        if (session_start_hooks.notifications.items.len > 0 or user_prompt_hooks.notifications.items.len > 0) {
+        if (err == error.AppServerApprovalCanceled) {
+            const completed_at_ms = currentUnixMilliseconds();
+            const completed_at = @divTrunc(completed_at_ms, std.time.ms_per_s);
+            const completed_notification = try renderTurnNotification(allocator, "turn/completed", thread.id, turn_id, "interrupted", started_at, completed_at);
+            var completed_notification_moved = false;
+            errdefer if (!completed_notification_moved) allocator.free(completed_notification);
+
+            try refreshLoadedThreadAfterTurn(allocator, thread, prompt_for_turn);
+            if (thread.path) |path| {
+                try session_store.saveTranscript(allocator, path, &thread.transcript);
+            }
+
             thread.status = .active;
             try queueThreadStatusChangedNotification(allocator, state, thread.id, .active);
             try queueTurnNotification(allocator, state, "turn/started", started_notification);
             started_notification_moved = true;
             try movePendingHookRuntimeNotifications(allocator, state, &session_start_hooks.notifications);
             try movePendingHookRuntimeNotifications(allocator, state, &user_prompt_hooks.notifications);
+            if (user_item_index < thread.transcript.history.items.len) {
+                const user_item = thread.transcript.history.items[user_item_index];
+                if (user_item.kind == .message and isHistoryRole(user_item, "user")) {
+                    try queueUserMessageItemNotification(allocator, state, "item/started", thread.id, turn_id, user_item_index, input.user_content_json, "startedAtMs", started_at_ms);
+                    try queueUserMessageItemNotification(allocator, state, "item/completed", thread.id, turn_id, user_item_index, input.user_content_json, "completedAtMs", completed_at_ms);
+                }
+            }
+            try movePendingTurnUpdateNotifications(allocator, state, &turn_update_notifications);
+            try queueTurnNotification(allocator, state, "turn/completed", completed_notification);
+            completed_notification_moved = true;
+            thread.status = .idle;
+            try queueThreadStatusChangedNotification(allocator, state, thread.id, .idle);
+
+            if (turn_start_response_sent) return null;
+            response_payload_moved = true;
+            return response_payload;
+        }
+
+        const error_message = try std.fmt.allocPrint(allocator, "turn/start failed to run turn: {s}", .{@errorName(err)});
+        defer allocator.free(error_message);
+        const should_emit_started = turn_start_response_sent or
+            session_start_hooks.notifications.items.len > 0 or
+            user_prompt_hooks.notifications.items.len > 0;
+        if (should_emit_started) {
+            thread.status = .active;
+            try queueThreadStatusChangedNotification(allocator, state, thread.id, .active);
+            try queueTurnNotification(allocator, state, "turn/started", started_notification);
+            started_notification_moved = true;
+            try movePendingHookRuntimeNotifications(allocator, state, &session_start_hooks.notifications);
+            try movePendingHookRuntimeNotifications(allocator, state, &user_prompt_hooks.notifications);
+            if (user_item_index < thread.transcript.history.items.len) {
+                const user_item = thread.transcript.history.items[user_item_index];
+                if (user_item.kind == .message and isHistoryRole(user_item, "user")) {
+                    try queueUserMessageItemNotification(allocator, state, "item/started", thread.id, turn_id, user_item_index, input.user_content_json, "startedAtMs", started_at_ms);
+                    try queueUserMessageItemNotification(allocator, state, "item/completed", thread.id, turn_id, user_item_index, input.user_content_json, "completedAtMs", currentUnixMilliseconds());
+                }
+            }
+            try movePendingTurnUpdateNotifications(allocator, state, &turn_update_notifications);
         }
         thread.status = .system_error;
         try refreshLoadedThreadAfterTurn(allocator, thread, prompt_for_turn);
@@ -26206,8 +26893,18 @@ fn handleTurnStart(
             try session_store.saveTranscript(allocator, path, &thread.transcript);
         }
         try queueErrorNotification(allocator, state, thread.id, turn_id, error_message, false);
+        if (turn_start_response_sent) {
+            const completed_at_ms = currentUnixMilliseconds();
+            const completed_at = @divTrunc(completed_at_ms, std.time.ms_per_s);
+            const failed_notification = try renderTurnNotification(allocator, "turn/completed", thread.id, turn_id, "failed", started_at, completed_at);
+            var failed_notification_moved = false;
+            errdefer if (!failed_notification_moved) allocator.free(failed_notification);
+            try queueTurnNotification(allocator, state, "turn/completed", failed_notification);
+            failed_notification_moved = true;
+        }
         try queueThreadStatusChangedNotification(allocator, state, thread.id, .system_error);
-        return renderJsonRpcError(allocator, id_value, -32603, error_message);
+        if (turn_start_response_sent) return null;
+        return try renderJsonRpcError(allocator, id_value, -32603, error_message);
     };
     defer allocator.free(answer);
 
@@ -26248,7 +26945,9 @@ fn handleTurnStart(
     thread.status = .idle;
     try queueThreadStatusChangedNotification(allocator, state, thread.id, .idle);
 
-    return renderJsonRpcResult(allocator, id_value, response);
+    if (turn_start_response_sent) return null;
+    response_payload_moved = true;
+    return response_payload;
 }
 
 fn handleTurnSteer(
