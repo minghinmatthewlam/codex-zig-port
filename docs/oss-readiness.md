@@ -19,8 +19,8 @@ parity tracker; implementation parity remains tracked in `docs/parity.md`.
   non-provider pattern scanning and secret validity checks as disabled.
   `SECURITY.md` is exposed through the repository security-policy URL. CodeQL
   Python code scanning is configured; the latest completed CodeQL run
-  `26015863400` passed on pushed head
-  `894fc13044d8d28cd88a433f820f8f1d9b690d47`. Open-alert queries for
+  `26033671712` passed on pushed head
+  `2045956fb61d0fb25a289e1a7c30c72e55d26fe9`. Open-alert queries for
   CodeQL, Dependabot, and secret scanning returned empty arrays. Historical
   CodeQL alerts remain visible through the API as fixed.
 - Repository rules: the branch-protection API reports `main` is unprotected and
@@ -28,13 +28,13 @@ parity tracker; implementation parity remains tracked in `docs/parity.md`.
 - CI: GitHub Actions runs formatting, Python smoke-script compilation, unit
   tests, and product-surface smoke tests on macOS with a direct Zig 0.16.0
   install from `ziglang.org` rather than a deprecated Node-based setup action.
-  Checked push run `26015863416` passed on pushed head
-  `894fc13044d8d28cd88a433f820f8f1d9b690d47`. Local pre-push verification for
-  the current app-server approval slice included `python3 -m py_compile
-  scripts/app_server_stdio_smoke.py`, `zig fmt src/app_server_cmd.zig
-  src/tools.zig`, `git diff --check`, focused app-server approval smoke,
-  `zig build test --summary all`, `zig build e2e --summary all`, and `codex
-  review --uncommitted`.
+  Checked push run `26033671740` passed on pushed head
+  `2045956fb61d0fb25a289e1a7c30c72e55d26fe9`. Local pre-push verification for
+  the current MCP reload-validation slice included `zig fmt
+  src/app_server_cmd.zig`, `python3 -m py_compile
+  scripts/app_server_stdio_smoke.py`, `zig build`, focused
+  `run_mcp_server_status_rpc_smoke` against `zig-out/bin/codex-zig`, `git diff
+  --check`, `zig build test --summary all`, and `zig build e2e --summary all`.
 - Source hygiene: current tracked-file and hidden working-tree scans found no
   high-confidence OpenAI, GitHub, AWS, Google, or Slack token patterns and no
   private-key blocks. Broad secret-word matches are limited to source variable
@@ -44,7 +44,7 @@ parity tracker; implementation parity remains tracked in `docs/parity.md`.
   the local scan used repository `rg` patterns plus GitHub's enabled secret
   scanning and CodeQL runs.
 - Package boundary: `build.zig.zon` lists only source, test, script, and public
-  documentation paths so local ignored artifacts are not part of a Zig package
+  documentation paths so local ignored artifacts are not part of a Zig package.
 
 ## Public Guardrails
 
