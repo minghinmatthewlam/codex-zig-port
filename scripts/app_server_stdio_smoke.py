@@ -20315,6 +20315,111 @@ def run_mcp_server_status_rpc_smoke(binary: Path) -> None:
         if timeout_proc.returncode != 0:
             raise AssertionError(f"app-server exited {timeout_proc.returncode}: {timeout_proc.stderr.read()}")
 
+        websocket_proc = subprocess.Popen(
+            [str(binary), "app-server", "--listen", "ws://127.0.0.1:0"],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            env=env,
+        )
+        websocket = None
+        try:
+            host, port = wait_for_websocket_bind(websocket_proc, 5)
+            websocket = SmokeWebSocket(host, port)
+            websocket.write_json(
+                {
+                    "jsonrpc": "2.0",
+                    "id": "mcp-oauth-websocket",
+                    "method": "mcpServer/oauth/login",
+                    "params": {
+                        "name": "oauth_discovery",
+                        "scopes": ["websocket"],
+                        "timeoutSecs": 1,
+                    },
+                }
+            )
+            oauth_websocket = websocket.read_json()
+            assert oauth_websocket["id"] == "mcp-oauth-websocket"
+            websocket_authorization_url = oauth_websocket["result"]["authorizationUrl"]
+            assert websocket_authorization_url.startswith(
+                f"{discovery_server.base_url}/oauth/authorize?"
+            )
+            with urllib.request.urlopen(websocket_authorization_url, timeout=5) as response:
+                assert response.status == 200
+                assert b"MCP login complete" in response.read()
+            websocket_completed = websocket.read_json()
+            assert websocket_completed["method"] == "mcpServer/oauthLogin/completed"
+            assert websocket_completed["params"] == {
+                "name": "oauth_discovery",
+                "success": True,
+                "error": None,
+            }
+            websocket.close()
+            websocket = None
+            websocket_proc.terminate()
+            websocket_proc.wait(timeout=5)
+        finally:
+            if websocket is not None:
+                websocket.close()
+            if websocket_proc.poll() is None:
+                websocket_proc.kill()
+                websocket_proc.wait(timeout=5)
+
+        unix_socket_dir = Path(tempfile.mkdtemp(prefix="codex-zig-app-server-mcp-oauth-unix-", dir="/tmp"))
+        unix_socket_path = unix_socket_dir / "app-server.sock"
+        unix_proc = subprocess.Popen(
+            [str(binary), "app-server", "--listen", f"unix://{unix_socket_path}"],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            env=env,
+        )
+        try:
+            wait_for_socket(unix_socket_path, unix_proc, 5)
+            with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
+                client.settimeout(5)
+                client.connect(str(unix_socket_path))
+                with client.makefile("r", encoding="utf-8", newline="\n") as reader:
+                    with client.makefile("w", encoding="utf-8", newline="\n") as writer:
+                        write_json_line_to_socket(
+                            writer,
+                            {
+                                "jsonrpc": "2.0",
+                                "id": "mcp-oauth-unix",
+                                "method": "mcpServer/oauth/login",
+                                "params": {
+                                    "name": "oauth_discovery",
+                                    "scopes": ["unix"],
+                                    "timeoutSecs": 1,
+                                },
+                            },
+                        )
+                        oauth_unix = read_json_line_from_socket(reader)
+                        assert oauth_unix["id"] == "mcp-oauth-unix"
+                        unix_authorization_url = oauth_unix["result"]["authorizationUrl"]
+                        assert unix_authorization_url.startswith(
+                            f"{discovery_server.base_url}/oauth/authorize?"
+                        )
+                        with urllib.request.urlopen(unix_authorization_url, timeout=5) as response:
+                            assert response.status == 200
+                            assert b"MCP login complete" in response.read()
+                        unix_completed = read_json_line_from_socket(reader)
+                        assert unix_completed["method"] == "mcpServer/oauthLogin/completed"
+                        assert unix_completed["params"] == {
+                            "name": "oauth_discovery",
+                            "success": True,
+                            "error": None,
+                        }
+            unix_proc.terminate()
+            unix_proc.wait(timeout=5)
+        finally:
+            if unix_proc.poll() is None:
+                unix_proc.kill()
+                unix_proc.wait(timeout=5)
+            shutil.rmtree(unix_socket_dir, ignore_errors=True)
+
         oauth_http_missing_discovery = request_stdio_app_server(
             binary,
             {
