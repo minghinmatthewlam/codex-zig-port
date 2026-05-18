@@ -26599,11 +26599,11 @@ fn renderRequestUserInputQuestionsJson(
         if (question != .object) return error.InvalidRequestUserInput;
         if (index > 0) try out.appendSlice(allocator, ",");
         try out.appendSlice(allocator, "{\"id\":");
-        try appendJsonString(allocator, &out, requiredRequestUserInputStringField(question.object, "id") orelse return error.InvalidRequestUserInput);
+        try appendJsonString(allocator, &out, requiredJsonStringField(question.object, "id") orelse return error.InvalidRequestUserInput);
         try out.appendSlice(allocator, ",\"header\":");
-        try appendJsonString(allocator, &out, requiredRequestUserInputStringField(question.object, "header") orelse return error.InvalidRequestUserInput);
+        try appendJsonString(allocator, &out, requiredJsonStringField(question.object, "header") orelse return error.InvalidRequestUserInput);
         try out.appendSlice(allocator, ",\"question\":");
-        try appendJsonString(allocator, &out, requiredRequestUserInputStringField(question.object, "question") orelse return error.InvalidRequestUserInput);
+        try appendJsonString(allocator, &out, requiredJsonStringField(question.object, "question") orelse return error.InvalidRequestUserInput);
         try out.appendSlice(allocator, ",\"isOther\":true,\"isSecret\":false,\"options\":");
         try renderRequestUserInputOptionsJson(allocator, &out, question.object.get("options") orelse return error.InvalidRequestUserInput);
         try out.appendSlice(allocator, "}");
@@ -26624,15 +26624,15 @@ fn renderRequestUserInputOptionsJson(
         if (option != .object) return error.InvalidRequestUserInput;
         if (index > 0) try out.appendSlice(allocator, ",");
         try out.appendSlice(allocator, "{\"label\":");
-        try appendJsonString(allocator, out, requiredRequestUserInputStringField(option.object, "label") orelse return error.InvalidRequestUserInput);
+        try appendJsonString(allocator, out, requiredJsonStringField(option.object, "label") orelse return error.InvalidRequestUserInput);
         try out.appendSlice(allocator, ",\"description\":");
-        try appendJsonString(allocator, out, requiredRequestUserInputStringField(option.object, "description") orelse return error.InvalidRequestUserInput);
+        try appendJsonString(allocator, out, requiredJsonStringField(option.object, "description") orelse return error.InvalidRequestUserInput);
         try out.appendSlice(allocator, "}");
     }
     try out.appendSlice(allocator, "]");
 }
 
-fn requiredRequestUserInputStringField(object: std.json.ObjectMap, name: []const u8) ?[]const u8 {
+fn requiredJsonStringField(object: std.json.ObjectMap, name: []const u8) ?[]const u8 {
     const value = object.get(name) orelse return null;
     if (value != .string) return null;
     return value.string;
@@ -26777,7 +26777,7 @@ fn renderMcpServerElicitationRequest(
     defer parsed.deinit();
     if (parsed.value != .object) return error.InvalidMcpElicitationRequest;
     const object = parsed.value.object;
-    const message = requiredRequestUserInputStringField(object, "message") orelse return error.InvalidMcpElicitationRequest;
+    const message = requiredJsonStringField(object, "message") orelse return error.InvalidMcpElicitationRequest;
 
     var out = std.ArrayList(u8).empty;
     errdefer out.deinit(allocator);
@@ -26792,7 +26792,7 @@ fn renderMcpServerElicitationRequest(
 
     if (object.get("url")) |url_value| {
         if (url_value != .string) return error.InvalidMcpElicitationRequest;
-        const elicitation_id = requiredRequestUserInputStringField(object, "elicitationId") orelse return error.InvalidMcpElicitationRequest;
+        const elicitation_id = requiredJsonStringField(object, "elicitationId") orelse return error.InvalidMcpElicitationRequest;
         try out.appendSlice(allocator, ",\"mode\":\"url\",\"_meta\":");
         try appendMcpElicitationMeta(allocator, &out, object);
         try out.appendSlice(allocator, ",\"message\":");
