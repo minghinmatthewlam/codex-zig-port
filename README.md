@@ -210,7 +210,8 @@ The first demo slice targets macOS and focuses on the interactive CLI surface:
 - reject conflicting approval-policy flags when dangerous bypass mode is set
 - inspect known feature flags with `features list`
 - enable or disable known feature flags and Rust legacy aliases for one
-  invocation with root `--enable/--disable`
+  invocation with root `--enable/--disable` or exec-local `--enable/--disable`,
+  including `exec --disable shell_tool` request-tool filtering
 - persist feature flags and Rust legacy aliases globally or per profile with
   `features enable|disable`, including Rust-like root clearing for default-off
   flags, under-development warnings for direct root enables, and app-server
@@ -566,6 +567,7 @@ codex-zig --oss --local-provider lmstudio
 codex-zig --search
 codex-zig --enable goals features list
 codex-zig --disable shell_tool features list
+codex-zig exec --enable goals --disable shell_tool "say hello"
 codex-zig help exec
 codex-zig --no-alt-screen
 codex-zig --version
