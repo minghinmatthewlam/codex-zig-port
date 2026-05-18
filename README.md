@@ -126,7 +126,9 @@ The first demo slice targets macOS and focuses on the interactive CLI surface:
 - uninstall local and remote app-server plugins with `plugin/uninstall`,
   including local cache/config cleanup and remote cloud mutation
 - run a stdio MCP server with `codex` and `codex-reply` tools plus per-call
-  `model`, `cwd`, `approval-policy`, and `sandbox` overrides
+  Rust-shaped tool schemas, `model`, `cwd`, `approval-policy`, `sandbox`,
+  `base-instructions`, `developer-instructions`, `compact-prompt`, and
+  supported `config` object overrides
 - run a minimal exec-server stdio/websocket JSON-RPC transport with a Rust-shaped
   `initialize` handshake, detached websocket `resumeSessionId` reconnects,
   pipe-backed and macOS PTY-backed `tty`

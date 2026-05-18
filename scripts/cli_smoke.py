@@ -7883,6 +7883,128 @@ def run_exec_streamable_http_mcp_keyring_oauth_smoke(binary: Path) -> None:
         shutil.rmtree(temp_root, ignore_errors=True)
 
 
+def run_mcp_server_schema_smoke(binary: Path) -> None:
+    temp_root = Path(tempfile.mkdtemp(prefix="codex-zig-cli-mcp-server-", dir="/tmp"))
+    try:
+        codex_home = temp_root / "codex-home"
+        codex_home.mkdir()
+        (codex_home / "config.toml").write_text("", encoding="utf-8")
+        env = os.environ.copy()
+        env["CODEX_HOME"] = str(codex_home)
+        env["OPENAI_API_KEY"] = "sk-mcp-server-schema-smoke"
+        requests = "\n".join(
+            [
+                json.dumps(
+                    {
+                        "jsonrpc": "2.0",
+                        "id": 1,
+                        "method": "initialize",
+                        "params": {
+                            "protocolVersion": "2025-03-26",
+                            "capabilities": {},
+                            "clientInfo": {"name": "schema-smoke", "version": "0"},
+                        },
+                    },
+                    separators=(",", ":"),
+                ),
+                json.dumps(
+                    {
+                        "jsonrpc": "2.0",
+                        "id": 2,
+                        "method": "tools/list",
+                        "params": {},
+                    },
+                    separators=(",", ":"),
+                ),
+                json.dumps(
+                    {
+                        "jsonrpc": "2.0",
+                        "id": 3,
+                        "method": "tools/call",
+                        "params": {
+                            "name": "codex",
+                            "arguments": {
+                                "prompt": "hello",
+                                "config": {"tools": {}},
+                            },
+                        },
+                    },
+                    separators=(",", ":"),
+                ),
+                json.dumps(
+                    {
+                        "jsonrpc": "2.0",
+                        "id": 4,
+                        "method": "tools/call",
+                        "params": {
+                            "name": "codex",
+                            "arguments": {
+                                "prompt": "hello",
+                                "config": "profile=work",
+                            },
+                        },
+                    },
+                    separators=(",", ":"),
+                ),
+                "",
+            ]
+        )
+        result = subprocess.run(
+            [str(binary.resolve()), "mcp-server"],
+            cwd=temp_root,
+            env=env,
+            input=requests,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=5,
+            check=True,
+        )
+        assert result.stderr == ""
+        lines = [json.loads(line) for line in result.stdout.splitlines() if line.strip()]
+        assert len(lines) == 4
+        initialize = lines[0]["result"]
+        assert initialize["serverInfo"]["name"] == "codex-mcp-server"
+        assert initialize["capabilities"]["tools"]["listChanged"] is True
+
+        tools = lines[1]["result"]["tools"]
+        assert [tool["name"] for tool in tools] == ["codex", "codex-reply"]
+        codex_tool = tools[0]
+        assert codex_tool["description"] == (
+            "Run a Codex session. Accepts configuration parameters matching the Codex Config struct."
+        )
+        codex_properties = codex_tool["inputSchema"]["properties"]
+        assert codex_properties["base-instructions"]["type"] == "string"
+        assert codex_properties["compact-prompt"]["type"] == "string"
+        assert codex_properties["config"]["additionalProperties"] is True
+        assert codex_properties["developer-instructions"]["type"] == "string"
+        assert codex_properties["prompt"]["description"] == (
+            "The *initial user prompt* to start the Codex conversation."
+        )
+        assert codex_tool["outputSchema"]["required"] == ["threadId", "content"]
+
+        reply_properties = tools[1]["inputSchema"]["properties"]
+        assert set(reply_properties) == {"conversationId", "prompt", "threadId"}
+        assert reply_properties["conversationId"]["description"] == (
+            "DEPRECATED: use threadId instead."
+        )
+        assert reply_properties["threadId"]["description"] == (
+            "The thread id for this Codex session. This field is required, but we keep it optional here for backward compatibility for clients that still use conversationId."
+        )
+
+        invalid_config = lines[2]["result"]
+        assert invalid_config["isError"] is True
+        assert "Invalid Codex config override" in invalid_config["structuredContent"]["content"]
+        invalid_config_type = lines[3]["result"]
+        assert invalid_config_type["isError"] is True
+        assert (
+            "Invalid Codex config override"
+            in invalid_config_type["structuredContent"]["content"]
+        )
+    finally:
+        shutil.rmtree(temp_root, ignore_errors=True)
+
+
 def run_mcp_oauth_login_logout_smoke(binary: Path) -> None:
     temp_root = Path(tempfile.mkdtemp(prefix="codex-zig-cli-mcp-oauth-", dir="/tmp"))
     discovery_server, remote_url = start_mcp_oauth_discovery_server()
@@ -9139,6 +9261,7 @@ def main() -> None:
     run_exec_plugin_mcp_resource_smoke(binary)
     run_exec_streamable_http_mcp_get_stream_smoke(binary)
     run_exec_streamable_http_mcp_keyring_oauth_smoke(binary)
+    run_mcp_server_schema_smoke(binary)
     run_mcp_oauth_login_logout_smoke(binary)
     run_exec_git_repo_check_smoke(binary)
     run_yolo_approval_conflict_smoke(binary)
@@ -9174,6 +9297,7 @@ def main() -> None:
     print("cli-exec-plugin-mcp-resource-e2e: ok")
     print("cli-exec-streamable-http-mcp-get-stream-e2e: ok")
     print("cli-exec-streamable-http-mcp-keyring-oauth-e2e: ok")
+    print("cli-mcp-server-schema-e2e: ok")
     print("cli-mcp-oauth-login-logout-e2e: ok")
     print("cli-exec-git-check-e2e: ok")
     print("cli-yolo-approval-conflict-e2e: ok")
