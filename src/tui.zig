@@ -2768,7 +2768,7 @@ fn runCompact(
     }
 
     std.debug.print("\ncompact:\n", .{});
-    const answer = try session.runTurnWithOptions(allocator, cfg, credentials, transcript, compact_prompt, .{
+    const answer = try session.runTurnWithOptions(allocator, cfg, credentials, transcript, compactPromptForConfig(cfg), .{
         .stream_text = true,
         .additional_writable_roots = additional_writable_roots,
         .include_tools = false,
@@ -2788,6 +2788,14 @@ fn runCompact(
     try transcript.replaceWithCompactedSummary(allocator, compacted);
     try session_store.saveTranscript(allocator, session_path, transcript);
     std.debug.print("\ncompacted: {d} -> {d} item\n", .{ previous_items, transcript.history.items.len });
+}
+
+fn compactPromptForConfig(cfg: config.Config) []const u8 {
+    if (cfg.compact_prompt) |prompt| {
+        const trimmed = std.mem.trim(u8, prompt, " \t\r\n");
+        if (trimmed.len > 0) return trimmed;
+    }
+    return compact_prompt;
 }
 
 fn printStatus(
@@ -3855,6 +3863,37 @@ test "parse slash command names and args" {
     try std.testing.expectEqualStrings("check regressions", review_cmd.args);
 
     try std.testing.expect(parseSlash("hello") == null);
+}
+
+test "compact prompt uses config override" {
+    const default_cfg = config.Config{
+        .codex_home = ".",
+        .active_profile = null,
+        .model = "demo-model",
+        .openai_base_url = "https://example.invalid/v1",
+        .chatgpt_base_url = "https://example.invalid/backend-api/codex",
+        .oss_provider = null,
+        .installation_id = "install-test",
+        .approval_policy = .on_request,
+        .sandbox_mode = .workspace_write,
+        .web_search_mode = null,
+        .model_reasoning_effort = null,
+        .service_tier = null,
+        .syntax_theme = null,
+        .personality = null,
+        .tui_status_line = null,
+        .tui_terminal_title = null,
+        .tui_alternate_screen = .auto,
+    };
+    try std.testing.expectEqualStrings(compact_prompt, compactPromptForConfig(default_cfg));
+
+    var custom_cfg = default_cfg;
+    custom_cfg.compact_prompt = "Custom compact prompt.";
+    try std.testing.expectEqualStrings("Custom compact prompt.", compactPromptForConfig(custom_cfg));
+
+    var blank_cfg = default_cfg;
+    blank_cfg.compact_prompt = " \n\t";
+    try std.testing.expectEqualStrings(compact_prompt, compactPromptForConfig(blank_cfg));
 }
 
 test "parse bang shell command" {

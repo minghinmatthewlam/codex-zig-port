@@ -1059,24 +1059,28 @@ const pragmaticPersonalityInstructions =
 fn baseInstructionsForConfig(allocator: std.mem.Allocator, cfg: config.Config, shell_tools_enabled: bool) ![]const u8 {
     var out = std.ArrayList(u8).empty;
     errdefer out.deinit(allocator);
-    try out.appendSlice(allocator, baseInstructions);
-    try out.append(allocator, '\n');
-    if (shell_tools_enabled) {
-        try out.appendSlice(allocator, shellToolInstructions);
+    if (cfg.base_instructions) |base_override| {
+        try out.appendSlice(allocator, base_override);
+    } else {
+        try out.appendSlice(allocator, baseInstructions);
         try out.append(allocator, '\n');
-    }
-    try out.appendSlice(allocator, baseInstructionsTail);
+        if (shell_tools_enabled) {
+            try out.appendSlice(allocator, shellToolInstructions);
+            try out.append(allocator, '\n');
+        }
+        try out.appendSlice(allocator, baseInstructionsTail);
 
-    if (cfg.personality) |personality| {
-        const message = switch (personality) {
-            .none => null,
-            .friendly => friendlyPersonalityInstructions,
-            .pragmatic => pragmaticPersonalityInstructions,
-        };
-        if (message) |text| {
-            try out.appendSlice(allocator, "\n<personality_spec>\nThe user has requested a new communication style. Future messages should adhere to the following personality:\n");
-            try out.appendSlice(allocator, text);
-            try out.appendSlice(allocator, "\n</personality_spec>\n");
+        if (cfg.personality) |personality| {
+            const message = switch (personality) {
+                .none => null,
+                .friendly => friendlyPersonalityInstructions,
+                .pragmatic => pragmaticPersonalityInstructions,
+            };
+            if (message) |text| {
+                try out.appendSlice(allocator, "\n<personality_spec>\nThe user has requested a new communication style. Future messages should adhere to the following personality:\n");
+                try out.appendSlice(allocator, text);
+                try out.appendSlice(allocator, "\n</personality_spec>\n");
+            }
         }
     }
 
@@ -1170,6 +1174,50 @@ test "empty developer instructions do not add collaboration mode block" {
     defer parsed.deinit();
     const instructions = parsed.value.object.get("instructions").?.string;
     try std.testing.expect(std.mem.indexOf(u8, instructions, "<collaboration_mode>") == null);
+}
+
+test "base instructions override replaces default instruction body" {
+    const allocator = std.testing.allocator;
+    const cfg = config.Config{
+        .codex_home = ".",
+        .active_profile = null,
+        .model = "demo-model",
+        .openai_base_url = "https://example.invalid/v1",
+        .chatgpt_base_url = "https://example.invalid/backend-api/codex",
+        .oss_provider = null,
+        .installation_id = "install-test",
+        .approval_policy = .on_request,
+        .sandbox_mode = .workspace_write,
+        .web_search_mode = null,
+        .model_reasoning_effort = null,
+        .service_tier = null,
+        .syntax_theme = null,
+        .personality = .pragmatic,
+        .base_instructions = "Custom base instructions.",
+        .developer_instructions = "Developer addendum.",
+        .tui_status_line = null,
+        .tui_terminal_title = null,
+        .tui_alternate_screen = .auto,
+    };
+    const history = [_]HistoryItem{
+        .{
+            .kind = .message,
+            .role = "user",
+            .content_type = "input_text",
+            .text = "hello",
+        },
+    };
+
+    const body = try buildRequestBody(allocator, cfg, history[0..]);
+    defer allocator.free(body);
+
+    var parsed = try std.json.parseFromSlice(std.json.Value, allocator, body, .{});
+    defer parsed.deinit();
+    const instructions = parsed.value.object.get("instructions").?.string;
+    try std.testing.expect(std.mem.startsWith(u8, instructions, "Custom base instructions."));
+    try std.testing.expect(std.mem.indexOf(u8, instructions, "You are Codex Zig") == null);
+    try std.testing.expect(std.mem.indexOf(u8, instructions, "<personality_spec>") == null);
+    try std.testing.expect(std.mem.indexOf(u8, instructions, "Developer addendum.") != null);
 }
 
 test "parses SSE text and function call" {

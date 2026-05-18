@@ -33,7 +33,9 @@ pub const Config = struct {
     service_tier: ?[]const u8,
     syntax_theme: ?[]const u8,
     personality: ?Personality,
+    base_instructions: ?[]const u8 = null,
     developer_instructions: ?[]const u8 = null,
+    compact_prompt: ?[]const u8 = null,
     forced_login_method: ?ForcedLoginMethod = null,
     forced_chatgpt_workspace_id: ?[]const u8 = null,
     tui_status_line: ?StringList,
@@ -58,7 +60,9 @@ pub const Config = struct {
         allocator.free(self.installation_id);
         if (self.service_tier) |value| allocator.free(value);
         if (self.syntax_theme) |value| allocator.free(value);
+        if (self.base_instructions) |value| allocator.free(value);
         if (self.developer_instructions) |value| allocator.free(value);
+        if (self.compact_prompt) |value| allocator.free(value);
         if (self.forced_chatgpt_workspace_id) |value| allocator.free(value);
         if (self.tui_status_line) |*value| value.deinit(allocator);
         if (self.tui_terminal_title) |*value| value.deinit(allocator);
@@ -181,6 +185,9 @@ pub const RuntimeOverrides = struct {
     model_verbosity: ?Verbosity = null,
     syntax_theme: ?[]const u8 = null,
     personality: ?Personality = null,
+    base_instructions: ?[]const u8 = null,
+    developer_instructions: ?[]const u8 = null,
+    compact_prompt: ?[]const u8 = null,
     tui_alternate_screen: ?AltScreenMode = null,
 };
 
@@ -201,6 +208,9 @@ pub fn mergeRuntimeOverrides(base: RuntimeOverrides, overrides: RuntimeOverrides
     if (overrides.model_verbosity) |value| merged.model_verbosity = value;
     if (overrides.syntax_theme) |value| merged.syntax_theme = value;
     if (overrides.personality) |value| merged.personality = value;
+    if (overrides.base_instructions) |value| merged.base_instructions = value;
+    if (overrides.developer_instructions) |value| merged.developer_instructions = value;
+    if (overrides.compact_prompt) |value| merged.compact_prompt = value;
     if (overrides.tui_alternate_screen) |value| merged.tui_alternate_screen = value;
     return merged;
 }
@@ -332,6 +342,21 @@ pub fn applyRuntimeOverrides(
     if (overrides.model_verbosity) |verbosity| {
         cfg.model_verbosity = verbosity;
     }
+    if (overrides.base_instructions) |base_instructions| {
+        const next_base_instructions = try allocator.dupe(u8, base_instructions);
+        if (cfg.base_instructions) |existing| allocator.free(existing);
+        cfg.base_instructions = next_base_instructions;
+    }
+    if (overrides.developer_instructions) |developer_instructions| {
+        const next_developer_instructions = try allocator.dupe(u8, developer_instructions);
+        if (cfg.developer_instructions) |existing| allocator.free(existing);
+        cfg.developer_instructions = next_developer_instructions;
+    }
+    if (overrides.compact_prompt) |compact_prompt| {
+        const next_compact_prompt = try allocator.dupe(u8, compact_prompt);
+        if (cfg.compact_prompt) |existing| allocator.free(existing);
+        cfg.compact_prompt = next_compact_prompt;
+    }
     if (overrides.tui_alternate_screen) |mode| {
         cfg.tui_alternate_screen = mode;
     }
@@ -375,6 +400,12 @@ pub fn applyRawConfigOverride(
         runtime_overrides.syntax_theme = value;
     } else if (std.mem.eql(u8, key, "personality")) {
         runtime_overrides.personality = try Personality.parse(value);
+    } else if (std.mem.eql(u8, key, "instructions") or std.mem.eql(u8, key, "base_instructions")) {
+        runtime_overrides.base_instructions = value;
+    } else if (std.mem.eql(u8, key, "developer_instructions")) {
+        runtime_overrides.developer_instructions = value;
+    } else if (std.mem.eql(u8, key, "compact_prompt")) {
+        runtime_overrides.compact_prompt = value;
     } else if (std.mem.eql(u8, key, "model_reasoning_summary")) {
         runtime_overrides.model_reasoning_summary = try ReasoningSummary.parse(value);
     } else if (std.mem.eql(u8, key, "model_verbosity")) {
@@ -781,6 +812,12 @@ pub fn loadWithOptions(allocator: std.mem.Allocator, options: LoadOptions) !Conf
     const syntax_theme = try resolveSyntaxTheme(allocator, config_view, active_profile);
     errdefer if (syntax_theme) |value| allocator.free(value);
     const personality = try resolvePersonality(allocator, config_view, active_profile);
+    const base_instructions = try resolveBaseInstructions(allocator, config_view, active_profile);
+    errdefer if (base_instructions) |value| allocator.free(value);
+    const developer_instructions = try resolveDeveloperInstructions(allocator, config_view, active_profile);
+    errdefer if (developer_instructions) |value| allocator.free(value);
+    const compact_prompt = try resolveCompactPrompt(allocator, config_view, active_profile);
+    errdefer if (compact_prompt) |value| allocator.free(value);
     const forced_login_method = try resolveForcedLoginMethod(allocator, config_view, active_profile);
     const forced_chatgpt_workspace_id = try resolveForcedChatGptWorkspaceId(allocator, config_view, active_profile);
     errdefer if (forced_chatgpt_workspace_id) |value| allocator.free(value);
@@ -818,6 +855,9 @@ pub fn loadWithOptions(allocator: std.mem.Allocator, options: LoadOptions) !Conf
         .service_tier = service_tier,
         .syntax_theme = syntax_theme,
         .personality = personality,
+        .base_instructions = base_instructions,
+        .developer_instructions = developer_instructions,
+        .compact_prompt = compact_prompt,
         .forced_login_method = forced_login_method,
         .forced_chatgpt_workspace_id = forced_chatgpt_workspace_id,
         .tui_status_line = tui_status_line,
@@ -862,6 +902,29 @@ fn resolveModel(allocator: std.mem.Allocator, config_view: ConfigView, active_pr
 
 fn resolveReviewModel(allocator: std.mem.Allocator, config_view: ConfigView) !?[]const u8 {
     return config_view.getTopLevelString(allocator, "review_model");
+}
+
+fn resolveBaseInstructions(allocator: std.mem.Allocator, config_view: ConfigView, active_profile: ?[]const u8) !?[]const u8 {
+    if (active_profile) |profile| {
+        if (try config_view.getProfileString(allocator, profile, "instructions")) |value| {
+            return value;
+        }
+        if (try config_view.getProfileString(allocator, profile, "base_instructions")) |value| {
+            return value;
+        }
+    }
+    if (try config_view.getTopLevelString(allocator, "instructions")) |value| {
+        return value;
+    }
+    return config_view.getTopLevelString(allocator, "base_instructions");
+}
+
+fn resolveDeveloperInstructions(allocator: std.mem.Allocator, config_view: ConfigView, active_profile: ?[]const u8) !?[]const u8 {
+    return config_view.getScopedString(allocator, active_profile, "developer_instructions");
+}
+
+fn resolveCompactPrompt(allocator: std.mem.Allocator, config_view: ConfigView, active_profile: ?[]const u8) !?[]const u8 {
+    return config_view.getScopedString(allocator, active_profile, "compact_prompt");
 }
 
 fn resolveModelContextWindow(config_view: ConfigView) !?i64 {
@@ -1597,6 +1660,27 @@ fn appendTomlStringLiteral(allocator: std.mem.Allocator, output: *std.ArrayList(
     try output.append(allocator, '"');
 }
 
+const TomlMultilineScanState = struct {
+    in_multiline_basic_string: bool = false,
+
+    fn skipBodyLine(self: *TomlMultilineScanState, line: []const u8) bool {
+        if (!self.in_multiline_basic_string) return false;
+        if (std.mem.indexOf(u8, line, "\"\"\"") != null) {
+            self.in_multiline_basic_string = false;
+        }
+        return true;
+    }
+
+    fn observeLine(self: *TomlMultilineScanState, line: []const u8) void {
+        const eq = std.mem.indexOfScalar(u8, line, '=') orelse return;
+        const rhs = std.mem.trim(u8, line[eq + 1 ..], " \t");
+        if (!std.mem.startsWith(u8, rhs, "\"\"\"")) return;
+        if (std.mem.indexOf(u8, rhs[3..], "\"\"\"") == null) {
+            self.in_multiline_basic_string = true;
+        }
+    }
+};
+
 const ConfigView = struct {
     bytes: []const u8,
 
@@ -1621,16 +1705,20 @@ const ConfigView = struct {
         key: []const u8,
     ) !?[]const u8 {
         var in_section = false;
+        var multiline = TomlMultilineScanState{};
         var iter = std.mem.splitScalar(u8, self.bytes, '\n');
         while (iter.next()) |line_raw| {
             const line = std.mem.trim(u8, line_raw, " \t\r");
+            if (multiline.skipBodyLine(line_raw)) continue;
             if (line.len == 0 or line[0] == '#') continue;
             if (line[0] == '[') {
                 in_section = isExactSection(line, section_name);
                 continue;
             }
-            if (!in_section) continue;
-            if (try stringValueForKey(allocator, line, key)) |value| return value;
+            if (in_section) {
+                if (try stringValueForKey(allocator, line, key)) |value| return value;
+            }
+            multiline.observeLine(line);
         }
         return null;
     }
@@ -1642,16 +1730,20 @@ const ConfigView = struct {
         key: []const u8,
     ) !?StringList {
         var in_section = false;
+        var multiline = TomlMultilineScanState{};
         var iter = std.mem.splitScalar(u8, self.bytes, '\n');
         while (iter.next()) |line_raw| {
             const line = std.mem.trim(u8, line_raw, " \t\r");
+            if (multiline.skipBodyLine(line_raw)) continue;
             if (line.len == 0 or line[0] == '#') continue;
             if (line[0] == '[') {
                 in_section = isExactSection(line, section_name);
                 continue;
             }
-            if (!in_section) continue;
-            if (try stringArrayValueForKey(allocator, line, key)) |value| return value;
+            if (in_section) {
+                if (try stringArrayValueForKey(allocator, line, key)) |value| return value;
+            }
+            multiline.observeLine(line);
         }
         return null;
     }
@@ -1662,16 +1754,20 @@ const ConfigView = struct {
         key: []const u8,
     ) ?bool {
         var in_section = false;
+        var multiline = TomlMultilineScanState{};
         var iter = std.mem.splitScalar(u8, self.bytes, '\n');
         while (iter.next()) |line_raw| {
             const line = std.mem.trim(u8, line_raw, " \t\r");
+            if (multiline.skipBodyLine(line_raw)) continue;
             if (line.len == 0 or line[0] == '#') continue;
             if (line[0] == '[') {
                 in_section = isExactSection(line, section_name);
                 continue;
             }
-            if (!in_section) continue;
-            if (boolValueForKey(line, key)) |value| return value;
+            if (in_section) {
+                if (boolValueForKey(line, key)) |value| return value;
+            }
+            multiline.observeLine(line);
         }
         return null;
     }
@@ -1682,60 +1778,78 @@ const ConfigView = struct {
         key: []const u8,
     ) !?u64 {
         var in_section = false;
+        var multiline = TomlMultilineScanState{};
         var iter = std.mem.splitScalar(u8, self.bytes, '\n');
         while (iter.next()) |line_raw| {
             const line = std.mem.trim(u8, line_raw, " \t\r");
+            if (multiline.skipBodyLine(line_raw)) continue;
             if (line.len == 0 or line[0] == '#') continue;
             if (line[0] == '[') {
                 in_section = isExactSection(line, section_name);
                 continue;
             }
-            if (!in_section) continue;
-            if (try u64ValueForKey(line, key)) |value| return value;
+            if (in_section) {
+                if (try u64ValueForKey(line, key)) |value| return value;
+            }
+            multiline.observeLine(line);
         }
         return null;
     }
 
     fn getTopLevelString(self: ConfigView, allocator: std.mem.Allocator, key: []const u8) !?[]const u8 {
+        var multiline = TomlMultilineScanState{};
         var iter = std.mem.splitScalar(u8, self.bytes, '\n');
+        var line_start: usize = 0;
         while (iter.next()) |line_raw| {
             const line = std.mem.trim(u8, line_raw, " \t\r");
+            defer line_start += line_raw.len + 1;
+            if (multiline.skipBodyLine(line_raw)) continue;
             if (line.len == 0 or line[0] == '#') continue;
             if (line[0] == '[') break;
-            if (try stringValueForKey(allocator, line, key)) |value| return value;
+            if (try stringValueForKeyAt(allocator, self.bytes, line_start, line_raw, key)) |value| return value;
+            multiline.observeLine(line);
         }
         return null;
     }
 
     fn getTopLevelStringArray(self: ConfigView, allocator: std.mem.Allocator, key: []const u8) !?StringList {
+        var multiline = TomlMultilineScanState{};
         var iter = std.mem.splitScalar(u8, self.bytes, '\n');
         while (iter.next()) |line_raw| {
             const line = std.mem.trim(u8, line_raw, " \t\r");
+            if (multiline.skipBodyLine(line_raw)) continue;
             if (line.len == 0 or line[0] == '#') continue;
             if (line[0] == '[') break;
             if (try stringArrayValueForKey(allocator, line, key)) |value| return value;
+            multiline.observeLine(line);
         }
         return null;
     }
 
     fn getTopLevelU64(self: ConfigView, key: []const u8) !?u64 {
+        var multiline = TomlMultilineScanState{};
         var iter = std.mem.splitScalar(u8, self.bytes, '\n');
         while (iter.next()) |line_raw| {
             const line = std.mem.trim(u8, line_raw, " \t\r");
+            if (multiline.skipBodyLine(line_raw)) continue;
             if (line.len == 0 or line[0] == '#') continue;
             if (line[0] == '[') break;
             if (try u64ValueForKey(line, key)) |value| return value;
+            multiline.observeLine(line);
         }
         return null;
     }
 
     fn getTopLevelI64(self: ConfigView, key: []const u8) !?i64 {
+        var multiline = TomlMultilineScanState{};
         var iter = std.mem.splitScalar(u8, self.bytes, '\n');
         while (iter.next()) |line_raw| {
             const line = std.mem.trim(u8, line_raw, " \t\r");
+            if (multiline.skipBodyLine(line_raw)) continue;
             if (line.len == 0 or line[0] == '#') continue;
             if (line[0] == '[') break;
             if (try i64ValueForKey(line, key)) |value| return value;
+            multiline.observeLine(line);
         }
         return null;
     }
@@ -1747,16 +1861,22 @@ const ConfigView = struct {
         key: []const u8,
     ) !?[]const u8 {
         var in_profile = false;
+        var multiline = TomlMultilineScanState{};
         var iter = std.mem.splitScalar(u8, self.bytes, '\n');
+        var line_start: usize = 0;
         while (iter.next()) |line_raw| {
             const line = std.mem.trim(u8, line_raw, " \t\r");
+            defer line_start += line_raw.len + 1;
+            if (multiline.skipBodyLine(line_raw)) continue;
             if (line.len == 0 or line[0] == '#') continue;
             if (line[0] == '[') {
                 in_profile = isProfileSection(line, profile);
                 continue;
             }
-            if (!in_profile) continue;
-            if (try stringValueForKey(allocator, line, key)) |value| return value;
+            if (in_profile) {
+                if (try stringValueForKeyAt(allocator, self.bytes, line_start, line_raw, key)) |value| return value;
+            }
+            multiline.observeLine(line);
         }
         return null;
     }
@@ -1834,19 +1954,23 @@ const ConfigView = struct {
             entries.deinit(allocator);
         }
 
+        var multiline = TomlMultilineScanState{};
         var iter = std.mem.splitScalar(u8, self.bytes, '\n');
         while (iter.next()) |line_raw| {
             const line = std.mem.trim(u8, line_raw, " \t\r");
+            if (multiline.skipBodyLine(line_raw)) continue;
             if (line.len == 0 or line[0] == '#') continue;
             if (line[0] == '[') {
                 if (in_section) break;
                 in_section = isExactSection(line, section_name);
                 continue;
             }
-            if (!in_section) continue;
-            if (try stringMapEntryForLine(allocator, line)) |entry| {
-                try entries.append(allocator, entry);
+            if (in_section) {
+                if (try stringMapEntryForLine(allocator, line)) |entry| {
+                    try entries.append(allocator, entry);
+                }
             }
+            multiline.observeLine(line);
         }
         if (entries.items.len == 0) {
             entries.deinit(allocator);
@@ -1862,16 +1986,20 @@ const ConfigView = struct {
         key: []const u8,
     ) !?[]const u8 {
         var in_provider = false;
+        var multiline = TomlMultilineScanState{};
         var iter = std.mem.splitScalar(u8, self.bytes, '\n');
         while (iter.next()) |line_raw| {
             const line = std.mem.trim(u8, line_raw, " \t\r");
+            if (multiline.skipBodyLine(line_raw)) continue;
             if (line.len == 0 or line[0] == '#') continue;
             if (line[0] == '[') {
                 in_provider = isNamedSection(line, "model_providers.", provider);
                 continue;
             }
-            if (!in_provider) continue;
-            if (try inlineTableValueForKey(allocator, line, key)) |value| return value;
+            if (in_provider) {
+                if (try inlineTableValueForKey(allocator, line, key)) |value| return value;
+            }
+            multiline.observeLine(line);
         }
         return null;
     }
@@ -1884,16 +2012,20 @@ const ConfigView = struct {
         key: []const u8,
     ) !?[]const u8 {
         var in_provider = false;
+        var multiline = TomlMultilineScanState{};
         var iter = std.mem.splitScalar(u8, self.bytes, '\n');
         while (iter.next()) |line_raw| {
             const line = std.mem.trim(u8, line_raw, " \t\r");
+            if (multiline.skipBodyLine(line_raw)) continue;
             if (line.len == 0 or line[0] == '#') continue;
             if (line[0] == '[') {
                 in_provider = isNamedSection(line, section_prefix, section_name);
                 continue;
             }
-            if (!in_provider) continue;
-            if (try stringValueForKey(allocator, line, key)) |value| return value;
+            if (in_provider) {
+                if (try stringValueForKey(allocator, line, key)) |value| return value;
+            }
+            multiline.observeLine(line);
         }
         return null;
     }
@@ -1904,16 +2036,20 @@ const ConfigView = struct {
         key: []const u8,
     ) ?bool {
         var in_provider = false;
+        var multiline = TomlMultilineScanState{};
         var iter = std.mem.splitScalar(u8, self.bytes, '\n');
         while (iter.next()) |line_raw| {
             const line = std.mem.trim(u8, line_raw, " \t\r");
+            if (multiline.skipBodyLine(line_raw)) continue;
             if (line.len == 0 or line[0] == '#') continue;
             if (line[0] == '[') {
                 in_provider = isNamedSection(line, "model_providers.", provider);
                 continue;
             }
-            if (!in_provider) continue;
-            if (boolValueForKey(line, key)) |value| return value;
+            if (in_provider) {
+                if (boolValueForKey(line, key)) |value| return value;
+            }
+            multiline.observeLine(line);
         }
         return null;
     }
@@ -1933,9 +2069,11 @@ const ConfigView = struct {
         var in_filesystem = false;
         var in_network = false;
 
+        var multiline = TomlMultilineScanState{};
         var iter = std.mem.splitScalar(u8, self.bytes, '\n');
         while (iter.next()) |line_raw| {
             const line = std.mem.trim(u8, line_raw, " \t\r");
+            if (multiline.skipBodyLine(line_raw)) continue;
             if (line.len == 0 or line[0] == '#') continue;
             if (line[0] == '[') {
                 in_filesystem = isPermissionsProfileSection(line, profile, "filesystem");
@@ -1954,6 +2092,7 @@ const ConfigView = struct {
                     network_unsupported = true;
                 }
             }
+            multiline.observeLine(line);
         }
 
         if (!saw_filesystem or !saw_network or network_enabled == null or network_unsupported) {
@@ -1963,11 +2102,14 @@ const ConfigView = struct {
     }
 
     fn hasProfile(self: ConfigView, profile: []const u8) bool {
+        var multiline = TomlMultilineScanState{};
         var iter = std.mem.splitScalar(u8, self.bytes, '\n');
         while (iter.next()) |line_raw| {
             const line = std.mem.trim(u8, line_raw, " \t\r");
+            if (multiline.skipBodyLine(line_raw)) continue;
             if (line.len == 0 or line[0] == '#') continue;
             if (line[0] == '[' and isProfileOrNestedSection(line, profile)) return true;
+            multiline.observeLine(line);
         }
         return false;
     }
@@ -2179,7 +2321,21 @@ fn stringValueForKey(allocator: std.mem.Allocator, line: []const u8, key: []cons
     const lhs = std.mem.trim(u8, line[0..eq], " \t");
     if (!std.mem.eql(u8, lhs, key)) return null;
     const rhs = std.mem.trim(u8, line[eq + 1 ..], " \t");
-    return parseTomlString(allocator, rhs);
+    return parseTomlStringValue(allocator, rhs);
+}
+
+fn stringValueForKeyAt(
+    allocator: std.mem.Allocator,
+    bytes: []const u8,
+    line_start: usize,
+    line: []const u8,
+    key: []const u8,
+) !?[]const u8 {
+    const eq = std.mem.indexOfScalar(u8, line, '=') orelse return null;
+    const lhs = std.mem.trim(u8, line[0..eq], " \t");
+    if (!std.mem.eql(u8, lhs, key)) return null;
+    const rhs_start = @min(line_start + eq + 1, bytes.len);
+    return parseTomlStringValue(allocator, bytes[rhs_start..]);
 }
 
 fn stringMapEntryForLine(allocator: std.mem.Allocator, line: []const u8) !?StringMapEntry {
@@ -2419,6 +2575,57 @@ pub fn parseTomlString(allocator: std.mem.Allocator, rhs: []const u8) !?[]const 
 
         index += 1;
         if (index >= rhs.len) return error.InvalidTomlString;
+        const escaped = tomlBasicStringEscapedByte(rhs[index]) orelse return error.InvalidTomlString;
+        try output.append(allocator, escaped);
+    }
+
+    return error.InvalidTomlString;
+}
+
+fn parseTomlStringValue(allocator: std.mem.Allocator, rhs_raw: []const u8) !?[]const u8 {
+    const rhs = std.mem.trim(u8, rhs_raw, " \t");
+    if (std.mem.startsWith(u8, rhs, "\"\"\"")) return try parseTomlMultilineBasicString(allocator, rhs);
+    return parseTomlString(allocator, rhs);
+}
+
+fn parseTomlMultilineBasicString(allocator: std.mem.Allocator, rhs: []const u8) ![]const u8 {
+    if (!std.mem.startsWith(u8, rhs, "\"\"\"")) return error.InvalidTomlString;
+
+    var output = std.ArrayList(u8).empty;
+    errdefer output.deinit(allocator);
+
+    var index: usize = 3;
+    if (index < rhs.len and rhs[index] == '\n') {
+        index += 1;
+    } else if (index + 1 < rhs.len and rhs[index] == '\r' and rhs[index + 1] == '\n') {
+        index += 2;
+    }
+
+    while (index < rhs.len) : (index += 1) {
+        if (index + 2 < rhs.len and std.mem.eql(u8, rhs[index .. index + 3], "\"\"\"")) {
+            return output.toOwnedSlice(allocator);
+        }
+        const byte = rhs[index];
+        if (byte != '\\') {
+            try output.append(allocator, byte);
+            continue;
+        }
+
+        index += 1;
+        if (index >= rhs.len) return error.InvalidTomlString;
+        if (rhs[index] == '\n') {
+            while (index + 1 < rhs.len and (rhs[index + 1] == ' ' or rhs[index + 1] == '\t' or rhs[index + 1] == '\r' or rhs[index + 1] == '\n')) {
+                index += 1;
+            }
+            continue;
+        }
+        if (rhs[index] == '\r' and index + 1 < rhs.len and rhs[index + 1] == '\n') {
+            index += 1;
+            while (index + 1 < rhs.len and (rhs[index + 1] == ' ' or rhs[index + 1] == '\t' or rhs[index + 1] == '\r' or rhs[index + 1] == '\n')) {
+                index += 1;
+            }
+            continue;
+        }
         const escaped = tomlBasicStringEscapedByte(rhs[index]) orelse return error.InvalidTomlString;
         try output.append(allocator, escaped);
     }
@@ -3340,6 +3547,9 @@ test "raw cli config overrides map supported fields" {
     try applyRawConfigOverride(&runtime, &profile, "service_tier=fast");
     try applyRawConfigOverride(&runtime, &profile, "syntax_theme=dracula");
     try applyRawConfigOverride(&runtime, &profile, "personality=friendly");
+    try applyRawConfigOverride(&runtime, &profile, "instructions=custom base");
+    try applyRawConfigOverride(&runtime, &profile, "developer_instructions=custom developer");
+    try applyRawConfigOverride(&runtime, &profile, "compact_prompt=custom compact");
     try applyRawConfigOverride(&runtime, &profile, "model_reasoning_summary=detailed");
     try applyRawConfigOverride(&runtime, &profile, "model_verbosity=high");
     try applyRawConfigOverride(&runtime, &profile, "tui.alternate_screen=never");
@@ -3359,6 +3569,9 @@ test "raw cli config overrides map supported fields" {
     try std.testing.expectEqualStrings("fast", runtime.service_tier.?);
     try std.testing.expectEqualStrings("dracula", runtime.syntax_theme.?);
     try std.testing.expectEqual(Personality.friendly, runtime.personality.?);
+    try std.testing.expectEqualStrings("custom base", runtime.base_instructions.?);
+    try std.testing.expectEqualStrings("custom developer", runtime.developer_instructions.?);
+    try std.testing.expectEqualStrings("custom compact", runtime.compact_prompt.?);
     try std.testing.expectEqual(ReasoningSummary.detailed, runtime.model_reasoning_summary.?);
     try std.testing.expectEqual(Verbosity.high, runtime.model_verbosity.?);
     try std.testing.expectEqual(AltScreenMode.never, runtime.tui_alternate_screen.?);
@@ -3368,6 +3581,81 @@ test "raw cli config override rejects missing assignment" {
     var runtime = RuntimeOverrides{};
     var profile: ?[]const u8 = null;
     try std.testing.expectError(error.InvalidConfigOverride, applyRawConfigOverride(&runtime, &profile, "model"));
+}
+
+test "instructions config key resolves as base instructions" {
+    const allocator = std.testing.allocator;
+    const view = ConfigView{ .bytes = "instructions = \"custom base instructions\"\n" };
+
+    const instructions = try resolveBaseInstructions(allocator, view, null);
+    defer allocator.free(instructions.?);
+
+    try std.testing.expectEqualStrings("custom base instructions", instructions.?);
+}
+
+test "multiline instruction config keys resolve" {
+    const allocator = std.testing.allocator;
+    const view = ConfigView{
+        .bytes =
+        \\instructions = """
+        \\Custom base.
+        \\Second line."""
+        \\developer_instructions = """
+        \\Developer line."""
+        \\compact_prompt = """
+        \\Compact line."""
+        \\
+        ,
+    };
+
+    const instructions = try resolveBaseInstructions(allocator, view, null);
+    defer allocator.free(instructions.?);
+    const developer_instructions = try resolveDeveloperInstructions(allocator, view, null);
+    defer allocator.free(developer_instructions.?);
+    const compact_prompt = try resolveCompactPrompt(allocator, view, null);
+    defer allocator.free(compact_prompt.?);
+
+    try std.testing.expectEqualStrings("Custom base.\nSecond line.", instructions.?);
+    try std.testing.expectEqualStrings("Developer line.", developer_instructions.?);
+    try std.testing.expectEqualStrings("Compact line.", compact_prompt.?);
+}
+
+test "multiline string bodies are skipped while scanning config keys" {
+    const allocator = std.testing.allocator;
+    const view = ConfigView{
+        .bytes =
+        \\instructions = """
+        \\model = "embedded-model"
+        \\[profiles.embedded]
+        \\"""
+        \\model = "real-model"
+        \\
+        ,
+    };
+
+    const model = try resolveModel(allocator, view, null);
+    defer allocator.free(model);
+
+    try std.testing.expectEqualStrings("real-model", model);
+    try std.testing.expect(!view.hasProfile("embedded"));
+}
+
+test "profile base instructions override top-level instructions alias" {
+    const allocator = std.testing.allocator;
+    const view = ConfigView{
+        .bytes =
+        \\instructions = "global instructions"
+        \\
+        \\[profiles.work]
+        \\base_instructions = "profile base instructions"
+        \\
+        ,
+    };
+
+    const instructions = try resolveBaseInstructions(allocator, view, "work");
+    defer allocator.free(instructions.?);
+
+    try std.testing.expectEqualStrings("profile base instructions", instructions.?);
 }
 
 test "service tier normalization maps fast aliases" {
