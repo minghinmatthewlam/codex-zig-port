@@ -86,6 +86,9 @@ The first demo slice targets macOS and focuses on the interactive CLI surface:
   `mcpServer/resource/read` and `mcpServer/tool/call`, including streamable
   HTTP configured static/env headers, GET SSE responses after accepted POSTs,
   and forwarded MCP JSON-RPC error code/message/data payloads
+- bridge stdio MCP `elicitation/create` requests raised during app-server
+  `mcpServer/tool/call` and model-triggered `turn/start` MCP tool calls through
+  `mcpServer/elicitation/request` plus `serverRequest/resolved`
 - validate app-server MCP OAuth login requests with `mcpServer/oauth/login`,
   including generated completion notification artifacts, Rust-shaped
   configured-server checks, and explicit not-implemented errors for the browser
@@ -265,6 +268,8 @@ The first demo slice targets macOS and focuses on the interactive CLI surface:
   MCP tool calls during `turn/start`
 - emit app-server MCP startup status notifications while `turn/start`
   discovers configured MCP tools
+- emit app-server `mcpServer/elicitation/request` requests when stdio MCP tools
+  ask the client for structured input during `turn/start`
 - emit app-server `thread/compacted` notifications after successful loaded
   thread compactions
 - root app-server `turn/start` model-requested shell tools and `apply_patch`
@@ -428,6 +433,8 @@ raw stdio tool/resource/resource-template inventory, bearer-token,
 file-backed OAuth, and OAuth-discovery not-logged-in auth reporting,
 config-backed stdio resource reads with and without loaded thread IDs,
 loaded-thread stdio tool calls including non-object argument pass-through, and
+stdio MCP elicitation request/response round trips for both direct
+`mcpServer/tool/call` and model-triggered `turn/start` MCP tool calls, and
 app-server streamable HTTP MCP resource reads and tool calls with bearer-token
 and file-backed OAuth auth plus streamable HTTP MCP session-id and teardown
 headers and GET SSE responses after accepted POSTs,
