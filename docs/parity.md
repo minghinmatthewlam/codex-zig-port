@@ -302,10 +302,11 @@ Runtime emission is also covered
 for `mcpServer/startupStatus/updated` starting, ready, and failed notifications
 while app-server `turn/start` discovers configured MCP tools, and for
 `item/mcpToolCall/progress` calling and completed notifications around
-configured MCP tools invoked during app-server `turn/start`. Dispatching the
-remaining dynamic tool-call, account refresh, and legacy approval surfaces
-remains planned, as does runtime emission for the remaining control/status
-notifications.
+configured MCP tools invoked during app-server `turn/start`, plus MCP server
+`notifications/progress` messages received while the tool call is in flight.
+Dispatching the remaining dynamic tool-call, account refresh, and legacy
+approval surfaces remains planned, as does runtime emission for the remaining
+control/status notifications.
 
 Additional app-server server-request generation coverage: generated TypeScript
 artifacts now include the top-level `ServerRequest` union for
@@ -473,7 +474,7 @@ by `serverRequest/resolved`. Streamable HTTP tool-call clients advertise
 is available, answer direct SSE `elicitation/create` requests, forward the
 client response back to the MCP server, and emit `serverRequest/resolved`. True
 thread-owned MCP runtime reuse, persistent streamable HTTP server notification
-streams, and progress remain planned.
+streams, and broader progress parity remain planned.
 
 Additional app-server MCP OAuth-login coverage: `mcpServer/oauth/login` now has
 generated TypeScript and JSON Schema artifacts for required `name`, optional
@@ -516,8 +517,10 @@ requests raised during model-triggered MCP tool calls are surfaced through
 app-server `mcpServer/elicitation/request` and resolved back to the MCP server.
 Streamable HTTP requests can receive JSON-RPC responses from GET SSE streams
 after accepted POSTs and can bridge direct SSE `elicitation/create` requests
-through the same app-server server-request flow. Persistent streamable HTTP
-server notification streams and true thread-owned MCP runtime reuse remain
+through the same app-server server-request flow. MCP server
+`notifications/progress` messages received during model-triggered tool calls are
+forwarded through app-server `item/mcpToolCall/progress`. Persistent streamable
+HTTP server notification streams and true thread-owned MCP runtime reuse remain
 planned.
 
 Current app-server `command/exec` coverage includes buffered command execution,
