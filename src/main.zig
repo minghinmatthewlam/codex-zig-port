@@ -391,6 +391,7 @@ fn mainInner(init: std.process.Init) !void {
             try review.runWithOptions(allocator, &args, .{
                 .profile = overrides.profile,
                 .runtime_overrides = overrides.runtime,
+                .feature_overrides = runtime_feature_overrides,
                 .oss = overrides.oss,
                 .oss_provider = overrides.oss_provider,
             });
@@ -500,6 +501,7 @@ fn mainInner(init: std.process.Init) !void {
             try exec.runWithOptions(allocator, &args, .{
                 .profile = overrides.profile,
                 .runtime_overrides = overrides.runtime,
+                .feature_overrides = runtime_feature_overrides,
                 .oss = overrides.oss,
                 .oss_provider = overrides.oss_provider,
                 .cwd = overrides.cwd,

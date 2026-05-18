@@ -3,6 +3,7 @@ const std = @import("std");
 const auth = @import("auth.zig");
 const cli_utils = @import("cli_utils.zig");
 const config = @import("config.zig");
+const features_cmd = @import("features_cmd.zig");
 const git_diff = @import("git_diff.zig");
 const session = @import("session.zig");
 const session_store = @import("session_store.zig");
@@ -28,6 +29,7 @@ const ReviewArgs = struct {
 pub const Options = struct {
     profile: ?[]const u8 = null,
     runtime_overrides: config.RuntimeOverrides = .{},
+    feature_overrides: features_cmd.FeatureOverrides = .{},
     oss: bool = false,
     oss_provider: ?[]const u8 = null,
     ignore_user_config: bool = false,
@@ -64,6 +66,13 @@ pub fn runRawArgsWithOptions(allocator: std.mem.Allocator, raw_args: []const []c
     }
     try applyReviewModel(allocator, &cfg);
 
+    var feature_overrides = features_cmd.FeatureOverrides{};
+    defer feature_overrides.deinit(allocator);
+    if (!options.ignore_user_config) {
+        feature_overrides = try features_cmd.loadFeatureOverridesForProfile(allocator, cfg.codex_home, cfg.active_profile);
+    }
+    try feature_overrides.putAll(allocator, options.feature_overrides);
+
     var credentials = if (options.oss)
         try auth.localOssCredentials(allocator)
     else
@@ -86,6 +95,7 @@ pub fn runRawArgsWithOptions(allocator: std.mem.Allocator, raw_args: []const []c
 
     const answer = try session.runTurnWithOptions(allocator, cfg, &credentials, &transcript, prompt, .{
         .prompt_for_approval = false,
+        .feature_overrides = feature_overrides,
     });
     defer allocator.free(answer);
 

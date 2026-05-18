@@ -52,10 +52,14 @@ pub const FeatureOverrides = struct {
     pub fn clone(self: FeatureOverrides, allocator: std.mem.Allocator) !FeatureOverrides {
         var cloned = FeatureOverrides{};
         errdefer cloned.deinit(allocator);
-        for (self.items.items) |item| {
-            try cloned.put(allocator, item.key, item.enabled);
-        }
+        try cloned.putAll(allocator, self);
         return cloned;
+    }
+
+    pub fn putAll(self: *FeatureOverrides, allocator: std.mem.Allocator, source: FeatureOverrides) !void {
+        for (source.items.items) |item| {
+            try self.put(allocator, item.key, item.enabled);
+        }
     }
 };
 

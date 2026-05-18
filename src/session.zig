@@ -3,6 +3,7 @@ const std = @import("std");
 const api = @import("api.zig");
 const auth = @import("auth.zig");
 const config = @import("config.zig");
+const features_cmd = @import("features_cmd.zig");
 const mcp_runtime = @import("mcp_runtime.zig");
 const plan_tool = @import("plan_tool.zig");
 const proposed_plan = @import("proposed_plan.zig");
@@ -294,6 +295,7 @@ pub const TurnOptions = struct {
     mcp_tool_call_progress_callback: ?McpToolCallProgressCallback = null,
     mcp_startup_status_callback: ?mcp_runtime.StartupStatusCallback = null,
     developer_messages_after_user: []const []const u8 = &.{},
+    feature_overrides: features_cmd.FeatureOverrides = .{},
     workdir: ?[]const u8 = null,
     background_terminal_owner: ?[]const u8 = null,
 };
@@ -514,6 +516,7 @@ pub fn runTurnWithOptions(
         create_options.input_images = options.input_images;
         create_options.include_tools = options.include_tools;
         create_options.mcp_tools = if (options.include_tools) mcp_catalog.tools else &.{};
+        create_options.feature_overrides = options.feature_overrides;
         if (options.stream_text and !options.json_events and !options.plan_mode) {
             create_options.stream_callback = api.StreamCallback{
                 .ctx = &stream_context,

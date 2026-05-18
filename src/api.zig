@@ -4,6 +4,7 @@ const agents_md = @import("agents_md.zig");
 const auth = @import("auth.zig");
 const config = @import("config.zig");
 const env = @import("env.zig");
+const features_cmd = @import("features_cmd.zig");
 const model_catalog = @import("model_catalog.zig");
 const mcp_runtime = @import("mcp_runtime.zig");
 
@@ -79,6 +80,7 @@ pub const CreateTurnOptions = struct {
     input_images: []const []const u8 = &.{},
     mcp_tools: []const mcp_runtime.ToolSpec = &.{},
     include_tools: bool = true,
+    feature_overrides: features_cmd.FeatureOverrides = .{},
 };
 
 pub const HistoryItem = struct {
@@ -192,6 +194,7 @@ pub fn createTurnWithOptions(
         .input_images = options.input_images,
         .mcp_tools = options.mcp_tools,
         .include_tools = options.include_tools,
+        .feature_overrides = options.feature_overrides,
     });
     defer allocator.free(body);
 
@@ -536,6 +539,7 @@ pub const RequestBodyOptions = struct {
     input_images: []const []const u8 = &.{},
     mcp_tools: []const mcp_runtime.ToolSpec = &.{},
     include_tools: bool = true,
+    feature_overrides: features_cmd.FeatureOverrides = .{},
 };
 
 fn latestUserMessageIndex(history: []const HistoryItem) ?usize {
@@ -621,6 +625,7 @@ pub fn buildRequestBodyWithOptions(
 
     var tools_list = std.ArrayList(Tool).empty;
     defer tools_list.deinit(allocator);
+    const shell_tools_enabled = options.feature_overrides.get("shell_tool") orelse true;
     if (options.include_tools) {
         const shell_tool = Tool{
             .type = "function",
@@ -694,10 +699,12 @@ pub fn buildRequestBodyWithOptions(
                 \\{"type":"object","properties":{"server":{"type":"string","description":"MCP server name exactly as configured. Must match the 'server' field returned by list_mcp_resources."},"uri":{"type":"string","description":"Resource URI to read. Must be one of the URIs returned by list_mcp_resources."}},"required":["server","uri"],"additionalProperties":false}
             ),
         };
-        try tools_list.append(allocator, exec_command_tool);
-        try tools_list.append(allocator, write_stdin_tool);
-        try tools_list.append(allocator, shell_tool);
-        try tools_list.append(allocator, shell_command_tool);
+        if (shell_tools_enabled) {
+            try tools_list.append(allocator, exec_command_tool);
+            try tools_list.append(allocator, write_stdin_tool);
+            try tools_list.append(allocator, shell_tool);
+            try tools_list.append(allocator, shell_command_tool);
+        }
         try tools_list.append(allocator, apply_patch_tool);
         try tools_list.append(allocator, update_plan_tool);
         try tools_list.append(allocator, list_mcp_resources_tool);
@@ -728,7 +735,7 @@ pub fn buildRequestBodyWithOptions(
     }
     const include = [_][]const u8{};
 
-    const base_instructions = try baseInstructionsForConfig(allocator, cfg);
+    const base_instructions = try baseInstructionsForConfig(allocator, cfg, shell_tools_enabled);
     defer allocator.free(base_instructions);
     const instructions = try agents_md.buildInstructions(allocator, base_instructions);
     defer allocator.free(instructions);
@@ -1002,7 +1009,13 @@ fn jsonIntegerFieldAny(object: std.json.ObjectMap, snake_name: []const u8, camel
 
 const baseInstructions =
     \\You are Codex Zig, an experimental local coding agent. Use tools only when needed.
+;
+
+const shellToolInstructions =
     \\When you need to inspect files or run commands, call exec_command. Use write_stdin for running exec_command sessions. shell_command and shell remain supported.
+;
+
+const baseInstructionsTail =
     \\When you need to edit files, prefer apply_patch with a focused Codex-style patch.
     \\For multi-step work, call update_plan with concise steps and current statuses.
     \\Use list_mcp_resources, list_mcp_resource_templates, and read_mcp_resource to inspect configured MCP context resources.
@@ -1015,10 +1028,16 @@ const friendlyPersonalityInstructions =
 const pragmaticPersonalityInstructions =
     "You are a deeply pragmatic, effective software engineer.";
 
-fn baseInstructionsForConfig(allocator: std.mem.Allocator, cfg: config.Config) ![]const u8 {
+fn baseInstructionsForConfig(allocator: std.mem.Allocator, cfg: config.Config, shell_tools_enabled: bool) ![]const u8 {
     var out = std.ArrayList(u8).empty;
     errdefer out.deinit(allocator);
     try out.appendSlice(allocator, baseInstructions);
+    try out.append(allocator, '\n');
+    if (shell_tools_enabled) {
+        try out.appendSlice(allocator, shellToolInstructions);
+        try out.append(allocator, '\n');
+    }
+    try out.appendSlice(allocator, baseInstructionsTail);
 
     if (cfg.personality) |personality| {
         const message = switch (personality) {
@@ -1265,8 +1284,11 @@ test "builds chronological request input from owned history" {
 
     var parsed = try std.json.parseFromSlice(std.json.Value, allocator, body, .{});
     defer parsed.deinit();
+    const instructions = parsed.value.object.get("instructions").?.string;
     const input = parsed.value.object.get("input").?.array;
 
+    try std.testing.expect(std.mem.indexOf(u8, instructions, "needed.\nWhen you need to inspect files") != null);
+    try std.testing.expect(std.mem.indexOf(u8, instructions, "supported.\nWhen you need to edit files") != null);
     try std.testing.expectEqual(@as(usize, 3), input.items.len);
     try std.testing.expectEqualStrings("message", input.items[0].object.get("type").?.string);
     try std.testing.expectEqualStrings("user", input.items[0].object.get("role").?.string);
@@ -1279,6 +1301,56 @@ test "builds chronological request input from owned history" {
     try std.testing.expect(std.mem.indexOf(u8, body, "\"name\":\"write_stdin\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, body, "\"name\":\"apply_patch\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, body, "\"name\":\"update_plan\"") != null);
+}
+
+test "runtime feature overrides can disable shell tools" {
+    const allocator = std.testing.allocator;
+    const cfg = config.Config{
+        .codex_home = ".",
+        .active_profile = null,
+        .model = "demo-model",
+        .openai_base_url = "https://example.invalid/v1",
+        .chatgpt_base_url = "https://example.invalid/backend-api/codex",
+        .oss_provider = null,
+        .installation_id = "install-test",
+        .approval_policy = .on_request,
+        .sandbox_mode = .workspace_write,
+        .web_search_mode = null,
+        .model_reasoning_effort = null,
+        .service_tier = null,
+        .syntax_theme = null,
+        .personality = null,
+        .tui_status_line = null,
+        .tui_terminal_title = null,
+        .tui_alternate_screen = .auto,
+    };
+    const history = [_]HistoryItem{.{
+        .kind = .message,
+        .role = "user",
+        .content_type = "input_text",
+        .text = "hello",
+    }};
+
+    var feature_overrides = features_cmd.FeatureOverrides{};
+    defer feature_overrides.deinit(allocator);
+    try feature_overrides.put(allocator, "shell_tool", false);
+
+    const body = try buildRequestBodyWithOptions(allocator, cfg, history[0..], .{
+        .feature_overrides = feature_overrides,
+    });
+    defer allocator.free(body);
+
+    var parsed = try std.json.parseFromSlice(std.json.Value, allocator, body, .{});
+    defer parsed.deinit();
+    const instructions = parsed.value.object.get("instructions").?.string;
+
+    try std.testing.expect(std.mem.indexOf(u8, instructions, "needed.\nWhen you need to edit files") != null);
+    try std.testing.expect(std.mem.indexOf(u8, instructions, "call exec_command") == null);
+    try std.testing.expect(std.mem.indexOf(u8, body, "\"name\":\"exec_command\"") == null);
+    try std.testing.expect(std.mem.indexOf(u8, body, "\"name\":\"write_stdin\"") == null);
+    try std.testing.expect(std.mem.indexOf(u8, body, "\"name\":\"shell\"") == null);
+    try std.testing.expect(std.mem.indexOf(u8, body, "\"name\":\"shell_command\"") == null);
+    try std.testing.expect(std.mem.indexOf(u8, body, "\"name\":\"apply_patch\"") != null);
 }
 
 test "builds request with configured reasoning controls" {

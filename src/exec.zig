@@ -4,6 +4,7 @@ const builtin = @import("builtin");
 const auth = @import("auth.zig");
 const cli_utils = @import("cli_utils.zig");
 const config = @import("config.zig");
+const features_cmd = @import("features_cmd.zig");
 const input_images = @import("input_images.zig");
 const review = @import("review.zig");
 const session = @import("session.zig");
@@ -20,6 +21,7 @@ const ExecArgs = struct {
     ignore_rules: bool = false,
     json: bool = false,
     config_overrides: config.RuntimeOverrides = .{},
+    feature_overrides: features_cmd.FeatureOverrides = .{},
     config_profile: ?[]const u8 = null,
     help: bool = false,
     last_message_file: ?[]const u8 = null,
@@ -41,6 +43,8 @@ const ExecArgs = struct {
     read_stdin: bool = false,
 
     fn deinit(self: ExecArgs, allocator: std.mem.Allocator) void {
+        var feature_overrides = self.feature_overrides;
+        feature_overrides.deinit(allocator);
         if (self.last_message_file) |path| allocator.free(path);
         if (self.output_schema_file) |path| allocator.free(path);
         for (self.image_files.items) |path| allocator.free(path);
@@ -63,6 +67,7 @@ const ExecArgs = struct {
 pub const Options = struct {
     profile: ?[]const u8 = null,
     runtime_overrides: config.RuntimeOverrides = .{},
+    feature_overrides: features_cmd.FeatureOverrides = .{},
     oss: bool = false,
     oss_provider: ?[]const u8 = null,
     cwd: ?[]const u8 = null,
@@ -104,10 +109,15 @@ pub fn runWithOptions(allocator: std.mem.Allocator, args: *std.process.Args.Iter
     const effective_cwd = parsed.cwd orelse options.cwd;
     if (effective_cwd) |cwd| try workdir.change(cwd);
 
+    var runtime_feature_overrides = try options.feature_overrides.clone(allocator);
+    defer runtime_feature_overrides.deinit(allocator);
+    try runtime_feature_overrides.putAll(allocator, parsed.feature_overrides);
+
     if (parsed.review_mode) {
         try review.runRawArgsWithOptions(allocator, parsed.review_args.items, .{
             .profile = parsed.profile,
             .runtime_overrides = mergedReviewOverrides(options.runtime_overrides, parsed),
+            .feature_overrides = runtime_feature_overrides,
             .oss = effective_oss,
             .oss_provider = effective_oss_provider,
             .ignore_user_config = parsed.ignore_user_config,
@@ -148,6 +158,14 @@ pub fn runWithOptions(allocator: std.mem.Allocator, args: *std.process.Args.Iter
     defer cfg.deinit(allocator);
     try config.applyRuntimeOverrides(&cfg, allocator, options.runtime_overrides);
     try config.applyRuntimeOverrides(&cfg, allocator, parsed.config_overrides);
+
+    var feature_overrides = features_cmd.FeatureOverrides{};
+    defer feature_overrides.deinit(allocator);
+    if (!parsed.ignore_user_config) {
+        feature_overrides = try features_cmd.loadFeatureOverridesForProfile(allocator, cfg.codex_home, cfg.active_profile);
+    }
+    try feature_overrides.putAll(allocator, runtime_feature_overrides);
+
     if (parsed.model) |model| {
         try config.applyRuntimeOverrides(&cfg, allocator, .{ .model = model });
     }
@@ -195,6 +213,7 @@ pub fn runWithOptions(allocator: std.mem.Allocator, args: *std.process.Args.Iter
         .additional_writable_roots = additional_writable_roots,
         .output_schema = output_schema.value(),
         .input_images = loaded_images.data_urls,
+        .feature_overrides = feature_overrides,
     });
     defer allocator.free(answer);
 
@@ -306,6 +325,26 @@ fn parseArgs(allocator: std.mem.Allocator, args: []const []const u8) !ExecArgs {
         }
         if (!end_options and std.mem.startsWith(u8, arg, "--config=")) {
             try config.applyRawConfigOverride(&parsed.config_overrides, &parsed.config_profile, arg["--config=".len..]);
+            continue;
+        }
+        if (!end_options and std.mem.eql(u8, arg, "--enable")) {
+            index += 1;
+            if (index >= args.len) return error.MissingFeatureName;
+            try features_cmd.putRuntimeToggle(allocator, &parsed.feature_overrides, args[index], true);
+            continue;
+        }
+        if (!end_options and std.mem.startsWith(u8, arg, "--enable=")) {
+            try features_cmd.putRuntimeToggle(allocator, &parsed.feature_overrides, arg["--enable=".len..], true);
+            continue;
+        }
+        if (!end_options and std.mem.eql(u8, arg, "--disable")) {
+            index += 1;
+            if (index >= args.len) return error.MissingFeatureName;
+            try features_cmd.putRuntimeToggle(allocator, &parsed.feature_overrides, args[index], false);
+            continue;
+        }
+        if (!end_options and std.mem.startsWith(u8, arg, "--disable=")) {
+            try features_cmd.putRuntimeToggle(allocator, &parsed.feature_overrides, arg["--disable=".len..], false);
             continue;
         }
         if (!end_options and std.mem.eql(u8, arg, "--color")) {
@@ -654,6 +693,8 @@ pub fn printHelp() void {
         \\  --ignore-user-config    Do not load CODEX_HOME/config.toml
         \\  --ignore-rules          Accepted for Rust CLI compatibility
         \\  -c, --config key=value  Override a supported config value
+        \\  --enable FEATURE        Enable a feature for this invocation
+        \\  --disable FEATURE       Disable a feature for this invocation
         \\  --color MODE            auto, always, or never
         \\  -C, --cd DIR            Use DIR as the working root
         \\  --add-dir DIR           Allow workspace-write shell tools to write DIR
@@ -706,6 +747,17 @@ test "exec args parse output schema" {
 
     try std.testing.expectEqualStrings("schema.json", parsed.output_schema_file.?);
     try std.testing.expectEqualStrings("say json", parsed.prompt.?);
+}
+
+test "exec args parse runtime feature toggles" {
+    const allocator = std.testing.allocator;
+    const argv = [_][]const u8{ "--enable", "goals", "--disable=shell_tool", "say", "hello" };
+    const parsed = try parseArgs(allocator, argv[0..]);
+    defer parsed.deinit(allocator);
+
+    try std.testing.expectEqual(true, parsed.feature_overrides.get("goals").?);
+    try std.testing.expectEqual(false, parsed.feature_overrides.get("shell_tool").?);
+    try std.testing.expectEqualStrings("say hello", parsed.prompt.?);
 }
 
 test "exec args parse resume last prompt" {
