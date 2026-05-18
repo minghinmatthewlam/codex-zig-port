@@ -282,6 +282,7 @@ pub const TurnOptions = struct {
     include_tools: bool = true,
     plan_mode: bool = false,
     plan_update_callback: ?PlanUpdateCallback = null,
+    proposed_plan_callback: ?ProposedPlanCallback = null,
     diff_update_callback: ?DiffUpdateCallback = null,
     command_execution_output_callback: ?CommandExecutionOutputCallback = null,
     terminal_interaction_callback: ?TerminalInteractionCallback = null,
@@ -300,6 +301,11 @@ pub const TurnOptions = struct {
 pub const PlanUpdateCallback = struct {
     ctx: *anyopaque,
     on_plan_updated: *const fn (ctx: *anyopaque, plan: *const plan_tool.State) anyerror!void,
+};
+
+pub const ProposedPlanCallback = struct {
+    ctx: *anyopaque,
+    on_proposed_plan: *const fn (ctx: *anyopaque, plan_text: []const u8) anyerror!void,
 };
 
 pub const DiffUpdateCallback = struct {
@@ -556,9 +562,27 @@ pub fn runTurnWithOptions(
             var answer = try final_text.toOwnedSlice(allocator);
             errdefer allocator.free(answer);
             if (options.plan_mode) {
-                const rendered = try proposed_plan.renderPlanMode(allocator, answer);
-                allocator.free(answer);
-                answer = rendered;
+                if (options.proposed_plan_callback) |callback| {
+                    if (try proposed_plan.extractPlanText(allocator, answer)) |plan_text| {
+                        defer allocator.free(plan_text);
+                        try callback.on_proposed_plan(callback.ctx, plan_text);
+
+                        const visible_answer = try proposed_plan.stripPlanBlocks(allocator, answer);
+                        errdefer allocator.free(visible_answer);
+                        const stored_answer = try proposed_plan.renderPlanMode(allocator, answer);
+                        defer allocator.free(stored_answer);
+                        if (stored_answer.len > 0) try transcript.appendAssistantMessage(allocator, stored_answer);
+
+                        allocator.free(answer);
+                        answer = visible_answer;
+                        if (options.json_events) try emitJsonEvent(allocator, .{ .type = "turn.completed", .message = answer });
+                        return answer;
+                    }
+                } else {
+                    const rendered = try proposed_plan.renderPlanMode(allocator, answer);
+                    allocator.free(answer);
+                    answer = rendered;
+                }
             }
             if (answer.len > 0) try transcript.appendAssistantMessage(allocator, answer);
             if (options.json_events) try emitJsonEvent(allocator, .{ .type = "turn.completed", .message = answer });
