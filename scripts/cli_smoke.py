@@ -7474,6 +7474,156 @@ def run_exec_plugin_mcp_tool_smoke(binary: Path) -> None:
         shutil.rmtree(temp_root, ignore_errors=True)
 
 
+def run_exec_plugin_mcp_resource_smoke(binary: Path) -> None:
+    temp_root = Path(tempfile.mkdtemp(prefix="codex-zig-cli-plugin-mcp-resource-", dir="/tmp"))
+    responses_server, base_url = start_exec_responses_server()
+    mcp_server, mcp_url = start_streamable_mcp_tool_server()
+    responses_server.response_payloads = [
+        function_call_response_payload(
+            "call-plugin-resources",
+            "list_mcp_resources",
+            {"server": "plugin-docs"},
+        ),
+        function_call_response_payload(
+            "call-plugin-read",
+            "read_mcp_resource",
+            {"server": "plugin-docs", "uri": "https://remote.example/resource.md"},
+        ),
+        (
+            b'data: {"type":"response.output_text.delta","delta":"plugin resource done"}\n\n'
+            b"data: [DONE]\n\n"
+        ),
+    ]
+    codex_home = temp_root / "codex-home"
+    plugin_root = codex_home / "plugins" / "cache" / "local-market" / "enabled-plugin" / "local"
+    try:
+        plugin_root.mkdir(parents=True)
+        (codex_home / "config.toml").write_text(
+            "\n".join(
+                [
+                    'model = "gpt-plugin-mcp-resource"',
+                    f'openai_base_url = "{base_url}"',
+                    "",
+                    "[features]",
+                    "plugins = true",
+                    "",
+                    '[plugins."enabled-plugin@local-market"]',
+                    "enabled = true",
+                    "",
+                ]
+            ),
+            encoding="utf-8",
+        )
+        (plugin_root / ".mcp.json").write_text(
+            json.dumps(
+                {
+                    "mcpServers": {
+                        "plugin-docs": {
+                            "url": mcp_url,
+                            "bearerTokenEnvVar": "PLUGIN_RESOURCE_MCP_TOKEN",
+                        }
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+        env = os.environ.copy()
+        env["CODEX_HOME"] = str(codex_home)
+        env["OPENAI_API_KEY"] = "test-api-key"
+        env["PLUGIN_RESOURCE_MCP_TOKEN"] = "plugin-resource-token"
+        env.pop("CODEX_ACCESS_TOKEN", None)
+
+        result = subprocess.run(
+            [
+                str(binary.resolve()),
+                "exec",
+                "--skip-git-repo-check",
+                "use",
+                "plugin",
+                "mcp",
+                "resource",
+            ],
+            cwd=temp_root,
+            env=env,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=10,
+            check=True,
+        )
+        assert result.stdout == "plugin resource done\n"
+        assert len(responses_server.request_bodies) == 3
+        first_tools = {
+            tool.get("name")
+            for tool in responses_server.request_bodies[0]["tools"]
+            if tool.get("type") == "function"
+        }
+        assert "list_mcp_resources" in first_tools
+        assert "read_mcp_resource" in first_tools
+
+        resources_output = json.loads(
+            responses_server.request_bodies[1]["input"][-1]["output"]
+        )
+        assert resources_output == {
+            "server": "plugin-docs",
+            "resources": [
+                {
+                    "server": "plugin-docs",
+                    "uri": "https://remote.example/resource.md",
+                    "name": "remote-resource",
+                    "description": "Remote MCP resource.",
+                    "mimeType": "text/markdown",
+                }
+            ],
+        }
+        read_output = json.loads(
+            responses_server.request_bodies[2]["input"][-1]["output"]
+        )
+        assert read_output == {
+            "server": "plugin-docs",
+            "uri": "https://remote.example/resource.md",
+            "contents": [
+                {
+                    "uri": "https://remote.example/resource.md",
+                    "mimeType": "text/markdown",
+                    "text": "remote resource body",
+                }
+            ],
+        }
+        assert [request["method"] for request in mcp_server.request_bodies] == [
+            "initialize",
+            "notifications/initialized",
+            "tools/list",
+            "DELETE",
+            "initialize",
+            "notifications/initialized",
+            "resources/list",
+            "DELETE",
+            "initialize",
+            "notifications/initialized",
+            "resources/read",
+            "DELETE",
+        ]
+        for index in (0, 4, 8):
+            assert header_value(mcp_server.request_headers[index], "Mcp-Session-Id") is None
+        for index in (1, 2, 3, 5, 6, 7, 9, 10, 11):
+            assert (
+                header_value(mcp_server.request_headers[index], "Mcp-Session-Id")
+                == "streamable-session-1"
+            )
+        for index in (2, 3, 6, 7, 10, 11):
+            assert (
+                header_value(mcp_server.request_headers[index], "Authorization")
+                == "Bearer plugin-resource-token"
+            )
+    finally:
+        responses_server.shutdown()
+        responses_server.server_close()
+        mcp_server.shutdown()
+        mcp_server.server_close()
+        shutil.rmtree(temp_root, ignore_errors=True)
+
+
 def run_exec_streamable_http_mcp_get_stream_smoke(binary: Path) -> None:
     temp_root = Path(tempfile.mkdtemp(prefix="codex-zig-cli-http-mcp-get-", dir="/tmp"))
     responses_server, base_url = start_exec_responses_server()
@@ -8986,6 +9136,7 @@ def main() -> None:
     run_exec_mcp_resource_tools_smoke(binary)
     run_exec_streamable_http_mcp_tool_smoke(binary)
     run_exec_plugin_mcp_tool_smoke(binary)
+    run_exec_plugin_mcp_resource_smoke(binary)
     run_exec_streamable_http_mcp_get_stream_smoke(binary)
     run_exec_streamable_http_mcp_keyring_oauth_smoke(binary)
     run_mcp_oauth_login_logout_smoke(binary)
@@ -9020,6 +9171,7 @@ def main() -> None:
     print("cli-exec-mcp-resource-tools-e2e: ok")
     print("cli-exec-streamable-http-mcp-tool-e2e: ok")
     print("cli-exec-plugin-mcp-tool-e2e: ok")
+    print("cli-exec-plugin-mcp-resource-e2e: ok")
     print("cli-exec-streamable-http-mcp-get-stream-e2e: ok")
     print("cli-exec-streamable-http-mcp-keyring-oauth-e2e: ok")
     print("cli-mcp-oauth-login-logout-e2e: ok")
