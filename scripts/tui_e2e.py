@@ -1283,6 +1283,63 @@ def run_help_command_smoke(
         raise AssertionError(
             f"expected exec feature disable flag help output:\n{exec_result.stderr}"
         )
+    if "-V, --version" not in exec_result.stderr:
+        raise AssertionError(
+            f"expected exec version flag help output:\n{exec_result.stderr}"
+        )
+
+    exec_version_result = subprocess.run(
+        [str(binary), "exec", "--version", "--help"],
+        cwd=workspace,
+        env=env,
+        text=True,
+        capture_output=True,
+        check=True,
+    )
+    if exec_version_result.stdout != "codex-cli-exec 0.0.1\n":
+        raise AssertionError(
+            f"expected exec version on stdout:\n{exec_version_result.stdout}"
+        )
+    if exec_version_result.stderr != "":
+        raise AssertionError(
+            f"expected no exec version stderr:\n{exec_version_result.stderr}"
+        )
+
+    exec_help_first_result = subprocess.run(
+        [str(binary), "exec", "--help", "--version"],
+        cwd=workspace,
+        env=env,
+        text=True,
+        capture_output=True,
+        check=True,
+    )
+    if "codex-zig exec [OPTIONS] [PROMPT]" not in exec_help_first_result.stderr:
+        raise AssertionError(
+            f"expected exec help before version output:\n{exec_help_first_result.stderr}"
+        )
+    if exec_help_first_result.stdout != "":
+        raise AssertionError(
+            f"expected no exec help stdout:\n{exec_help_first_result.stdout}"
+        )
+
+    exec_resume_version_result = subprocess.run(
+        [str(binary), "exec", "resume", "--version"],
+        cwd=workspace,
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    if exec_resume_version_result.returncode == 0:
+        raise AssertionError("expected exec resume --version to fail")
+    if "unknown exec option: --version" not in exec_resume_version_result.stderr:
+        raise AssertionError(
+            f"expected resume-local version rejection:\n{exec_resume_version_result.stderr}"
+        )
+    if "codex-cli-exec 0.0.1" in exec_resume_version_result.stdout:
+        raise AssertionError(
+            f"exec resume --version printed parent version:\n{exec_resume_version_result.stdout}"
+        )
 
     apply_result = subprocess.run(
         [str(binary), "help", "apply"],

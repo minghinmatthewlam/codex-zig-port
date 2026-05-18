@@ -11,6 +11,8 @@ const session = @import("session.zig");
 const session_store = @import("session_store.zig");
 const workdir = @import("workdir.zig");
 
+const version = "0.0.1";
+
 const ExecArgs = struct {
     auto_approve: bool = false,
     ephemeral: bool = false,
@@ -35,6 +37,7 @@ const ExecArgs = struct {
     profile: ?[]const u8 = null,
     cwd: ?[]const u8 = null,
     additional_writable_roots: std.ArrayList([]const u8) = .empty,
+    version: bool = false,
     resume_target: ?[]const u8 = null,
     resume_all: bool = false,
     review_mode: bool = false,
@@ -93,6 +96,11 @@ pub fn runWithOptions(allocator: std.mem.Allocator, args: *std.process.Args.Iter
         } else if (parsed.config_profile) |profile| {
             parsed.profile = try allocator.dupe(u8, profile);
         }
+    }
+
+    if (parsed.version) {
+        try printVersion();
+        return;
     }
 
     if (parsed.help) {
@@ -499,7 +507,11 @@ fn parseArgs(allocator: std.mem.Allocator, args: []const []const u8) !ExecArgs {
         }
         if (!end_options and (std.mem.eql(u8, arg, "--help") or std.mem.eql(u8, arg, "-h"))) {
             parsed.help = true;
-            continue;
+            break;
+        }
+        if (!end_options and !resume_mode and (std.mem.eql(u8, arg, "--version") or std.mem.eql(u8, arg, "-V"))) {
+            parsed.version = true;
+            break;
         }
         if (!end_options and resume_mode and std.mem.eql(u8, arg, "--last")) {
             try setResumeTarget(allocator, &parsed, "last");
@@ -708,8 +720,13 @@ pub fn printHelp() void {
         \\                          Write final answer to FILE
         \\  --output-schema FILE    Send a JSON Schema for the final response
         \\  -i, --image FILE        Attach local image file(s); comma-separated values accepted
+        \\  -V, --version           Print version
         \\
     , .{});
+}
+
+pub fn printVersion() !void {
+    try cli_utils.writeStdout("codex-cli-exec " ++ version ++ "\n");
 }
 
 test "exec args parse prompt and options" {
@@ -758,6 +775,48 @@ test "exec args parse runtime feature toggles" {
     try std.testing.expectEqual(true, parsed.feature_overrides.get("goals").?);
     try std.testing.expectEqual(false, parsed.feature_overrides.get("shell_tool").?);
     try std.testing.expectEqualStrings("say hello", parsed.prompt.?);
+}
+
+test "exec args parse version before help" {
+    const allocator = std.testing.allocator;
+    const argv = [_][]const u8{ "--version", "--help", "--unknown" };
+    const parsed = try parseArgs(allocator, argv[0..]);
+    defer parsed.deinit(allocator);
+
+    try std.testing.expect(parsed.version);
+    try std.testing.expect(!parsed.help);
+    try std.testing.expect(parsed.prompt == null);
+}
+
+test "exec args parse help before version" {
+    const allocator = std.testing.allocator;
+    const argv = [_][]const u8{ "--help", "--version", "--unknown" };
+    const parsed = try parseArgs(allocator, argv[0..]);
+    defer parsed.deinit(allocator);
+
+    try std.testing.expect(parsed.help);
+    try std.testing.expect(!parsed.version);
+    try std.testing.expect(parsed.prompt == null);
+}
+
+test "exec args keep version literal after end options" {
+    const allocator = std.testing.allocator;
+    const argv = [_][]const u8{ "--", "say", "--version" };
+    const parsed = try parseArgs(allocator, argv[0..]);
+    defer parsed.deinit(allocator);
+
+    try std.testing.expect(!parsed.version);
+    try std.testing.expectEqualStrings("say --version", parsed.prompt.?);
+}
+
+test "exec args reject version after resume subcommand" {
+    const allocator = std.testing.allocator;
+
+    const missing_target = [_][]const u8{ "resume", "--version" };
+    try std.testing.expectError(error.UnknownExecOption, parseArgs(allocator, missing_target[0..]));
+
+    const after_target = [_][]const u8{ "resume", "last", "-V" };
+    try std.testing.expectError(error.UnknownExecOption, parseArgs(allocator, after_target[0..]));
 }
 
 test "exec args parse resume last prompt" {

@@ -571,6 +571,7 @@ codex-zig exec --enable goals --disable shell_tool "say hello"
 codex-zig help exec
 codex-zig --no-alt-screen
 codex-zig --version
+codex-zig exec --version
 codex-zig exec --profile work "say hello"
 codex-zig exec --skip-git-repo-check "say hello"
 printf 'say hello' | codex-zig exec
