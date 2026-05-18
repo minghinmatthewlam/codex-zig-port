@@ -57,12 +57,15 @@ pub const McpServer = struct {
     env_vars: std.ArrayList(KeyValue) = .empty,
     http_headers: std.ArrayList(KeyValue) = .empty,
     env_http_headers: std.ArrayList(KeyValue) = .empty,
+    scopes: std.ArrayList([]const u8) = .empty,
+    oauth_resource: ?[]const u8 = null,
 
     pub fn deinit(self: *McpServer, allocator: std.mem.Allocator) void {
         allocator.free(self.name);
         if (self.command) |value| allocator.free(value);
         if (self.url) |value| allocator.free(value);
         if (self.bearer_token_env_var) |value| allocator.free(value);
+        if (self.oauth_resource) |value| allocator.free(value);
         for (self.args.items) |arg| allocator.free(arg);
         self.args.deinit(allocator);
         for (self.env_vars.items) |entry| entry.deinit(allocator);
@@ -71,6 +74,8 @@ pub const McpServer = struct {
         self.http_headers.deinit(allocator);
         for (self.env_http_headers.items) |entry| entry.deinit(allocator);
         self.env_http_headers.deinit(allocator);
+        for (self.scopes.items) |scope| allocator.free(scope);
+        self.scopes.deinit(allocator);
     }
 };
 
@@ -144,7 +149,7 @@ fn runArgs(allocator: std.mem.Allocator, args: []const []const u8) !void {
         try runRemove(allocator, codex_home, config_bytes orelse "", &servers, args[1..]);
     } else if (std.mem.eql(u8, subcommand, "login")) {
         try appendPluginMcpServers(allocator, codex_home, config_bytes orelse "", &servers);
-        try runLogin(allocator, servers, args[1..]);
+        try runLogin(allocator, codex_home, config_bytes orelse "", servers, args[1..]);
     } else if (std.mem.eql(u8, subcommand, "logout")) {
         try appendPluginMcpServers(allocator, codex_home, config_bytes orelse "", &servers);
         try runLogout(allocator, codex_home, config_bytes orelse "", servers, args[1..]);
@@ -372,7 +377,7 @@ fn runRemove(
     try cli_utils.writeStdout(message);
 }
 
-fn runLogin(allocator: std.mem.Allocator, servers: McpServers, args: []const []const u8) !void {
+fn runLogin(allocator: std.mem.Allocator, codex_home: []const u8, config_bytes: []const u8, servers: McpServers, args: []const []const u8) !void {
     if (args.len == 0) return error.MissingMcpServerName;
     if (isHelpFlag(args[0])) {
         printLoginHelp();
@@ -380,6 +385,13 @@ fn runLogin(allocator: std.mem.Allocator, servers: McpServers, args: []const []c
     }
     const name = args[0];
     try validateServerName(name);
+
+    var explicit_scopes = std.ArrayList([]const u8).empty;
+    defer {
+        for (explicit_scopes.items) |scope| allocator.free(scope);
+        explicit_scopes.deinit(allocator);
+    }
+    var explicit_scopes_present = false;
 
     var index: usize = 1;
     while (index < args.len) : (index += 1) {
@@ -391,11 +403,13 @@ fn runLogin(allocator: std.mem.Allocator, servers: McpServers, args: []const []c
         if (std.mem.eql(u8, arg, "--scopes")) {
             index += 1;
             if (index >= args.len) return error.MissingMcpOptionValue;
-            try validateMcpOAuthScopes(args[index]);
+            try replaceMcpOAuthScopesCsv(allocator, &explicit_scopes, args[index]);
+            explicit_scopes_present = true;
             continue;
         }
         if (std.mem.startsWith(u8, arg, "--scopes=")) {
-            try validateMcpOAuthScopes(arg["--scopes=".len..]);
+            try replaceMcpOAuthScopesCsv(allocator, &explicit_scopes, arg["--scopes=".len..]);
+            explicit_scopes_present = true;
             continue;
         }
         return error.UnknownMcpLoginOption;
@@ -412,8 +426,11 @@ fn runLogin(allocator: std.mem.Allocator, servers: McpServers, args: []const []c
         return error.McpOAuthLoginRequiresHttp;
     }
 
-    try cli_utils.writeStdout("MCP OAuth login is not implemented in the Zig port yet.\n");
-    return error.UnsupportedMcpOAuth;
+    const resolved_scopes = if (explicit_scopes_present) explicit_scopes.items else server.scopes.items;
+    try performMcpOAuthLogin(allocator, codex_home, config_bytes, server.*, resolved_scopes);
+    const message = try std.fmt.allocPrint(allocator, "Successfully logged in to MCP server '{s}'.\n", .{name});
+    defer allocator.free(message);
+    try cli_utils.writeStdout(message);
 }
 
 fn runLogout(
@@ -448,6 +465,21 @@ fn validateMcpOAuthScopes(raw: []const u8) !void {
         const end = std.mem.indexOfScalarPos(u8, raw, start, ',') orelse raw.len;
         const scope = std.mem.trim(u8, raw[start..end], " \t\r\n");
         if (scope.len == 0) return error.InvalidMcpOAuthScopes;
+        if (end == raw.len) break;
+        start = end + 1;
+    }
+}
+
+fn replaceMcpOAuthScopesCsv(allocator: std.mem.Allocator, scopes: *std.ArrayList([]const u8), raw: []const u8) !void {
+    try validateMcpOAuthScopes(raw);
+    for (scopes.items) |scope| allocator.free(scope);
+    scopes.clearRetainingCapacity();
+
+    var start: usize = 0;
+    while (start <= raw.len) {
+        const end = std.mem.indexOfScalarPos(u8, raw, start, ',') orelse raw.len;
+        const scope = std.mem.trim(u8, raw[start..end], " \t\r\n");
+        try scopes.append(allocator, try allocator.dupe(u8, scope));
         if (end == raw.len) break;
         start = end + 1;
     }
@@ -794,6 +826,789 @@ fn oauthDiscoveryMetadataIsSupported(allocator: std.mem.Allocator, body: []const
     return authorization_endpoint == .string and token_endpoint == .string;
 }
 
+const McpOAuthMetadata = struct {
+    authorization_endpoint: []const u8,
+    token_endpoint: []const u8,
+    registration_endpoint: ?[]const u8 = null,
+    scopes_supported: std.ArrayList([]const u8) = .empty,
+
+    fn deinit(self: *McpOAuthMetadata, allocator: std.mem.Allocator) void {
+        allocator.free(self.authorization_endpoint);
+        allocator.free(self.token_endpoint);
+        if (self.registration_endpoint) |value| allocator.free(value);
+        for (self.scopes_supported.items) |scope| allocator.free(scope);
+        self.scopes_supported.deinit(allocator);
+    }
+};
+
+const McpOAuthClientRegistration = struct {
+    client_id: []const u8,
+    client_secret: ?[]const u8 = null,
+
+    fn deinit(self: *McpOAuthClientRegistration, allocator: std.mem.Allocator) void {
+        allocator.free(self.client_id);
+        if (self.client_secret) |value| allocator.free(value);
+    }
+};
+
+const McpOAuthTokens = struct {
+    access_token: []const u8,
+    refresh_token: ?[]const u8 = null,
+    expires_at_ms: ?u64 = null,
+    scopes: std.ArrayList([]const u8) = .empty,
+
+    fn deinit(self: *McpOAuthTokens, allocator: std.mem.Allocator) void {
+        allocator.free(self.access_token);
+        if (self.refresh_token) |value| allocator.free(value);
+        for (self.scopes.items) |scope| allocator.free(scope);
+        self.scopes.deinit(allocator);
+    }
+};
+
+const McpOAuthHttpHeaders = struct {
+    headers: std.ArrayList(std.http.Header) = .empty,
+    owned_values: std.ArrayList([]const u8) = .empty,
+
+    fn deinit(self: *McpOAuthHttpHeaders, allocator: std.mem.Allocator) void {
+        for (self.owned_values.items) |value| allocator.free(value);
+        self.owned_values.deinit(allocator);
+        self.headers.deinit(allocator);
+    }
+};
+
+const McpOAuthHttpResponse = struct {
+    status: std.http.Status,
+    body: []const u8,
+
+    fn deinit(self: *const McpOAuthHttpResponse, allocator: std.mem.Allocator) void {
+        allocator.free(self.body);
+    }
+};
+
+const PkceCodes = struct {
+    code_verifier: []const u8,
+    code_challenge: []const u8,
+
+    fn deinit(self: *PkceCodes, allocator: std.mem.Allocator) void {
+        allocator.free(self.code_verifier);
+        allocator.free(self.code_challenge);
+    }
+};
+
+fn performMcpOAuthLogin(
+    allocator: std.mem.Allocator,
+    codex_home: []const u8,
+    config_bytes: []const u8,
+    server: McpServer,
+    requested_scopes: []const []const u8,
+) !void {
+    const server_url = server.url orelse return error.McpOAuthLoginRequiresHttp;
+
+    var metadata = try discoverMcpOAuthMetadata(allocator, server);
+    defer metadata.deinit(allocator);
+
+    var resolved_scopes = try resolveMcpOAuthLoginScopes(allocator, requested_scopes, metadata.scopes_supported.items);
+    defer {
+        for (resolved_scopes.items) |scope| allocator.free(scope);
+        resolved_scopes.deinit(allocator);
+    }
+
+    var callback_server = try bindMcpOAuthCallbackServer();
+    defer callback_server.deinit(std.Io.Threaded.global_single_threaded.io());
+
+    const callback_port = callback_server.socket.address.getPort();
+    const redirect_uri = try std.fmt.allocPrint(allocator, "http://127.0.0.1:{d}/callback", .{callback_port});
+    defer allocator.free(redirect_uri);
+
+    const registration_endpoint = metadata.registration_endpoint orelse return error.MissingMcpOAuthRegistrationEndpoint;
+    var registration = try registerMcpOAuthClient(allocator, server, registration_endpoint, redirect_uri);
+    defer registration.deinit(allocator);
+
+    var pkce = try generateMcpOAuthPkce(allocator);
+    defer pkce.deinit(allocator);
+    const state = try randomUrlSafe(allocator, 32);
+    defer allocator.free(state);
+
+    const authorization_url = try buildMcpOAuthAuthorizationUrl(
+        allocator,
+        metadata.authorization_endpoint,
+        registration.client_id,
+        redirect_uri,
+        pkce,
+        state,
+        resolved_scopes.items,
+        server.oauth_resource,
+    );
+    defer allocator.free(authorization_url);
+
+    try printMcpOAuthPrompt(allocator, server.name, authorization_url);
+    if (!try shouldSkipMcpOAuthBrowser(allocator)) {
+        openBrowser(allocator, authorization_url) catch |err| {
+            std.debug.print("warning: could not open browser automatically: {s}\n", .{@errorName(err)});
+        };
+    }
+
+    const code = try waitForMcpOAuthCallback(allocator, &callback_server, state);
+    defer allocator.free(code);
+
+    var tokens = try exchangeMcpOAuthCodeForTokens(
+        allocator,
+        server,
+        metadata.token_endpoint,
+        code,
+        redirect_uri,
+        registration.client_id,
+        registration.client_secret,
+        pkce.code_verifier,
+    );
+    defer tokens.deinit(allocator);
+
+    try saveMcpOAuthCredentials(allocator, codex_home, parseMcpOAuthCredentialsStore(config_bytes), server.name, server_url, registration.client_id, tokens);
+}
+
+fn discoverMcpOAuthMetadata(allocator: std.mem.Allocator, server: McpServer) !McpOAuthMetadata {
+    const url = server.url orelse return error.McpOAuthLoginRequiresHttp;
+    var candidates = try discoveryUrls(allocator, url);
+    defer {
+        for (candidates.items) |candidate| allocator.free(candidate);
+        candidates.deinit(allocator);
+    }
+
+    for (candidates.items) |candidate| {
+        var response = mcpOAuthFetch(allocator, server, .GET, candidate, null, null) catch continue;
+        defer response.deinit(allocator);
+        if (!statusIsSuccess(response.status)) continue;
+        return parseMcpOAuthMetadata(allocator, response.body) catch continue;
+    }
+    return error.McpOAuthDiscoveryFailed;
+}
+
+fn parseMcpOAuthMetadata(allocator: std.mem.Allocator, body: []const u8) !McpOAuthMetadata {
+    var parsed = try std.json.parseFromSlice(std.json.Value, allocator, body, .{});
+    defer parsed.deinit();
+    if (parsed.value != .object) return error.InvalidMcpOAuthDiscoveryMetadata;
+    const object = parsed.value.object;
+    const authorization_endpoint = jsonStringField(object, "authorization_endpoint") orelse return error.InvalidMcpOAuthDiscoveryMetadata;
+    const token_endpoint = jsonStringField(object, "token_endpoint") orelse return error.InvalidMcpOAuthDiscoveryMetadata;
+
+    var metadata = McpOAuthMetadata{
+        .authorization_endpoint = try allocator.dupe(u8, authorization_endpoint),
+        .token_endpoint = try allocator.dupe(u8, token_endpoint),
+    };
+    errdefer metadata.deinit(allocator);
+    if (jsonStringField(object, "registration_endpoint")) |registration_endpoint| {
+        metadata.registration_endpoint = try allocator.dupe(u8, registration_endpoint);
+    }
+    try appendJsonStringArray(allocator, &metadata.scopes_supported, object.get("scopes_supported"));
+    return metadata;
+}
+
+fn resolveMcpOAuthLoginScopes(
+    allocator: std.mem.Allocator,
+    requested_scopes: []const []const u8,
+    discovered_scopes: []const []const u8,
+) !std.ArrayList([]const u8) {
+    var resolved = std.ArrayList([]const u8).empty;
+    errdefer {
+        for (resolved.items) |scope| allocator.free(scope);
+        resolved.deinit(allocator);
+    }
+    const source = if (requested_scopes.len > 0) requested_scopes else discovered_scopes;
+    for (source) |scope| {
+        try resolved.append(allocator, try allocator.dupe(u8, scope));
+    }
+    return resolved;
+}
+
+fn registerMcpOAuthClient(
+    allocator: std.mem.Allocator,
+    server: McpServer,
+    registration_endpoint: []const u8,
+    redirect_uri: []const u8,
+) !McpOAuthClientRegistration {
+    const payload = try std.json.Stringify.valueAlloc(allocator, .{
+        .client_name = "Codex",
+        .redirect_uris = .{redirect_uri},
+        .grant_types = .{"authorization_code"},
+        .response_types = .{"code"},
+        .token_endpoint_auth_method = "none",
+    }, .{});
+    defer allocator.free(payload);
+
+    var response = try mcpOAuthFetch(allocator, server, .POST, registration_endpoint, "application/json", payload);
+    defer response.deinit(allocator);
+    if (!statusIsSuccess(response.status)) return error.McpOAuthClientRegistrationFailed;
+
+    var parsed = try std.json.parseFromSlice(std.json.Value, allocator, response.body, .{});
+    defer parsed.deinit();
+    if (parsed.value != .object) return error.McpOAuthClientRegistrationFailed;
+    const client_id = jsonStringField(parsed.value.object, "client_id") orelse return error.McpOAuthClientRegistrationFailed;
+    var registered = McpOAuthClientRegistration{ .client_id = try allocator.dupe(u8, client_id) };
+    errdefer registered.deinit(allocator);
+    if (jsonStringField(parsed.value.object, "client_secret")) |client_secret| {
+        registered.client_secret = try allocator.dupe(u8, client_secret);
+    }
+    return registered;
+}
+
+fn exchangeMcpOAuthCodeForTokens(
+    allocator: std.mem.Allocator,
+    server: McpServer,
+    token_endpoint: []const u8,
+    code: []const u8,
+    redirect_uri: []const u8,
+    client_id: []const u8,
+    client_secret: ?[]const u8,
+    code_verifier: []const u8,
+) !McpOAuthTokens {
+    var body = std.ArrayList(u8).empty;
+    defer body.deinit(allocator);
+    try appendFormField(allocator, &body, "grant_type", "authorization_code");
+    try appendFormField(allocator, &body, "code", code);
+    try appendFormField(allocator, &body, "redirect_uri", redirect_uri);
+    try appendFormField(allocator, &body, "client_id", client_id);
+    try appendFormField(allocator, &body, "code_verifier", code_verifier);
+    if (client_secret) |secret| try appendFormField(allocator, &body, "client_secret", secret);
+
+    var response = try mcpOAuthFetch(allocator, server, .POST, token_endpoint, "application/x-www-form-urlencoded", body.items);
+    defer response.deinit(allocator);
+    if (!statusIsSuccess(response.status)) return error.McpOAuthTokenExchangeFailed;
+
+    return parseMcpOAuthTokenResponse(allocator, response.body);
+}
+
+fn parseMcpOAuthTokenResponse(allocator: std.mem.Allocator, body: []const u8) !McpOAuthTokens {
+    var parsed = try std.json.parseFromSlice(std.json.Value, allocator, body, .{});
+    defer parsed.deinit();
+    if (parsed.value != .object) return error.McpOAuthTokenExchangeFailed;
+    const object = parsed.value.object;
+    const access_token = jsonStringField(object, "access_token") orelse return error.McpOAuthTokenExchangeFailed;
+    var tokens = McpOAuthTokens{ .access_token = try allocator.dupe(u8, access_token) };
+    errdefer tokens.deinit(allocator);
+    if (jsonStringField(object, "refresh_token")) |refresh_token| {
+        tokens.refresh_token = try allocator.dupe(u8, refresh_token);
+    }
+    if (oauthJsonUnsigned(object.get("expires_in"))) |expires_in| {
+        const now_ms: u64 = @intCast(currentUnixMilliseconds());
+        tokens.expires_at_ms = now_ms + expires_in * std.time.ms_per_s;
+    }
+    if (jsonStringField(object, "scope")) |scope_text| {
+        try appendSpaceSeparatedScopes(allocator, &tokens.scopes, scope_text);
+    }
+    return tokens;
+}
+
+fn saveMcpOAuthCredentials(
+    allocator: std.mem.Allocator,
+    codex_home: []const u8,
+    store_mode: McpOAuthCredentialsStore,
+    server_name: []const u8,
+    server_url: []const u8,
+    client_id: []const u8,
+    tokens: McpOAuthTokens,
+) !void {
+    // The Zig runtime currently reads file-backed MCP OAuth tokens. Use the
+    // fallback file for auto mode until full keyring-backed runtime parity lands.
+    switch (store_mode) {
+        .file, .auto => try saveMcpOAuthFileCredentials(allocator, codex_home, server_name, server_url, client_id, tokens),
+        .keyring => try saveMcpOAuthKeyringCredentials(allocator, server_name, server_url, client_id, tokens),
+    }
+}
+
+fn saveMcpOAuthFileCredentials(
+    allocator: std.mem.Allocator,
+    codex_home: []const u8,
+    server_name: []const u8,
+    server_url: []const u8,
+    client_id: []const u8,
+    tokens: McpOAuthTokens,
+) !void {
+    const path = try std.fs.path.join(allocator, &.{ codex_home, ".credentials.json" });
+    defer allocator.free(path);
+
+    const bytes = std.Io.Dir.cwd().readFileAlloc(std.Io.Threaded.global_single_threaded.io(), path, allocator, .limited(1024 * 1024)) catch |err| switch (err) {
+        error.FileNotFound => null,
+        else => return err,
+    };
+    defer if (bytes) |owned| allocator.free(owned);
+
+    var parsed_opt: ?std.json.Parsed(std.json.Value) = null;
+    defer if (parsed_opt) |*parsed| parsed.deinit();
+    if (bytes) |existing| {
+        parsed_opt = std.json.parseFromSlice(std.json.Value, allocator, existing, .{}) catch return error.InvalidMcpOAuthCredentialsFile;
+        if (parsed_opt.?.value != .object) return error.InvalidMcpOAuthCredentialsFile;
+    }
+
+    const key = try computeMcpOAuthStoreKey(allocator, server_name, server_url);
+    defer allocator.free(key);
+
+    var output = std.ArrayList(u8).empty;
+    errdefer output.deinit(allocator);
+    try output.append(allocator, '{');
+    var wrote: usize = 0;
+    if (parsed_opt) |parsed| {
+        var iterator = parsed.value.object.iterator();
+        while (iterator.next()) |entry| {
+            if (std.mem.eql(u8, entry.key_ptr.*, key)) continue;
+            if (wrote > 0) try output.append(allocator, ',');
+            try appendJsonString(allocator, &output, entry.key_ptr.*);
+            try output.append(allocator, ':');
+            const rendered_value = try std.json.Stringify.valueAlloc(allocator, entry.value_ptr.*, .{});
+            defer allocator.free(rendered_value);
+            try output.appendSlice(allocator, rendered_value);
+            wrote += 1;
+        }
+    }
+    if (wrote > 0) try output.append(allocator, ',');
+    try appendJsonString(allocator, &output, key);
+    try output.append(allocator, ':');
+    try appendMcpOAuthFallbackEntryJson(allocator, &output, server_name, server_url, client_id, tokens);
+    try output.append(allocator, '}');
+
+    const rendered = try output.toOwnedSlice(allocator);
+    defer allocator.free(rendered);
+    try std.Io.Dir.cwd().createDirPath(std.Io.Threaded.global_single_threaded.io(), codex_home);
+    try std.Io.Dir.cwd().writeFile(std.Io.Threaded.global_single_threaded.io(), .{ .sub_path = path, .data = rendered });
+}
+
+fn saveMcpOAuthKeyringCredentials(
+    allocator: std.mem.Allocator,
+    server_name: []const u8,
+    server_url: []const u8,
+    client_id: []const u8,
+    tokens: McpOAuthTokens,
+) !void {
+    if (!mcpOAuthKeyringSupported()) return error.UnsupportedMcpOAuthKeyring;
+    const key = try computeMcpOAuthStoreKey(allocator, server_name, server_url);
+    defer allocator.free(key);
+    const serialized = try renderMcpOAuthStoredTokensJson(allocator, server_name, server_url, client_id, tokens);
+    defer allocator.free(serialized);
+    const argv = [_][]const u8{ security_binary, "add-generic-password", "-U", "-s", mcp_oauth_keyring_service, "-a", key, "-w", serialized };
+    var result = try runSecurityCommand(allocator, argv[0..]);
+    defer result.deinit(allocator);
+    switch (result.term) {
+        .exited => |code| if (code == 0) return,
+        else => {},
+    }
+    return error.McpOAuthKeyringUnavailable;
+}
+
+fn appendMcpOAuthFallbackEntryJson(
+    allocator: std.mem.Allocator,
+    output: *std.ArrayList(u8),
+    server_name: []const u8,
+    server_url: []const u8,
+    client_id: []const u8,
+    tokens: McpOAuthTokens,
+) !void {
+    try output.append(allocator, '{');
+    try output.appendSlice(allocator, "\"server_name\":");
+    try appendJsonString(allocator, output, server_name);
+    try output.appendSlice(allocator, ",\"server_url\":");
+    try appendJsonString(allocator, output, server_url);
+    try output.appendSlice(allocator, ",\"client_id\":");
+    try appendJsonString(allocator, output, client_id);
+    try output.appendSlice(allocator, ",\"access_token\":");
+    try appendJsonString(allocator, output, tokens.access_token);
+    if (tokens.expires_at_ms) |expires_at| {
+        try output.appendSlice(allocator, ",\"expires_at\":");
+        try appendUnsigned(allocator, output, expires_at);
+    }
+    if (tokens.refresh_token) |refresh_token| {
+        try output.appendSlice(allocator, ",\"refresh_token\":");
+        try appendJsonString(allocator, output, refresh_token);
+    }
+    if (tokens.scopes.items.len > 0) {
+        try output.appendSlice(allocator, ",\"scopes\":");
+        try appendJsonStringArrayValue(allocator, output, tokens.scopes.items);
+    }
+    try output.append(allocator, '}');
+}
+
+fn renderMcpOAuthStoredTokensJson(
+    allocator: std.mem.Allocator,
+    server_name: []const u8,
+    server_url: []const u8,
+    client_id: []const u8,
+    tokens: McpOAuthTokens,
+) ![]const u8 {
+    var output = std.ArrayList(u8).empty;
+    errdefer output.deinit(allocator);
+    try output.append(allocator, '{');
+    try output.appendSlice(allocator, "\"server_name\":");
+    try appendJsonString(allocator, &output, server_name);
+    try output.appendSlice(allocator, ",\"url\":");
+    try appendJsonString(allocator, &output, server_url);
+    try output.appendSlice(allocator, ",\"client_id\":");
+    try appendJsonString(allocator, &output, client_id);
+    try output.appendSlice(allocator, ",\"token_response\":{\"access_token\":");
+    try appendJsonString(allocator, &output, tokens.access_token);
+    try output.appendSlice(allocator, ",\"token_type\":\"Bearer\"");
+    if (tokens.expires_at_ms) |expires_at| {
+        const now_ms: u64 = @intCast(currentUnixMilliseconds());
+        const expires_in = if (expires_at > now_ms) @divTrunc(expires_at - now_ms, std.time.ms_per_s) else 0;
+        try output.appendSlice(allocator, ",\"expires_in\":");
+        try appendUnsigned(allocator, &output, expires_in);
+    }
+    if (tokens.refresh_token) |refresh_token| {
+        try output.appendSlice(allocator, ",\"refresh_token\":");
+        try appendJsonString(allocator, &output, refresh_token);
+    }
+    if (tokens.scopes.items.len > 0) {
+        const scope_text = try joinScopes(allocator, tokens.scopes.items, " ");
+        defer allocator.free(scope_text);
+        try output.appendSlice(allocator, ",\"scope\":");
+        try appendJsonString(allocator, &output, scope_text);
+    }
+    try output.append(allocator, '}');
+    if (tokens.expires_at_ms) |expires_at| {
+        try output.appendSlice(allocator, ",\"expires_at\":");
+        try appendUnsigned(allocator, &output, expires_at);
+    }
+    try output.append(allocator, '}');
+    return output.toOwnedSlice(allocator);
+}
+
+fn mcpOAuthFetch(
+    allocator: std.mem.Allocator,
+    server: McpServer,
+    method: std.http.Method,
+    url: []const u8,
+    content_type: ?[]const u8,
+    payload: ?[]const u8,
+) !McpOAuthHttpResponse {
+    var headers = try buildMcpOAuthHttpHeaders(allocator, server, content_type);
+    defer headers.deinit(allocator);
+
+    var io_instance: std.Io.Threaded = .init(allocator, .{});
+    defer io_instance.deinit();
+    var client = std.http.Client{ .allocator = allocator, .io = io_instance.io() };
+    defer client.deinit();
+
+    var response_body: std.Io.Writer.Allocating = .init(allocator);
+    defer response_body.deinit();
+    const result = try client.fetch(.{
+        .location = .{ .url = url },
+        .method = method,
+        .payload = payload,
+        .response_writer = &response_body.writer,
+        .extra_headers = headers.headers.items,
+    });
+    return .{ .status = result.status, .body = try response_body.toOwnedSlice() };
+}
+
+fn buildMcpOAuthHttpHeaders(
+    allocator: std.mem.Allocator,
+    server: McpServer,
+    content_type: ?[]const u8,
+) !McpOAuthHttpHeaders {
+    var headers = McpOAuthHttpHeaders{};
+    errdefer headers.deinit(allocator);
+    try headers.headers.append(allocator, .{ .name = "MCP-Protocol-Version", .value = "2024-11-05" });
+    try headers.headers.append(allocator, .{ .name = "Accept", .value = "application/json" });
+    try headers.headers.append(allocator, .{ .name = "User-Agent", .value = "codex-zig-port/0.0.1" });
+    if (content_type) |value| try headers.headers.append(allocator, .{ .name = "Content-Type", .value = value });
+    for (server.http_headers.items) |entry| {
+        try headers.headers.append(allocator, .{ .name = entry.key, .value = entry.value });
+    }
+    for (server.env_http_headers.items) |entry| {
+        const value = try env.getOwnedDynamic(allocator, entry.value) orelse continue;
+        errdefer allocator.free(value);
+        try headers.owned_values.append(allocator, value);
+        try headers.headers.append(allocator, .{ .name = entry.key, .value = value });
+    }
+    return headers;
+}
+
+fn bindMcpOAuthCallbackServer() !std.Io.net.Server {
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var address: std.Io.net.IpAddress = .{ .ip4 = std.Io.net.Ip4Address.loopback(0) };
+    return address.listen(io, .{ .reuse_address = true });
+}
+
+fn waitForMcpOAuthCallback(
+    allocator: std.mem.Allocator,
+    server: *std.Io.net.Server,
+    expected_state: []const u8,
+) ![]const u8 {
+    const io = std.Io.Threaded.global_single_threaded.io();
+    while (true) {
+        var stream = try server.accept(io);
+        defer stream.close(io);
+
+        var send_buffer: [4096]u8 = undefined;
+        var recv_buffer: [4096]u8 = undefined;
+        var connection_reader = stream.reader(io, &recv_buffer);
+        var connection_writer = stream.writer(io, &send_buffer);
+        var http_server: std.http.Server = .init(&connection_reader.interface, &connection_writer.interface);
+        var request = http_server.receiveHead() catch |err| switch (err) {
+            error.HttpConnectionClosing => continue,
+            else => return err,
+        };
+
+        if (try handleMcpOAuthCallbackRequest(allocator, &request, expected_state)) |code| return code;
+    }
+}
+
+fn handleMcpOAuthCallbackRequest(
+    allocator: std.mem.Allocator,
+    request: *std.http.Server.Request,
+    expected_state: []const u8,
+) !?[]const u8 {
+    const path, const query = splitTarget(request.head.target);
+    if (!std.mem.eql(u8, path, "/callback")) {
+        try respondText(request, .not_found, "Not Found\n");
+        return null;
+    }
+    const callback_state = try queryParam(allocator, query, "state");
+    defer if (callback_state) |value| allocator.free(value);
+    if (callback_state == null or !std.mem.eql(u8, callback_state.?, expected_state)) {
+        try respondText(request, .bad_request, "State mismatch\n");
+        return error.McpOAuthStateMismatch;
+    }
+    const error_code = try queryParam(allocator, query, "error");
+    defer if (error_code) |value| allocator.free(value);
+    if (error_code) |value| {
+        const description = try queryParam(allocator, query, "error_description");
+        defer if (description) |text| allocator.free(text);
+        const message = if (description) |text|
+            try std.fmt.allocPrint(allocator, "OAuth login failed: {s}\n", .{text})
+        else
+            try std.fmt.allocPrint(allocator, "OAuth login failed: {s}\n", .{value});
+        defer allocator.free(message);
+        try respondText(request, .bad_request, message);
+        return error.McpOAuthProviderError;
+    }
+    const code = try queryParam(allocator, query, "code");
+    if (code == null or code.?.len == 0) {
+        defer if (code) |value| allocator.free(value);
+        try respondText(request, .bad_request, "Missing authorization code\n");
+        return error.MissingMcpOAuthAuthorizationCode;
+    }
+    try respondText(
+        request,
+        .ok,
+        "<!doctype html><meta charset=\"utf-8\"><title>MCP login complete</title><h1>MCP login complete</h1><p>You can return to the terminal.</p>",
+    );
+    return code.?;
+}
+
+fn splitTarget(target: []const u8) struct { []const u8, []const u8 } {
+    if (std.mem.indexOfScalar(u8, target, '?')) |index| {
+        return .{ target[0..index], target[index + 1 ..] };
+    }
+    return .{ target, "" };
+}
+
+fn respondText(request: *std.http.Server.Request, status: std.http.Status, body: []const u8) !void {
+    try request.respond(body, .{
+        .status = status,
+        .extra_headers = &.{
+            .{ .name = "Content-Type", .value = "text/html; charset=utf-8" },
+            .{ .name = "Connection", .value = "close" },
+        },
+    });
+}
+
+fn queryParam(allocator: std.mem.Allocator, query: []const u8, name: []const u8) !?[]const u8 {
+    var parts = std.mem.splitScalar(u8, query, '&');
+    while (parts.next()) |part| {
+        if (part.len == 0) continue;
+        const key_raw, const value_raw = if (std.mem.indexOfScalar(u8, part, '=')) |index|
+            .{ part[0..index], part[index + 1 ..] }
+        else
+            .{ part, "" };
+        const key = try percentDecodeQueryComponent(allocator, key_raw);
+        defer allocator.free(key);
+        if (!std.mem.eql(u8, key, name)) continue;
+        return try percentDecodeQueryComponent(allocator, value_raw);
+    }
+    return null;
+}
+
+fn percentDecodeQueryComponent(allocator: std.mem.Allocator, value: []const u8) ![]const u8 {
+    const copy = try allocator.dupe(u8, value);
+    errdefer allocator.free(copy);
+    for (copy) |*byte| {
+        if (byte.* == '+') byte.* = ' ';
+    }
+    const decoded = std.Uri.percentDecodeInPlace(copy);
+    if (decoded.ptr != copy.ptr) {
+        std.mem.copyForwards(u8, copy[0..decoded.len], decoded);
+    }
+    if (decoded.len == copy.len) return copy;
+    return try allocator.realloc(copy, decoded.len);
+}
+
+fn buildMcpOAuthAuthorizationUrl(
+    allocator: std.mem.Allocator,
+    authorization_endpoint: []const u8,
+    client_id: []const u8,
+    redirect_uri: []const u8,
+    pkce: PkceCodes,
+    state: []const u8,
+    scopes: []const []const u8,
+    oauth_resource: ?[]const u8,
+) ![]const u8 {
+    var out = std.ArrayList(u8).empty;
+    errdefer out.deinit(allocator);
+    try out.appendSlice(allocator, authorization_endpoint);
+    try appendQueryParam(allocator, &out, "response_type", "code");
+    try appendQueryParam(allocator, &out, "client_id", client_id);
+    try appendQueryParam(allocator, &out, "redirect_uri", redirect_uri);
+    try appendQueryParam(allocator, &out, "code_challenge", pkce.code_challenge);
+    try appendQueryParam(allocator, &out, "code_challenge_method", "S256");
+    try appendQueryParam(allocator, &out, "state", state);
+    if (scopes.len > 0) {
+        const scope_text = try joinScopes(allocator, scopes, " ");
+        defer allocator.free(scope_text);
+        try appendQueryParam(allocator, &out, "scope", scope_text);
+    }
+    if (oauth_resource) |resource| {
+        if (std.mem.trim(u8, resource, " \t\r\n").len > 0) {
+            try appendQueryParam(allocator, &out, "resource", resource);
+        }
+    }
+    return out.toOwnedSlice(allocator);
+}
+
+fn appendQueryParam(allocator: std.mem.Allocator, out: *std.ArrayList(u8), name: []const u8, value: []const u8) !void {
+    const separator: u8 = if (std.mem.indexOfScalar(u8, out.items, '?') == null) '?' else '&';
+    try out.append(allocator, separator);
+    try percentEncode(allocator, out, name);
+    try out.append(allocator, '=');
+    try percentEncode(allocator, out, value);
+}
+
+fn appendFormField(allocator: std.mem.Allocator, out: *std.ArrayList(u8), name: []const u8, value: []const u8) !void {
+    if (out.items.len > 0) try out.append(allocator, '&');
+    try percentEncode(allocator, out, name);
+    try out.append(allocator, '=');
+    try percentEncode(allocator, out, value);
+}
+
+fn percentEncode(allocator: std.mem.Allocator, out: *std.ArrayList(u8), value: []const u8) !void {
+    const hex = "0123456789ABCDEF";
+    for (value) |byte| {
+        const unreserved =
+            (byte >= 'A' and byte <= 'Z') or
+            (byte >= 'a' and byte <= 'z') or
+            (byte >= '0' and byte <= '9') or
+            byte == '-' or byte == '_' or byte == '.' or byte == '~';
+        if (unreserved) {
+            try out.append(allocator, byte);
+        } else {
+            try out.append(allocator, '%');
+            try out.append(allocator, hex[byte >> 4]);
+            try out.append(allocator, hex[byte & 0x0f]);
+        }
+    }
+}
+
+fn generateMcpOAuthPkce(allocator: std.mem.Allocator) !PkceCodes {
+    const code_verifier = try randomUrlSafe(allocator, 64);
+    errdefer allocator.free(code_verifier);
+    var digest: [std.crypto.hash.sha2.Sha256.digest_length]u8 = undefined;
+    std.crypto.hash.sha2.Sha256.hash(code_verifier, &digest, .{});
+    const code_challenge = try base64UrlSafeAlloc(allocator, &digest);
+    errdefer allocator.free(code_challenge);
+    return .{ .code_verifier = code_verifier, .code_challenge = code_challenge };
+}
+
+fn randomUrlSafe(allocator: std.mem.Allocator, comptime byte_count: usize) ![]const u8 {
+    var bytes: [byte_count]u8 = undefined;
+    std.Io.Threaded.global_single_threaded.io().random(&bytes);
+    return base64UrlSafeAlloc(allocator, &bytes);
+}
+
+fn base64UrlSafeAlloc(allocator: std.mem.Allocator, bytes: []const u8) ![]const u8 {
+    const len = std.base64.url_safe_no_pad.Encoder.calcSize(bytes.len);
+    const encoded = try allocator.alloc(u8, len);
+    errdefer allocator.free(encoded);
+    _ = std.base64.url_safe_no_pad.Encoder.encode(encoded, bytes);
+    return encoded;
+}
+
+fn openBrowser(allocator: std.mem.Allocator, url: []const u8) !void {
+    if (builtin.os.tag != .macos) return;
+    var io_instance: std.Io.Threaded = .init(allocator, .{});
+    defer io_instance.deinit();
+    const result = try std.process.run(allocator, io_instance.io(), .{
+        .argv = &.{ "/usr/bin/open", url },
+        .stdout_limit = .limited(1024),
+        .stderr_limit = .limited(1024),
+        .timeout = .{ .duration = .{ .raw = std.Io.Duration.fromMilliseconds(5000), .clock = .awake } },
+    });
+    defer allocator.free(result.stdout);
+    defer allocator.free(result.stderr);
+    switch (result.term) {
+        .exited => |code| if (code != 0) return error.OpenBrowserFailed,
+        else => return error.OpenBrowserFailed,
+    }
+}
+
+fn printMcpOAuthPrompt(allocator: std.mem.Allocator, server_name: []const u8, authorization_url: []const u8) !void {
+    const message = try std.fmt.allocPrint(
+        allocator,
+        "Authorize `{s}` by opening this URL in your browser:\n{s}\n\n",
+        .{ server_name, authorization_url },
+    );
+    defer allocator.free(message);
+    try cli_utils.writeStdout(message);
+}
+
+fn shouldSkipMcpOAuthBrowser(allocator: std.mem.Allocator) !bool {
+    const value = try env.getOwned(allocator, "CODEX_MCP_OAUTH_SKIP_BROWSER") orelse return false;
+    defer allocator.free(value);
+    return std.mem.eql(u8, value, "1") or std.ascii.eqlIgnoreCase(value, "true");
+}
+
+fn appendSpaceSeparatedScopes(allocator: std.mem.Allocator, scopes: *std.ArrayList([]const u8), text: []const u8) !void {
+    var parts = std.mem.tokenizeAny(u8, text, " \t\r\n");
+    while (parts.next()) |scope| {
+        try scopes.append(allocator, try allocator.dupe(u8, scope));
+    }
+}
+
+fn joinScopes(allocator: std.mem.Allocator, scopes: []const []const u8, separator: []const u8) ![]const u8 {
+    var out = std.ArrayList(u8).empty;
+    errdefer out.deinit(allocator);
+    for (scopes, 0..) |scope, index| {
+        if (index > 0) try out.appendSlice(allocator, separator);
+        try out.appendSlice(allocator, scope);
+    }
+    return out.toOwnedSlice(allocator);
+}
+
+fn appendJsonStringArrayValue(allocator: std.mem.Allocator, output: *std.ArrayList(u8), values: []const []const u8) !void {
+    try output.append(allocator, '[');
+    for (values, 0..) |value, index| {
+        if (index > 0) try output.append(allocator, ',');
+        try appendJsonString(allocator, output, value);
+    }
+    try output.append(allocator, ']');
+}
+
+fn oauthJsonUnsigned(value: ?std.json.Value) ?u64 {
+    const actual = value orelse return null;
+    return switch (actual) {
+        .integer => |number| if (number >= 0) @intCast(number) else null,
+        .number_string => |text| std.fmt.parseUnsigned(u64, text, 10) catch null,
+        .string => |text| std.fmt.parseUnsigned(u64, text, 10) catch null,
+        else => null,
+    };
+}
+
+fn statusIsSuccess(status: std.http.Status) bool {
+    const code = @intFromEnum(status);
+    return code >= 200 and code < 300;
+}
+
+fn currentUnixMilliseconds() i64 {
+    const now_ns = std.Io.Timestamp.now(std.Io.Threaded.global_single_threaded.io(), .real).nanoseconds;
+    return @intCast(@divTrunc(now_ns, std.time.ns_per_ms));
+}
+
 fn computeMcpOAuthStoreKey(allocator: std.mem.Allocator, server_name: []const u8, server_url: []const u8) ![]const u8 {
     const url_json = try std.json.Stringify.valueAlloc(allocator, server_url, .{});
     defer allocator.free(url_json);
@@ -882,6 +1697,13 @@ fn parseServers(allocator: std.mem.Allocator, bytes: []const u8) !McpServers {
                 if (server.bearer_token_env_var) |existing| allocator.free(existing);
                 server.bearer_token_env_var = token_env;
             }
+        } else if (std.mem.eql(u8, key, "oauth_resource")) {
+            if (try parseTomlString(allocator, value)) |resource| {
+                if (server.oauth_resource) |existing| allocator.free(existing);
+                server.oauth_resource = resource;
+            }
+        } else if (std.mem.eql(u8, key, "scopes")) {
+            try replaceTomlStringArray(allocator, &server.scopes, value);
         } else if (std.mem.eql(u8, key, "http_headers")) {
             try appendTomlInlineKeyValueTable(allocator, &server.http_headers, value);
         } else if (std.mem.eql(u8, key, "env_http_headers")) {
@@ -965,6 +1787,12 @@ fn parsePluginMcpServer(allocator: std.mem.Allocator, name: []const u8, value: s
     } else if (jsonStringField(value.object, "bearerTokenEnvVar")) |token_env| {
         server.bearer_token_env_var = try allocator.dupe(u8, token_env);
     }
+    if (jsonStringField(value.object, "oauth_resource")) |resource| {
+        server.oauth_resource = try allocator.dupe(u8, resource);
+    } else if (jsonStringField(value.object, "oauthResource")) |resource| {
+        server.oauth_resource = try allocator.dupe(u8, resource);
+    }
+    try appendJsonStringArray(allocator, &server.scopes, value.object.get("scopes"));
     try appendJsonStringMap(allocator, &server.http_headers, value.object.get("http_headers"));
     try appendJsonStringMap(allocator, &server.http_headers, value.object.get("httpHeaders"));
     try appendJsonStringMap(allocator, &server.env_http_headers, value.object.get("env_http_headers"));
@@ -1026,6 +1854,13 @@ fn replaceArgs(allocator: std.mem.Allocator, server: *McpServer, raw: []const u8
     for (server.args.items) |arg| allocator.free(arg);
     server.args.clearRetainingCapacity();
 
+    try replaceTomlStringArray(allocator, &server.args, raw);
+}
+
+fn replaceTomlStringArray(allocator: std.mem.Allocator, values: *std.ArrayList([]const u8), raw: []const u8) !void {
+    for (values.items) |value| allocator.free(value);
+    values.clearRetainingCapacity();
+
     const trimmed = std.mem.trim(u8, raw, " \t");
     if (trimmed.len < 2 or trimmed[0] != '[' or trimmed[trimmed.len - 1] != ']') return;
     var index: usize = 1;
@@ -1043,7 +1878,7 @@ fn replaceArgs(allocator: std.mem.Allocator, server: *McpServer, raw: []const u8
         }
         if (index >= trimmed.len) return;
         const value = try parseTomlString(allocator, trimmed[start .. index + 1]);
-        if (value) |arg| try server.args.append(allocator, arg);
+        if (value) |owned| try values.append(allocator, owned);
     }
 }
 
@@ -1104,6 +1939,14 @@ fn appendJsonStringMap(allocator: std.mem.Allocator, entries: *std.ArrayList(Key
     }
 }
 
+fn appendJsonStringArray(allocator: std.mem.Allocator, values: *std.ArrayList([]const u8), value: ?std.json.Value) !void {
+    const array = value orelse return;
+    if (array != .array) return;
+    for (array.array.items) |item| {
+        if (item == .string) try values.append(allocator, try allocator.dupe(u8, item.string));
+    }
+}
+
 fn appendKeyValueCopy(allocator: std.mem.Allocator, entries: *std.ArrayList(KeyValue), key: []const u8, value: []const u8) !void {
     const key_copy = try allocator.dupe(u8, key);
     errdefer allocator.free(key_copy);
@@ -1150,6 +1993,15 @@ fn appendServersToml(allocator: std.mem.Allocator, output: *std.ArrayList(u8), s
         if (server.kind == .streamable_http) {
             try appendTomlStringField(allocator, output, "url", server.url.?);
             if (server.bearer_token_env_var) |token_env| try appendTomlStringField(allocator, output, "bearer_token_env_var", token_env);
+            if (server.oauth_resource) |resource| try appendTomlStringField(allocator, output, "oauth_resource", resource);
+            if (server.scopes.items.len > 0) {
+                try output.appendSlice(allocator, "scopes = [");
+                for (server.scopes.items, 0..) |scope, scope_index| {
+                    if (scope_index > 0) try output.appendSlice(allocator, ", ");
+                    try appendTomlString(allocator, output, scope);
+                }
+                try output.appendSlice(allocator, "]\n");
+            }
         } else {
             try appendTomlStringField(allocator, output, "command", server.command.?);
             if (server.args.items.len > 0) {
@@ -1378,6 +2230,12 @@ fn appendOptionalKeyValueJsonObject(allocator: std.mem.Allocator, output: *std.A
 
 fn appendJsonString(allocator: std.mem.Allocator, output: *std.ArrayList(u8), value: []const u8) !void {
     const rendered = try std.json.Stringify.valueAlloc(allocator, value, .{});
+    defer allocator.free(rendered);
+    try output.appendSlice(allocator, rendered);
+}
+
+fn appendUnsigned(allocator: std.mem.Allocator, output: *std.ArrayList(u8), value: u64) !void {
+    const rendered = try std.fmt.allocPrint(allocator, "{d}", .{value});
     defer allocator.free(rendered);
     try output.appendSlice(allocator, rendered);
 }
