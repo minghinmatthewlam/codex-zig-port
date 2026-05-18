@@ -17,6 +17,7 @@ import tempfile
 import threading
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -1492,7 +1493,63 @@ class McpOAuthDiscoveryHandler(BaseHTTPRequestHandler):
                 {
                     "authorization_endpoint": f"{self.server.base_url}/oauth/authorize",
                     "token_endpoint": f"{self.server.base_url}/oauth/token",
+                    "registration_endpoint": f"{self.server.base_url}/oauth/register",
                     "scopes_supported": ["read", "write"],
+                },
+                separators=(",", ":"),
+            ).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(payload)))
+            self.end_headers()
+            self.wfile.write(payload)
+            return
+        if self.path.startswith("/oauth/authorize?"):
+            parsed = urllib.parse.urlparse(self.path)
+            query = urllib.parse.parse_qs(parsed.query)
+            self.server.authorization_requests.append(query)
+            redirect_uri = query["redirect_uri"][0]
+            state = query["state"][0]
+            location = f"{redirect_uri}?code=mock-code&state={urllib.parse.quote(state)}"
+            self.send_response(302)
+            self.send_header("Location", location)
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+            return
+        payload = b"not found"
+        self.send_response(404)
+        self.send_header("Content-Type", "text/plain")
+        self.send_header("Content-Length", str(len(payload)))
+        self.end_headers()
+        self.wfile.write(payload)
+
+    def do_POST(self) -> None:
+        self.server.request_paths.append(self.path)
+        length = int(self.headers.get("Content-Length", "0"))
+        raw_body = self.rfile.read(length)
+        if self.path == "/oauth/register":
+            body = json.loads(raw_body.decode() or "{}")
+            self.server.registration_requests.append(body)
+            payload = json.dumps(
+                {"client_id": "mock-client"},
+                separators=(",", ":"),
+            ).encode()
+            self.send_response(201)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(payload)))
+            self.end_headers()
+            self.wfile.write(payload)
+            return
+        if self.path == "/oauth/token":
+            body = urllib.parse.parse_qs(raw_body.decode())
+            self.server.token_requests.append(body)
+            payload = json.dumps(
+                {
+                    "access_token": "mock-access-token",
+                    "token_type": "Bearer",
+                    "expires_in": 3600,
+                    "refresh_token": "mock-refresh-token",
+                    "scope": body.get("scope", ["read write"])[0],
                 },
                 separators=(",", ":"),
             ).encode()
@@ -1515,6 +1572,9 @@ class McpOAuthDiscoveryHandler(BaseHTTPRequestHandler):
 
 class McpOAuthDiscoveryServer(ThreadingHTTPServer):
     request_paths: list[str]
+    authorization_requests: list[dict[str, list[str]]]
+    registration_requests: list[dict]
+    token_requests: list[dict[str, list[str]]]
     base_url: str
 
 
@@ -1756,6 +1816,9 @@ def start_exec_server_http_request_server(public_host: str = "127.0.0.1") -> tup
 def start_mcp_oauth_discovery_server() -> tuple[McpOAuthDiscoveryServer, str]:
     server = McpOAuthDiscoveryServer(("127.0.0.1", 0), McpOAuthDiscoveryHandler)
     server.request_paths = []
+    server.authorization_requests = []
+    server.registration_requests = []
+    server.token_requests = []
     server.base_url = f"http://127.0.0.1:{server.server_port}"
     threading.Thread(target=server.serve_forever, daemon=True).start()
     return server, f"{server.base_url}/mcp"
@@ -7421,7 +7484,7 @@ def cleanup_mcp_oauth_keyring_entry(account: str) -> None:
     )
 
 
-def run_mcp_oauth_logout_smoke(binary: Path) -> None:
+def run_mcp_oauth_login_logout_smoke(binary: Path) -> None:
     temp_root = Path(tempfile.mkdtemp(prefix="codex-zig-cli-mcp-oauth-", dir="/tmp"))
     discovery_server, remote_url = start_mcp_oauth_discovery_server()
     try:
@@ -7586,7 +7649,9 @@ def run_mcp_oauth_logout_smoke(binary: Path) -> None:
         assert invalid_scopes_login.returncode != 0
         assert "error: InvalidMcpOAuthScopes" in invalid_scopes_login.stderr
 
-        remote_login = subprocess.run(
+        login_env = env.copy()
+        login_env["CODEX_MCP_OAUTH_SKIP_BROWSER"] = "1"
+        remote_login = subprocess.Popen(
             [
                 str(binary.resolve()),
                 "mcp",
@@ -7596,18 +7661,45 @@ def run_mcp_oauth_logout_smoke(binary: Path) -> None:
                 "read,write",
             ],
             cwd=temp_root,
-            env=env,
+            env=login_env,
             text=True,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
-            timeout=5,
-            check=False,
         )
-        assert remote_login.returncode != 0
-        assert remote_login.stdout == (
-            "MCP OAuth login is not implemented in the Zig port yet.\n"
+        assert remote_login.stdout is not None
+        authorization_url = ""
+        deadline = time.time() + 5
+        stdout_lines: list[str] = []
+        while time.time() < deadline:
+            line = remote_login.stdout.readline()
+            if line:
+                stdout_lines.append(line)
+                if line.startswith("http://"):
+                    authorization_url = line.strip()
+                    break
+            elif remote_login.poll() is not None:
+                break
+            else:
+                time.sleep(0.05)
+        assert authorization_url, "".join(stdout_lines)
+        with urllib.request.urlopen(authorization_url, timeout=5) as response:
+            assert b"MCP login complete" in response.read()
+        remaining_stdout, remote_login_stderr = remote_login.communicate(timeout=5)
+        remote_login_stdout = "".join(stdout_lines) + remaining_stdout
+        assert remote_login.returncode == 0, remote_login_stderr
+        assert "Successfully logged in to MCP server 'remote'." in remote_login_stdout
+        credentials = json.loads((codex_home / ".credentials.json").read_text(encoding="utf-8"))
+        assert credentials[remote_key]["access_token"] == "mock-access-token"
+        assert credentials[remote_key]["refresh_token"] == "mock-refresh-token"
+        assert credentials[remote_key]["client_id"] == "mock-client"
+        assert credentials[remote_key]["scopes"] == ["read", "write"]
+        assert discovery_server.registration_requests[0]["redirect_uris"][0].startswith(
+            "http://127.0.0.1:"
         )
-        assert "error: UnsupportedMcpOAuth" in remote_login.stderr
+        assert discovery_server.authorization_requests[0]["scope"] == ["read write"]
+        assert discovery_server.authorization_requests[0]["client_id"] == ["mock-client"]
+        assert discovery_server.token_requests[0]["code"] == ["mock-code"]
+        assert discovery_server.token_requests[0]["client_id"] == ["mock-client"]
 
         removed = subprocess.run(
             [str(binary.resolve()), "mcp", "logout", "remote"],
@@ -8621,7 +8713,7 @@ def main() -> None:
     run_exec_mcp_resource_tools_smoke(binary)
     run_exec_streamable_http_mcp_tool_smoke(binary)
     run_exec_streamable_http_mcp_get_stream_smoke(binary)
-    run_mcp_oauth_logout_smoke(binary)
+    run_mcp_oauth_login_logout_smoke(binary)
     run_exec_git_repo_check_smoke(binary)
     run_yolo_approval_conflict_smoke(binary)
     run_full_auto_compat_smoke(binary)
@@ -8653,7 +8745,7 @@ def main() -> None:
     print("cli-exec-mcp-resource-tools-e2e: ok")
     print("cli-exec-streamable-http-mcp-tool-e2e: ok")
     print("cli-exec-streamable-http-mcp-get-stream-e2e: ok")
-    print("cli-mcp-oauth-logout-e2e: ok")
+    print("cli-mcp-oauth-login-logout-e2e: ok")
     print("cli-exec-git-check-e2e: ok")
     print("cli-yolo-approval-conflict-e2e: ok")
     print("cli-full-auto-compat-e2e: ok")
