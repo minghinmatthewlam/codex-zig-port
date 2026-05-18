@@ -644,6 +644,8 @@ pub fn printHelp() void {
         \\Options:
         \\  --auto-approve          Run requested tools without prompting
         \\  --yolo                  Danger: approval=never and sandbox=danger-full-access
+        \\  --dangerously-bypass-approvals-and-sandbox
+        \\                          Alias for --yolo
         \\  -m, --model MODEL       Override the model
         \\  --oss                   Use a local open-source provider
         \\  --local-provider NAME   Local OSS provider: lmstudio or ollama

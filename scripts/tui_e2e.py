@@ -1256,6 +1256,10 @@ def run_help_command_smoke(
         raise AssertionError(f"expected remote flag help output:\n{root_result.stderr}")
     if "codex-zig --remote-control" not in root_result.stderr:
         raise AssertionError(f"expected remote-control flag help output:\n{root_result.stderr}")
+    if "codex-zig --dangerously-bypass-approvals-and-sandbox" not in root_result.stderr:
+        raise AssertionError(
+            f"expected dangerous bypass flag help output:\n{root_result.stderr}"
+        )
 
     exec_result = subprocess.run(
         [str(binary), "help", "exec"],
@@ -1267,6 +1271,10 @@ def run_help_command_smoke(
     )
     if "codex-zig exec [OPTIONS] [PROMPT]" not in exec_result.stderr:
         raise AssertionError(f"expected exec help output:\n{exec_result.stderr}")
+    if "--dangerously-bypass-approvals-and-sandbox" not in exec_result.stderr:
+        raise AssertionError(
+            f"expected exec dangerous bypass flag help output:\n{exec_result.stderr}"
+        )
 
     apply_result = subprocess.run(
         [str(binary), "help", "apply"],
