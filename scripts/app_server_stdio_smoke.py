@@ -9481,6 +9481,316 @@ def run_turn_command_approval_request_smoke(binary: Path) -> None:
         shutil.rmtree(codex_home, ignore_errors=True)
 
 
+def run_turn_request_permissions_smoke(binary: Path) -> None:
+    server, base_url = start_turn_responses_server()
+    codex_home = Path(tempfile.mkdtemp(prefix="codex-zig-app-server-permissions-home-", dir="/tmp"))
+    try:
+        codex_home.joinpath("config.toml").write_text(
+            (
+                f'openai_base_url = "{base_url}"\n'
+                'model = "gpt-turn-permissions"\n'
+                "\n[features]\n"
+                "request_permissions_tool = true\n"
+            ),
+            encoding="utf-8",
+        )
+        env = os.environ.copy()
+        env["CODEX_HOME"] = str(codex_home)
+        env["OPENAI_API_KEY"] = "test-api-key"
+        env.pop("CODEX_ACCESS_TOKEN", None)
+
+        proc = subprocess.Popen(
+            [str(binary), "app-server"],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            env=env,
+        )
+        try:
+            write_json_line(
+                proc,
+                {
+                    "jsonrpc": "2.0",
+                    "id": "initialize",
+                    "method": "initialize",
+                    "params": {
+                        "clientInfo": {"name": "app-server-smoke", "version": "0"},
+                        "capabilities": {
+                            "optOutNotificationMethods": ["configWarning", "warning"],
+                        },
+                    },
+                },
+            )
+            assert read_json_line(proc, 5)["id"] == "initialize"
+
+            with tempfile.TemporaryDirectory(prefix="codex-zig-turn-permissions-", dir="/tmp") as root:
+                root_path = Path(root)
+                cwd_path = root_path / "work"
+                shared_path = root_path / "shared"
+                cwd_path.mkdir()
+                shared_path.mkdir()
+                cwd = str(cwd_path.resolve())
+
+                write_json_line(
+                    proc,
+                    {
+                        "jsonrpc": "2.0",
+                        "id": "thread-start-for-permissions",
+                        "method": "thread/start",
+                        "params": {
+                            "cwd": cwd,
+                            "approvalPolicy": "never",
+                            "sandbox": "workspace-write",
+                        },
+                    },
+                )
+                thread_start = read_json_line(proc, 5)
+                assert thread_start["id"] == "thread-start-for-permissions"
+                thread = thread_start["result"]["thread"]
+                thread_id = thread["id"]
+                assert_thread_started_notification(read_json_line(proc, 5), thread)
+
+                request_permissions_call = {
+                    "type": "response.output_item.done",
+                    "item": {
+                        "type": "function_call",
+                        "call_id": "call-request-permissions",
+                        "name": "request_permissions",
+                        "arguments": json.dumps(
+                            {
+                                "reason": "Select a workspace root",
+                                "permissions": {
+                                    "file_system": {
+                                        "write": [".", "../shared"],
+                                    }
+                                },
+                            },
+                            separators=(",", ":"),
+                        ),
+                    },
+                }
+                granted_exec_call = {
+                    "type": "response.output_item.done",
+                    "item": {
+                        "type": "function_call",
+                        "call_id": "call-permission-granted-exec",
+                        "name": "exec_command",
+                        "arguments": json.dumps(
+                            {
+                                "cmd": "printf permission-granted > ../shared/permission-granted.txt; printf permission-granted",
+                                "workdir": cwd,
+                            },
+                            separators=(",", ":"),
+                        ),
+                    },
+                }
+                session_exec_call = {
+                    "type": "response.output_item.done",
+                    "item": {
+                        "type": "function_call",
+                        "call_id": "call-permission-session-exec",
+                        "name": "exec_command",
+                        "arguments": json.dumps(
+                            {
+                                "cmd": "printf permission-session > ../shared/permission-session.txt; printf permission-session",
+                                "workdir": cwd,
+                            },
+                            separators=(",", ":"),
+                        ),
+                    },
+                }
+                server.response_payloads.extend(
+                    [
+                        (
+                            f"data: {json.dumps(request_permissions_call, separators=(',', ':'))}\n\n"
+                            "data: [DONE]\n\n"
+                        ).encode(),
+                        (
+                            f"data: {json.dumps(granted_exec_call, separators=(',', ':'))}\n\n"
+                            "data: [DONE]\n\n"
+                        ).encode(),
+                        (
+                            b'data: {"type":"response.output_text.delta","delta":"permissions granted"}\n\n'
+                            b"data: [DONE]\n\n"
+                        ),
+                        (
+                            f"data: {json.dumps(session_exec_call, separators=(',', ':'))}\n\n"
+                            "data: [DONE]\n\n"
+                        ).encode(),
+                        (
+                            b'data: {"type":"response.output_text.delta","delta":"session grant reused"}\n\n'
+                            b"data: [DONE]\n\n"
+                        ),
+                    ]
+                )
+
+                write_json_line(
+                    proc,
+                    {
+                        "jsonrpc": "2.0",
+                        "id": "turn-start-request-permissions",
+                        "method": "turn/start",
+                        "params": {
+                            "threadId": thread_id,
+                            "input": [{"type": "text", "text": "request write access"}],
+                        },
+                    },
+                )
+                turn_start = read_json_line(proc, 5)
+                assert turn_start["id"] == "turn-start-request-permissions"
+                turn_id = turn_start["result"]["turn"]["id"]
+                permission_request = read_json_line(proc, 5)
+                assert permission_request["method"] == "item/permissions/requestApproval"
+                permission_params = permission_request["params"]
+                assert permission_params["threadId"] == thread_id
+                assert permission_params["turnId"] == turn_id
+                assert permission_params["itemId"] == "call-request-permissions"
+                assert permission_params["cwd"] == cwd
+                assert permission_params["reason"] == "Select a workspace root"
+                requested_file_system = permission_params["permissions"]["fileSystem"]
+                assert requested_file_system["write"] == [
+                    str(cwd_path.resolve()),
+                    str(shared_path.resolve()),
+                ]
+                assert requested_file_system["entries"] == [
+                    {
+                        "path": {"type": "path", "path": str(cwd_path.resolve())},
+                        "access": "write",
+                    },
+                    {
+                        "path": {"type": "path", "path": str(shared_path.resolve())},
+                        "access": "write",
+                    },
+                ]
+                assert any(
+                    tool.get("name") == "request_permissions"
+                    for tool in server.request_bodies[0]["tools"]
+                    if tool.get("type") == "function"
+                )
+
+                write_json_line(
+                    proc,
+                    {
+                        "jsonrpc": "2.0",
+                        "id": permission_request["id"],
+                        "result": {
+                            "permissions": {
+                                "network": None,
+                                "fileSystem": {
+                                    "read": None,
+                                    "write": [str(shared_path.resolve())],
+                                },
+                            },
+                            "scope": "session",
+                        },
+                    },
+                )
+                permission_resolved = read_json_line(proc, 5)
+                assert permission_resolved["method"] == "serverRequest/resolved"
+                assert permission_resolved["params"]["threadId"] == thread_id
+                assert permission_resolved["params"]["requestId"] == permission_request["id"]
+                first_turn_messages = read_json_lines_until(
+                    proc,
+                    5,
+                    lambda messages: any(
+                        message.get("method") == "turn/completed"
+                        and message["params"]["turn"]["id"] == turn_id
+                        for message in messages
+                    )
+                    and any(
+                        message.get("method") == "thread/status/changed"
+                        and message["params"]["status"] == {"type": "idle"}
+                        for message in messages
+                    ),
+                )
+                assert any(
+                    message.get("method") == "item/commandExecution/outputDelta"
+                    and message["params"]["itemId"] == "call-permission-granted-exec"
+                    and "permission-granted" in message["params"]["delta"]
+                    for message in first_turn_messages
+                )
+                assert (shared_path / "permission-granted.txt").read_text(
+                    encoding="utf-8"
+                ) == "permission-granted"
+                permission_followup = server.request_bodies[1]
+                assert any(
+                    item.get("type") == "function_call_output"
+                    and item.get("call_id") == "call-request-permissions"
+                    and '"scope":"session"' in item.get("output", "")
+                    for item in permission_followup["input"]
+                )
+                exec_followup = server.request_bodies[2]
+                assert any(
+                    item.get("type") == "function_call_output"
+                    and item.get("call_id") == "call-permission-granted-exec"
+                    and "permission-granted" in item.get("output", "")
+                    for item in exec_followup["input"]
+                )
+
+                write_json_line(
+                    proc,
+                    {
+                        "jsonrpc": "2.0",
+                        "id": "turn-start-session-permission-reuse",
+                        "method": "turn/start",
+                        "params": {
+                            "threadId": thread_id,
+                            "input": [{"type": "text", "text": "reuse session write access"}],
+                        },
+                    },
+                )
+                session_turn = read_json_line(proc, 5)
+                assert session_turn["id"] == "turn-start-session-permission-reuse"
+                session_turn_id = session_turn["result"]["turn"]["id"]
+                session_messages = read_json_lines_until(
+                    proc,
+                    5,
+                    lambda messages: any(
+                        message.get("method") == "item/permissions/requestApproval"
+                        for message in messages
+                    )
+                    or (
+                        any(
+                            message.get("method") == "turn/completed"
+                            and message["params"]["turn"]["id"] == session_turn_id
+                            for message in messages
+                        )
+                        and any(
+                            message.get("method") == "thread/status/changed"
+                            and message["params"]["status"] == {"type": "idle"}
+                            for message in messages
+                        )
+                    ),
+                )
+                assert not any(
+                    message.get("method") == "item/permissions/requestApproval"
+                    for message in session_messages
+                )
+                assert any(
+                    message.get("method") == "item/commandExecution/outputDelta"
+                    and message["params"]["itemId"] == "call-permission-session-exec"
+                    and "permission-session" in message["params"]["delta"]
+                    for message in session_messages
+                )
+                assert (shared_path / "permission-session.txt").read_text(
+                    encoding="utf-8"
+                ) == "permission-session"
+
+            proc.stdin.close()
+            proc.wait(timeout=5)
+            if proc.returncode != 0:
+                raise AssertionError(f"app-server exited {proc.returncode}: {proc.stderr.read()}")
+        finally:
+            if proc.poll() is None:
+                proc.kill()
+                proc.wait(timeout=5)
+    finally:
+        server.shutdown()
+        server.server_close()
+        shutil.rmtree(codex_home, ignore_errors=True)
+
+
 def run_turn_terminal_interaction_smoke(binary: Path) -> None:
     server, base_url = start_turn_responses_server()
     codex_home = Path(tempfile.mkdtemp(prefix="codex-zig-app-server-terminal-interaction-home-", dir="/tmp"))
@@ -39613,6 +39923,8 @@ def main() -> None:
     print("app-server-turn-tool-cwd-e2e: ok")
     run_turn_command_approval_request_smoke(binary)
     print("app-server-turn-command-approval-request-e2e: ok")
+    run_turn_request_permissions_smoke(binary)
+    print("app-server-turn-request-permissions-e2e: ok")
     run_turn_terminal_interaction_smoke(binary)
     print("app-server-turn-terminal-interaction-e2e: ok")
     run_app_server_experimental_api_gate_smoke(binary)
