@@ -166,6 +166,7 @@ pub const ApprovalRequest = struct {
     call_id: []const u8,
     kind: ToolKind,
     detail: []const u8,
+    cwd: ?[]const u8 = null,
 };
 
 pub const ApprovalDecision = enum {
@@ -189,7 +190,7 @@ pub fn runFunctionCall(allocator: std.mem.Allocator, call: api.FunctionCall, pol
     if (std.mem.eql(u8, call.name, "exec_command")) {
         var parsed = try std.json.parseFromSlice(ExecCommandArgs, allocator, call.arguments, .{ .ignore_unknown_fields = true });
         defer parsed.deinit();
-        if (try permissionResult(allocator, call.call_id, policy, .shell, parsed.value.cmd, isTrustedShellCommand(parsed.value.cmd))) |result| return result;
+        if (try permissionResult(allocator, call.call_id, policy, .shell, parsed.value.cmd, parsed.value.workdir orelse policy.workdir, isTrustedShellCommand(parsed.value.cmd))) |result| return result;
         return runExecCommand(allocator, call.call_id, parsed.value, policy);
     }
 
@@ -202,7 +203,7 @@ pub fn runFunctionCall(allocator: std.mem.Allocator, call: api.FunctionCall, pol
     if (std.mem.eql(u8, call.name, "shell_command")) {
         var parsed = try std.json.parseFromSlice(ShellCommandArgs, allocator, call.arguments, .{ .ignore_unknown_fields = true });
         defer parsed.deinit();
-        if (try permissionResult(allocator, call.call_id, policy, .shell, parsed.value.command, isTrustedShellCommand(parsed.value.command))) |result| return result;
+        if (try permissionResult(allocator, call.call_id, policy, .shell, parsed.value.command, policy.workdir, isTrustedShellCommand(parsed.value.command))) |result| return result;
         return runShellCommand(allocator, call.call_id, parsed.value.command, policy);
     }
 
@@ -212,14 +213,14 @@ pub fn runFunctionCall(allocator: std.mem.Allocator, call: api.FunctionCall, pol
         if (parsed.value.command.len == 0) return error.EmptyShellCommand;
         const command = try joinCommand(allocator, parsed.value.command);
         defer allocator.free(command);
-        if (try permissionResult(allocator, call.call_id, policy, .shell, command, isTrustedArgv(parsed.value.command))) |result| return result;
+        if (try permissionResult(allocator, call.call_id, policy, .shell, command, policy.workdir, isTrustedArgv(parsed.value.command))) |result| return result;
         return runArgv(allocator, call.call_id, parsed.value.command, policy);
     }
 
     if (std.mem.eql(u8, call.name, "apply_patch")) {
         var parsed = try std.json.parseFromSlice(ApplyPatchArgs, allocator, call.arguments, .{ .ignore_unknown_fields = true });
         defer parsed.deinit();
-        if (try permissionResult(allocator, call.call_id, policy, .apply_patch, parsed.value.patch, false)) |result| return result;
+        if (try permissionResult(allocator, call.call_id, policy, .apply_patch, parsed.value.patch, policy.workdir, false)) |result| return result;
         return runApplyPatch(allocator, call.call_id, parsed.value.patch, policy.workdir);
     }
 
@@ -236,11 +237,12 @@ fn permissionResult(
     policy: Policy,
     kind: ToolKind,
     detail: []const u8,
+    cwd: ?[]const u8,
     trusted_read_only: bool,
 ) !?ToolResult {
     return switch (decidePermission(policy, kind, trusted_read_only)) {
         .allow => null,
-        .prompt => try promptForPermission(allocator, call_id, policy, kind, detail),
+        .prompt => try promptForPermission(allocator, call_id, policy, kind, detail, cwd),
         .reject => try rejected(allocator, call_id),
         .block => try blockedBySandbox(allocator, call_id, policy.sandbox_mode),
     };
@@ -252,12 +254,14 @@ fn promptForPermission(
     policy: Policy,
     kind: ToolKind,
     detail: []const u8,
+    cwd: ?[]const u8,
 ) !?ToolResult {
     if (policy.approval_callback) |callback| {
         const request = ApprovalRequest{
             .call_id = call_id,
             .kind = kind,
             .detail = detail,
+            .cwd = cwd,
         };
         return switch (try callback.on_approval_requested(callback.ctx, request)) {
             .allow => null,
@@ -2447,10 +2451,12 @@ const TestApprovalContext = struct {
     expected_call_id: []const u8,
     expected_kind: ToolKind,
     expected_detail_substring: []const u8,
+    expected_cwd: ?[]const u8 = null,
     calls: usize = 0,
     matched_call_id: bool = false,
     matched_kind: bool = false,
     matched_detail: bool = false,
+    matched_cwd: bool = false,
 };
 
 fn recordTestApproval(ctx: *anyopaque, request: ApprovalRequest) anyerror!ApprovalDecision {
@@ -2459,6 +2465,10 @@ fn recordTestApproval(ctx: *anyopaque, request: ApprovalRequest) anyerror!Approv
     context.matched_call_id = std.mem.eql(u8, request.call_id, context.expected_call_id);
     context.matched_kind = request.kind == context.expected_kind;
     context.matched_detail = std.mem.indexOf(u8, request.detail, context.expected_detail_substring) != null;
+    context.matched_cwd = if (context.expected_cwd) |expected|
+        request.cwd != null and std.mem.eql(u8, request.cwd.?, expected)
+    else
+        request.cwd == null;
     return context.decision;
 }
 
@@ -2474,6 +2484,7 @@ test "approval callback can allow prompted shell command" {
         .expected_call_id = "call-approval-allow",
         .expected_kind = .shell,
         .expected_detail_substring = "callback-ok > allowed.txt",
+        .expected_cwd = cwd,
     };
     const call = api.FunctionCall{
         .call_id = "call-approval-allow",
@@ -2498,6 +2509,7 @@ test "approval callback can allow prompted shell command" {
     try std.testing.expect(context.matched_call_id);
     try std.testing.expect(context.matched_kind);
     try std.testing.expect(context.matched_detail);
+    try std.testing.expect(context.matched_cwd);
     const file = try dir.dir.readFileAlloc(std.Io.Threaded.global_single_threaded.io(), "allowed.txt", allocator, .limited(1024));
     defer allocator.free(file);
     try std.testing.expectEqualStrings("callback-ok", file);
@@ -2515,6 +2527,7 @@ test "approval callback can reject prompted shell command" {
         .expected_call_id = "call-approval-reject",
         .expected_kind = .shell,
         .expected_detail_substring = "rejected.txt",
+        .expected_cwd = cwd,
     };
     const call = api.FunctionCall{
         .call_id = "call-approval-reject",
@@ -2539,7 +2552,52 @@ test "approval callback can reject prompted shell command" {
     try std.testing.expect(context.matched_call_id);
     try std.testing.expect(context.matched_kind);
     try std.testing.expect(context.matched_detail);
+    try std.testing.expect(context.matched_cwd);
     try std.testing.expectError(error.FileNotFound, dir.dir.access(std.Io.Threaded.global_single_threaded.io(), "rejected.txt", .{}));
+}
+
+test "approval callback sees exec_command argument workdir" {
+    const allocator = std.testing.allocator;
+    var dir = std.testing.tmpDir(.{});
+    defer dir.cleanup();
+    const cwd = try dir.dir.realPathFileAlloc(std.Io.Threaded.global_single_threaded.io(), ".", allocator);
+    defer allocator.free(cwd);
+    const cwd_json = try std.json.Stringify.valueAlloc(allocator, cwd, .{});
+    defer allocator.free(cwd_json);
+    const arguments = try std.fmt.allocPrint(allocator, "{{\"cmd\":\"printf exec-cwd\",\"workdir\":{s}}}", .{cwd_json});
+    defer allocator.free(arguments);
+
+    var context = TestApprovalContext{
+        .decision = .allow,
+        .expected_call_id = "call-approval-exec-cwd",
+        .expected_kind = .shell,
+        .expected_detail_substring = "printf exec-cwd",
+        .expected_cwd = cwd,
+    };
+    const call = api.FunctionCall{
+        .call_id = "call-approval-exec-cwd",
+        .name = "exec_command",
+        .arguments = arguments,
+    };
+
+    const result = try runFunctionCall(allocator, call, .{
+        .approval_policy = .on_request,
+        .sandbox_mode = .danger_full_access,
+        .prompt_for_approval = true,
+        .approval_callback = .{
+            .ctx = &context,
+            .on_approval_requested = recordTestApproval,
+        },
+    });
+    defer result.deinit(allocator);
+
+    try std.testing.expectEqualStrings("exit 0", result.summary);
+    try std.testing.expectEqual(@as(usize, 1), context.calls);
+    try std.testing.expect(context.matched_call_id);
+    try std.testing.expect(context.matched_kind);
+    try std.testing.expect(context.matched_detail);
+    try std.testing.expect(context.matched_cwd);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "exec-cwd") != null);
 }
 
 test "read-only sandbox blocks apply_patch even with auto approval" {
