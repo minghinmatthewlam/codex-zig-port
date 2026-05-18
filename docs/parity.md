@@ -293,14 +293,16 @@ included in the top-level `ServerNotification` `"serverRequest/resolved"`,
 `"item/mcpToolCall/progress"`, `"mcpServer/startupStatus/updated"`, and
 `"remoteControl/status/changed"` union variants. Runtime emission is now
 covered for `serverRequest/resolved` when a tracked pending server request is
-answered by a standalone JSON-RPC client result or error envelope, for
-`mcpServer/startupStatus/updated` starting, ready, and failed notifications
+answered by a standalone JSON-RPC client result or error envelope, when an
+app-server `turn/start` command approval or file-change approval is answered,
+and when an in-flight approval is interrupted. Runtime emission is also covered
+for `mcpServer/startupStatus/updated` starting, ready, and failed notifications
 while app-server `turn/start` discovers configured MCP tools, and for
 `item/mcpToolCall/progress` calling and completed notifications around
 configured MCP tools invoked during app-server `turn/start`. Dispatching the
-server-request approval/user-input/elicitation surfaces that populate the
-pending request set remains planned, as does runtime emission for the remaining
-control/status notifications.
+remaining server-request user-input, elicitation, permission, dynamic tool-call,
+account refresh, and legacy approval surfaces remains planned, as does runtime
+emission for the remaining control/status notifications.
 
 Additional app-server server-request generation coverage: generated TypeScript
 artifacts now include the top-level `ServerRequest` union for
@@ -312,13 +314,19 @@ artifacts now include the top-level `ServerRequest` union for
 artifacts cover legacy patch and exec approval params, command/file/permission
 approval request params, dynamic tool-call params, request-user-input question
 and option params, network approval/policy helpers, and the MCP elicitation
-request envelope. JSON Schema generation now includes the legacy
+request envelope. App-server `turn/start` now dispatches v2 command execution
+and file-change approval requests through the JSON-RPC client transport before
+running shell commands or `apply_patch`, including approval resolution,
+interrupt cancellation, session-scoped command approvals, and notification
+opt-out handling. File-change approval requests include the requested patch text
+as `reason` and the patch root as `grantRoot` so clients can render the pending
+edit before accepting it. JSON Schema generation now includes the legacy
 `ApplyPatchApprovalParams` and `ExecCommandApprovalParams` helper files plus
 the v2 command/file/permission approval, dynamic tool-call, request-user-input,
 and MCP elicitation request param helper files. Stable-client filtering is
 covered for `item/commandExecution/requestApproval.additionalPermissions` when
-a command-approval server request is rendered. Runtime handling for these
-request surfaces remains planned.
+a command-approval server request is rendered. Runtime handling for the
+remaining generated request surfaces remains planned.
 
 Additional app-server dynamic/MCP helper generation coverage: generated
 TypeScript artifacts now include dynamic tool-call output, response, status,
