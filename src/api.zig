@@ -627,6 +627,8 @@ pub fn buildRequestBodyWithOptions(
     defer tools_list.deinit(allocator);
     const shell_tools_enabled = options.feature_overrides.get("shell_tool") orelse true;
     const request_permissions_tool_enabled = options.feature_overrides.get("request_permissions_tool") orelse false;
+    const request_user_input_tool_enabled = options.feature_overrides.get("request_user_input_tool") orelse false;
+    const default_mode_request_user_input_enabled = options.feature_overrides.get("default_mode_request_user_input") orelse false;
     if (options.include_tools) {
         const shell_tool = Tool{
             .type = "function",
@@ -684,6 +686,17 @@ pub fn buildRequestBodyWithOptions(
                 \\{"type":"object","properties":{"reason":{"type":"string","description":"Optional short explanation for why additional permissions are needed."},"permissions":{"type":"object","properties":{"network":{"type":"object","properties":{"enabled":{"type":"boolean"}},"additionalProperties":false},"file_system":{"type":"object","properties":{"read":{"type":"array","items":{"type":"string"}},"write":{"type":"array","items":{"type":"string"}}},"additionalProperties":false}},"required":["permissions"],"additionalProperties":false}},"required":["permissions"],"additionalProperties":false}
             ),
         };
+        const request_user_input_tool = Tool{
+            .type = "function",
+            .name = "request_user_input",
+            .description = if (default_mode_request_user_input_enabled)
+                "Request user input for one to three short questions and wait for the response. This tool is only available in Default or Plan mode."
+            else
+                "Request user input for one to three short questions and wait for the response. This tool is only available in Plan mode.",
+            .parameters = try appendParsedJsonValue(allocator, &parsed_parameter_values,
+                \\{"type":"object","properties":{"questions":{"type":"array","description":"Questions to show the user. Prefer 1 and do not exceed 3","items":{"type":"object","properties":{"id":{"type":"string","description":"Stable identifier for mapping answers (snake_case)."},"header":{"type":"string","description":"Short header label shown in the UI (12 or fewer chars)."},"question":{"type":"string","description":"Single-sentence prompt shown to the user."},"options":{"type":"array","description":"Provide 2-3 mutually exclusive choices. Put the recommended option first and suffix its label with \"(Recommended)\". Do not include an \"Other\" option in this list; the client will add a free-form \"Other\" option automatically.","items":{"type":"object","properties":{"label":{"type":"string","description":"User-facing label (1-5 words)."},"description":{"type":"string","description":"One short sentence explaining impact/tradeoff if selected."}},"required":["label","description"],"additionalProperties":false}}},"required":["id","header","question","options"],"additionalProperties":false}}},"required":["questions"],"additionalProperties":false}
+            ),
+        };
         const list_mcp_resources_tool = Tool{
             .type = "function",
             .name = "list_mcp_resources",
@@ -718,6 +731,9 @@ pub fn buildRequestBodyWithOptions(
         try tools_list.append(allocator, update_plan_tool);
         if (request_permissions_tool_enabled) {
             try tools_list.append(allocator, request_permissions_tool);
+        }
+        if (request_user_input_tool_enabled) {
+            try tools_list.append(allocator, request_user_input_tool);
         }
         try tools_list.append(allocator, list_mcp_resources_tool);
         try tools_list.append(allocator, list_mcp_resource_templates_tool);

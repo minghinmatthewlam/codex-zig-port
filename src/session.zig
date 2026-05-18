@@ -275,6 +275,7 @@ pub const TurnOptions = struct {
     prompt_for_approval: bool = true,
     approval_callback: ?tools.ApprovalCallback = null,
     request_permissions_callback: ?RequestPermissionsCallback = null,
+    request_user_input_callback: ?RequestUserInputCallback = null,
     json_events: bool = false,
     stream_text: bool = false,
     additional_writable_roots: []const []const u8 = &.{},
@@ -385,6 +386,24 @@ pub const RequestPermissionsResult = struct {
 pub const RequestPermissionsCallback = struct {
     ctx: *anyopaque,
     on_request_permissions_requested: *const fn (ctx: *anyopaque, request: RequestPermissionsRequest) anyerror!RequestPermissionsResult,
+};
+
+pub const RequestUserInputRequest = struct {
+    call_id: []const u8,
+    arguments_json: []const u8,
+};
+
+pub const RequestUserInputResult = struct {
+    output_json: []const u8,
+
+    pub fn deinit(self: *RequestUserInputResult, allocator: std.mem.Allocator) void {
+        allocator.free(self.output_json);
+    }
+};
+
+pub const RequestUserInputCallback = struct {
+    ctx: *anyopaque,
+    on_request_user_input_requested: *const fn (ctx: *anyopaque, request: RequestUserInputRequest) anyerror!RequestUserInputResult,
 };
 
 fn replaceOptionalString(allocator: std.mem.Allocator, slot: *?[]const u8, value: []const u8) !void {
@@ -646,6 +665,12 @@ pub fn runTurnWithOptions(
                     &turn_writable_roots,
                     &turn_network_enabled,
                 )
+            else if (std.mem.eql(u8, call.name, "request_user_input"))
+                try runRequestUserInputToolCall(
+                    allocator,
+                    call,
+                    options,
+                )
             else
                 try runToolCall(
                     allocator,
@@ -769,6 +794,83 @@ fn runToolCall(
     }
 
     return tool_result;
+}
+
+fn runRequestUserInputToolCall(
+    allocator: std.mem.Allocator,
+    call: api.FunctionCall,
+    options: TurnOptions,
+) !tools.ToolResult {
+    const default_mode_enabled = options.feature_overrides.get("default_mode_request_user_input") orelse false;
+    if (!options.plan_mode and !default_mode_enabled) {
+        return .{
+            .call_id = try allocator.dupe(u8, call.call_id),
+            .summary = try allocator.dupe(u8, "request user input unavailable"),
+            .output = try allocator.dupe(u8, "request_user_input is unavailable in Default mode"),
+        };
+    }
+
+    const callback = options.request_user_input_callback orelse return .{
+        .call_id = try allocator.dupe(u8, call.call_id),
+        .summary = try allocator.dupe(u8, "request user input unavailable"),
+        .output = try allocator.dupe(u8, "request_user_input is not available in this session"),
+    };
+
+    if (!requestUserInputArgumentsAreValid(allocator, call.arguments)) {
+        return .{
+            .call_id = try allocator.dupe(u8, call.call_id),
+            .summary = try allocator.dupe(u8, "request user input invalid"),
+            .output = try allocator.dupe(u8, "request_user_input requires non-empty options for every question"),
+        };
+    }
+
+    var response = callback.on_request_user_input_requested(callback.ctx, .{
+        .call_id = call.call_id,
+        .arguments_json = call.arguments,
+    }) catch |err| switch (err) {
+        error.OutOfMemory => return err,
+        else => return .{
+            .call_id = try allocator.dupe(u8, call.call_id),
+            .summary = try allocator.dupe(u8, "request user input failed"),
+            .output = try std.fmt.allocPrint(allocator, "request_user_input failed: {s}", .{@errorName(err)}),
+        },
+    };
+    defer response.deinit(allocator);
+
+    return .{
+        .call_id = try allocator.dupe(u8, call.call_id),
+        .summary = try allocator.dupe(u8, "request user input completed"),
+        .output = try allocator.dupe(u8, response.output_json),
+    };
+}
+
+fn requestUserInputArgumentsAreValid(allocator: std.mem.Allocator, arguments_json: []const u8) bool {
+    var parsed = std.json.parseFromSlice(std.json.Value, allocator, arguments_json, .{}) catch return false;
+    defer parsed.deinit();
+    if (parsed.value != .object) return false;
+    const questions = parsed.value.object.get("questions") orelse return false;
+    if (questions != .array) return false;
+    if (questions.array.items.len == 0) return false;
+    for (questions.array.items) |question| {
+        if (question != .object) return false;
+        if (!jsonStringFieldIsPresent(question.object, "id")) return false;
+        if (!jsonStringFieldIsPresent(question.object, "header")) return false;
+        if (!jsonStringFieldIsPresent(question.object, "question")) return false;
+        const options = question.object.get("options") orelse return false;
+        if (options != .array) return false;
+        if (options.array.items.len == 0) return false;
+        for (options.array.items) |option| {
+            if (option != .object) return false;
+            if (!jsonStringFieldIsPresent(option.object, "label")) return false;
+            if (!jsonStringFieldIsPresent(option.object, "description")) return false;
+        }
+    }
+    return true;
+}
+
+fn jsonStringFieldIsPresent(object: std.json.ObjectMap, name: []const u8) bool {
+    const value = object.get(name) orelse return false;
+    return value == .string;
 }
 
 fn runRequestPermissionsToolCall(
