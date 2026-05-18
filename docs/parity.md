@@ -484,13 +484,13 @@ generated TypeScript and JSON Schema artifacts for required `name`, optional
 nullable `scopes`, optional nullable `timeoutSecs`, and `authorizationUrl`
 responses plus `mcpServer/oauthLogin/completed` notifications. The runtime
 validates request shape, missing configured servers, and non-streamable HTTP
-servers with Rust-shaped errors. For stdio app-server connections, configured
+servers with Rust-shaped errors. App-server connections to configured
 streamable HTTP servers now start the browser OAuth flow, return the
 authorization URL, wait on the local PKCE callback in a background worker,
 persist file/keyring credentials through the shared CLI OAuth storage path, and
-emit `mcpServer/oauthLogin/completed`; `timeoutSecs` emits a failed completion
-notification when no callback arrives in time. Non-stdio app-server transport
-delivery remains planned.
+emit `mcpServer/oauthLogin/completed` over stdio, Unix-socket, and websocket
+app-server transports; `timeoutSecs` emits a failed completion notification
+when no callback arrives in time.
 
 Additional CLI MCP OAuth coverage: `codex-zig mcp login NAME` now validates
 configured servers, streamable HTTP transport requirements, and
@@ -511,8 +511,7 @@ OAuth-discovery not-logged-in servers. Runtime streamable HTTP MCP clients use
 file-backed OAuth credentials and, on macOS, Rust-shaped keychain-backed OAuth
 credentials from service `Codex MCP Credentials` when the credential store is
 `auto` or `keyring`. Retrying provider-rejected discovered scopes without
-scopes, cross-platform keyring backends, and full app-server OAuth login
-completion remain planned.
+scopes and cross-platform keyring backends remain planned.
 
 Additional model-facing MCP coverage: Responses turns now advertise configured
 stdio and streamable HTTP MCP tools plus the `list_mcp_resources`,
