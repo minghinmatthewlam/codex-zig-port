@@ -301,9 +301,9 @@ for `mcpServer/startupStatus/updated` starting, ready, and failed notifications
 while app-server `turn/start` discovers configured MCP tools, and for
 `item/mcpToolCall/progress` calling and completed notifications around
 configured MCP tools invoked during app-server `turn/start`. Dispatching the
-remaining server-request user-input, elicitation, dynamic tool-call, account
-refresh, and legacy approval surfaces remains planned, as does runtime emission
-for the remaining control/status notifications.
+remaining server-request elicitation, dynamic tool-call, account refresh, and
+legacy approval surfaces remains planned, as does runtime emission for the
+remaining control/status notifications.
 
 Additional app-server server-request generation coverage: generated TypeScript
 artifacts now include the top-level `ServerRequest` union for
@@ -326,8 +326,12 @@ edit before accepting it. App-server `turn/start` also exposes the model-facing
 filesystem permission requests as `item/permissions/requestApproval`, returns
 the client permission response to the model as function-call output, emits
 `serverRequest/resolved`, and applies session-scoped write-root grants to later
-commands in the same loaded thread. JSON Schema generation now includes the
-legacy
+commands in the same loaded thread. App-server `turn/start` now exposes
+`request_user_input` during plan-mode turns, renders model-requested questions
+as `item/tool/requestUserInput` with Rust-compatible `isOther` normalization,
+returns client answers to the model as function-call output, and emits
+`serverRequest/resolved` before completing the turn. JSON Schema generation now
+includes the legacy
 `ApplyPatchApprovalParams` and `ExecCommandApprovalParams` helper files plus
 the v2 command/file/permission approval, dynamic tool-call, request-user-input,
 and MCP elicitation request param helper files. Stable-client filtering is
