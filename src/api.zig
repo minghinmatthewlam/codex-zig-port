@@ -626,6 +626,7 @@ pub fn buildRequestBodyWithOptions(
     var tools_list = std.ArrayList(Tool).empty;
     defer tools_list.deinit(allocator);
     const shell_tools_enabled = options.feature_overrides.get("shell_tool") orelse true;
+    const request_permissions_tool_enabled = options.feature_overrides.get("request_permissions_tool") orelse false;
     if (options.include_tools) {
         const shell_tool = Tool{
             .type = "function",
@@ -675,6 +676,14 @@ pub fn buildRequestBodyWithOptions(
                 \\{"type":"object","properties":{"explanation":{"type":"string","description":"Optional short explanation for the plan update."},"plan":{"type":"array","description":"Ordered plan items.","items":{"type":"object","properties":{"step":{"type":"string","description":"A concise task step."},"status":{"type":"string","enum":["pending","in_progress","completed"],"description":"Current status for the step."}},"required":["step","status"],"additionalProperties":false}}},"required":["plan"],"additionalProperties":false}
             ),
         };
+        const request_permissions_tool = Tool{
+            .type = "function",
+            .name = "request_permissions",
+            .description = "Request additional filesystem or network permissions from the user and wait for the client to grant a subset of the requested permission profile. Granted permissions apply automatically to later shell-like commands in the current turn, or for the rest of the session if the client approves them at session scope.",
+            .parameters = try appendParsedJsonValue(allocator, &parsed_parameter_values,
+                \\{"type":"object","properties":{"reason":{"type":"string","description":"Optional short explanation for why additional permissions are needed."},"permissions":{"type":"object","properties":{"network":{"type":"object","properties":{"enabled":{"type":"boolean"}},"additionalProperties":false},"file_system":{"type":"object","properties":{"read":{"type":"array","items":{"type":"string"}},"write":{"type":"array","items":{"type":"string"}}},"additionalProperties":false}},"required":["permissions"],"additionalProperties":false}},"required":["permissions"],"additionalProperties":false}
+            ),
+        };
         const list_mcp_resources_tool = Tool{
             .type = "function",
             .name = "list_mcp_resources",
@@ -707,6 +716,9 @@ pub fn buildRequestBodyWithOptions(
         }
         try tools_list.append(allocator, apply_patch_tool);
         try tools_list.append(allocator, update_plan_tool);
+        if (request_permissions_tool_enabled) {
+            try tools_list.append(allocator, request_permissions_tool);
+        }
         try tools_list.append(allocator, list_mcp_resources_tool);
         try tools_list.append(allocator, list_mcp_resource_templates_tool);
         try tools_list.append(allocator, read_mcp_resource_tool);

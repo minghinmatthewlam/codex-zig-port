@@ -274,6 +274,7 @@ pub const TurnOptions = struct {
     auto_approve: bool = false,
     prompt_for_approval: bool = true,
     approval_callback: ?tools.ApprovalCallback = null,
+    request_permissions_callback: ?RequestPermissionsCallback = null,
     json_events: bool = false,
     stream_text: bool = false,
     additional_writable_roots: []const []const u8 = &.{},
@@ -354,6 +355,36 @@ pub const ModelVerificationCallback = struct {
 pub const McpToolCallProgressCallback = struct {
     ctx: *anyopaque,
     on_mcp_tool_call_progress: *const fn (ctx: *anyopaque, item_id: []const u8, message: []const u8) anyerror!void,
+};
+
+pub const PermissionGrantScope = enum {
+    turn,
+    session,
+};
+
+pub const RequestPermissionsRequest = struct {
+    call_id: []const u8,
+    reason: ?[]const u8,
+    arguments_json: []const u8,
+    cwd: []const u8,
+};
+
+pub const RequestPermissionsResult = struct {
+    output_json: []const u8,
+    scope: PermissionGrantScope,
+    writable_roots: []const []const u8 = &.{},
+    network_enabled: ?bool = null,
+
+    pub fn deinit(self: *RequestPermissionsResult, allocator: std.mem.Allocator) void {
+        allocator.free(self.output_json);
+        for (self.writable_roots) |root| allocator.free(root);
+        allocator.free(self.writable_roots);
+    }
+};
+
+pub const RequestPermissionsCallback = struct {
+    ctx: *anyopaque,
+    on_request_permissions_requested: *const fn (ctx: *anyopaque, request: RequestPermissionsRequest) anyerror!RequestPermissionsResult,
 };
 
 fn replaceOptionalString(allocator: std.mem.Allocator, slot: *?[]const u8, value: []const u8) !void {
@@ -503,6 +534,13 @@ pub fn runTurnWithOptions(
     errdefer final_text.deinit(allocator);
     var last_reported_server_model: ?[]const u8 = null;
     defer if (last_reported_server_model) |model| allocator.free(model);
+    var turn_writable_roots = std.ArrayList([]const u8).empty;
+    defer {
+        for (turn_writable_roots.items[options.additional_writable_roots.len..]) |root| allocator.free(root);
+        turn_writable_roots.deinit(allocator);
+    }
+    try turn_writable_roots.appendSlice(allocator, options.additional_writable_roots);
+    var turn_network_enabled = options.network_enabled;
 
     var mcp_catalog = try mcp_runtime.loadCatalogWithOptions(allocator, cfg.codex_home, .{
         .startup_status_callback = options.mcp_startup_status_callback,
@@ -600,7 +638,25 @@ pub fn runTurnWithOptions(
                 std.debug.print("\n[tool requested] {s} {s}\n", .{ call.name, call.arguments });
             }
 
-            var tool_result = try runToolCall(allocator, cfg, mcp_catalog, call, transcript, options);
+            var tool_result = if (std.mem.eql(u8, call.name, "request_permissions"))
+                try runRequestPermissionsToolCall(
+                    allocator,
+                    call,
+                    options,
+                    &turn_writable_roots,
+                    &turn_network_enabled,
+                )
+            else
+                try runToolCall(
+                    allocator,
+                    cfg,
+                    mcp_catalog,
+                    call,
+                    transcript,
+                    options,
+                    turn_writable_roots.items,
+                    turn_network_enabled,
+                );
             defer tool_result.deinit(allocator);
 
             if (options.json_events) {
@@ -624,6 +680,8 @@ fn runToolCall(
     call: api.FunctionCall,
     transcript: *Transcript,
     options: TurnOptions,
+    additional_writable_roots: []const []const u8,
+    network_enabled: bool,
 ) !tools.ToolResult {
     if (std.mem.eql(u8, call.name, "update_plan")) {
         var update = try plan_tool.applyUpdate(allocator, &transcript.plan, call.arguments);
@@ -681,9 +739,9 @@ fn runToolCall(
     var tool_result = try tools.runFunctionCall(allocator, call, .{
         .approval_policy = cfg.approval_policy,
         .sandbox_mode = cfg.sandbox_mode,
-        .additional_writable_roots = options.additional_writable_roots,
+        .additional_writable_roots = additional_writable_roots,
         .include_cwd_write_root = options.include_cwd_write_root,
-        .network_enabled = options.network_enabled,
+        .network_enabled = network_enabled,
         .auto_approve = options.auto_approve,
         .prompt_for_approval = options.prompt_for_approval,
         .approval_callback = options.approval_callback,
@@ -711,6 +769,90 @@ fn runToolCall(
     }
 
     return tool_result;
+}
+
+fn runRequestPermissionsToolCall(
+    allocator: std.mem.Allocator,
+    call: api.FunctionCall,
+    options: TurnOptions,
+    writable_roots: *std.ArrayList([]const u8),
+    network_enabled: *bool,
+) !tools.ToolResult {
+    const callback = options.request_permissions_callback orelse return .{
+        .call_id = try allocator.dupe(u8, call.call_id),
+        .summary = try allocator.dupe(u8, "request permissions unavailable"),
+        .output = try allocator.dupe(u8, "request_permissions is not available in this session"),
+    };
+
+    var parsed = std.json.parseFromSlice(std.json.Value, allocator, call.arguments, .{}) catch |err| switch (err) {
+        error.OutOfMemory => return err,
+        else => return .{
+            .call_id = try allocator.dupe(u8, call.call_id),
+            .summary = try allocator.dupe(u8, "request permissions invalid"),
+            .output = try allocator.dupe(u8, "request_permissions handler received unsupported payload"),
+        },
+    };
+    defer parsed.deinit();
+    if (parsed.value != .object) return .{
+        .call_id = try allocator.dupe(u8, call.call_id),
+        .summary = try allocator.dupe(u8, "request permissions invalid"),
+        .output = try allocator.dupe(u8, "request_permissions handler received unsupported payload"),
+    };
+    const permissions = parsed.value.object.get("permissions") orelse return .{
+        .call_id = try allocator.dupe(u8, call.call_id),
+        .summary = try allocator.dupe(u8, "request permissions invalid"),
+        .output = try allocator.dupe(u8, "request_permissions requires at least one permission"),
+    };
+    if (permissions != .object) return .{
+        .call_id = try allocator.dupe(u8, call.call_id),
+        .summary = try allocator.dupe(u8, "request permissions invalid"),
+        .output = try allocator.dupe(u8, "request_permissions requires at least one permission"),
+    };
+    const reason = if (parsed.value.object.get("reason")) |reason_value|
+        if (reason_value == .string) reason_value.string else null
+    else
+        null;
+    const cwd = options.workdir orelse ".";
+
+    var response = callback.on_request_permissions_requested(callback.ctx, .{
+        .call_id = call.call_id,
+        .reason = reason,
+        .arguments_json = call.arguments,
+        .cwd = cwd,
+    }) catch |err| switch (err) {
+        error.OutOfMemory => return err,
+        else => return .{
+            .call_id = try allocator.dupe(u8, call.call_id),
+            .summary = try allocator.dupe(u8, "request permissions failed"),
+            .output = try std.fmt.allocPrint(allocator, "request_permissions failed: {s}", .{@errorName(err)}),
+        },
+    };
+    defer response.deinit(allocator);
+
+    for (response.writable_roots) |root| {
+        if (stringListContains(writable_roots.items, root)) continue;
+        const copy = try allocator.dupe(u8, root);
+        writable_roots.append(allocator, copy) catch |err| {
+            allocator.free(copy);
+            return err;
+        };
+    }
+    if (response.network_enabled) |enabled| {
+        if (enabled) network_enabled.* = true;
+    }
+
+    return .{
+        .call_id = try allocator.dupe(u8, call.call_id),
+        .summary = try allocator.dupe(u8, "request permissions completed"),
+        .output = try allocator.dupe(u8, response.output_json),
+    };
+}
+
+fn stringListContains(values: []const []const u8, needle: []const u8) bool {
+    for (values) |value| {
+        if (std.mem.eql(u8, value, needle)) return true;
+    }
+    return false;
 }
 
 const TerminalInteractionArgs = struct {
