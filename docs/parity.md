@@ -292,12 +292,15 @@ TypeScript and JSON Schema artifacts now include
 included in the top-level `ServerNotification` `"serverRequest/resolved"`,
 `"item/mcpToolCall/progress"`, `"mcpServer/startupStatus/updated"`, and
 `"remoteControl/status/changed"` union variants. Runtime emission is now
-covered for `mcpServer/startupStatus/updated` starting, ready, and failed
-notifications while app-server `turn/start` discovers configured MCP tools.
-Runtime emission is also covered for `item/mcpToolCall/progress` calling and
-completed notifications around configured MCP tools invoked during app-server
-`turn/start`. Runtime emission for the remaining control/status notifications
-remains planned.
+covered for `serverRequest/resolved` when a tracked pending server request is
+answered by a standalone JSON-RPC client result or error envelope, for
+`mcpServer/startupStatus/updated` starting, ready, and failed notifications
+while app-server `turn/start` discovers configured MCP tools, and for
+`item/mcpToolCall/progress` calling and completed notifications around
+configured MCP tools invoked during app-server `turn/start`. Dispatching the
+server-request approval/user-input/elicitation surfaces that populate the
+pending request set remains planned, as does runtime emission for the remaining
+control/status notifications.
 
 Additional app-server server-request generation coverage: generated TypeScript
 artifacts now include the top-level `ServerRequest` union for

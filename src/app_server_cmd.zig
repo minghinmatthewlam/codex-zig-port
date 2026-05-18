@@ -108,6 +108,7 @@ const AppServerState = struct {
     opt_out_notification_methods: std.ArrayList([]const u8) = .empty,
     pre_response_notifications: std.ArrayList([]const u8) = .empty,
     pending_notifications: std.ArrayList([]const u8) = .empty,
+    pending_server_requests: std.ArrayList(PendingServerRequest) = .empty,
     active_command_execs: std.ArrayList(*ActiveCommandExecSession) = .empty,
 
     fn deinit(self: *AppServerState, allocator: std.mem.Allocator) void {
@@ -124,6 +125,8 @@ const AppServerState = struct {
         self.opt_out_notification_methods.deinit(allocator);
         self.pre_response_notifications.deinit(allocator);
         self.pending_notifications.deinit(allocator);
+        for (self.pending_server_requests.items) |*request| request.deinit(allocator);
+        self.pending_server_requests.deinit(allocator);
         self.active_command_execs.deinit(allocator);
     }
 };
@@ -159,7 +162,19 @@ fn clearAppServerConnectionState(allocator: std.mem.Allocator, state: *AppServer
     state.pre_response_notifications.clearRetainingCapacity();
     for (state.pending_notifications.items) |payload| allocator.free(payload);
     state.pending_notifications.clearRetainingCapacity();
+    for (state.pending_server_requests.items) |*request| request.deinit(allocator);
+    state.pending_server_requests.clearRetainingCapacity();
 }
+
+const PendingServerRequest = struct {
+    request_id_json: []const u8,
+    thread_id: []const u8,
+
+    fn deinit(self: *PendingServerRequest, allocator: std.mem.Allocator) void {
+        allocator.free(self.request_id_json);
+        allocator.free(self.thread_id);
+    }
+};
 
 const LoadedThread = struct {
     id: []const u8,
@@ -25327,6 +25342,7 @@ fn handleJsonRpcLine(allocator: std.mem.Allocator, state: *AppServerState, line:
     const id_value = object.get("id");
     const method_value = object.get("method") orelse {
         if (isJsonRpcResponseEnvelope(object)) {
+            try handleJsonRpcResponseEnvelope(allocator, state, object);
             return null;
         }
         return try renderJsonRpcError(allocator, id_value, -32600, "Invalid Request");
@@ -25453,6 +25469,78 @@ fn isJsonRpcErrorValue(value: std.json.Value) bool {
     if (code_value != .integer) return false;
     const message_value = object.get("message") orelse return false;
     return message_value == .string;
+}
+
+fn handleJsonRpcResponseEnvelope(
+    allocator: std.mem.Allocator,
+    state: *AppServerState,
+    object: std.json.ObjectMap,
+) !void {
+    const id_value = object.get("id") orelse return;
+    const request_id_json = try std.json.Stringify.valueAlloc(allocator, id_value, .{});
+    defer allocator.free(request_id_json);
+
+    var pending = takePendingServerRequest(state, request_id_json) orelse return;
+    defer pending.deinit(allocator);
+
+    const notification = try renderServerRequestResolvedNotification(allocator, pending.thread_id, pending.request_id_json);
+    try queuePendingServerNotification(allocator, state, "serverRequest/resolved", notification);
+}
+
+fn trackPendingServerRequest(
+    allocator: std.mem.Allocator,
+    state: *AppServerState,
+    request_json: []const u8,
+) !void {
+    var parsed = try std.json.parseFromSlice(std.json.Value, allocator, request_json, .{});
+    defer parsed.deinit();
+    if (parsed.value != .object) return error.InvalidServerRequest;
+    const object = parsed.value.object;
+    const id_value = object.get("id") orelse return error.InvalidServerRequest;
+    if (!isJsonRpcRequestIdValue(id_value)) return error.InvalidServerRequest;
+    const params_value = object.get("params") orelse return error.InvalidServerRequest;
+    if (params_value != .object) return error.InvalidServerRequest;
+    const thread_id_value = params_value.object.get("threadId") orelse return error.InvalidServerRequest;
+    if (thread_id_value != .string or thread_id_value.string.len == 0) return error.InvalidServerRequest;
+
+    const request_id_json = try std.json.Stringify.valueAlloc(allocator, id_value, .{});
+    errdefer allocator.free(request_id_json);
+    const thread_id = try allocator.dupe(u8, thread_id_value.string);
+    errdefer allocator.free(thread_id);
+
+    if (takePendingServerRequest(state, request_id_json)) |existing_request| {
+        var existing = existing_request;
+        existing.deinit(allocator);
+    }
+
+    try state.pending_server_requests.append(allocator, .{
+        .request_id_json = request_id_json,
+        .thread_id = thread_id,
+    });
+}
+
+fn takePendingServerRequest(state: *AppServerState, request_id_json: []const u8) ?PendingServerRequest {
+    for (state.pending_server_requests.items, 0..) |request, index| {
+        if (std.mem.eql(u8, request.request_id_json, request_id_json)) {
+            return state.pending_server_requests.orderedRemove(index);
+        }
+    }
+    return null;
+}
+
+fn renderServerRequestResolvedNotification(
+    allocator: std.mem.Allocator,
+    thread_id: []const u8,
+    request_id_json: []const u8,
+) ![]const u8 {
+    var notification = std.ArrayList(u8).empty;
+    errdefer notification.deinit(allocator);
+    try notification.appendSlice(allocator, "{\"jsonrpc\":\"2.0\",\"method\":\"serverRequest/resolved\",\"params\":{\"threadId\":");
+    try appendJsonString(allocator, &notification, thread_id);
+    try notification.appendSlice(allocator, ",\"requestId\":");
+    try notification.appendSlice(allocator, request_id_json);
+    try notification.appendSlice(allocator, "}}");
+    return notification.toOwnedSlice(allocator);
 }
 
 fn handleMemoryReset(allocator: std.mem.Allocator, id_value: std.json.Value) ![]const u8 {
@@ -52224,6 +52312,63 @@ test "app-server filters experimental server request fields by capability" {
     const other_stable = try renderServerRequestForConnection(allocator, false, other_request);
     defer allocator.free(other_stable);
     try std.testing.expect(std.mem.indexOf(u8, other_stable, "additionalPermissions") != null);
+}
+
+test "app-server resolves pending server requests from client responses" {
+    const allocator = std.testing.allocator;
+    var state = AppServerState{};
+    defer state.deinit(allocator);
+
+    try trackPendingServerRequest(
+        allocator,
+        &state,
+        "{\"jsonrpc\":\"2.0\",\"id\":\"approval-1\",\"method\":\"item/commandExecution/requestApproval\",\"params\":{\"threadId\":\"thread-1\",\"turnId\":\"turn-1\",\"itemId\":\"item-1\",\"command\":\"echo hi\",\"cwd\":\"/tmp\"}}",
+    );
+    try std.testing.expectEqual(@as(usize, 1), state.pending_server_requests.items.len);
+
+    const unmatched = try handleJsonRpcLine(
+        allocator,
+        &state,
+        "{\"jsonrpc\":\"2.0\",\"id\":\"approval-2\",\"result\":{\"decision\":\"accept\"}}",
+    );
+    try std.testing.expect(unmatched == null);
+    try std.testing.expectEqual(@as(usize, 1), state.pending_server_requests.items.len);
+    try std.testing.expectEqual(@as(usize, 0), state.pending_notifications.items.len);
+
+    const resolved = try handleJsonRpcLine(
+        allocator,
+        &state,
+        "{\"jsonrpc\":\"2.0\",\"id\":\"approval-1\",\"result\":{\"decision\":\"accept\"}}",
+    );
+    try std.testing.expect(resolved == null);
+    try std.testing.expectEqual(@as(usize, 0), state.pending_server_requests.items.len);
+    try std.testing.expectEqual(@as(usize, 1), state.pending_notifications.items.len);
+    try std.testing.expect(std.mem.indexOf(u8, state.pending_notifications.items[0], "\"method\":\"serverRequest/resolved\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, state.pending_notifications.items[0], "\"threadId\":\"thread-1\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, state.pending_notifications.items[0], "\"requestId\":\"approval-1\"") != null);
+}
+
+test "app-server resolves pending server requests from client errors" {
+    const allocator = std.testing.allocator;
+    var state = AppServerState{};
+    defer state.deinit(allocator);
+
+    try trackPendingServerRequest(
+        allocator,
+        &state,
+        "{\"jsonrpc\":\"2.0\",\"id\":42,\"method\":\"item/tool/requestUserInput\",\"params\":{\"threadId\":\"thread-2\",\"turnId\":\"turn-1\",\"itemId\":\"item-1\",\"question\":{\"label\":\"Continue?\"}}}",
+    );
+
+    const resolved = try handleJsonRpcLine(
+        allocator,
+        &state,
+        "{\"jsonrpc\":\"2.0\",\"id\":42,\"error\":{\"code\":-32000,\"message\":\"declined\"}}",
+    );
+    try std.testing.expect(resolved == null);
+    try std.testing.expectEqual(@as(usize, 0), state.pending_server_requests.items.len);
+    try std.testing.expectEqual(@as(usize, 1), state.pending_notifications.items.len);
+    try std.testing.expect(std.mem.indexOf(u8, state.pending_notifications.items[0], "\"threadId\":\"thread-2\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, state.pending_notifications.items[0], "\"requestId\":42") != null);
 }
 
 test "app-server transport labels preserve configured listen URL" {
