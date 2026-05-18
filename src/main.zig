@@ -127,7 +127,12 @@ fn mainInner(init: std.process.Init) !void {
     defer if (forced_initial_prompt) |prompt| allocator.free(prompt);
     var approval_policy_requested = false;
     var dangerous_bypass_requested = false;
-    while (args.next()) |arg| {
+    var pending_arg: ?[]const u8 = null;
+    while (true) {
+        const arg = if (pending_arg) |value| arg: {
+            pending_arg = null;
+            break :arg value;
+        } else args.next() orelse break;
         if (std.mem.eql(u8, arg, "--profile") or std.mem.eql(u8, arg, "-p")) {
             overrides.profile = args.next() orelse return error.MissingProfileOptionValue;
             continue;
@@ -177,11 +182,15 @@ fn mainInner(init: std.process.Init) !void {
             continue;
         }
         if (std.mem.eql(u8, arg, "--image") or std.mem.eql(u8, arg, "-i")) {
-            try input_images.appendFiles(allocator, &initial_image_files, args.next() orelse return error.MissingImageOptionValue);
+            const first_value = args.next() orelse return error.MissingImageOptionValue;
+            pending_arg = input_images.appendVariadicFilesFromIterator(allocator, &initial_image_files, &args, first_value) catch |err| switch (err) {
+                error.MissingImageValue => return error.MissingImageOptionValue,
+                else => return err,
+            };
             continue;
         }
         if (std.mem.startsWith(u8, arg, "--image=")) {
-            try input_images.appendFiles(allocator, &initial_image_files, arg["--image=".len..]);
+            pending_arg = try input_images.appendVariadicFilesFromIteratorAfterValue(allocator, &initial_image_files, &args, arg["--image=".len..]);
             continue;
         }
         if (std.mem.eql(u8, arg, "--enable")) {
@@ -997,100 +1006,106 @@ fn parseSessionCommandArgs(allocator: std.mem.Allocator, args: []const []const u
     var approval_policy_requested = false;
     var dangerous_bypass_requested = false;
     var index: usize = 0;
+    var end_options = false;
     while (index < args.len) : (index += 1) {
         const arg = args[index];
-        if (isHelpFlag(arg)) {
+        if (!end_options and std.mem.eql(u8, arg, "--")) {
+            end_options = true;
+            continue;
+        }
+        if (!end_options and isHelpFlag(arg)) {
             parsed.help = true;
             continue;
         }
-        if (std.mem.eql(u8, arg, "--last")) {
+        if (!end_options and std.mem.eql(u8, arg, "--last")) {
             parsed.last = true;
             continue;
         }
-        if (std.mem.eql(u8, arg, "--all")) {
+        if (!end_options and std.mem.eql(u8, arg, "--all")) {
             parsed.show_all = true;
             continue;
         }
-        if (std.mem.eql(u8, arg, "--include-non-interactive")) {
+        if (!end_options and std.mem.eql(u8, arg, "--include-non-interactive")) {
             if (!allow_include_non_interactive) return error.UnknownSessionCommandOption;
             parsed.include_non_interactive = true;
             continue;
         }
-        if (std.mem.eql(u8, arg, "--profile") or std.mem.eql(u8, arg, "-p")) {
+        if (!end_options and (std.mem.eql(u8, arg, "--profile") or std.mem.eql(u8, arg, "-p"))) {
             if (index + 1 >= args.len) return error.MissingProfileOptionValue;
             index += 1;
             parsed.profile = args[index];
             continue;
         }
-        if (std.mem.startsWith(u8, arg, "--profile=")) {
+        if (!end_options and std.mem.startsWith(u8, arg, "--profile=")) {
             parsed.profile = arg["--profile=".len..];
             continue;
         }
-        if (std.mem.eql(u8, arg, "--config") or std.mem.eql(u8, arg, "-c")) {
+        if (!end_options and (std.mem.eql(u8, arg, "--config") or std.mem.eql(u8, arg, "-c"))) {
             if (index + 1 >= args.len) return error.MissingConfigOptionValue;
             index += 1;
             try config.applyRawConfigOverride(&parsed.runtime_overrides, &parsed.profile, args[index]);
             continue;
         }
-        if (std.mem.startsWith(u8, arg, "--config=")) {
+        if (!end_options and std.mem.startsWith(u8, arg, "--config=")) {
             try config.applyRawConfigOverride(&parsed.runtime_overrides, &parsed.profile, arg["--config=".len..]);
             continue;
         }
-        if (std.mem.eql(u8, arg, "--model") or std.mem.eql(u8, arg, "-m")) {
+        if (!end_options and (std.mem.eql(u8, arg, "--model") or std.mem.eql(u8, arg, "-m"))) {
             if (index + 1 >= args.len) return error.MissingModelOptionValue;
             index += 1;
             parsed.runtime_overrides.model = args[index];
             continue;
         }
-        if (std.mem.startsWith(u8, arg, "--model=")) {
+        if (!end_options and std.mem.startsWith(u8, arg, "--model=")) {
             parsed.runtime_overrides.model = arg["--model=".len..];
             continue;
         }
-        if (std.mem.eql(u8, arg, "--image") or std.mem.eql(u8, arg, "-i")) {
-            if (index + 1 >= args.len) return error.MissingImageOptionValue;
-            index += 1;
-            try input_images.appendFiles(allocator, &parsed.image_files, args[index]);
+        if (!end_options and (std.mem.eql(u8, arg, "--image") or std.mem.eql(u8, arg, "-i"))) {
+            input_images.appendVariadicFiles(allocator, &parsed.image_files, args, &index) catch |err| switch (err) {
+                error.MissingImageValue => return error.MissingImageOptionValue,
+                else => return err,
+            };
             continue;
         }
-        if (std.mem.startsWith(u8, arg, "--image=")) {
-            try input_images.appendFiles(allocator, &parsed.image_files, arg["--image=".len..]);
+        if (!end_options and std.mem.startsWith(u8, arg, "--image=")) {
+            try input_images.appendVariadicFilesAfterValue(allocator, &parsed.image_files, args, &index, arg["--image=".len..]);
             continue;
         }
-        if (std.mem.eql(u8, arg, "--cd") or std.mem.eql(u8, arg, "-C")) {
+        if (!end_options and (std.mem.eql(u8, arg, "--cd") or std.mem.eql(u8, arg, "-C"))) {
             if (index + 1 >= args.len) return error.MissingCdOptionValue;
             index += 1;
             parsed.cwd = args[index];
             continue;
         }
-        if (std.mem.startsWith(u8, arg, "--cd=")) {
+        if (!end_options and std.mem.startsWith(u8, arg, "--cd=")) {
             parsed.cwd = arg["--cd=".len..];
             continue;
         }
-        if (std.mem.eql(u8, arg, "--add-dir")) {
+        if (!end_options and std.mem.eql(u8, arg, "--add-dir")) {
             if (index + 1 >= args.len) return error.MissingAddDirOptionValue;
             index += 1;
             try parsed.additional_writable_roots.append(allocator, args[index]);
             continue;
         }
-        if (std.mem.startsWith(u8, arg, "--add-dir=")) {
+        if (!end_options and std.mem.startsWith(u8, arg, "--add-dir=")) {
             try parsed.additional_writable_roots.append(allocator, arg["--add-dir=".len..]);
             continue;
         }
-        if (std.mem.eql(u8, arg, "--oss")) {
+        if (!end_options and std.mem.eql(u8, arg, "--oss")) {
             parsed.oss = true;
             continue;
         }
-        if (std.mem.eql(u8, arg, "--local-provider")) {
+        if (!end_options and std.mem.eql(u8, arg, "--local-provider")) {
             if (index + 1 >= args.len) return error.MissingLocalProviderOptionValue;
             index += 1;
             parsed.oss_provider = args[index];
             continue;
         }
-        if (std.mem.startsWith(u8, arg, "--local-provider=")) {
+        if (!end_options and std.mem.startsWith(u8, arg, "--local-provider=")) {
             parsed.oss_provider = arg["--local-provider=".len..];
             continue;
         }
-        if (std.mem.eql(u8, arg, "--ask-for-approval") or std.mem.eql(u8, arg, "-a")) {
+        if (!end_options and (std.mem.eql(u8, arg, "--ask-for-approval") or std.mem.eql(u8, arg, "-a"))) {
             if (dangerous_bypass_requested) return error.ConflictingCliOptions;
             if (index + 1 >= args.len) return error.MissingApprovalOptionValue;
             approval_policy_requested = true;
@@ -1098,13 +1113,13 @@ fn parseSessionCommandArgs(allocator: std.mem.Allocator, args: []const []const u
             parsed.runtime_overrides.approval_policy = try config.ApprovalPolicy.parse(args[index]);
             continue;
         }
-        if (std.mem.startsWith(u8, arg, "--ask-for-approval=")) {
+        if (!end_options and std.mem.startsWith(u8, arg, "--ask-for-approval=")) {
             if (dangerous_bypass_requested) return error.ConflictingCliOptions;
             approval_policy_requested = true;
             parsed.runtime_overrides.approval_policy = try config.ApprovalPolicy.parse(arg["--ask-for-approval=".len..]);
             continue;
         }
-        if (std.mem.eql(u8, arg, "--approval-policy")) {
+        if (!end_options and std.mem.eql(u8, arg, "--approval-policy")) {
             if (dangerous_bypass_requested) return error.ConflictingCliOptions;
             if (index + 1 >= args.len) return error.MissingApprovalOptionValue;
             approval_policy_requested = true;
@@ -1112,72 +1127,72 @@ fn parseSessionCommandArgs(allocator: std.mem.Allocator, args: []const []const u
             parsed.runtime_overrides.approval_policy = try config.ApprovalPolicy.parse(args[index]);
             continue;
         }
-        if (std.mem.startsWith(u8, arg, "--approval-policy=")) {
+        if (!end_options and std.mem.startsWith(u8, arg, "--approval-policy=")) {
             if (dangerous_bypass_requested) return error.ConflictingCliOptions;
             approval_policy_requested = true;
             parsed.runtime_overrides.approval_policy = try config.ApprovalPolicy.parse(arg["--approval-policy=".len..]);
             continue;
         }
-        if (std.mem.eql(u8, arg, "--sandbox") or std.mem.eql(u8, arg, "-s")) {
+        if (!end_options and (std.mem.eql(u8, arg, "--sandbox") or std.mem.eql(u8, arg, "-s"))) {
             if (index + 1 >= args.len) return error.MissingSandboxOptionValue;
             index += 1;
             parsed.runtime_overrides.sandbox_mode = try config.SandboxMode.parse(args[index]);
             continue;
         }
-        if (std.mem.startsWith(u8, arg, "--sandbox=")) {
+        if (!end_options and std.mem.startsWith(u8, arg, "--sandbox=")) {
             parsed.runtime_overrides.sandbox_mode = try config.SandboxMode.parse(arg["--sandbox=".len..]);
             continue;
         }
-        if (std.mem.eql(u8, arg, "--dangerously-bypass-approvals-and-sandbox") or std.mem.eql(u8, arg, "--yolo")) {
+        if (!end_options and (std.mem.eql(u8, arg, "--dangerously-bypass-approvals-and-sandbox") or std.mem.eql(u8, arg, "--yolo"))) {
             if (approval_policy_requested) return error.ConflictingCliOptions;
             dangerous_bypass_requested = true;
             parsed.runtime_overrides.approval_policy = .never;
             parsed.runtime_overrides.sandbox_mode = .danger_full_access;
             continue;
         }
-        if (std.mem.eql(u8, arg, "--search")) {
+        if (!end_options and std.mem.eql(u8, arg, "--search")) {
             parsed.runtime_overrides.web_search_mode = .live;
             continue;
         }
-        if (std.mem.eql(u8, arg, "--no-alt-screen")) {
+        if (!end_options and std.mem.eql(u8, arg, "--no-alt-screen")) {
             parsed.no_alt_screen = true;
             continue;
         }
-        if (std.mem.eql(u8, arg, "--remote")) {
+        if (!end_options and std.mem.eql(u8, arg, "--remote")) {
             if (index + 1 >= args.len) return error.MissingRemoteOptionValue;
             index += 1;
             parsed.remote = args[index];
             continue;
         }
-        if (std.mem.startsWith(u8, arg, "--remote=")) {
+        if (!end_options and std.mem.startsWith(u8, arg, "--remote=")) {
             parsed.remote = arg["--remote=".len..];
             continue;
         }
-        if (std.mem.eql(u8, arg, "--remote-auth-token-env")) {
+        if (!end_options and std.mem.eql(u8, arg, "--remote-auth-token-env")) {
             if (index + 1 >= args.len) return error.MissingRemoteAuthTokenEnvOptionValue;
             index += 1;
             parsed.remote_auth_token_env = args[index];
             continue;
         }
-        if (std.mem.startsWith(u8, arg, "--remote-auth-token-env=")) {
+        if (!end_options and std.mem.startsWith(u8, arg, "--remote-auth-token-env=")) {
             parsed.remote_auth_token_env = arg["--remote-auth-token-env=".len..];
             continue;
         }
-        if (std.mem.eql(u8, arg, "--remote-control")) {
+        if (!end_options and std.mem.eql(u8, arg, "--remote-control")) {
             parsed.local_remote_control = true;
             continue;
         }
-        if (std.mem.eql(u8, arg, "--remote-control-bind")) {
+        if (!end_options and std.mem.eql(u8, arg, "--remote-control-bind")) {
             if (index + 1 >= args.len) return error.MissingRemoteControlBindOptionValue;
             index += 1;
             parsed.remote_control_bind = args[index];
             continue;
         }
-        if (std.mem.startsWith(u8, arg, "--remote-control-bind=")) {
+        if (!end_options and std.mem.startsWith(u8, arg, "--remote-control-bind=")) {
             parsed.remote_control_bind = arg["--remote-control-bind=".len..];
             continue;
         }
-        if (std.mem.startsWith(u8, arg, "-")) {
+        if (!end_options and std.mem.startsWith(u8, arg, "-")) {
             return error.UnknownSessionCommandOption;
         }
         if (parsed.target != null) return error.UnexpectedSessionCommandArgument;
@@ -1691,7 +1706,8 @@ test "session command flags merge interactive overrides" {
         "--add-dir",
         "/tmp/extra",
         "-i",
-        "/tmp/a.png,/tmp/b.png",
+        "/tmp/a.png",
+        "/tmp/b.png",
         "-c",
         "review_model=gpt-session-review",
         "--no-alt-screen",
@@ -1710,9 +1726,22 @@ test "session command flags merge interactive overrides" {
     try std.testing.expectEqualStrings("work", parsed.profile.?);
     try std.testing.expectEqualStrings("/tmp/workspace", parsed.cwd.?);
     try std.testing.expectEqualStrings("/tmp/extra", parsed.additional_writable_roots.items[0]);
+    try std.testing.expectEqual(@as(usize, 2), parsed.image_files.items.len);
     try std.testing.expectEqualStrings("/tmp/a.png", parsed.image_files.items[0]);
     try std.testing.expectEqualStrings("/tmp/b.png", parsed.image_files.items[1]);
     try std.testing.expect(parsed.no_alt_screen);
+}
+
+test "session command variadic images stop at separator before target" {
+    const allocator = std.testing.allocator;
+    const argv = [_][]const u8{ "--image", "/tmp/a.png", "/tmp/b.png", "--", "last" };
+    var parsed = try parseSessionCommandArgs(allocator, argv[0..], true);
+    defer parsed.deinit(allocator);
+
+    try std.testing.expectEqualStrings("last", parsed.target.?);
+    try std.testing.expectEqual(@as(usize, 2), parsed.image_files.items.len);
+    try std.testing.expectEqualStrings("/tmp/a.png", parsed.image_files.items[0]);
+    try std.testing.expectEqualStrings("/tmp/b.png", parsed.image_files.items[1]);
 }
 
 test "session command flags parse target and reject extra target" {

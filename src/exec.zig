@@ -512,13 +512,14 @@ fn parseArgs(allocator: std.mem.Allocator, args: []const []const u8) !ExecArgs {
             continue;
         }
         if (!end_options and (std.mem.eql(u8, arg, "--image") or std.mem.eql(u8, arg, "-i"))) {
-            index += 1;
-            if (index >= args.len) return error.MissingExecOptionValue;
-            try input_images.appendFiles(allocator, &parsed.image_files, args[index]);
+            input_images.appendVariadicFiles(allocator, &parsed.image_files, args, &index) catch |err| switch (err) {
+                error.MissingImageValue => return error.MissingExecOptionValue,
+                else => return err,
+            };
             continue;
         }
         if (!end_options and std.mem.startsWith(u8, arg, "--image=")) {
-            try input_images.appendFiles(allocator, &parsed.image_files, arg["--image=".len..]);
+            try input_images.appendVariadicFilesAfterValue(allocator, &parsed.image_files, args, &index, arg["--image=".len..]);
             continue;
         }
         if (!end_options and (std.mem.eql(u8, arg, "--help") or std.mem.eql(u8, arg, "-h"))) {
@@ -747,7 +748,7 @@ pub fn printHelp() void {
         \\  -o, --output-last-message FILE
         \\                          Write final answer to FILE
         \\  --output-schema FILE    Send a JSON Schema for the final response
-        \\  -i, --image FILE        Attach local image file(s); comma-separated values accepted
+        \\  -i, --image FILE...     Attach local image file(s)
         \\  -V, --version           Print version
         \\
     , .{});
@@ -779,7 +780,7 @@ fn printResumeHelp() void {
         \\  --all                   Show all sessions
         \\  --enable FEATURE        Enable a feature for this invocation
         \\  --disable FEATURE       Disable a feature for this invocation
-        \\  -i, --image FILE        Attach local image file(s)
+        \\  -i, --image FILE...     Attach local image file(s)
         \\  -m, --model MODEL       Override the model
         \\  --dangerously-bypass-approvals-and-sandbox
         \\                          Danger: approval=never and sandbox=danger-full-access
@@ -847,7 +848,7 @@ pub fn printVersion() !void {
 
 test "exec args parse prompt and options" {
     const allocator = std.testing.allocator;
-    const argv = [_][]const u8{ "--auto-approve", "--skip-git-repo-check", "--full-auto", "--sandbox", "read-only", "--ignore-user-config", "--ignore-rules", "-c", "web_search=live", "-c", "review_model=gpt-review", "--color", "never", "--json", "--profile", "work", "--oss", "--local-provider", "ollama", "-m", "gpt-test", "--cd", "/tmp/demo", "--add-dir", "/tmp/extra", "--image", "one.png,two.jpg", "-o", "last.txt", "say", "hello" };
+    const argv = [_][]const u8{ "--auto-approve", "--skip-git-repo-check", "--full-auto", "--sandbox", "read-only", "--ignore-user-config", "--ignore-rules", "-c", "web_search=live", "-c", "review_model=gpt-review", "--color", "never", "--json", "--profile", "work", "--oss", "--local-provider", "ollama", "-m", "gpt-test", "--cd", "/tmp/demo", "--add-dir", "/tmp/extra", "--image", "one.png,two.jpg", "three.webp", "-o", "last.txt", "--", "say", "hello" };
     const parsed = try parseArgs(allocator, argv[0..]);
     defer parsed.deinit(allocator);
 
@@ -866,8 +867,10 @@ test "exec args parse prompt and options" {
     try std.testing.expectEqualStrings("gpt-test", parsed.model.?);
     try std.testing.expectEqualStrings("/tmp/demo", parsed.cwd.?);
     try std.testing.expectEqualStrings("/tmp/extra", parsed.additional_writable_roots.items[0]);
+    try std.testing.expectEqual(@as(usize, 3), parsed.image_files.items.len);
     try std.testing.expectEqualStrings("one.png", parsed.image_files.items[0]);
     try std.testing.expectEqualStrings("two.jpg", parsed.image_files.items[1]);
+    try std.testing.expectEqualStrings("three.webp", parsed.image_files.items[2]);
     try std.testing.expectEqualStrings("last.txt", parsed.last_message_file.?);
     try std.testing.expectEqualStrings("say hello", parsed.prompt.?);
 }

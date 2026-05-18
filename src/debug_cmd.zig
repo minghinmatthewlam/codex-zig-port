@@ -59,21 +59,34 @@ fn runPromptInput(allocator: std.mem.Allocator, args: *std.process.Args.Iterator
         image_files.deinit(allocator);
     }
 
-    while (args.next()) |arg| {
-        if (isHelpFlag(arg)) {
+    var pending_arg: ?[]const u8 = null;
+    var end_options = false;
+    while (true) {
+        const arg = if (pending_arg) |value| arg: {
+            pending_arg = null;
+            break :arg value;
+        } else args.next() orelse break;
+        if (!end_options and std.mem.eql(u8, arg, "--")) {
+            end_options = true;
+            continue;
+        }
+        if (!end_options and isHelpFlag(arg)) {
             printPromptInputHelp();
             return;
         }
-        if (std.mem.eql(u8, arg, "--image") or std.mem.eql(u8, arg, "-i")) {
+        if (!end_options and (std.mem.eql(u8, arg, "--image") or std.mem.eql(u8, arg, "-i"))) {
             const value = args.next() orelse return error.MissingDebugPromptInputOptionValue;
-            try input_images.appendFiles(allocator, &image_files, value);
+            pending_arg = input_images.appendVariadicFilesFromIterator(allocator, &image_files, args, value) catch |err| switch (err) {
+                error.MissingImageValue => return error.MissingDebugPromptInputOptionValue,
+                else => return err,
+            };
             continue;
         }
-        if (std.mem.startsWith(u8, arg, "--image=")) {
-            try input_images.appendFiles(allocator, &image_files, arg["--image=".len..]);
+        if (!end_options and std.mem.startsWith(u8, arg, "--image=")) {
+            pending_arg = try input_images.appendVariadicFilesFromIteratorAfterValue(allocator, &image_files, args, arg["--image=".len..]);
             continue;
         }
-        if (std.mem.startsWith(u8, arg, "-")) return error.UnknownDebugPromptInputOption;
+        if (!end_options and std.mem.startsWith(u8, arg, "-")) return error.UnknownDebugPromptInputOption;
         try prompt_parts.append(allocator, arg);
     }
 
@@ -553,7 +566,7 @@ fn printPromptInputHelp() void {
         \\Prints the Responses API input list that would be sent for PROMPT.
         \\
         \\Options:
-        \\  -i, --image FILE        Attach local image file(s); comma-separated values accepted
+        \\  -i, --image FILE...     Attach local image file(s)
         \\
     , .{});
 }
