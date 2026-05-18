@@ -250,6 +250,14 @@ app-server `turn/start` turns through the shared session loop, including
 opt-out handling. JSON Schema parity and runtime coverage for the full raw
 response-item graph remain planned.
 
+Additional app-server web-search item notification coverage: Responses
+`web_search_call` output items observed during app-server `turn/start` now emit
+Rust-shaped `webSearch` thread items through `item/started` and
+`item/completed`, including Rust-compatible query summaries for search,
+open-page, and find-in-page actions. The app-server smoke verifies the same turn
+also preserves the raw response item and advertises the native `web_search` tool
+when `web_search = "live"` is configured.
+
 Additional app-server model-notification generation coverage: generated
 TypeScript and JSON Schema artifacts now include `ModelRerouteReason`,
 `ModelReroutedNotification`, `ModelVerification`, and
