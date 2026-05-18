@@ -1504,7 +1504,10 @@ def assert_thread_status_notification(
 
 
 def assert_turn_start_rpc_completed(
-    proc: subprocess.Popen[str], thread_id: str, response_id: str
+    proc: subprocess.Popen[str],
+    thread_id: str,
+    response_id: str,
+    expect_agent_message: bool = True,
 ) -> dict:
     response = read_json_line(proc, 5)
     assert response["id"] == response_id
@@ -1524,6 +1527,26 @@ def assert_turn_start_rpc_completed(
         assert next_notification["jsonrpc"] == "2.0"
         assert next_notification["params"]["threadId"] == thread_id
         next_notification = read_json_line(proc, 5)
+    if (
+        next_notification["method"] == "item/started"
+        and next_notification["params"]["item"]["type"] == "plan"
+    ):
+        plan_started = next_notification
+        assert plan_started["params"]["threadId"] == thread_id
+        plan_item_id = plan_started["params"]["item"]["id"]
+        next_notification = read_json_line(proc, 5)
+        while next_notification["method"] == "item/plan/delta":
+            assert next_notification["params"]["threadId"] == thread_id
+            assert next_notification["params"]["itemId"] == plan_item_id
+            next_notification = read_json_line(proc, 5)
+        assert next_notification["method"] == "item/completed"
+        assert next_notification["params"]["threadId"] == thread_id
+        assert next_notification["params"]["item"]["type"] == "plan"
+        assert next_notification["params"]["item"]["id"] == plan_item_id
+        next_notification = read_json_line(proc, 5)
+    if not expect_agent_message and next_notification["method"] == "turn/completed":
+        assert_thread_status_notification(read_json_line(proc, 5), thread_id, "idle")
+        return response
     assert next_notification["method"] == "item/started"
     assert read_json_line(proc, 5)["method"] == "item/agentMessage/delta"
     assert read_json_line(proc, 5)["method"] == "item/completed"
@@ -6102,7 +6125,10 @@ def run_turn_start_rpc_smoke(binary: Path) -> None:
                     },
                 )
                 assert_turn_start_rpc_completed(
-                    proc, thread_id, "turn-start-plan-collaboration-mode"
+                    proc,
+                    thread_id,
+                    "turn-start-plan-collaboration-mode",
+                    expect_agent_message=False,
                 )
                 assert server.request_paths == ["/responses"] * 21
                 plan_collaboration_request = server.request_bodies[-1]
@@ -6126,10 +6152,14 @@ def run_turn_start_rpc_smoke(binary: Path) -> None:
                 assert read_after_plan_collaboration["id"] == (
                     "thread-read-after-plan-collaboration-mode"
                 )
-                plan_agent_text = read_after_plan_collaboration["result"]["thread"][
+                plan_turn_items = read_after_plan_collaboration["result"]["thread"][
                     "turns"
-                ][-1]["items"][0]["text"]
-                assert plan_agent_text == "proposed plan:\n1. Inspect\n2. Verify\n"
+                ][-1]["items"]
+                assert plan_turn_items[0]["type"] == "agentMessage"
+                assert plan_turn_items[0]["text"] == (
+                    "proposed plan:\n1. Inspect\n2. Verify\n"
+                )
+                assert "<proposed_plan>" not in plan_turn_items[0]["text"]
 
                 server.response_payloads.append(
                     b'data: {"type":"response.output_text.delta","delta":"<proposed_plan>\\n- Sticky plan\\n</proposed_plan>"}\n\n'
@@ -6153,7 +6183,10 @@ def run_turn_start_rpc_smoke(binary: Path) -> None:
                     },
                 )
                 assert_turn_start_rpc_completed(
-                    proc, thread_id, "turn-start-sticky-plan-collaboration-mode"
+                    proc,
+                    thread_id,
+                    "turn-start-sticky-plan-collaboration-mode",
+                    expect_agent_message=False,
                 )
                 assert server.request_paths == ["/responses"] * 22
                 sticky_plan_request = server.request_bodies[-1]
@@ -6174,10 +6207,14 @@ def run_turn_start_rpc_smoke(binary: Path) -> None:
                 assert read_after_sticky_plan["id"] == (
                     "thread-read-after-sticky-plan-collaboration-mode"
                 )
-                sticky_plan_text = read_after_sticky_plan["result"]["thread"]["turns"][
-                    -1
-                ]["items"][0]["text"]
-                assert sticky_plan_text == "proposed plan:\n- Sticky plan\n"
+                sticky_plan_turn_items = read_after_sticky_plan["result"]["thread"][
+                    "turns"
+                ][-1]["items"]
+                assert sticky_plan_turn_items[0]["type"] == "agentMessage"
+                assert sticky_plan_turn_items[0]["text"] == (
+                    "proposed plan:\n- Sticky plan\n"
+                )
+                assert "<proposed_plan>" not in sticky_plan_turn_items[0]["text"]
 
                 server.response_payloads.append(
                     b'data: {"type":"response.output_text.delta","delta":"<proposed_plan>\\n- Default mode keeps raw tags\\n</proposed_plan>"}\n\n'
@@ -6704,6 +6741,335 @@ def run_turn_plan_updated_notification_smoke(binary: Path) -> None:
                     and "[>] Emit notification" in item.get("output", "")
                     for item in second_request["input"]
                 )
+
+            proc.stdin.close()
+            proc.wait(timeout=5)
+            if proc.returncode != 0:
+                raise AssertionError(f"app-server exited {proc.returncode}: {proc.stderr.read()}")
+        finally:
+            if proc.poll() is None:
+                proc.kill()
+                proc.wait(timeout=5)
+    finally:
+        server.shutdown()
+        server.server_close()
+        shutil.rmtree(codex_home, ignore_errors=True)
+
+
+def run_turn_plan_item_notification_smoke(binary: Path) -> None:
+    server, base_url = start_turn_responses_server()
+    codex_home = Path(tempfile.mkdtemp(prefix="codex-zig-app-server-plan-item-", dir="/tmp"))
+    try:
+        codex_home.joinpath("config.toml").write_text(
+            f'openai_base_url = "{base_url}"\nmodel = "gpt-plan-item"\n',
+            encoding="utf-8",
+        )
+        env = os.environ.copy()
+        env["CODEX_HOME"] = str(codex_home)
+        env["OPENAI_API_KEY"] = "test-api-key"
+        env.pop("CODEX_ACCESS_TOKEN", None)
+
+        proc = subprocess.Popen(
+            [str(binary), "app-server"],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            env=env,
+        )
+        try:
+            write_json_line(
+                proc,
+                {
+                    "jsonrpc": "2.0",
+                    "id": "initialize",
+                    "method": "initialize",
+                    "params": {
+                        "clientInfo": {"name": "app-server-smoke", "version": "0"},
+                        "capabilities": EXPERIMENTAL_API_CAPABILITIES,
+                    },
+                },
+            )
+            assert read_json_line(proc, 5)["id"] == "initialize"
+
+            with tempfile.TemporaryDirectory(prefix="codex-zig-plan-item-cwd-", dir="/tmp") as cwd:
+                write_json_line(
+                    proc,
+                    {
+                        "jsonrpc": "2.0",
+                        "id": "thread-start-for-plan-item",
+                        "method": "thread/start",
+                        "params": {
+                            "cwd": cwd,
+                            "approvalPolicy": "never",
+                            "sandbox": "danger-full-access",
+                        },
+                    },
+                )
+                thread_start = read_json_line(proc, 5)
+                assert thread_start["id"] == "thread-start-for-plan-item"
+                thread = thread_start["result"]["thread"]
+                thread_id = thread["id"]
+                assert_thread_started_notification(read_json_line(proc, 5), thread)
+
+                plan_message = (
+                    "Preface\n"
+                    "<proposed_plan>\n"
+                    "# Final plan\n"
+                    "- first\n"
+                    "- second\n"
+                    "</proposed_plan>\n"
+                    "Postscript"
+                )
+                server.response_payloads.append(
+                    (
+                        f"data: {json.dumps({'type': 'response.output_text.delta', 'delta': plan_message}, separators=(',', ':'))}\n\n"
+                        "data: [DONE]\n\n"
+                    ).encode()
+                )
+
+                write_json_line(
+                    proc,
+                    {
+                        "jsonrpc": "2.0",
+                        "id": "turn-start-plan-item",
+                        "method": "turn/start",
+                        "params": {
+                            "threadId": thread_id,
+                            "collaborationMode": {
+                                "mode": "plan",
+                                "settings": {
+                                    "model": "gpt-plan-item",
+                                    "reasoning_effort": "medium",
+                                    "developer_instructions": None,
+                                },
+                            },
+                            "input": [{"type": "text", "text": "plan this"}],
+                        },
+                    },
+                )
+                turn_start = read_json_line(proc, 5)
+                assert turn_start["id"] == "turn-start-plan-item"
+                assert turn_start["result"]["turn"]["id"] == "turn-0"
+                assert_thread_status_notification(
+                    read_json_line(proc, 5), thread_id, "active"
+                )
+                started = read_json_line(proc, 5)
+                assert started["method"] == "turn/started"
+                assert read_json_line(proc, 5)["method"] == "item/started"
+                assert read_json_line(proc, 5)["method"] == "item/completed"
+
+                plan_started = read_json_line(proc, 5)
+                assert plan_started["method"] == "item/started"
+                assert plan_started["params"]["threadId"] == thread_id
+                assert plan_started["params"]["turnId"] == "turn-0"
+                assert plan_started["params"]["item"] == {
+                    "type": "plan",
+                    "id": "turn-0-plan",
+                    "text": "",
+                }
+
+                plan_delta = read_json_line(proc, 5)
+                assert plan_delta == {
+                    "jsonrpc": "2.0",
+                    "method": "item/plan/delta",
+                    "params": {
+                        "threadId": thread_id,
+                        "turnId": "turn-0",
+                        "itemId": "turn-0-plan",
+                        "delta": "# Final plan\n- first\n- second\n",
+                    },
+                }
+
+                plan_completed = read_json_line(proc, 5)
+                assert plan_completed["method"] == "item/completed"
+                assert plan_completed["params"]["threadId"] == thread_id
+                assert plan_completed["params"]["turnId"] == "turn-0"
+                assert plan_completed["params"]["item"] == {
+                    "type": "plan",
+                    "id": "turn-0-plan",
+                    "text": "# Final plan\n- first\n- second\n",
+                }
+
+                agent_item_started = read_json_line(proc, 5)
+                assert agent_item_started["method"] == "item/started"
+                agent_text = agent_item_started["params"]["item"]["text"]
+                assert agent_text == "Preface\nPostscript"
+                assert "<proposed_plan>" not in agent_text
+                assert "# Final plan" not in agent_text
+                agent_delta = read_json_line(proc, 5)
+                assert agent_delta["method"] == "item/agentMessage/delta"
+                assert agent_delta["params"]["delta"] == agent_text
+                assert read_json_line(proc, 5)["method"] == "item/completed"
+                completed = read_json_line(proc, 5)
+                assert completed["method"] == "turn/completed"
+                assert completed["params"]["turn"]["id"] == "turn-0"
+                assert_thread_status_notification(
+                    read_json_line(proc, 5), thread_id, "idle"
+                )
+
+                write_json_line(
+                    proc,
+                    {
+                        "jsonrpc": "2.0",
+                        "id": "thread-read-after-plan-item",
+                        "method": "thread/read",
+                        "params": {"threadId": thread_id, "includeTurns": True},
+                    },
+                )
+                thread_read = read_json_line(proc, 5)
+                assert thread_read["id"] == "thread-read-after-plan-item"
+                stored_agent_item = thread_read["result"]["thread"]["turns"][-1][
+                    "items"
+                ][0]
+                assert stored_agent_item["type"] == "agentMessage"
+                assert stored_agent_item["text"] == (
+                    "Preface\n"
+                    "Postscript\n\n"
+                    "proposed plan:\n"
+                    "# Final plan\n"
+                    "- first\n"
+                    "- second\n"
+                )
+                assert "<proposed_plan>" not in stored_agent_item["text"]
+
+                assert server.request_paths == ["/responses"]
+                request = server.request_bodies[0]
+                assert request["model"] == "gpt-plan-item"
+                assert "Work in plan mode" in request["instructions"]
+
+            proc.stdin.close()
+            proc.wait(timeout=5)
+            if proc.returncode != 0:
+                raise AssertionError(f"app-server exited {proc.returncode}: {proc.stderr.read()}")
+        finally:
+            if proc.poll() is None:
+                proc.kill()
+                proc.wait(timeout=5)
+    finally:
+        server.shutdown()
+        server.server_close()
+        shutil.rmtree(codex_home, ignore_errors=True)
+
+
+def run_turn_plan_item_opt_out_smoke(binary: Path) -> None:
+    server, base_url = start_turn_responses_server()
+    codex_home = Path(tempfile.mkdtemp(prefix="codex-zig-app-server-plan-item-optout-", dir="/tmp"))
+    try:
+        codex_home.joinpath("config.toml").write_text(
+            f'openai_base_url = "{base_url}"\nmodel = "gpt-plan-item-optout"\n',
+            encoding="utf-8",
+        )
+        env = os.environ.copy()
+        env["CODEX_HOME"] = str(codex_home)
+        env["OPENAI_API_KEY"] = "test-api-key"
+        env.pop("CODEX_ACCESS_TOKEN", None)
+
+        proc = subprocess.Popen(
+            [str(binary), "app-server"],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            env=env,
+        )
+        try:
+            write_json_line(
+                proc,
+                {
+                    "jsonrpc": "2.0",
+                    "id": "initialize",
+                    "method": "initialize",
+                    "params": {
+                        "clientInfo": {"name": "app-server-smoke", "version": "0"},
+                        "capabilities": {
+                            "experimentalApi": True,
+                            "optOutNotificationMethods": [
+                                "configWarning",
+                                "item/started",
+                                "item/completed",
+                            ],
+                        },
+                    },
+                },
+            )
+            assert read_json_line(proc, 5)["id"] == "initialize"
+
+            with tempfile.TemporaryDirectory(prefix="codex-zig-plan-item-optout-cwd-", dir="/tmp") as cwd:
+                write_json_line(
+                    proc,
+                    {
+                        "jsonrpc": "2.0",
+                        "id": "thread-start-for-plan-item-optout",
+                        "method": "thread/start",
+                        "params": {
+                            "cwd": cwd,
+                            "approvalPolicy": "never",
+                            "sandbox": "danger-full-access",
+                        },
+                    },
+                )
+                thread_start = read_json_line(proc, 5)
+                assert thread_start["id"] == "thread-start-for-plan-item-optout"
+                thread = thread_start["result"]["thread"]
+                thread_id = thread["id"]
+                assert_thread_started_notification(read_json_line(proc, 5), thread)
+
+                plan_message = "<proposed_plan>\n# Only plan\n</proposed_plan>\n"
+                server.response_payloads.append(
+                    (
+                        f"data: {json.dumps({'type': 'response.output_text.delta', 'delta': plan_message}, separators=(',', ':'))}\n\n"
+                        "data: [DONE]\n\n"
+                    ).encode()
+                )
+
+                write_json_line(
+                    proc,
+                    {
+                        "jsonrpc": "2.0",
+                        "id": "turn-start-plan-item-optout",
+                        "method": "turn/start",
+                        "params": {
+                            "threadId": thread_id,
+                            "collaborationMode": {
+                                "mode": "plan",
+                                "settings": {
+                                    "model": "gpt-plan-item-optout",
+                                    "reasoning_effort": "medium",
+                                    "developer_instructions": None,
+                                },
+                            },
+                            "input": [{"type": "text", "text": "plan this"}],
+                        },
+                    },
+                )
+                turn_start = read_json_line(proc, 5)
+                assert turn_start["id"] == "turn-start-plan-item-optout"
+                assert_thread_status_notification(
+                    read_json_line(proc, 5), thread_id, "active"
+                )
+                turn_started = read_json_line(proc, 5)
+                assert turn_started["method"] == "turn/started"
+
+                plan_delta = read_json_line(proc, 5)
+                assert plan_delta == {
+                    "jsonrpc": "2.0",
+                    "method": "item/plan/delta",
+                    "params": {
+                        "threadId": thread_id,
+                        "turnId": "turn-0",
+                        "itemId": "turn-0-plan",
+                        "delta": "# Only plan\n",
+                    },
+                }
+                completed = read_json_line(proc, 5)
+                assert completed["method"] == "turn/completed"
+                assert completed["params"]["turn"]["id"] == "turn-0"
+                assert_thread_status_notification(
+                    read_json_line(proc, 5), thread_id, "idle"
+                )
+
+                assert server.request_paths == ["/responses"]
 
             proc.stdin.close()
             proc.wait(timeout=5)
@@ -37652,6 +38018,10 @@ def main() -> None:
     print("app-server-turn-project-model-controls-rpc-e2e: ok")
     run_turn_plan_updated_notification_smoke(binary)
     print("app-server-turn-plan-updated-notification-e2e: ok")
+    run_turn_plan_item_notification_smoke(binary)
+    print("app-server-turn-plan-item-notification-e2e: ok")
+    run_turn_plan_item_opt_out_smoke(binary)
+    print("app-server-turn-plan-item-opt-out-e2e: ok")
     run_turn_reasoning_notification_smoke(binary)
     print("app-server-turn-reasoning-notification-e2e: ok")
     run_turn_model_notification_smoke(binary)

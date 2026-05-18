@@ -230,10 +230,12 @@ for the model-visible output from model-requested shell tools during app-server
 now covered for successful model-requested `write_stdin` calls during app-server
 `turn/start`. Runtime `item/fileChange/patchUpdated` emission is now covered
 for successful model-requested `apply_patch` edits during app-server
-`turn/start`. Runtime emission for the remaining current item-stream
-notifications remains planned; the legacy file-change output-delta notification
-is generation-covered for source compatibility even though the Rust app server
-no longer emits it.
+`turn/start`. Runtime `item/plan/delta` emission plus plan-item
+`item/started` / `item/completed` notifications are now covered for plan-mode
+`turn/start` responses that include `<proposed_plan>` blocks. Runtime emission
+for the remaining current item-stream notifications remains planned; the
+legacy file-change output-delta notification is generation-covered for source
+compatibility even though the Rust app server no longer emits it.
 
 Additional app-server raw response-item notification generation coverage:
 generated TypeScript and JSON Schema artifacts now include
