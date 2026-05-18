@@ -2801,7 +2801,11 @@ fn performExecServerHttpRequestStream(task: *HttpBodyStreamTask, io: std.Io) !vo
         var decompress: std.http.Decompress = undefined;
         const reader = response.readerDecompressing(&transfer_buffer, &decompress, decompress_buffer);
         var read_buffer: [8192]u8 = undefined;
+        var fixed_identity_body_remaining: ?u64 = if (content_encoding == .identity and response.head.transfer_encoding == .none) response.head.content_length else null;
         while (true) {
+            if (fixed_identity_body_remaining) |remaining| {
+                if (remaining == 0) break;
+            }
             var read_slices = [_][]u8{&read_buffer};
             const read_len = reader.readVec(&read_slices) catch |err| switch (err) {
                 error.EndOfStream => {
@@ -2819,6 +2823,10 @@ fn performExecServerHttpRequestStream(task: *HttpBodyStreamTask, io: std.Io) !vo
             };
             if (httpBodyStreamTaskCanceled(task)) return error.ExecServerHttpBodyStreamCanceled;
             if (read_len == 0) continue;
+            if (fixed_identity_body_remaining) |*remaining| {
+                const read_len_u64: u64 = @intCast(read_len);
+                remaining.* = if (read_len_u64 >= remaining.*) 0 else remaining.* - read_len_u64;
+            }
             const seq = claimHttpBodyStreamDeltaSeq(task);
             try writeExecServerHttpBodyDelta(allocator, task.output, params.request_id, seq, read_buffer[0..read_len], false, null);
         }
