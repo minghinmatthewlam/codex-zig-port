@@ -19919,6 +19919,7 @@ def run_mcp_server_status_rpc_smoke(binary: Path) -> None:
     plugin_root = codex_home / "plugins" / "cache" / "test" / "sample" / "local"
     discovery_server, discovery_url = start_mcp_oauth_discovery_server()
     streamable_server, streamable_url = start_streamable_mcp_server()
+    plugin_streamable_server, plugin_streamable_url = start_streamable_mcp_server()
     oauth_url = f"{discovery_url}/oauth"
     oauth_key = mcp_oauth_credential_key("oauth", oauth_url)
     try:
@@ -20045,6 +20046,11 @@ def run_mcp_server_status_rpc_smoke(binary: Path) -> None:
                     '      "type": "http",',
                     f'      "url": {json.dumps(discovery_url)},',
                     '      "bearerTokenEnvVar": "PLUGIN_MCP_TOKEN"',
+                    "    },",
+                    '    "zz_plugin_status_remote": {',
+                    '      "type": "http",',
+                    f'      "url": {json.dumps(plugin_streamable_url)},',
+                    '      "bearerTokenEnvVar": "PLUGIN_STATUS_MCP_TOKEN"',
                     "    }",
                     "  }",
                     "}",
@@ -20113,6 +20119,7 @@ def run_mcp_server_status_rpc_smoke(binary: Path) -> None:
         env = os.environ.copy()
         env["CODEX_HOME"] = str(codex_home)
         env["PLUGIN_MCP_TOKEN"] = "plugin-token"
+        env["PLUGIN_STATUS_MCP_TOKEN"] = "plugin-status-token"
         env["TEST_MCP_TOKEN"] = "test-token"
         env["APP_MCP_HEADER"] = "app-env"
         env.pop("MISSING_MCP_TOKEN", None)
@@ -20523,7 +20530,7 @@ def run_mcp_server_status_rpc_smoke(binary: Path) -> None:
             env,
         )
         assert second_page["id"] == "mcp-status-second-page"
-        assert second_page["result"]["nextCursor"] is None
+        assert second_page["result"]["nextCursor"] == "6"
         second_entries = second_page["result"]["data"]
         assert [entry["name"] for entry in second_entries] == [
             "oauth",
@@ -20598,6 +20605,71 @@ def run_mcp_server_status_rpc_smoke(binary: Path) -> None:
             assert headers["x-app-mcp-static"] == "app-static"
             assert headers["x-app-mcp-env"] == "app-env"
         assert "/.well-known/oauth-authorization-server/mcp" in discovery_server.request_paths
+
+        third_page = request_stdio_app_server(
+            binary,
+            {
+                "jsonrpc": "2.0",
+                "id": "mcp-status-third-page",
+                "method": "mcpServerStatus/list",
+                "params": {"cursor": "6", "limit": 2},
+            },
+            env,
+        )
+        assert third_page["id"] == "mcp-status-third-page"
+        assert third_page["result"]["nextCursor"] is None
+        third_entries = third_page["result"]["data"]
+        assert [entry["name"] for entry in third_entries] == ["zz_plugin_status_remote"]
+        plugin_status_entry = third_entries[0]
+        assert plugin_status_entry["authStatus"] == "bearerToken"
+        assert list(plugin_status_entry["tools"].keys()) == ["echo"]
+        assert plugin_status_entry["resources"] == [
+            {
+                "uri": "test://codex/resource",
+                "name": "remote-resource",
+                "description": "Remote resource from streamable HTTP.",
+                "mimeType": "text/plain",
+            },
+            {
+                "uri": "test://codex/second-http-resource",
+                "name": "second-http-resource",
+                "title": "Second HTTP resource",
+                "mimeType": "text/plain",
+            },
+        ]
+        assert plugin_status_entry["resourceTemplates"] == [
+            {
+                "uriTemplate": "test://codex/{slug}",
+                "name": "remote-template",
+                "description": "Remote resource template from streamable HTTP.",
+                "mimeType": "text/plain",
+            }
+        ]
+        assert [
+            request["method"] for request in plugin_streamable_server.request_bodies
+        ] == [
+            "initialize",
+            "notifications/initialized",
+            "tools/list",
+            "resources/list",
+            "resources/list",
+            "resources/templates/list",
+            "DELETE",
+        ]
+        assert "mcp-session-id" not in plugin_streamable_server.request_headers[0]
+        for index in (1, 2, 3, 4, 5, 6):
+            assert (
+                plugin_streamable_server.request_headers[index]["mcp-session-id"]
+                == "streamable-session-1"
+            )
+        assert (
+            plugin_streamable_server.request_bodies[4]["params"]["cursor"]
+            == "next-http-resources"
+        )
+        assert (
+            plugin_streamable_server.request_headers[-1]["authorization"]
+            == "Bearer plugin-status-token"
+        )
 
         zero_limit = request_stdio_app_server(
             binary,
@@ -20678,6 +20750,8 @@ def run_mcp_server_status_rpc_smoke(binary: Path) -> None:
         assert invalid_reload["id"] == "mcp-reload-invalid-params"
         assert invalid_reload["error"]["code"] == -32602
     finally:
+        plugin_streamable_server.shutdown()
+        plugin_streamable_server.server_close()
         streamable_server.shutdown()
         streamable_server.server_close()
         discovery_server.shutdown()
