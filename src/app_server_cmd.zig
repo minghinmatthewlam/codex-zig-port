@@ -51887,8 +51887,12 @@ fn handleAccountLoginStartChatGpt(
         return renderJsonRpcError(allocator, id_value, -32600, "ChatGPT login is disabled. Use API key login instead.");
     }
 
+    const issuer_override = try accountLoginIssuerOverride(allocator);
+    defer if (issuer_override) |value| allocator.free(value);
+    const issuer = issuer_override orelse login_mod.default_issuer;
     var login_handle = login_mod.startBrowserAuthReturnUrl(allocator, .{
         .codex_home = cfg.codex_home,
+        .issuer = issuer,
         .forced_chatgpt_workspace_id = cfg.forced_chatgpt_workspace_id,
         .codex_streamlined_login = codex_streamlined_login,
     }) catch |err| {
