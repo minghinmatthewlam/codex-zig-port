@@ -537,6 +537,7 @@ fn refreshChatGptAuth(allocator: std.mem.Allocator, codex_home: []const u8, auth
 
     const output = try std.json.Stringify.valueAlloc(allocator, .{
         .auth_mode = "chatgpt",
+        .OPENAI_API_KEY = auth_json.OPENAI_API_KEY,
         .tokens = .{
             .id_token = refreshed_id,
             .access_token = refreshed_access,

@@ -128,7 +128,7 @@ pub const DeviceAuthHandle = struct {
         defer tokens.deinit(allocator);
 
         try ensureWorkspaceAllowed(allocator, self.forced_chatgpt_workspace_id, tokens.id_token);
-        try saveChatGptTokens(allocator, self.codex_home, tokens);
+        try saveChatGptTokens(allocator, self.codex_home, tokens, null);
     }
 };
 
@@ -685,7 +685,13 @@ fn handleBrowserLoginRequest(
         },
         else => return err,
     };
-    try saveChatGptTokens(allocator, codex_home, tokens);
+    const api_key = obtainApiKey(allocator, issuer, client_id, tokens.id_token) catch |err| switch (err) {
+        error.OutOfMemory => return err,
+        else => null,
+    };
+    defer if (api_key) |value| allocator.free(value);
+
+    try saveChatGptTokens(allocator, codex_home, tokens, api_key);
     const success_url = try composeSuccessUrl(allocator, actual_port, issuer, tokens, codex_streamlined_login);
     defer allocator.free(success_url);
     callback_completed.* = true;
@@ -1165,7 +1171,7 @@ fn runDeviceAuth(
     defer tokens.deinit(allocator);
 
     try ensureWorkspaceAllowed(allocator, forced_chatgpt_workspace_id, tokens.id_token);
-    try saveChatGptTokens(allocator, codex_home, tokens);
+    try saveChatGptTokens(allocator, codex_home, tokens, null);
 }
 
 fn requestDeviceCode(allocator: std.mem.Allocator, issuer: []const u8, client_id: []const u8) !DeviceCode {
@@ -1307,6 +1313,30 @@ fn exchangeCodeForTokens(
     return .{ .id_token = id_token, .access_token = access_token, .refresh_token = refresh_token };
 }
 
+fn obtainApiKey(allocator: std.mem.Allocator, issuer: []const u8, client_id: []const u8, id_token: []const u8) ![]const u8 {
+    const base = std.mem.trimEnd(u8, issuer, "/");
+    const url = try std.fmt.allocPrint(allocator, "{s}/oauth/token", .{base});
+    defer allocator.free(url);
+
+    const body = try formEncode(allocator, &.{
+        .{ .name = "grant_type", .value = "urn:ietf:params:oauth:grant-type:token-exchange" },
+        .{ .name = "client_id", .value = client_id },
+        .{ .name = "requested_token", .value = "openai-api-key" },
+        .{ .name = "subject_token", .value = id_token },
+        .{ .name = "subject_token_type", .value = "urn:ietf:params:oauth:token-type:id_token" },
+    });
+    defer allocator.free(body);
+
+    var response = try post(allocator, url, "application/x-www-form-urlencoded", body);
+    defer response.deinit(allocator);
+    if (!statusIsSuccess(response.status)) return error.ApiKeyExchangeFailed;
+
+    var parsed = try std.json.parseFromSlice(std.json.Value, allocator, response.body, .{});
+    defer parsed.deinit();
+    const object = try jsonObject(parsed.value);
+    return allocator.dupe(u8, try jsonRequiredString(object, "access_token", null));
+}
+
 fn post(allocator: std.mem.Allocator, url: []const u8, content_type: []const u8, payload: []const u8) !HttpResponse {
     var headers = std.ArrayList(std.http.Header).empty;
     defer headers.deinit(allocator);
@@ -1334,7 +1364,7 @@ fn post(allocator: std.mem.Allocator, url: []const u8, content_type: []const u8,
     return .{ .status = result.status, .body = try response_body.toOwnedSlice() };
 }
 
-fn saveChatGptTokens(allocator: std.mem.Allocator, codex_home: []const u8, tokens: Tokens) !void {
+fn saveChatGptTokens(allocator: std.mem.Allocator, codex_home: []const u8, tokens: Tokens, api_key: ?[]const u8) !void {
     var claims = try auth.parseChatGptClaims(allocator, tokens.id_token);
     defer claims.deinit(allocator);
 
@@ -1343,6 +1373,7 @@ fn saveChatGptTokens(allocator: std.mem.Allocator, codex_home: []const u8, token
 
     const json = try std.json.Stringify.valueAlloc(allocator, .{
         .auth_mode = "chatgpt",
+        .OPENAI_API_KEY = api_key,
         .tokens = .{
             .id_token = tokens.id_token,
             .access_token = tokens.access_token,
@@ -1699,6 +1730,64 @@ test "api key login writes auth json load can reuse" {
     defer credentials.deinit(allocator);
     try std.testing.expectEqual(auth.Credentials.Mode.api_key, credentials.mode);
     try std.testing.expectEqualStrings("test-api-key", credentials.token);
+}
+
+test "chatgpt token save persists exchanged api key when provided" {
+    const allocator = std.testing.allocator;
+    var dir = std.testing.tmpDir(.{});
+    defer dir.cleanup();
+    const root = try dir.dir.realPathFileAlloc(std.Io.Threaded.global_single_threaded.io(), ".", allocator);
+    defer allocator.free(root);
+
+    const id_token = try testJwt(allocator,
+        \\{"https://api.openai.com/auth":{"chatgpt_account_id":"acct_123"}}
+    );
+    defer allocator.free(id_token);
+
+    try saveChatGptTokens(allocator, root, .{
+        .id_token = id_token,
+        .access_token = "chatgpt-access-token",
+        .refresh_token = "chatgpt-refresh-token",
+    }, "sk-token-exchange");
+
+    const path = try std.fs.path.join(allocator, &.{ root, "auth.json" });
+    defer allocator.free(path);
+    const bytes = try std.Io.Dir.cwd().readFileAlloc(std.Io.Threaded.global_single_threaded.io(), path, allocator, .limited(4096));
+    defer allocator.free(bytes);
+
+    try std.testing.expect(std.mem.indexOf(u8, bytes, "\"OPENAI_API_KEY\": \"sk-token-exchange\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, bytes, "\"auth_mode\": \"chatgpt\"") != null);
+
+    var credentials = try auth.loadNoRefresh(allocator, root);
+    defer credentials.deinit(allocator);
+    try std.testing.expectEqual(auth.Credentials.Mode.chatgpt, credentials.mode);
+    try std.testing.expectEqualStrings("chatgpt-access-token", credentials.token);
+}
+
+test "chatgpt token save omits exchanged api key when absent" {
+    const allocator = std.testing.allocator;
+    var dir = std.testing.tmpDir(.{});
+    defer dir.cleanup();
+    const root = try dir.dir.realPathFileAlloc(std.Io.Threaded.global_single_threaded.io(), ".", allocator);
+    defer allocator.free(root);
+
+    const id_token = try testJwt(allocator,
+        \\{"https://api.openai.com/auth":{"chatgpt_account_id":"acct_123"}}
+    );
+    defer allocator.free(id_token);
+
+    try saveChatGptTokens(allocator, root, .{
+        .id_token = id_token,
+        .access_token = "chatgpt-access-token",
+        .refresh_token = "chatgpt-refresh-token",
+    }, null);
+
+    const path = try std.fs.path.join(allocator, &.{ root, "auth.json" });
+    defer allocator.free(path);
+    const bytes = try std.Io.Dir.cwd().readFileAlloc(std.Io.Threaded.global_single_threaded.io(), path, allocator, .limited(4096));
+    defer allocator.free(bytes);
+
+    try std.testing.expect(std.mem.indexOf(u8, bytes, "OPENAI_API_KEY") == null);
 }
 
 test "access token login writes agent identity auth json load can reuse" {
