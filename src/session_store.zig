@@ -13,6 +13,11 @@ const StoredLine = struct {
     title: ?[]const u8 = null,
     memory_mode: ?[]const u8 = null,
     git: ?StoredGitInfo = null,
+    goal: ?StoredGoalInfo = null,
+    total_token_usage: ?StoredTokenUsage = null,
+    last_token_usage: ?StoredTokenUsage = null,
+    model_context_window: ?i64 = null,
+    token_usage_turn_index: ?usize = null,
     role: ?[]const u8 = null,
     content_type: ?[]const u8 = null,
     text: ?[]const u8 = null,
@@ -26,6 +31,24 @@ const StoredGitInfo = struct {
     commit_hash: ?[]const u8 = null,
     branch: ?[]const u8 = null,
     repository_url: ?[]const u8 = null,
+};
+
+const StoredGoalInfo = struct {
+    objective: []const u8,
+    status: []const u8,
+    token_budget: ?i64 = null,
+    tokens_used: i64,
+    time_used_seconds: i64,
+    created_at: i64,
+    updated_at: i64,
+};
+
+const StoredTokenUsage = struct {
+    input_tokens: i64,
+    cached_input_tokens: i64,
+    output_tokens: i64,
+    reasoning_output_tokens: i64,
+    total_tokens: i64,
 };
 
 pub const SessionSummary = struct {
@@ -157,12 +180,17 @@ pub fn saveTranscript(allocator: std.mem.Allocator, path: []const u8, transcript
     var output = std.ArrayList(u8).empty;
     defer output.deinit(allocator);
 
-    if (transcript.title != null or transcript.memory_mode != null or transcriptHasGitInfo(transcript)) {
+    if (transcript.title != null or transcript.memory_mode != null or transcriptHasGitInfo(transcript) or transcript.goal != null or transcript.token_usage != null) {
         try appendStoredLineJson(allocator, &output, .{
             .type = "metadata",
             .title = transcript.title,
             .memory_mode = transcript.memory_mode,
             .git = storedGitInfoFromTranscript(transcript),
+            .goal = storedGoalInfoFromTranscript(transcript),
+            .total_token_usage = storedTotalTokenUsageFromTranscript(transcript),
+            .last_token_usage = storedLastTokenUsageFromTranscript(transcript),
+            .model_context_window = storedModelContextWindowFromTranscript(transcript),
+            .token_usage_turn_index = transcript.token_usage_turn_index,
         });
     }
 
@@ -517,6 +545,8 @@ fn appendTranscriptLine(allocator: std.mem.Allocator, transcript: *session.Trans
         if (jsonStringField(object, "title")) |title| try transcript.setTitle(allocator, title);
         if (jsonStringField(object, "memory_mode")) |value| try transcript.setMemoryMode(allocator, value);
         try applyGitInfo(allocator, transcript, object.get("git"));
+        try applyGoalInfo(allocator, transcript, object.get("goal"));
+        applyStoredTokenUsageInfo(transcript, object);
         return;
     }
 
@@ -600,6 +630,7 @@ fn applyRolloutSessionMeta(
     if (jsonStringField(object, "cli_version")) |value| try transcript.setCliVersion(allocator, value);
     if (jsonStringField(object, "memory_mode")) |value| try transcript.setMemoryMode(allocator, value);
     try applyGitInfo(allocator, transcript, object.get("git"));
+    try applyGoalInfo(allocator, transcript, object.get("goal"));
 }
 
 fn transcriptHasGitInfo(transcript: *const session.Transcript) bool {
@@ -612,6 +643,44 @@ fn storedGitInfoFromTranscript(transcript: *const session.Transcript) ?StoredGit
         .commit_hash = transcript.git_sha,
         .branch = transcript.git_branch,
         .repository_url = transcript.git_origin_url,
+    };
+}
+
+fn storedGoalInfoFromTranscript(transcript: *const session.Transcript) ?StoredGoalInfo {
+    const goal = transcript.goal orelse return null;
+    return .{
+        .objective = goal.objective,
+        .status = goal.status,
+        .token_budget = goal.token_budget,
+        .tokens_used = goal.tokens_used,
+        .time_used_seconds = goal.time_used_seconds,
+        .created_at = goal.created_at,
+        .updated_at = goal.updated_at,
+    };
+}
+
+fn storedTotalTokenUsageFromTranscript(transcript: *const session.Transcript) ?StoredTokenUsage {
+    const token_usage = transcript.token_usage orelse return null;
+    return storedTokenUsage(token_usage.total);
+}
+
+fn storedLastTokenUsageFromTranscript(transcript: *const session.Transcript) ?StoredTokenUsage {
+    const token_usage = transcript.token_usage orelse return null;
+    return storedTokenUsage(token_usage.last);
+}
+
+fn storedModelContextWindowFromTranscript(transcript: *const session.Transcript) ?i64 {
+    const token_usage = transcript.token_usage orelse return null;
+    return token_usage.model_context_window;
+}
+
+fn storedTokenUsage(token_usage: session.TokenUsage) StoredTokenUsage {
+    return .{
+        .input_tokens = token_usage.input_tokens,
+        .cached_input_tokens = token_usage.cached_input_tokens,
+        .output_tokens = token_usage.output_tokens,
+        .reasoning_output_tokens = token_usage.reasoning_output_tokens,
+        .total_tokens = token_usage.total_tokens,
     };
 }
 
@@ -634,6 +703,59 @@ fn applyGitInfo(
         try transcript.setGitOriginUrl(allocator, field)
     else
         transcript.clearGitOriginUrl(allocator);
+}
+
+fn applyGoalInfo(
+    allocator: std.mem.Allocator,
+    transcript: *session.Transcript,
+    value: ?std.json.Value,
+) !void {
+    const goal_value = value orelse return;
+    if (goal_value == .null) {
+        transcript.clearGoal(allocator);
+        return;
+    }
+    if (goal_value != .object) return;
+    const object = goal_value.object;
+    const raw_objective = jsonStringField(object, "objective") orelse return;
+    const objective = std.mem.trim(u8, raw_objective, " \t\r\n");
+    if (objective.len == 0) return;
+    const raw_status = jsonStringField(object, "status") orelse return;
+    const status = normalizeGoalStatus(raw_status) orelse return;
+    const tokens_used = jsonIntFieldAny(object, "tokens_used", "tokensUsed") orelse return;
+    const time_used_seconds = jsonIntFieldAny(object, "time_used_seconds", "timeUsedSeconds") orelse return;
+    const created_at = jsonIntFieldAny(object, "created_at", "createdAt") orelse return;
+    const updated_at = jsonIntFieldAny(object, "updated_at", "updatedAt") orelse return;
+    if (tokens_used < 0 or time_used_seconds < 0 or created_at < 0 or updated_at < 0) return;
+    const token_budget = jsonOptionalIntFieldAny(object, "token_budget", "tokenBudget");
+    if (token_budget) |budget| {
+        if (budget <= 0) return;
+    }
+
+    try transcript.setGoal(allocator, .{
+        .objective = objective,
+        .status = status,
+        .token_budget = token_budget,
+        .tokens_used = tokens_used,
+        .time_used_seconds = time_used_seconds,
+        .created_at = created_at,
+        .updated_at = updated_at,
+    });
+}
+
+fn applyStoredTokenUsageInfo(transcript: *session.Transcript, object: std.json.ObjectMap) void {
+    const info = parseTokenUsageInfo(object) orelse return;
+    transcript.token_usage = info;
+    transcript.token_usage_turn_index = jsonOptionalUsizeField(object, "token_usage_turn_index") orelse lastMessageTurnIndex(transcript);
+}
+
+fn normalizeGoalStatus(status: []const u8) ?[]const u8 {
+    if (std.mem.eql(u8, status, "active")) return status;
+    if (std.mem.eql(u8, status, "paused")) return status;
+    if (std.mem.eql(u8, status, "budgetLimited")) return status;
+    if (std.mem.eql(u8, status, "budget_limited")) return "budgetLimited";
+    if (std.mem.eql(u8, status, "complete")) return status;
+    return null;
 }
 
 fn jsonStringField(object: std.json.ObjectMap, name: []const u8) ?[]const u8 {
@@ -702,6 +824,7 @@ fn rollbackTranscript(allocator: std.mem.Allocator, transcript: *session.Transcr
     transcript.history.shrinkRetainingCapacity(cut_index);
     transcript.token_usage = null;
     transcript.token_usage_turn_index = null;
+    transcript.clearGoal(allocator);
 }
 
 fn rollbackCutIndex(transcript: *const session.Transcript, num_turns: usize) ?usize {
@@ -754,9 +877,32 @@ fn jsonOptionalIntField(object: std.json.ObjectMap, name: []const u8) ?i64 {
     return jsonValueAsInt(value);
 }
 
+fn jsonOptionalUsizeField(object: std.json.ObjectMap, name: []const u8) ?usize {
+    const value = jsonOptionalIntField(object, name) orelse return null;
+    if (value < 0) return null;
+    return @intCast(value);
+}
+
 fn jsonIntField(object: std.json.ObjectMap, name: []const u8) ?i64 {
     const value = object.get(name) orelse return null;
     return jsonValueAsInt(value);
+}
+
+fn jsonOptionalIntFieldAny(object: std.json.ObjectMap, snake_name: []const u8, camel_name: []const u8) ?i64 {
+    if (object.get(snake_name)) |value| {
+        if (value == .null) return null;
+        return jsonValueAsInt(value);
+    }
+    if (object.get(camel_name)) |value| {
+        if (value == .null) return null;
+        return jsonValueAsInt(value);
+    }
+    return null;
+}
+
+fn jsonIntFieldAny(object: std.json.ObjectMap, snake_name: []const u8, camel_name: []const u8) ?i64 {
+    if (jsonIntField(object, snake_name)) |value| return value;
+    return jsonIntField(object, camel_name);
 }
 
 fn jsonValueAsInt(value: std.json.Value) ?i64 {
@@ -1285,6 +1431,15 @@ test "session store round trips transcript jsonl" {
     try transcript.setGitSha(allocator, "abc123");
     try transcript.setGitBranch(allocator, "main");
     try transcript.setGitOriginUrl(allocator, "https://example.test/repo.git");
+    try transcript.setGoal(allocator, .{
+        .objective = "persist goal state",
+        .status = "budgetLimited",
+        .token_budget = 321,
+        .tokens_used = 300,
+        .time_used_seconds = 42,
+        .created_at = 100,
+        .updated_at = 120,
+    });
     try transcript.appendUserMessage(allocator, "hello");
     try transcript.appendAssistantMessage(allocator, "hi");
     try transcript.appendHistoryItem(allocator, .{
@@ -1294,6 +1449,24 @@ test "session store round trips transcript jsonl" {
         .arguments = "{\"command\":\"pwd\"}",
     });
     try transcript.appendFunctionOutput(allocator, "call-1", "stdout:\n/tmp\n");
+    transcript.token_usage = .{
+        .total = .{
+            .input_tokens = 90,
+            .cached_input_tokens = 15,
+            .output_tokens = 45,
+            .reasoning_output_tokens = 12,
+            .total_tokens = 135,
+        },
+        .last = .{
+            .input_tokens = 30,
+            .cached_input_tokens = 5,
+            .output_tokens = 20,
+            .reasoning_output_tokens = 7,
+            .total_tokens = 50,
+        },
+        .model_context_window = 200000,
+    };
+    transcript.token_usage_turn_index = 1;
 
     const path = try createSessionPathForId(allocator, root, "test-a");
     defer allocator.free(path);
@@ -1307,6 +1480,21 @@ test "session store round trips transcript jsonl" {
     try std.testing.expectEqualStrings("abc123", loaded.git_sha.?);
     try std.testing.expectEqualStrings("main", loaded.git_branch.?);
     try std.testing.expectEqualStrings("https://example.test/repo.git", loaded.git_origin_url.?);
+    try std.testing.expectEqualStrings("persist goal state", loaded.goal.?.objective);
+    try std.testing.expectEqualStrings("budgetLimited", loaded.goal.?.status);
+    try std.testing.expectEqual(@as(?i64, 321), loaded.goal.?.token_budget);
+    try std.testing.expectEqual(@as(i64, 300), loaded.goal.?.tokens_used);
+    try std.testing.expectEqual(@as(i64, 42), loaded.goal.?.time_used_seconds);
+    try std.testing.expectEqual(@as(i64, 100), loaded.goal.?.created_at);
+    try std.testing.expectEqual(@as(i64, 120), loaded.goal.?.updated_at);
+    try std.testing.expectEqual(@as(usize, 1), loaded.token_usage_turn_index.?);
+    try std.testing.expectEqual(@as(i64, 135), loaded.token_usage.?.total.total_tokens);
+    try std.testing.expectEqual(@as(i64, 90), loaded.token_usage.?.total.input_tokens);
+    try std.testing.expectEqual(@as(i64, 15), loaded.token_usage.?.total.cached_input_tokens);
+    try std.testing.expectEqual(@as(i64, 45), loaded.token_usage.?.total.output_tokens);
+    try std.testing.expectEqual(@as(i64, 12), loaded.token_usage.?.total.reasoning_output_tokens);
+    try std.testing.expectEqual(@as(i64, 50), loaded.token_usage.?.last.total_tokens);
+    try std.testing.expectEqual(@as(i64, 200000), loaded.token_usage.?.model_context_window.?);
     try std.testing.expectEqual(@as(usize, 4), loaded.history.items.len);
     try std.testing.expectEqual(api.HistoryItem.Kind.message, loaded.history.items[0].kind);
     try std.testing.expectEqualStrings("user", loaded.history.items[0].role.?);
@@ -1314,6 +1502,43 @@ test "session store round trips transcript jsonl" {
     try std.testing.expectEqual(api.HistoryItem.Kind.function_call, loaded.history.items[2].kind);
     try std.testing.expectEqualStrings("shell_command", loaded.history.items[2].name.?);
     try std.testing.expectEqualStrings("stdout:\n/tmp\n", loaded.history.items[3].output.?);
+}
+
+test "session store rollback clears transcript metadata goal" {
+    const allocator = std.testing.allocator;
+    var dir = std.testing.tmpDir(.{});
+    defer dir.cleanup();
+
+    const root = try dir.dir.realPathFileAlloc(std.Io.Threaded.global_single_threaded.io(), ".", allocator);
+    defer allocator.free(root);
+
+    var transcript = session.Transcript{};
+    defer transcript.deinit(allocator);
+    try transcript.setGoal(allocator, .{
+        .objective = "rolled back goal",
+        .status = "complete",
+        .token_budget = 100,
+        .tokens_used = 40,
+        .time_used_seconds = 10,
+        .created_at = 100,
+        .updated_at = 120,
+    });
+    try transcript.appendUserMessage(allocator, "first");
+    try transcript.appendAssistantMessage(allocator, "first answer");
+    try transcript.appendUserMessage(allocator, "second");
+    try transcript.appendAssistantMessage(allocator, "second answer");
+
+    const path = try createSessionPathForId(allocator, root, "rollback-goal");
+    defer allocator.free(path);
+    try saveTranscript(allocator, path, &transcript);
+    try appendThreadRollback(allocator, path, 1);
+
+    var loaded = try loadTranscript(allocator, path);
+    defer loaded.deinit(allocator);
+    try std.testing.expect(loaded.goal == null);
+    try std.testing.expectEqual(@as(usize, 2), loaded.history.items.len);
+    try std.testing.expectEqualStrings("first", loaded.history.items[0].text.?);
+    try std.testing.expectEqualStrings("first answer", loaded.history.items[1].text.?);
 }
 
 test "list sessions includes persisted title metadata" {

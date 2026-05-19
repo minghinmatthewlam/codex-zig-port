@@ -9,6 +9,38 @@ const plan_tool = @import("plan_tool.zig");
 const proposed_plan = @import("proposed_plan.zig");
 const tools = @import("tools.zig");
 
+pub const ThreadGoal = struct {
+    objective: []const u8,
+    status: []const u8,
+    token_budget: ?i64,
+    tokens_used: i64,
+    time_used_seconds: i64,
+    created_at: i64,
+    updated_at: i64,
+
+    pub fn deinit(self: *ThreadGoal, allocator: std.mem.Allocator) void {
+        allocator.free(self.objective);
+        allocator.free(self.status);
+    }
+
+    pub fn clone(self: ThreadGoal, allocator: std.mem.Allocator) !ThreadGoal {
+        const objective = try allocator.dupe(u8, self.objective);
+        errdefer allocator.free(objective);
+        const status = try allocator.dupe(u8, self.status);
+        errdefer allocator.free(status);
+
+        return .{
+            .objective = objective,
+            .status = status,
+            .token_budget = self.token_budget,
+            .tokens_used = self.tokens_used,
+            .time_used_seconds = self.time_used_seconds,
+            .created_at = self.created_at,
+            .updated_at = self.updated_at,
+        };
+    }
+};
+
 pub const Transcript = struct {
     id: ?[]const u8 = null,
     forked_from_id: ?[]const u8 = null,
@@ -23,6 +55,7 @@ pub const Transcript = struct {
     git_origin_url: ?[]const u8 = null,
     token_usage: ?TokenUsageInfo = null,
     token_usage_turn_index: ?usize = null,
+    goal: ?ThreadGoal = null,
     title: ?[]const u8 = null,
     history: std.ArrayList(api.HistoryItem) = .empty,
     plan: plan_tool.State = .{},
@@ -30,6 +63,7 @@ pub const Transcript = struct {
     pub fn deinit(self: *Transcript, allocator: std.mem.Allocator) void {
         self.clearMetadata(allocator);
         self.clearTitle(allocator);
+        self.clearGoal(allocator);
         self.plan.deinit(allocator);
         for (self.history.items) |item| item.deinit(allocator);
         self.history.deinit(allocator);
@@ -122,6 +156,20 @@ pub const Transcript = struct {
         return self.title orelse "<none>";
     }
 
+    pub fn setGoal(self: *Transcript, allocator: std.mem.Allocator, goal: ThreadGoal) !void {
+        var copy = try goal.clone(allocator);
+        errdefer copy.deinit(allocator);
+        self.clearGoal(allocator);
+        self.goal = copy;
+    }
+
+    pub fn clearGoal(self: *Transcript, allocator: std.mem.Allocator) void {
+        if (self.goal) |*goal| {
+            goal.deinit(allocator);
+            self.goal = null;
+        }
+    }
+
     pub fn clone(self: *const Transcript, allocator: std.mem.Allocator) !Transcript {
         var copy = Transcript{};
         errdefer copy.deinit(allocator);
@@ -139,6 +187,7 @@ pub const Transcript = struct {
         if (self.git_origin_url) |value| try copy.setGitOriginUrl(allocator, value);
         copy.token_usage = self.token_usage;
         copy.token_usage_turn_index = self.token_usage_turn_index;
+        if (self.goal) |goal| try copy.setGoal(allocator, goal);
         if (self.title) |title| try copy.setTitle(allocator, title);
         copy.plan = try self.plan.clone(allocator);
         for (self.history.items) |item| try copy.appendHistoryItem(allocator, item);
@@ -248,8 +297,11 @@ pub const Transcript = struct {
         if (self.git_sha) |value| try replacement.setGitSha(allocator, value);
         if (self.git_branch) |value| try replacement.setGitBranch(allocator, value);
         if (self.git_origin_url) |value| try replacement.setGitOriginUrl(allocator, value);
+        if (self.goal) |goal| try replacement.setGoal(allocator, goal);
         if (self.title) |value| try replacement.setTitle(allocator, value);
         try replacement.appendUserMessage(allocator, summary);
+        replacement.token_usage = self.token_usage;
+        replacement.token_usage_turn_index = null;
 
         self.deinit(allocator);
         self.* = replacement;
@@ -552,6 +604,7 @@ pub fn runTurnWithOptions(
     options: TurnOptions,
 ) ![]const u8 {
     try transcript.appendUserMessage(allocator, prompt);
+    const token_usage_turn_index = lastMessageTurnIndex(transcript) orelse 0;
     for (options.developer_messages_after_user) |developer_message| {
         try transcript.appendDeveloperMessage(allocator, developer_message);
     }
@@ -568,6 +621,8 @@ pub fn runTurnWithOptions(
     }
     try turn_writable_roots.appendSlice(allocator, options.additional_writable_roots);
     var turn_network_enabled = options.network_enabled;
+    const turn_start_total_usage: TokenUsage = if (transcript.token_usage) |usage_info| usage_info.total else .{};
+    var turn_token_usage: TokenUsage = .{};
 
     const load_mcp_tools = options.include_tools and mcpToolsEnabled(options);
     var mcp_catalog = if (load_mcp_tools)
@@ -597,6 +652,17 @@ pub fn runTurnWithOptions(
         }
         var response = try api.createTurnWithOptions(allocator, cfg, credentials, transcript.history.items, create_options);
         defer response.deinit(allocator);
+
+        if (response.token_usage) |usage_info| {
+            recordResponseTokenUsage(
+                transcript,
+                usage_info,
+                turn_start_total_usage,
+                &turn_token_usage,
+                token_usage_turn_index,
+                cfg.model_context_window,
+            );
+        }
 
         if (response.text.len > 0) {
             try final_text.appendSlice(allocator, response.text);
@@ -725,6 +791,56 @@ pub fn runTurnWithOptions(
     }
 
     return error.TooManyToolRounds;
+}
+
+fn recordResponseTokenUsage(
+    transcript: *Transcript,
+    response_usage: api.ResponseTokenUsageInfo,
+    turn_start_total_usage: TokenUsage,
+    turn_token_usage: *TokenUsage,
+    token_usage_turn_index: usize,
+    configured_context_window: ?i64,
+) void {
+    const previous_context_window = if (transcript.token_usage) |usage_info| usage_info.model_context_window else null;
+    const usage = tokenUsageFromApi(response_usage.usage);
+    turn_token_usage.* = addTokenUsage(turn_token_usage.*, usage);
+    transcript.token_usage = .{
+        .total = addTokenUsage(turn_start_total_usage, turn_token_usage.*),
+        .last = usage,
+        .model_context_window = response_usage.model_context_window orelse previous_context_window orelse configured_context_window,
+    };
+    transcript.token_usage_turn_index = token_usage_turn_index;
+}
+
+fn tokenUsageFromApi(usage: api.ResponseTokenUsage) TokenUsage {
+    return .{
+        .input_tokens = usage.input_tokens,
+        .cached_input_tokens = usage.cached_input_tokens,
+        .output_tokens = usage.output_tokens,
+        .reasoning_output_tokens = usage.reasoning_output_tokens,
+        .total_tokens = usage.total_tokens,
+    };
+}
+
+fn addTokenUsage(left: TokenUsage, right: TokenUsage) TokenUsage {
+    return .{
+        .input_tokens = left.input_tokens + right.input_tokens,
+        .cached_input_tokens = left.cached_input_tokens + right.cached_input_tokens,
+        .output_tokens = left.output_tokens + right.output_tokens,
+        .reasoning_output_tokens = left.reasoning_output_tokens + right.reasoning_output_tokens,
+        .total_tokens = left.total_tokens + right.total_tokens,
+    };
+}
+
+fn lastMessageTurnIndex(transcript: *const Transcript) ?usize {
+    var message_turn_index: usize = 0;
+    var last: ?usize = null;
+    for (transcript.history.items) |item| {
+        if (item.kind != .message) continue;
+        last = message_turn_index;
+        message_turn_index += 1;
+    }
+    return last;
 }
 
 fn runToolCall(
@@ -1198,19 +1314,53 @@ test "replace transcript with compacted summary" {
     try transcript.setId(allocator, "11111111-1111-4111-8111-111111111111");
     try transcript.setCwd(allocator, "/tmp/demo");
     try transcript.setGitBranch(allocator, "main");
+    try transcript.setGoal(allocator, .{
+        .objective = "ship persistence",
+        .status = "active",
+        .token_budget = 1000,
+        .tokens_used = 20,
+        .time_used_seconds = 30,
+        .created_at = 11,
+        .updated_at = 12,
+    });
     try transcript.appendUserMessage(allocator, "first");
     try transcript.appendAssistantMessage(allocator, "second");
+    transcript.token_usage = .{
+        .total = .{
+            .input_tokens = 10,
+            .cached_input_tokens = 2,
+            .output_tokens = 5,
+            .reasoning_output_tokens = 1,
+            .total_tokens = 15,
+        },
+        .last = .{
+            .input_tokens = 4,
+            .cached_input_tokens = 1,
+            .output_tokens = 3,
+            .reasoning_output_tokens = 1,
+            .total_tokens = 7,
+        },
+        .model_context_window = 200000,
+    };
+    transcript.token_usage_turn_index = 1;
     try transcript.replaceWithCompactedSummary(allocator, "summary");
 
     try std.testing.expectEqualStrings("demo title", transcript.title.?);
     try std.testing.expectEqualStrings("11111111-1111-4111-8111-111111111111", transcript.id.?);
     try std.testing.expectEqualStrings("/tmp/demo", transcript.cwd.?);
     try std.testing.expectEqualStrings("main", transcript.git_branch.?);
+    try std.testing.expectEqualStrings("ship persistence", transcript.goal.?.objective);
+    try std.testing.expectEqualStrings("active", transcript.goal.?.status);
+    try std.testing.expectEqual(@as(?i64, 1000), transcript.goal.?.token_budget);
     try std.testing.expectEqual(@as(usize, 1), transcript.history.items.len);
     try std.testing.expectEqual(api.HistoryItem.Kind.message, transcript.history.items[0].kind);
     try std.testing.expectEqualStrings("user", transcript.history.items[0].role.?);
     try std.testing.expectEqualStrings("input_text", transcript.history.items[0].content_type.?);
     try std.testing.expectEqualStrings("summary", transcript.history.items[0].text.?);
+    try std.testing.expectEqual(@as(i64, 15), transcript.token_usage.?.total.total_tokens);
+    try std.testing.expectEqual(@as(i64, 7), transcript.token_usage.?.last.total_tokens);
+    try std.testing.expectEqual(@as(i64, 200000), transcript.token_usage.?.model_context_window.?);
+    try std.testing.expectEqual(@as(?usize, null), transcript.token_usage_turn_index);
 }
 
 test "clone transcript copies title and history" {
@@ -1219,19 +1369,33 @@ test "clone transcript copies title and history" {
     defer transcript.deinit(allocator);
 
     try transcript.setTitle(allocator, "source title");
+    try transcript.setGoal(allocator, .{
+        .objective = "clone goal",
+        .status = "paused",
+        .token_budget = null,
+        .tokens_used = 5,
+        .time_used_seconds = 6,
+        .created_at = 7,
+        .updated_at = 8,
+    });
     try transcript.appendUserMessage(allocator, "hello");
 
     var copy = try transcript.clone(allocator);
     defer copy.deinit(allocator);
 
     try std.testing.expectEqualStrings("source title", copy.title.?);
+    try std.testing.expectEqualStrings("clone goal", copy.goal.?.objective);
+    try std.testing.expectEqualStrings("paused", copy.goal.?.status);
+    try std.testing.expectEqual(@as(i64, 5), copy.goal.?.tokens_used);
     try std.testing.expectEqual(@as(usize, 1), copy.history.items.len);
     try std.testing.expectEqualStrings("hello", copy.history.items[0].text.?);
 
     try transcript.setTitle(allocator, "changed title");
+    transcript.clearGoal(allocator);
     try transcript.appendAssistantMessage(allocator, "later");
 
     try std.testing.expectEqualStrings("source title", copy.title.?);
+    try std.testing.expectEqualStrings("clone goal", copy.goal.?.objective);
     try std.testing.expectEqual(@as(usize, 1), copy.history.items.len);
     try std.testing.expectEqualStrings("hello", copy.history.items[0].text.?);
 }
