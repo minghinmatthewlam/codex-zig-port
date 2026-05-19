@@ -470,6 +470,30 @@ class ExecServerRemoteRegistryServer(ThreadingHTTPServer):
     response_payloads: list[bytes]
 
 
+class RevokeTokenHandler(BaseHTTPRequestHandler):
+    def do_POST(self) -> None:
+        length = int(self.headers.get("Content-Length", "0"))
+        body = self.rfile.read(length)
+        self.server.request_paths.append(self.path)
+        self.server.request_headers.append(dict(self.headers.items()))
+        self.server.request_bodies.append(json.loads(body))
+        payload = json.dumps({"ok": True}, separators=(",", ":")).encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(payload)))
+        self.end_headers()
+        self.wfile.write(payload)
+
+    def log_message(self, fmt: str, *args: object) -> None:
+        return
+
+
+class RevokeTokenServer(ThreadingHTTPServer):
+    request_paths: list[str]
+    request_headers: list[dict[str, str]]
+    request_bodies: list[dict]
+
+
 class ExecServerHttpRequestHandler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
 
@@ -1813,6 +1837,15 @@ def start_exec_responses_server() -> tuple[ExecResponsesServer, str]:
     server.response_delays = []
     threading.Thread(target=server.serve_forever, daemon=True).start()
     return server, f"http://127.0.0.1:{server.server_port}"
+
+
+def start_revoke_token_server() -> tuple[RevokeTokenServer, str]:
+    server = RevokeTokenServer(("127.0.0.1", 0), RevokeTokenHandler)
+    server.request_paths = []
+    server.request_headers = []
+    server.request_bodies = []
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    return server, f"http://127.0.0.1:{server.server_port}/oauth/revoke"
 
 
 def start_exec_server_http_request_server(public_host: str = "127.0.0.1") -> tuple[ExecServerHttpRequestServer, str]:
@@ -8005,6 +8038,58 @@ def run_mcp_server_schema_smoke(binary: Path) -> None:
         shutil.rmtree(temp_root, ignore_errors=True)
 
 
+def run_logout_revoke_smoke(binary: Path) -> None:
+    temp_root = Path(tempfile.mkdtemp(prefix="codex-zig-cli-logout-revoke-", dir="/tmp"))
+    revoke_server, revoke_url = start_revoke_token_server()
+    try:
+        codex_home = temp_root / "codex-home"
+        codex_home.mkdir()
+        (codex_home / "auth.json").write_text(
+            json.dumps(
+                {
+                    "auth_mode": "chatgpt",
+                    "tokens": {
+                        "access_token": "access-token",
+                        "refresh_token": "refresh-token",
+                        "account_id": "acct_123",
+                    },
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        env = os.environ.copy()
+        env.pop("OPENAI_API_KEY", None)
+        env.pop("CODEX_ACCESS_TOKEN", None)
+        env["CODEX_HOME"] = str(codex_home)
+        env["CODEX_REVOKE_TOKEN_URL_OVERRIDE"] = revoke_url
+        result = subprocess.run(
+            [str(binary.resolve()), "logout"],
+            cwd=temp_root,
+            env=env,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=5,
+            check=True,
+        )
+        assert result.stdout == ""
+        assert result.stderr == "Successfully logged out\n"
+        assert not (codex_home / "auth.json").exists()
+        assert revoke_server.request_paths == ["/oauth/revoke"]
+        assert revoke_server.request_bodies == [
+            {
+                "token": "refresh-token",
+                "token_type_hint": "refresh_token",
+                "client_id": "app_EMoamEEZ73f0CkXaXp7hrann",
+            }
+        ]
+    finally:
+        revoke_server.shutdown()
+        revoke_server.server_close()
+        shutil.rmtree(temp_root, ignore_errors=True)
+
+
 def run_mcp_oauth_login_logout_smoke(binary: Path) -> None:
     temp_root = Path(tempfile.mkdtemp(prefix="codex-zig-cli-mcp-oauth-", dir="/tmp"))
     discovery_server, remote_url = start_mcp_oauth_discovery_server()
@@ -9262,6 +9347,7 @@ def main() -> None:
     run_exec_streamable_http_mcp_get_stream_smoke(binary)
     run_exec_streamable_http_mcp_keyring_oauth_smoke(binary)
     run_mcp_server_schema_smoke(binary)
+    run_logout_revoke_smoke(binary)
     run_mcp_oauth_login_logout_smoke(binary)
     run_exec_git_repo_check_smoke(binary)
     run_yolo_approval_conflict_smoke(binary)
@@ -9298,6 +9384,7 @@ def main() -> None:
     print("cli-exec-streamable-http-mcp-get-stream-e2e: ok")
     print("cli-exec-streamable-http-mcp-keyring-oauth-e2e: ok")
     print("cli-mcp-server-schema-e2e: ok")
+    print("cli-logout-revoke-e2e: ok")
     print("cli-mcp-oauth-login-logout-e2e: ok")
     print("cli-exec-git-check-e2e: ok")
     print("cli-yolo-approval-conflict-e2e: ok")

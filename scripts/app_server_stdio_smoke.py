@@ -1406,6 +1406,43 @@ class RefreshTokenBackendHandler(BaseHTTPRequestHandler):
         return
 
 
+class RevokeTokenBackendHandler(BaseHTTPRequestHandler):
+    requests: list[dict[str, object]] = []
+    delay_seconds: float = 0.0
+
+    def do_POST(self) -> None:
+        content_length = int(self.headers.get("Content-Length", "0"))
+        body_bytes = self.rfile.read(content_length)
+        body_text = body_bytes.decode("utf-8")
+        content_type = self.headers.get("Content-Type")
+        body: object = json.loads(body_text) if content_type == "application/json" and body_text else body_text
+        RevokeTokenBackendHandler.requests.append(
+            {
+                "path": self.path,
+                "content_type": content_type,
+                "body": body,
+            }
+        )
+
+        if RevokeTokenBackendHandler.delay_seconds:
+            time.sleep(RevokeTokenBackendHandler.delay_seconds)
+        try:
+            self._send_json(200, {"ok": True})
+        except BrokenPipeError:
+            return
+
+    def _send_json(self, status_code: int, payload: dict[str, object]) -> None:
+        body = json.dumps(payload, separators=(",", ":")).encode("utf-8")
+        self.send_response(status_code)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def log_message(self, format: str, *args: object) -> None:
+        return
+
+
 class CommandExecNetworkHandler(BaseHTTPRequestHandler):
     requests: list[str] = []
 
@@ -29572,6 +29609,14 @@ def start_refresh_token_backend() -> tuple[ThreadingHTTPServer, str]:
     return server, f"http://127.0.0.1:{server.server_port}/oauth/token"
 
 
+def start_revoke_token_backend(delay_seconds: float = 0.0) -> tuple[ThreadingHTTPServer, str]:
+    RevokeTokenBackendHandler.requests = []
+    RevokeTokenBackendHandler.delay_seconds = delay_seconds
+    server = ThreadingHTTPServer(("127.0.0.1", 0), RevokeTokenBackendHandler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    return server, f"http://127.0.0.1:{server.server_port}/oauth/revoke"
+
+
 def start_command_exec_network_backend() -> tuple[ThreadingHTTPServer, str]:
     CommandExecNetworkHandler.requests = []
     server = ThreadingHTTPServer(("127.0.0.1", 0), CommandExecNetworkHandler)
@@ -29876,6 +29921,10 @@ def run_get_auth_status_rpc_smoke(binary: Path) -> None:
 
 def run_account_logout_rpc_smoke(binary: Path) -> None:
     codex_home = Path(tempfile.mkdtemp(prefix="codex-zig-app-server-account-logout-", dir="/tmp"))
+    chatgpt_home = Path(tempfile.mkdtemp(prefix="codex-zig-app-server-account-logout-revoke-", dir="/tmp"))
+    stalled_home = Path(tempfile.mkdtemp(prefix="codex-zig-app-server-account-logout-stalled-revoke-", dir="/tmp"))
+    revoke_server: ThreadingHTTPServer | None = None
+    stalled_server: ThreadingHTTPServer | None = None
     try:
         (codex_home / "auth.json").write_text(
             json.dumps({"auth_mode": "apikey", "OPENAI_API_KEY": "test-api-key"}),
@@ -29931,8 +29980,134 @@ def run_account_logout_rpc_smoke(binary: Path) -> None:
             if proc.poll() is None:
                 proc.kill()
                 proc.wait(timeout=5)
+
+        revoke_server, revoke_url = start_revoke_token_backend()
+        (chatgpt_home / "auth.json").write_text(
+            json.dumps(
+                {
+                    "auth_mode": "chatgpt",
+                    "tokens": {
+                        "access_token": "access-token",
+                        "refresh_token": "refresh-token",
+                        "account_id": "acct_123",
+                    },
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        revoke_env = os.environ.copy()
+        revoke_env.pop("OPENAI_API_KEY", None)
+        revoke_env.pop("CODEX_ACCESS_TOKEN", None)
+        revoke_env["CODEX_HOME"] = str(chatgpt_home)
+        revoke_env["CODEX_REVOKE_TOKEN_URL_OVERRIDE"] = revoke_url
+        revoke_proc = subprocess.Popen(
+            [str(binary), "app-server"],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            env=revoke_env,
+        )
+        try:
+            write_json_line(revoke_proc, {"jsonrpc": "2.0", "id": "logout-revoke", "method": "account/logout"})
+            revoke_logout = read_json_line(revoke_proc, 5)
+            assert revoke_logout["id"] == "logout-revoke"
+            assert revoke_logout["result"] == {}
+
+            revoke_notification = read_json_line(revoke_proc, 5)
+            assert revoke_notification == {
+                "method": "account/updated",
+                "params": {"authMode": None, "planType": None},
+            }
+            assert not (chatgpt_home / "auth.json").exists()
+
+            assert len(RevokeTokenBackendHandler.requests) == 1
+            revoke_request = RevokeTokenBackendHandler.requests[0]
+            assert revoke_request["path"] == "/oauth/revoke"
+            assert revoke_request["content_type"] == "application/json"
+            assert revoke_request["body"] == {
+                "token": "refresh-token",
+                "token_type_hint": "refresh_token",
+                "client_id": "app_EMoamEEZ73f0CkXaXp7hrann",
+            }
+
+            assert revoke_proc.stdin is not None
+            revoke_proc.stdin.close()
+            revoke_proc.wait(timeout=5)
+            if revoke_proc.returncode != 0:
+                raise AssertionError(f"app-server revoke logout exited {revoke_proc.returncode}: {revoke_proc.stderr.read()}")
+        finally:
+            if revoke_proc.poll() is None:
+                revoke_proc.kill()
+                revoke_proc.wait(timeout=5)
+
+        stalled_server, stalled_url = start_revoke_token_backend(delay_seconds=2.0)
+        (stalled_home / "auth.json").write_text(
+            json.dumps(
+                {
+                    "auth_mode": "chatgpt",
+                    "tokens": {
+                        "access_token": "stalled-access-token",
+                        "refresh_token": "stalled-refresh-token",
+                        "account_id": "acct_123",
+                    },
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        stalled_env = os.environ.copy()
+        stalled_env.pop("OPENAI_API_KEY", None)
+        stalled_env.pop("CODEX_ACCESS_TOKEN", None)
+        stalled_env["CODEX_HOME"] = str(stalled_home)
+        stalled_env["CODEX_REVOKE_TOKEN_URL_OVERRIDE"] = stalled_url
+        stalled_env["CODEX_REVOKE_TOKEN_TIMEOUT_MS_OVERRIDE"] = "100"
+        stalled_proc = subprocess.Popen(
+            [str(binary), "app-server"],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            env=stalled_env,
+        )
+        try:
+            start = time.monotonic()
+            write_json_line(stalled_proc, {"jsonrpc": "2.0", "id": "logout-stalled-revoke", "method": "account/logout"})
+            stalled_logout = read_json_line(stalled_proc, 5)
+            elapsed = time.monotonic() - start
+            assert elapsed < 1.5
+            assert stalled_logout["id"] == "logout-stalled-revoke"
+            assert stalled_logout["result"] == {}
+
+            stalled_notification = read_json_line(stalled_proc, 5)
+            assert stalled_notification == {
+                "method": "account/updated",
+                "params": {"authMode": None, "planType": None},
+            }
+            assert not (stalled_home / "auth.json").exists()
+            assert len(RevokeTokenBackendHandler.requests) == 1
+            assert RevokeTokenBackendHandler.requests[0]["body"]["token"] == "stalled-refresh-token"
+
+            assert stalled_proc.stdin is not None
+            stalled_proc.stdin.close()
+            stalled_proc.wait(timeout=5)
+            if stalled_proc.returncode != 0:
+                raise AssertionError(f"app-server stalled revoke logout exited {stalled_proc.returncode}: {stalled_proc.stderr.read()}")
+        finally:
+            if stalled_proc.poll() is None:
+                stalled_proc.kill()
+                stalled_proc.wait(timeout=5)
     finally:
+        if revoke_server is not None:
+            revoke_server.shutdown()
+            revoke_server.server_close()
+        if stalled_server is not None:
+            stalled_server.shutdown()
+            stalled_server.server_close()
         shutil.rmtree(codex_home, ignore_errors=True)
+        shutil.rmtree(chatgpt_home, ignore_errors=True)
+        shutil.rmtree(stalled_home, ignore_errors=True)
 
 
 def run_account_login_rpc_smoke(binary: Path) -> None:
