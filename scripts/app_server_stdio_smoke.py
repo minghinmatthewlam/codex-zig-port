@@ -35065,6 +35065,64 @@ def assert_clean_signal_exit(proc: subprocess.Popen[str], sig: signal.Signals, n
     assert returncode == 0, f"{name} exited {returncode} after {sig.name}: {stderr}"
 
 
+def assert_unix_shutdown_ignores_buffered_request(binary: Path, sig: signal.Signals) -> None:
+    codex_home = Path(tempfile.mkdtemp(prefix="codex-zig-app-server-unix-buffered-signal-home-", dir="/tmp"))
+    socket_dir = Path(tempfile.mkdtemp(prefix="codex-zig-app-server-unix-buffered-signal-", dir="/tmp"))
+    side_effect_dir = Path(tempfile.mkdtemp(prefix="codex-zig-app-server-unix-buffered-side-effect-", dir="/tmp"))
+    socket_path = socket_dir / "app-server.sock"
+    side_effect_path = side_effect_dir / "shutdown-request.txt"
+    env = os.environ.copy()
+    env["CODEX_HOME"] = str(codex_home)
+    proc = subprocess.Popen(
+        [str(binary), "app-server", "--listen", f"unix://{socket_path}"],
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        env=env,
+    )
+    client = None
+    try:
+        wait_for_socket(socket_path, proc, 5)
+        client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        client.settimeout(5)
+        client.connect(str(socket_path))
+        payload = json.dumps(
+            {
+                "jsonrpc": "2.0",
+                "id": "unix-shutdown-buffered-request",
+                "method": "fs/writeFile",
+                "params": {
+                    "path": str(side_effect_path),
+                    "dataBase64": base64.b64encode(b"handled during shutdown").decode("ascii"),
+                },
+            },
+            separators=(",", ":"),
+        ).encode("utf-8")
+        client.sendall(payload)
+        time.sleep(0.05)
+        assert_clean_signal_exit(
+            proc,
+            sig,
+            f"buffered Unix request app-server {sig.name}",
+        )
+        try:
+            response = client.recv(4096)
+        except (ConnectionResetError, OSError, socket.timeout):
+            response = b""
+        assert response == b"", f"buffered Unix request produced a shutdown response: {response!r}"
+        assert not side_effect_path.exists(), "buffered Unix request was handled during shutdown"
+    finally:
+        if client is not None:
+            client.close()
+        if proc.poll() is None:
+            proc.kill()
+            proc.wait(timeout=5)
+        shutil.rmtree(side_effect_dir, ignore_errors=True)
+        shutil.rmtree(socket_dir, ignore_errors=True)
+        shutil.rmtree(codex_home, ignore_errors=True)
+
+
 def run_app_server_signal_shutdown_smoke(binary: Path) -> None:
     for sig in (signal.SIGTERM, signal.SIGINT):
         codex_home = Path(tempfile.mkdtemp(prefix="codex-zig-app-server-ws-signal-", dir="/tmp"))
@@ -35202,6 +35260,9 @@ def run_app_server_signal_shutdown_smoke(binary: Path) -> None:
                 proc.wait(timeout=5)
             shutil.rmtree(socket_dir, ignore_errors=True)
             shutil.rmtree(codex_home, ignore_errors=True)
+
+    for sig in (signal.SIGTERM, signal.SIGINT):
+        assert_unix_shutdown_ignores_buffered_request(binary, sig)
 
 
 def run_unix_path_smoke(binary: Path) -> None:
