@@ -411,17 +411,19 @@ It also preserves Rust's externally managed auth guard by rejecting API-key,
 browser, and device-code login attempts while external ChatGPT auth tokens are
 active. Browser ChatGPT login now starts the local callback server, returns a
 Rust-shaped `loginId` / `authUrl`, includes forced-workspace auth URL
-constraints, tracks the active login, completes the callback exchange against
-the configured issuer, saves ChatGPT tokens, redirects through the local
-`/success` page, renders callback error/missing-code HTML pages, emits
-completion/account-update notifications, and supports `account/login/cancel`
-with `canceled` plus `account/login/completed` failure notification.
+constraints plus post-token workspace validation, tracks the active login,
+completes the callback exchange against the configured issuer, saves ChatGPT
+tokens only after workspace validation, redirects through the local `/success`
+page, renders callback error/missing-code/workspace-restriction HTML pages,
+emits completion/account-update notifications, and supports
+`account/login/cancel` with `canceled` plus `account/login/completed` failure
+notification.
 Device-code ChatGPT login now
 starts against the configured issuer, returns a Rust-shaped `loginId` /
-`verificationUrl` / `userCode`, saves completed ChatGPT tokens, emits
-completion/account-update notifications, and supports cancellation. Browser and
-device-code background completions clear matching active-login state so later
-cancel requests return `notFound`.
+`verificationUrl` / `userCode`, validates forced-workspace restrictions before
+saving completed ChatGPT tokens, emits completion/account-update notifications,
+and supports cancellation. Browser and device-code background completions clear
+matching active-login state so later cancel requests return `notFound`.
 
 Additional app-server filesystem generation coverage: `fs/readFile`,
 `fs/writeFile`, `fs/createDirectory`, `fs/getMetadata`, `fs/readDirectory`,
