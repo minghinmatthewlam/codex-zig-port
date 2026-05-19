@@ -27600,6 +27600,46 @@ fn handleAppsList(
     return renderJsonRpcResult(allocator, id_value, result_json);
 }
 
+fn queueAppListUpdatedNotificationAfterEnablement(allocator: std.mem.Allocator, state: *AppServerState) !void {
+    if (serverNotificationShouldBeDropped(state, "app/list/updated")) return;
+    if (!(try appServerFeatureEnabled(allocator, state, "apps"))) return;
+
+    const notification = try renderAppListUpdatedNotification(allocator);
+    try queuePendingServerNotification(allocator, state, "app/list/updated", notification);
+}
+
+fn renderAppListUpdatedNotification(allocator: std.mem.Allocator) ![]const u8 {
+    const data_json = try renderCurrentAppListDataJson(allocator);
+    defer allocator.free(data_json);
+
+    return std.fmt.allocPrint(
+        allocator,
+        "{{\"jsonrpc\":\"2.0\",\"method\":\"app/list/updated\",\"params\":{{\"data\":{s}}}}}",
+        .{data_json},
+    );
+}
+
+fn renderCurrentAppListDataJson(allocator: std.mem.Allocator) ![]const u8 {
+    const codex_home = try resolveCodexHome(allocator);
+    defer allocator.free(codex_home);
+
+    const config_path = try config.configTomlPath(allocator, codex_home);
+    defer allocator.free(config_path);
+    const config_bytes = try config.readConfigTomlFile(allocator, config_path);
+    defer if (config_bytes) |bytes| allocator.free(bytes);
+
+    var total: usize = 0;
+    const response = (try plugin_list.renderAppsListResponse(allocator, codex_home, config_bytes orelse "", &.{}, 0, null, &total)) orelse return error.InvalidAppListRefreshCursor;
+    defer allocator.free(response);
+
+    var parsed = try std.json.parseFromSlice(std.json.Value, allocator, response, .{});
+    defer parsed.deinit();
+    if (parsed.value != .object) return error.InvalidAppListRefreshResponse;
+    const data = parsed.value.object.get("data") orelse return error.InvalidAppListRefreshResponse;
+    if (data != .array) return error.InvalidAppListRefreshResponse;
+    return std.json.Stringify.valueAlloc(allocator, data, .{});
+}
+
 fn handleGetConversationSummary(
     allocator: std.mem.Allocator,
     state: *AppServerState,
@@ -53855,6 +53895,9 @@ fn handleExperimentalFeatureEnablementSet(
 
     const result = try renderExperimentalFeatureEnablementResponse(allocator, enablement.object);
     defer allocator.free(result);
+    if (enablement.object.get("apps")) |apps_value| {
+        if (apps_value.bool) queueAppListUpdatedNotificationAfterEnablement(allocator, state) catch {};
+    }
     return renderJsonRpcResult(allocator, id_value, result);
 }
 
@@ -55225,6 +55268,30 @@ test "app-server initialize honors remote-control status opt-out" {
     defer allocator.free(response.?);
 
     try std.testing.expect(std.mem.indexOf(u8, response.?, "\"id\":\"initialize\"") != null);
+    try std.testing.expectEqual(@as(usize, 0), state.pending_notifications.items.len);
+}
+
+test "experimental feature apps refresh honors app-list update opt-out" {
+    const allocator = std.testing.allocator;
+    var state = AppServerState{};
+    defer state.deinit(allocator);
+
+    const initialize_response = try handleJsonRpcLine(
+        allocator,
+        &state,
+        "{\"jsonrpc\":\"2.0\",\"id\":\"initialize\",\"method\":\"initialize\",\"params\":{\"clientInfo\":{\"name\":\"test\",\"version\":\"0\"},\"capabilities\":{\"optOutNotificationMethods\":[\"configWarning\",\"remoteControl/status/changed\",\"app/list/updated\"]}}}",
+    );
+    defer allocator.free(initialize_response.?);
+
+    const response = try handleJsonRpcLine(
+        allocator,
+        &state,
+        "{\"jsonrpc\":\"2.0\",\"id\":\"feature-enable\",\"method\":\"experimentalFeature/enablement/set\",\"params\":{\"enablement\":{\"apps\":true}}}",
+    );
+    defer allocator.free(response.?);
+
+    try std.testing.expect(std.mem.indexOf(u8, response.?, "\"id\":\"feature-enable\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, response.?, "\"apps\":true") != null);
     try std.testing.expectEqual(@as(usize, 0), state.pending_notifications.items.len);
 }
 
