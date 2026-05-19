@@ -831,6 +831,20 @@ Schema files now cover the newly typed marketplace, plugin, config, and review
 request params where the protocol carries params; full Rust schema parity
 remains planned.
 
+Additional app-server review/start coverage: `review/start` now validates
+loaded `threadId`, Rust-shaped review targets, empty `branch` / `sha` /
+`instructions` cases, extra turn-start-only params, and inline delivery. Inline
+reviews return a Rust-shaped `ReviewStartResponse` whose `turn.items` display
+the synthesized review hint, run the model request with the Rust review rubric
+and target prompt, disable web search and collaboration/request tools, force
+approval policy to `never` inside a read-only/no-writable-roots review turn,
+honor `review_model`, run configured `SessionStart` and `UserPromptSubmit`
+hooks with hook context injected into the isolated review request, render
+structured review JSON into final review text, persist the review user-action
+context, and emit `enteredReviewMode` / `exitedReviewMode` review items around
+the final assistant review text. Detached review-thread delivery remains
+planned.
+
 Additional app-server external-agent config coverage: `externalAgentConfig/detect`
 now validates `includeHome` and nullable/array `cwds` params, detects
 home-scoped Claude `settings.json` / `settings.local.json` `CONFIG` migrations

@@ -1,6 +1,6 @@
 # OSS Readiness
 
-Last checked: 2026-05-18.
+Last checked: 2026-05-19.
 
 This file records the public-readiness state for the repository. It is not a
 parity tracker; implementation parity remains tracked in `docs/parity.md`.
@@ -14,13 +14,13 @@ parity tracker; implementation parity remains tracked in `docs/parity.md`.
 - Community files: `README.md`, `CONTRIBUTING.md`, `SECURITY.md`,
   `.github/CODE_OF_CONDUCT.md`, issue templates, PR template, and CODEOWNERS
 - GitHub community profile: 100% by the repository community-profile API.
-- Security settings: GitHub API checks through 2026-05-18 show secret scanning,
+- Security settings: GitHub API checks through 2026-05-19 show secret scanning,
   push protection, and Dependabot security updates enabled. GitHub reports
   non-provider pattern scanning and secret validity checks as disabled.
   `SECURITY.md` is exposed through the repository security-policy URL. CodeQL
   Python code scanning is configured; the latest completed CodeQL run
-  `26050958768` passed on pushed head
-  `26dc306c365591d2e23faf07bfa04d39be3a00d0`. Open-alert queries for
+  `26081859591` passed on pushed head
+  `6d5d321f0e3372ca0d20e363f77f0854659e3210`. Open-alert queries for
   CodeQL, Dependabot, and secret scanning returned empty arrays after the OAuth
   smoke redirect-header fix. Historical CodeQL alerts remain visible through
   the API as fixed.
@@ -29,13 +29,12 @@ parity tracker; implementation parity remains tracked in `docs/parity.md`.
 - CI: GitHub Actions runs formatting, Python smoke-script compilation, unit
   tests, and product-surface smoke tests on macOS with a direct Zig 0.16.0
   install from `ziglang.org` rather than a deprecated Node-based setup action.
-  Checked push run `26050958792` passed on pushed head
-  `26dc306c365591d2e23faf07bfa04d39be3a00d0`. Local pre-push verification for
-  the latest OAuth and OSS-readiness slices included `python3 -m py_compile
-  scripts/app_server_stdio_smoke.py scripts/cli_smoke.py scripts/tui_e2e.py`,
-  `zig build`, focused CLI MCP OAuth login/logout smoke, focused app-server MCP
-  status smoke repeated five times, `git diff --check`, `zig build test
-  --summary all`, and `zig build e2e --summary all`.
+  Checked push run `26081859690` passed on pushed head
+  `6d5d321f0e3372ca0d20e363f77f0854659e3210`. Local pre-push verification for
+  the latest review-start and OSS-readiness slices included `python3 -m
+  py_compile scripts/app_server_stdio_smoke.py`, `zig build`, focused
+  app-server review-start smoke, `git diff --check`, `zig build test --summary
+  all`, and `zig build e2e --summary all`.
 - Fresh public clone proof: a clean HTTPS clone from
   `https://github.com/minghinmatthewlam/codex-zig-port` at pushed head
   `26dc306c365591d2e23faf07bfa04d39be3a00d0` passed `python3 -m py_compile

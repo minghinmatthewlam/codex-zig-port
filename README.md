@@ -268,6 +268,11 @@ The first demo slice targets macOS and focuses on the interactive CLI surface:
 - emit app-server `app/list/updated` after `experimentalFeature/enablement/set`
   enables `apps`, using the current local plugin app catalog and honoring
   notification opt-out
+- run app-server `review/start` inline reviews for loaded threads, including
+  Rust-shaped target validation, read-only review runtime constraints,
+  configured `SessionStart` / `UserPromptSubmit` hook handling,
+  `ReviewStartResponse` display turns, structured review output rendering, and
+  `review_model` request routing
 - include experimental `permissionProfile` and `activePermissionProfile`
   fields on `thread/start`, `thread/resume`, and `thread/fork` responses only
   after the client enables `experimentalApi`
