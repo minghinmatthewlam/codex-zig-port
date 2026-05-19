@@ -1296,16 +1296,30 @@ class DeviceAuthBackendHandler(BaseHTTPRequestHandler):
             return
 
         if self.path == "/oauth/token":
+            auth_claims = {
+                "chatgpt_plan_type": "pro",
+                "chatgpt_account_id": "org-device",
+                "organization_id": "org-device-workspace",
+                "project_id": "proj-device",
+                "completed_platform_onboarding": True,
+                "is_org_owner": True,
+            }
+            if DeviceAuthBackendHandler.mode == "large-token":
+                auth_claims["large_claim"] = "x" * 8192
             id_token = encode_unsigned_jwt(
                 {
                     "email": "device@example.com",
+                    "https://api.openai.com/auth": auth_claims,
+                }
+            )
+            access_token = encode_unsigned_jwt(
+                {
+                    "exp": 4_102_444_800,
                     "https://api.openai.com/auth": {
                         "chatgpt_plan_type": "pro",
-                        "chatgpt_account_id": "org-device",
                     },
                 }
             )
-            access_token = encode_unsigned_jwt({"exp": 4_102_444_800})
             self._send_json(
                 200,
                 {
@@ -30338,9 +30352,9 @@ def run_account_login_cancel_rpc_smoke(binary: Path) -> None:
         shutil.rmtree(codex_home, ignore_errors=True)
 
 
-def run_account_login_browser_callback_rpc_smoke(binary: Path) -> None:
-    server, issuer = start_device_auth_backend("success")
-    codex_home = Path(tempfile.mkdtemp(prefix="codex-zig-app-server-browser-login-success-", dir="/tmp"))
+def run_account_login_browser_callback_rpc_smoke(binary: Path, backend_mode: str = "success") -> None:
+    server, issuer = start_device_auth_backend(backend_mode)
+    codex_home = Path(tempfile.mkdtemp(prefix=f"codex-zig-app-server-browser-login-{backend_mode}-", dir="/tmp"))
     try:
         env = os.environ.copy()
         env.pop("OPENAI_API_KEY", None)
@@ -30376,6 +30390,28 @@ def run_account_login_browser_callback_rpc_smoke(binary: Path) -> None:
             query = urllib.parse.parse_qs(parsed_auth_url.query)
             redirect_uri = query["redirect_uri"][0]
             state = query["state"][0]
+
+            bad_state_url = f"{redirect_uri}?code=ignored&state=wrong-state"
+            try:
+                urllib.request.urlopen(bad_state_url, timeout=5)
+                raise AssertionError("state mismatch callback unexpectedly succeeded")
+            except urllib.error.HTTPError as error:
+                assert error.code == 400
+                assert "State mismatch" in error.read().decode("utf-8")
+            assert DeviceAuthBackendHandler.requests == []
+
+            parsed_redirect_uri = urllib.parse.urlparse(redirect_uri)
+            premature_success_url = urllib.parse.urlunparse(
+                parsed_redirect_uri._replace(path="/success", query="", fragment="")
+            )
+            try:
+                urllib.request.urlopen(premature_success_url, timeout=5)
+                raise AssertionError("premature success page unexpectedly completed login")
+            except urllib.error.HTTPError as error:
+                assert error.code == 400
+                assert "Login has not completed" in error.read().decode("utf-8")
+            assert DeviceAuthBackendHandler.requests == []
+
             callback_url = f"{redirect_uri}?code=browser-code-123&state={urllib.parse.quote(state)}"
 
             deadline = time.monotonic() + 5
@@ -30383,12 +30419,23 @@ def run_account_login_browser_callback_rpc_smoke(binary: Path) -> None:
                 try:
                     with urllib.request.urlopen(callback_url, timeout=5) as response:
                         callback_body = response.read().decode("utf-8")
+                        success_url = response.geturl()
                     break
                 except urllib.error.URLError:
                     if time.monotonic() >= deadline:
                         raise
                     time.sleep(0.05)
-            assert "Codex login complete" in callback_body
+            assert "Signed in to Codex" in callback_body
+            parsed_success_url = urllib.parse.urlparse(success_url)
+            assert parsed_success_url.path == "/success"
+            if backend_mode == "large-token":
+                assert len(success_url) > 4096
+            success_query = urllib.parse.parse_qs(parsed_success_url.query)
+            assert success_query["needs_setup"] == ["false"]
+            assert success_query["org_id"] == ["org-device-workspace"]
+            assert success_query["project_id"] == ["proj-device"]
+            assert success_query["plan_type"] == ["pro"]
+            assert success_query["platform_url"] == ["https://platform.api.openai.org"]
 
             completion_messages = read_json_lines_until(
                 proc,
@@ -30433,6 +30480,126 @@ def run_account_login_browser_callback_rpc_smoke(binary: Path) -> None:
         server.shutdown()
         server.server_close()
         shutil.rmtree(codex_home, ignore_errors=True)
+
+
+def run_account_login_browser_callback_error_rpc_smoke(binary: Path) -> None:
+    def assert_callback_failure(
+        name: str,
+        callback_query_suffix: str,
+        expected_body_parts: list[str],
+        expected_error: str,
+        unexpected_body_parts: list[str] | None = None,
+    ) -> None:
+        server, issuer = start_device_auth_backend("success")
+        codex_home = Path(tempfile.mkdtemp(prefix=f"codex-zig-app-server-browser-login-{name}-", dir="/tmp"))
+        try:
+            env = os.environ.copy()
+            env.pop("OPENAI_API_KEY", None)
+            env.pop("CODEX_ACCESS_TOKEN", None)
+            env["CODEX_HOME"] = str(codex_home)
+            env["CODEX_APP_SERVER_LOGIN_ISSUER"] = issuer
+            proc = subprocess.Popen(
+                [str(binary), "app-server"],
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                env=env,
+            )
+            try:
+                write_json_line(
+                    proc,
+                    {
+                        "jsonrpc": "2.0",
+                        "id": f"{name}-start",
+                        "method": "account/login/start",
+                        "params": {"type": "chatgpt"},
+                    },
+                )
+                started = read_json_line(proc, 5)
+                assert started["id"] == f"{name}-start"
+                login_id = started["result"]["loginId"]
+
+                auth_url = started["result"]["authUrl"]
+                parsed_auth_url = urllib.parse.urlparse(auth_url)
+                query = urllib.parse.parse_qs(parsed_auth_url.query)
+                redirect_uri = query["redirect_uri"][0]
+                state = query["state"][0]
+                callback_url = f"{redirect_uri}?state={urllib.parse.quote(state)}{callback_query_suffix}"
+
+                with urllib.request.urlopen(callback_url, timeout=5) as response:
+                    assert response.status == 200
+                    callback_body = response.read().decode("utf-8")
+
+                for expected in expected_body_parts:
+                    assert expected in callback_body
+                for unexpected in unexpected_body_parts or []:
+                    assert unexpected not in callback_body
+
+                completion_messages = read_json_lines_until(
+                    proc,
+                    5,
+                    lambda received: any(message.get("method") == "account/login/completed" for message in received),
+                )
+                completed = next(
+                    message for message in completion_messages if message.get("method") == "account/login/completed"
+                )
+                assert completed["params"] == {
+                    "loginId": login_id,
+                    "success": False,
+                    "error": expected_error,
+                }
+                assert DeviceAuthBackendHandler.requests == []
+                assert not (codex_home / "auth.json").exists()
+
+                write_json_line(
+                    proc,
+                    {
+                        "jsonrpc": "2.0",
+                        "id": f"{name}-cancel-completed",
+                        "method": "account/login/cancel",
+                        "params": {"loginId": login_id},
+                    },
+                )
+                cancel_completed = read_json_line(proc, 5)
+                assert cancel_completed["id"] == f"{name}-cancel-completed"
+                assert cancel_completed["result"] == {"status": "notFound"}
+
+                assert proc.stdin is not None
+                proc.stdin.close()
+                proc.wait(timeout=5)
+                if proc.returncode != 0:
+                    raise AssertionError(f"{name} browser callback app-server exited {proc.returncode}: {proc.stderr.read()}")
+            finally:
+                if proc.poll() is None:
+                    proc.kill()
+                    proc.wait(timeout=5)
+        finally:
+            server.shutdown()
+            server.server_close()
+            shutil.rmtree(codex_home, ignore_errors=True)
+
+    assert_callback_failure(
+        "missing-code",
+        "",
+        [
+            "Sign-in could not be completed",
+            "Missing authorization code. Sign-in could not be completed.",
+            "missing_authorization_code",
+        ],
+        "Missing authorization code. Sign-in could not be completed.",
+    )
+    assert_callback_failure(
+        "missing-entitlement",
+        "&error=access_denied&error_description=Workspace%20has%20missing_codex_entitlement",
+        [
+            "You do not have access to Codex",
+            "This account is not currently authorized to use Codex in this workspace.",
+            "Contact your workspace administrator to request access to Codex.",
+        ],
+        "Codex is not enabled for your workspace. Contact your workspace administrator to request access to Codex.",
+        ["missing_codex_entitlement"],
+    )
 
 
 def run_account_login_device_code_rpc_smoke(binary: Path) -> None:
@@ -42227,6 +42394,10 @@ def main() -> None:
     print("app-server-account-login-cancel-rpc-e2e: ok")
     run_account_login_browser_callback_rpc_smoke(binary)
     print("app-server-account-login-browser-callback-rpc-e2e: ok")
+    run_account_login_browser_callback_rpc_smoke(binary, "large-token")
+    print("app-server-account-login-browser-callback-large-token-rpc-e2e: ok")
+    run_account_login_browser_callback_error_rpc_smoke(binary)
+    print("app-server-account-login-browser-callback-error-rpc-e2e: ok")
     run_account_login_device_code_rpc_smoke(binary)
     print("app-server-account-login-device-code-rpc-e2e: ok")
     run_account_rate_limits_rpc_smoke(binary)
