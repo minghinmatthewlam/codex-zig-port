@@ -1849,24 +1849,47 @@ class PluginBackendHandler(BaseHTTPRequestHandler):
         return
 
 
-def read_json_line(proc: subprocess.Popen[str], timeout: float) -> dict:
-    try:
-        assert proc.stdout is not None
-        line_queue: queue.Queue[str] = queue.Queue(maxsize=1)
+def is_initial_remote_control_status_snapshot(message: dict) -> bool:
+    return message.get("method") == "remoteControl/status/changed" and message.get(
+        "params"
+    ) == {"status": "disabled", "environmentId": None}
 
-        def read_line() -> None:
-            line_queue.put(proc.stdout.readline())
 
-        threading.Thread(target=read_line, daemon=True).start()
-        line = line_queue.get(timeout=timeout)
-    except queue.Empty:
-        stderr = proc.stderr.read() if proc.poll() is not None else ""
-        raise AssertionError(f"timed out waiting for app-server response\n{stderr}")
+def read_json_line(
+    proc: subprocess.Popen[str],
+    timeout: float,
+    include_remote_control_status: bool = False,
+) -> dict:
+    deadline = time.monotonic() + timeout
+    while True:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            stderr = proc.stderr.read() if proc.poll() is not None else ""
+            raise AssertionError(f"timed out waiting for app-server response\n{stderr}")
 
-    if not line:
-        stderr = proc.stderr.read()
-        raise AssertionError(f"app-server closed stdout before response\n{stderr}")
-    return json.loads(line)
+        try:
+            assert proc.stdout is not None
+            line_queue: queue.Queue[str] = queue.Queue(maxsize=1)
+
+            def read_line() -> None:
+                line_queue.put(proc.stdout.readline())
+
+            threading.Thread(target=read_line, daemon=True).start()
+            line = line_queue.get(timeout=remaining)
+        except queue.Empty:
+            stderr = proc.stderr.read() if proc.poll() is not None else ""
+            raise AssertionError(f"timed out waiting for app-server response\n{stderr}")
+
+        if not line:
+            stderr = proc.stderr.read()
+            raise AssertionError(f"app-server closed stdout before response\n{stderr}")
+        message = json.loads(line)
+        if (
+            not include_remote_control_status
+            and is_initial_remote_control_status_snapshot(message)
+        ):
+            continue
+        return message
 
 
 def read_json_lines_until(
@@ -32384,6 +32407,52 @@ def run_experimental_feature_rpc_smoke(binary: Path) -> None:
         shutil.rmtree(codex_home, ignore_errors=True)
 
 
+def run_remote_control_status_notification_smoke(binary: Path) -> None:
+    codex_home = Path(tempfile.mkdtemp(prefix="codex-zig-remote-status-", dir="/tmp"))
+    env = os.environ.copy()
+    env["CODEX_HOME"] = str(codex_home)
+    proc = subprocess.Popen(
+        [str(binary), "app-server"],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        env=env,
+    )
+    try:
+        write_json_line(
+            proc,
+            {
+                "jsonrpc": "2.0",
+                "id": "initialize-remote-control-status",
+                "method": "initialize",
+                "params": {
+                    "clientInfo": {"name": "app-server-smoke", "version": "0"},
+                    "capabilities": {},
+                },
+            },
+        )
+        initialized = read_json_line(proc, 5, include_remote_control_status=True)
+        assert initialized["id"] == "initialize-remote-control-status"
+        status = read_json_line(proc, 5, include_remote_control_status=True)
+        assert status == {
+            "jsonrpc": "2.0",
+            "method": "remoteControl/status/changed",
+            "params": {"status": "disabled", "environmentId": None},
+        }
+    finally:
+        if proc.stdin is not None:
+            proc.stdin.close()
+        try:
+            proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.wait(timeout=5)
+        if proc.returncode != 0:
+            raise AssertionError(f"app-server exited {proc.returncode}: {proc.stderr.read()}")
+        shutil.rmtree(codex_home, ignore_errors=True)
+
+
 def run_app_server_root_feature_override_smoke(binary: Path) -> None:
     codex_home = Path(tempfile.mkdtemp(prefix="codex-zig-app-server-root-features-", dir="/tmp"))
     (codex_home / "config.toml").write_text(
@@ -33123,11 +33192,21 @@ def wait_for_socket(socket_path: Path, proc: subprocess.Popen[str], timeout: flo
     raise AssertionError(f"timed out waiting for Unix socket: {socket_path}")
 
 
-def read_json_line_from_socket(reader) -> dict:
-    line = reader.readline()
-    if not line:
-        raise AssertionError("app-server closed Unix socket before response")
-    return json.loads(line)
+def read_json_line_from_socket(
+    reader,
+    include_remote_control_status: bool = False,
+) -> dict:
+    while True:
+        line = reader.readline()
+        if not line:
+            raise AssertionError("app-server closed Unix socket before response")
+        message = json.loads(line)
+        if (
+            not include_remote_control_status
+            and is_initial_remote_control_status_snapshot(message)
+        ):
+            continue
+        return message
 
 
 def write_json_line_to_socket(writer, payload: dict) -> None:
@@ -33448,11 +33527,18 @@ class SmokeWebSocket:
     def write_json(self, payload: dict) -> None:
         self._send_frame(0x1, json.dumps(payload, separators=(",", ":")).encode("utf-8"))
 
-    def read_json(self) -> dict:
-        payload = self._read_frame()
-        if payload is None:
-            raise AssertionError("websocket closed before response")
-        return json.loads(payload.decode("utf-8"))
+    def read_json(self, include_remote_control_status: bool = False) -> dict:
+        while True:
+            payload = self._read_frame()
+            if payload is None:
+                raise AssertionError("websocket closed before response")
+            message = json.loads(payload.decode("utf-8"))
+            if (
+                not include_remote_control_status
+                and is_initial_remote_control_status_snapshot(message)
+            ):
+                continue
+            return message
 
     def _recv_until(self, delimiter: bytes) -> bytes:
         data = b""
@@ -43197,6 +43283,8 @@ def main() -> None:
     print("app-server-apps-list-rpc-e2e: ok")
     run_experimental_feature_rpc_smoke(binary)
     print("app-server-experimental-feature-rpc-e2e: ok")
+    run_remote_control_status_notification_smoke(binary)
+    print("app-server-remote-control-status-notification-e2e: ok")
     run_app_server_root_feature_override_smoke(binary)
     print("app-server-root-feature-override-e2e: ok")
     run_initialize_config_warning_smoke(binary)
