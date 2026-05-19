@@ -10398,6 +10398,273 @@ def run_turn_mcp_status_notification_smoke(binary: Path) -> None:
         shutil.rmtree(codex_home, ignore_errors=True)
 
 
+def run_mcp_reload_loaded_thread_turn_smoke(binary: Path) -> None:
+    server, base_url = start_turn_responses_server()
+    codex_home = Path(tempfile.mkdtemp(prefix="codex-zig-app-server-mcp-reload-", dir="/tmp"))
+    mcp_server = codex_home / "mcp_reload_server.py"
+    config_path = codex_home / "config.toml"
+    try:
+        mcp_server.write_text(
+            "\n".join(
+                [
+                    "import json",
+                    "import sys",
+                    "",
+                    "def write(payload):",
+                    "    sys.stdout.write(json.dumps(payload, separators=(',', ':')) + '\\n')",
+                    "    sys.stdout.flush()",
+                    "",
+                    "for line in sys.stdin:",
+                    "    if not line.strip():",
+                    "        continue",
+                    "    request = json.loads(line)",
+                    "    method = request.get('method')",
+                    "    if method == 'notifications/initialized':",
+                    "        continue",
+                    "    request_id = request.get('id')",
+                    "    if method == 'initialize':",
+                    "        write({",
+                    "            'jsonrpc': '2.0',",
+                    "            'id': request_id,",
+                    "            'result': {",
+                    "                'protocolVersion': '2025-03-26',",
+                    "                'capabilities': {'tools': {}},",
+                    "                'serverInfo': {'name': 'mcp-reload', 'version': '0.1.0'},",
+                    "            },",
+                    "        })",
+                    "    elif method == 'tools/list':",
+                    "        write({",
+                    "            'jsonrpc': '2.0',",
+                    "            'id': request_id,",
+                    "            'result': {",
+                    "                'tools': [",
+                    "                    {",
+                    "                        'name': 'lookup',",
+                    "                        'description': 'Lookup reloaded test data.',",
+                    "                        'inputSchema': {'type': 'object'},",
+                    "                    }",
+                    "                ],",
+                    "                'nextCursor': None,",
+                    "            },",
+                    "        })",
+                    "    elif method == 'tools/call':",
+                    "        write({",
+                    "            'jsonrpc': '2.0',",
+                    "            'id': request_id,",
+                    "            'result': {",
+                    "                'content': [{'type': 'text', 'text': 'reload lookup result'}],",
+                    "            },",
+                    "        })",
+                    "    else:",
+                    "        write({",
+                    "            'jsonrpc': '2.0',",
+                    "            'id': request_id,",
+                    "            'error': {'code': -32601, 'message': f'unknown method: {method}'},",
+                    "        })",
+                    "",
+                ]
+            ),
+            encoding="utf-8",
+        )
+        config_path.write_text(
+            "\n".join(
+                [
+                    f'openai_base_url = "{base_url}"',
+                    'model = "gpt-mcp-reload"',
+                    "",
+                ]
+            ),
+            encoding="utf-8",
+        )
+        env = os.environ.copy()
+        env["CODEX_HOME"] = str(codex_home)
+        env["OPENAI_API_KEY"] = "test-api-key"
+        env.pop("CODEX_ACCESS_TOKEN", None)
+
+        proc = subprocess.Popen(
+            [str(binary), "app-server"],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            env=env,
+        )
+        try:
+            write_json_line(
+                proc,
+                {
+                    "jsonrpc": "2.0",
+                    "id": "initialize",
+                    "method": "initialize",
+                    "params": {
+                        "clientInfo": {"name": "app-server-smoke", "version": "0"},
+                        "capabilities": {},
+                    },
+                },
+            )
+            assert read_json_line(proc, 5)["id"] == "initialize"
+
+            with tempfile.TemporaryDirectory(prefix="codex-zig-turn-mcp-reload-cwd-", dir="/tmp") as cwd:
+                write_json_line(
+                    proc,
+                    {
+                        "jsonrpc": "2.0",
+                        "id": "thread-start-for-mcp-reload",
+                        "method": "thread/start",
+                        "params": {
+                            "cwd": cwd,
+                            "approvalPolicy": "never",
+                            "sandbox": "danger-full-access",
+                        },
+                    },
+                )
+                thread_start = read_json_line(proc, 5)
+                assert thread_start["id"] == "thread-start-for-mcp-reload"
+                thread = thread_start["result"]["thread"]
+                thread_id = thread["id"]
+                assert_thread_started_notification(read_json_line(proc, 5), thread)
+
+                config_path.write_text(
+                    "\n".join(
+                        [
+                            f'openai_base_url = "{base_url}"',
+                            'model = "gpt-mcp-reload"',
+                            "",
+                            "[mcp_servers.reloaded_docs]",
+                            f"command = {json.dumps(sys.executable)}",
+                            f"args = [{json.dumps(str(mcp_server))}]",
+                            "",
+                        ]
+                    ),
+                    encoding="utf-8",
+                )
+                write_json_line(
+                    proc,
+                    {
+                        "jsonrpc": "2.0",
+                        "id": "mcp-reload-loaded-thread",
+                        "method": "config/mcpServer/reload",
+                        "params": {},
+                    },
+                )
+                reload_response = read_json_line(proc, 5)
+                assert reload_response["id"] == "mcp-reload-loaded-thread"
+                assert reload_response["result"] == {}
+
+                mcp_tool_event = {
+                    "type": "response.output_item.done",
+                    "item": {
+                        "type": "function_call",
+                        "call_id": "mcp-reload-call",
+                        "name": "mcp__reloaded_docs__lookup",
+                        "arguments": "{}",
+                    },
+                }
+                server.response_payloads.extend(
+                    [
+                        (
+                            f"data: {json.dumps(mcp_tool_event, separators=(',', ':'))}\n\n"
+                            "data: [DONE]\n\n"
+                        ).encode(),
+                        (
+                            b'data: {"type":"response.output_text.delta","delta":"mcp reload reply"}\n\n'
+                            b"data: [DONE]\n\n"
+                        ),
+                    ]
+                )
+                write_json_line(
+                    proc,
+                    {
+                        "jsonrpc": "2.0",
+                        "id": "turn-start-after-mcp-reload",
+                        "method": "turn/start",
+                        "params": {
+                            "threadId": thread_id,
+                            "input": [{"type": "text", "text": "use reloaded mcp"}],
+                        },
+                    },
+                )
+                turn_start = read_json_line(proc, 5)
+                assert turn_start["id"] == "turn-start-after-mcp-reload"
+                assert turn_start["result"]["turn"]["id"] == "turn-0"
+                assert_thread_status_notification(
+                    read_json_line(proc, 5), thread_id, "active"
+                )
+                assert read_json_line(proc, 5)["method"] == "turn/started"
+                assert read_json_line(proc, 5)["method"] == "item/started"
+                assert read_json_line(proc, 5)["method"] == "item/completed"
+                assert_mcp_startup_status_notification(
+                    read_json_line(proc, 5), "reloaded_docs", "starting"
+                )
+                assert_mcp_startup_status_notification(
+                    read_json_line(proc, 5), "reloaded_docs", "ready"
+                )
+
+                raw_mcp_item_completed = read_json_line(proc, 5)
+                assert raw_mcp_item_completed["method"] == "rawResponseItem/completed"
+                assert raw_mcp_item_completed["params"]["threadId"] == thread_id
+                assert raw_mcp_item_completed["params"]["turnId"] == "turn-0"
+                assert raw_mcp_item_completed["params"]["item"]["type"] == "function_call"
+                assert (
+                    raw_mcp_item_completed["params"]["item"]["call_id"]
+                    == "mcp-reload-call"
+                )
+
+                mcp_calling = read_json_line(proc, 5)
+                assert mcp_calling["method"] == "item/mcpToolCall/progress"
+                assert mcp_calling["params"] == {
+                    "threadId": thread_id,
+                    "turnId": "turn-0",
+                    "itemId": "mcp-reload-call",
+                    "message": "calling reloaded_docs.lookup",
+                }
+                mcp_completed = read_json_line(proc, 5)
+                assert mcp_completed["method"] == "item/mcpToolCall/progress"
+                assert mcp_completed["params"] == {
+                    "threadId": thread_id,
+                    "turnId": "turn-0",
+                    "itemId": "mcp-reload-call",
+                    "message": "completed reloaded_docs.lookup",
+                }
+
+                agent_item_started = read_json_line(proc, 5)
+                assert agent_item_started["method"] == "item/started"
+                assert agent_item_started["params"]["item"]["text"] == "mcp reload reply"
+                agent_delta = read_json_line(proc, 5)
+                assert agent_delta["method"] == "item/agentMessage/delta"
+                assert agent_delta["params"]["delta"] == "mcp reload reply"
+                assert read_json_line(proc, 5)["method"] == "item/completed"
+                completed = read_json_line(proc, 5)
+                assert completed["method"] == "turn/completed"
+                assert completed["params"]["turn"]["id"] == "turn-0"
+                assert_thread_status_notification(
+                    read_json_line(proc, 5), thread_id, "idle"
+                )
+
+                assert server.request_paths == ["/responses", "/responses"]
+                tool_names = {tool["name"] for tool in server.request_bodies[0]["tools"]}
+                assert "mcp__reloaded_docs__lookup" in tool_names
+                assert any(
+                    item.get("type") == "function_call_output"
+                    and item.get("call_id") == "mcp-reload-call"
+                    and item.get("output") == "reload lookup result"
+                    for item in server.request_bodies[1]["input"]
+                )
+
+            proc.stdin.close()
+            proc.wait(timeout=5)
+            if proc.returncode != 0:
+                raise AssertionError(f"app-server exited {proc.returncode}: {proc.stderr.read()}")
+        finally:
+            if proc.poll() is None:
+                proc.kill()
+                proc.wait(timeout=5)
+    finally:
+        server.shutdown()
+        server.server_close()
+        shutil.rmtree(codex_home, ignore_errors=True)
+
+
 def run_thread_start_required_mcp_failure_smoke(binary: Path) -> None:
     codex_home = Path(tempfile.mkdtemp(prefix="codex-zig-app-server-required-mcp-", dir="/tmp"))
     try:
@@ -45921,6 +46188,8 @@ def main() -> None:
     print("app-server-turn-model-notification-e2e: ok")
     run_turn_mcp_status_notification_smoke(binary)
     print("app-server-turn-mcp-status-notification-e2e: ok")
+    run_mcp_reload_loaded_thread_turn_smoke(binary)
+    print("app-server-mcp-reload-loaded-thread-turn-e2e: ok")
     run_thread_start_required_mcp_failure_smoke(binary)
     print("app-server-thread-start-required-mcp-failure-e2e: ok")
     run_thread_start_optional_mcp_nonblocking_smoke(binary)

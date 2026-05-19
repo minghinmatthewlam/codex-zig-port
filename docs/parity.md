@@ -844,8 +844,11 @@ Additional app-server MCP reload coverage: `config/mcpServer/reload` is included
 in current TypeScript and JSON schema generation with optional empty-object
 params and an empty Rust-shaped response object. The runtime validates request
 shape, reloads current config, and strictly rebuilds configured plus enabled
-plugin MCP server inventory before returning success. Queued loaded-thread MCP
-manager refresh remains planned.
+plugin MCP server inventory before returning success. Loaded-thread turns rebuild
+their MCP catalog from current config at turn start, and stdio smoke coverage
+proves a loaded thread can call a newly configured MCP tool after
+`config/mcpServer/reload`. Persistent Rust-style thread-owned MCP manager reuse
+remains planned.
 
 Additional app-server ClientRequest TypeScript union coverage: generated
 TypeScript now includes the Rust-side `ClientRequest` methods for
