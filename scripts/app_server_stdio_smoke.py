@@ -1855,10 +1855,15 @@ def is_initial_remote_control_status_snapshot(message: dict) -> bool:
     ) == {"status": "disabled", "environmentId": None}
 
 
+def is_app_list_updated_notification(message: dict) -> bool:
+    return message.get("method") == "app/list/updated"
+
+
 def read_json_line(
     proc: subprocess.Popen[str],
     timeout: float,
     include_remote_control_status: bool = False,
+    include_app_list_updated: bool = False,
 ) -> dict:
     deadline = time.monotonic() + timeout
     while True:
@@ -1888,6 +1893,8 @@ def read_json_line(
             not include_remote_control_status
             and is_initial_remote_control_status_snapshot(message)
         ):
+            continue
+        if not include_app_list_updated and is_app_list_updated_notification(message):
             continue
         return message
 
@@ -32111,6 +32118,25 @@ def run_apps_list_rpc_smoke(binary: Path) -> None:
             proc,
             {
                 "jsonrpc": "2.0",
+                "id": "apps-list-enable-refresh",
+                "method": "experimentalFeature/enablement/set",
+                "params": {"enablement": {"apps": True}},
+            },
+        )
+        refresh_response = read_json_line(proc, 5)
+        assert refresh_response["id"] == "apps-list-enable-refresh"
+        assert refresh_response["result"] == {"enablement": {"apps": True}}
+        app_list_updated = read_json_line(proc, 5, include_app_list_updated=True)
+        assert app_list_updated == {
+            "jsonrpc": "2.0",
+            "method": "app/list/updated",
+            "params": {"data": [gmail_app, slack_app, zoom_app]},
+        }
+
+        write_json_line(
+            proc,
+            {
+                "jsonrpc": "2.0",
                 "id": "apps-list-thread-start",
                 "method": "thread/start",
                 "params": {"cwd": str(workspace_root), "ephemeral": True},
@@ -33195,6 +33221,7 @@ def wait_for_socket(socket_path: Path, proc: subprocess.Popen[str], timeout: flo
 def read_json_line_from_socket(
     reader,
     include_remote_control_status: bool = False,
+    include_app_list_updated: bool = False,
 ) -> dict:
     while True:
         line = reader.readline()
@@ -33205,6 +33232,8 @@ def read_json_line_from_socket(
             not include_remote_control_status
             and is_initial_remote_control_status_snapshot(message)
         ):
+            continue
+        if not include_app_list_updated and is_app_list_updated_notification(message):
             continue
         return message
 
@@ -33527,7 +33556,11 @@ class SmokeWebSocket:
     def write_json(self, payload: dict) -> None:
         self._send_frame(0x1, json.dumps(payload, separators=(",", ":")).encode("utf-8"))
 
-    def read_json(self, include_remote_control_status: bool = False) -> dict:
+    def read_json(
+        self,
+        include_remote_control_status: bool = False,
+        include_app_list_updated: bool = False,
+    ) -> dict:
         while True:
             payload = self._read_frame()
             if payload is None:
@@ -33537,6 +33570,8 @@ class SmokeWebSocket:
                 not include_remote_control_status
                 and is_initial_remote_control_status_snapshot(message)
             ):
+                continue
+            if not include_app_list_updated and is_app_list_updated_notification(message):
                 continue
             return message
 
