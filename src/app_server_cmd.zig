@@ -32,6 +32,7 @@ const plugin_config = @import("plugin_config.zig");
 const plugin_list = @import("plugin_list.zig");
 const plan_tool = @import("plan_tool.zig");
 const remote_plugin = @import("remote_plugin.zig");
+const review_prompt = @import("review_prompt.zig");
 const sandbox_mod = @import("sandbox.zig");
 const session_mod = @import("session.zig");
 const session_store = @import("session_store.zig");
@@ -342,6 +343,7 @@ const LoadedThread = struct {
     transcript: session_mod.Transcript,
     turns_json: []const u8,
     next_turn_index: usize,
+    reserved_next_turn_index: ?usize = null,
     pending_session_start_source: ?[]const u8,
     created_at: i64,
     updated_at: i64,
@@ -6937,7 +6939,7 @@ const REVIEW_TARGET_TS =
     \\export type ReviewTarget =
     \\  | { type: "uncommittedChanges" }
     \\  | { type: "baseBranch"; branch: string }
-    \\  | { type: "commit"; sha: string; title: string | null }
+    \\  | { type: "commit"; sha: string; title?: string | null }
     \\  | { type: "custom"; instructions: string };
     \\
     ;
@@ -14460,7 +14462,7 @@ const REVIEW_START_PARAMS_JSON_SCHEMA =
     \\        },
     \\        {
     \\          "type": "object",
-    \\          "required": ["type", "sha", "title"],
+    \\          "required": ["type", "sha"],
     \\          "properties": {
     \\            "type": { "const": "commit" },
     \\            "sha": { "type": "string" },
@@ -25784,6 +25786,9 @@ fn handleJsonRpcLine(allocator: std.mem.Allocator, state: *AppServerState, line:
     if (std.mem.eql(u8, method, "app/list")) {
         return try handleAppsList(allocator, state, id_value.?, object.get("params"));
     }
+    if (isReviewMethod(method)) {
+        return try handleReviewMethod(allocator, state, id_value.?, method, object.get("params"));
+    }
     if (isTurnMethod(method)) {
         return try handleTurnMethod(allocator, state, id_value.?, method, object.get("params"));
     }
@@ -27864,6 +27869,1006 @@ const TurnLocalImages = struct {
     }
 };
 
+fn isReviewMethod(method: []const u8) bool {
+    return std.mem.eql(u8, method, "review/start");
+}
+
+fn handleReviewMethod(
+    allocator: std.mem.Allocator,
+    state: *AppServerState,
+    id_value: std.json.Value,
+    method: []const u8,
+    params_value: ?std.json.Value,
+) !?[]const u8 {
+    if (std.mem.eql(u8, method, "review/start")) {
+        return try handleReviewStart(allocator, state, id_value, params_value);
+    }
+    return try renderParsedButNotImplemented(allocator, id_value, method);
+}
+
+const ReviewStartTarget = union(enum) {
+    uncommitted_changes,
+    base_branch: []const u8,
+    commit: Commit,
+    custom: []const u8,
+
+    const Commit = struct {
+        sha: []const u8,
+        title: ?[]const u8,
+    };
+
+    fn deinit(self: ReviewStartTarget, allocator: std.mem.Allocator) void {
+        switch (self) {
+            .uncommitted_changes => {},
+            .base_branch => |branch| allocator.free(branch),
+            .commit => |commit| {
+                allocator.free(commit.sha);
+                if (commit.title) |title| allocator.free(title);
+            },
+            .custom => |instructions| allocator.free(instructions),
+        }
+    }
+};
+
+const ReviewStartDelivery = enum {
+    inline_delivery,
+    detached,
+};
+
+fn validateReviewStartParamsObject(object: std.json.ObjectMap) !void {
+    var iterator = object.iterator();
+    while (iterator.next()) |entry| {
+        if (std.mem.eql(u8, entry.key_ptr.*, "threadId")) continue;
+        if (std.mem.eql(u8, entry.key_ptr.*, "target")) continue;
+        if (std.mem.eql(u8, entry.key_ptr.*, "delivery")) continue;
+        return error.UnknownReviewStartParam;
+    }
+}
+
+fn handleReviewStart(
+    allocator: std.mem.Allocator,
+    state: *AppServerState,
+    id_value: std.json.Value,
+    params_value: ?std.json.Value,
+) !?[]const u8 {
+    const params = params_value orelse return try renderJsonRpcError(allocator, id_value, -32602, "review/start params must be an object");
+    if (params != .object) return try renderJsonRpcError(allocator, id_value, -32602, "review/start params must be an object");
+    const object = params.object;
+    validateReviewStartParamsObject(object) catch |err| switch (err) {
+        error.UnknownReviewStartParam => return try renderJsonRpcError(allocator, id_value, -32602, "review/start params only support threadId, target, and delivery"),
+    };
+
+    const thread_id = requiredThreadIdParam(object) catch |err| switch (err) {
+        error.MissingThreadId => return try renderJsonRpcError(allocator, id_value, -32602, "threadId must be a string"),
+    };
+    if (!isUuidString(thread_id)) {
+        return try renderInvalidThreadId(allocator, id_value, thread_id);
+    }
+    const thread_index = findLoadedThreadIndex(state, thread_id) orelse {
+        return try renderThreadNotFound(allocator, id_value, thread_id);
+    };
+
+    var target = parseReviewStartTarget(allocator, object) catch |err| switch (err) {
+        error.InvalidReviewTarget => return try renderJsonRpcError(allocator, id_value, -32602, "target must be a supported review target object"),
+        error.EmptyReviewBranch => return try renderJsonRpcError(allocator, id_value, -32600, "branch must not be empty"),
+        error.EmptyReviewSha => return try renderJsonRpcError(allocator, id_value, -32600, "sha must not be empty"),
+        error.EmptyReviewInstructions => return try renderJsonRpcError(allocator, id_value, -32600, "instructions must not be empty"),
+        else => return err,
+    };
+    defer target.deinit(allocator);
+
+    const delivery = parseReviewStartDelivery(object) catch |err| switch (err) {
+        error.InvalidReviewDelivery => return try renderJsonRpcError(allocator, id_value, -32602, "delivery must be inline, detached, or null"),
+    };
+    if (delivery == .detached) {
+        return try renderJsonRpcError(allocator, id_value, -32603, "review/start detached delivery is parsed but not implemented yet");
+    }
+
+    var cfg = config.load(allocator) catch |err| {
+        return try renderJsonRpcErrorForFailure(allocator, id_value, "review/start failed to load config", err);
+    };
+    defer cfg.deinit(allocator);
+
+    const thread = &state.loaded_threads.items[thread_index];
+    applyProjectLayersToConfigForCwd(allocator, &cfg, thread.cwd) catch |err| {
+        return try renderJsonRpcErrorForFailure(allocator, id_value, "review/start failed to load project config", err);
+    };
+
+    applyLoadedThreadRuntimeToConfig(allocator, &cfg, thread) catch |err| switch (err) {
+        error.InvalidLoadedThreadRuntime => return try renderJsonRpcError(allocator, id_value, -32602, "invalid loaded review context"),
+        else => return err,
+    };
+    try applyReviewStartConstraints(allocator, &cfg);
+    try applyReviewModelForTurn(allocator, &cfg);
+
+    var credentials = auth_mod.loadForConfig(allocator, &cfg) catch |err| {
+        return try renderJsonRpcErrorForFailure(allocator, id_value, "review/start failed to load auth", err);
+    };
+    defer credentials.deinit(allocator);
+
+    const display_text = try buildReviewStartDisplayText(allocator, target);
+    defer allocator.free(display_text);
+    const prompt = try buildReviewStartPrompt(allocator, thread.cwd, target);
+    defer allocator.free(prompt);
+
+    const turn_id = try allocateNextTurnIdForThread(allocator, thread);
+    defer allocator.free(turn_id);
+    const review_next_turn_index = thread.next_turn_index;
+    const started_at_ms = currentUnixMilliseconds();
+    const started_at = @divTrunc(started_at_ms, std.time.ms_per_s);
+
+    const response = try renderReviewStartResponse(allocator, turn_id, display_text, thread.id);
+    defer allocator.free(response);
+    const response_payload = try renderJsonRpcResult(allocator, id_value, response);
+    var response_payload_moved = false;
+    defer if (!response_payload_moved) allocator.free(response_payload);
+    var turn_start_response_sent = false;
+    const started_notification = try renderTurnNotification(allocator, "turn/started", thread.id, turn_id, "inProgress", started_at, null);
+    var started_notification_moved = false;
+    defer if (!started_notification_moved) allocator.free(started_notification);
+    var turn_update_notifications = std.ArrayList([]const u8).empty;
+    defer {
+        for (turn_update_notifications.items) |notification| allocator.free(notification);
+        turn_update_notifications.deinit(allocator);
+    }
+
+    var plan_update_context = PlanUpdateNotificationContext{
+        .allocator = allocator,
+        .enabled = !notificationMethodOptedOut(state, "turn/plan/updated"),
+        .thread_id = thread.id,
+        .turn_id = turn_id,
+        .notifications = &turn_update_notifications,
+    };
+    var proposed_plan_context = ProposedPlanNotificationContext{
+        .allocator = allocator,
+        .started_enabled = !notificationMethodOptedOut(state, "item/started"),
+        .delta_enabled = !notificationMethodOptedOut(state, "item/plan/delta"),
+        .completed_enabled = !notificationMethodOptedOut(state, "item/completed"),
+        .thread_id = thread.id,
+        .turn_id = turn_id,
+        .notifications = &turn_update_notifications,
+    };
+    var diff_update_context = DiffUpdateNotificationContext{
+        .allocator = allocator,
+        .enabled = !notificationMethodOptedOut(state, "turn/diff/updated"),
+        .thread_id = thread.id,
+        .turn_id = turn_id,
+        .cwd = thread.cwd,
+        .notifications = &turn_update_notifications,
+    };
+    var command_execution_output_context = CommandExecutionOutputNotificationContext{
+        .allocator = allocator,
+        .enabled = !notificationMethodOptedOut(state, "item/commandExecution/outputDelta"),
+        .thread_id = thread.id,
+        .turn_id = turn_id,
+        .notifications = &turn_update_notifications,
+    };
+    var terminal_interaction_context = TerminalInteractionNotificationContext{
+        .allocator = allocator,
+        .enabled = !notificationMethodOptedOut(state, "item/commandExecution/terminalInteraction"),
+        .thread_id = thread.id,
+        .turn_id = turn_id,
+        .notifications = &turn_update_notifications,
+    };
+    var file_change_patch_update_context = FileChangePatchUpdateNotificationContext{
+        .allocator = allocator,
+        .enabled = !notificationMethodOptedOut(state, "item/fileChange/patchUpdated"),
+        .thread_id = thread.id,
+        .turn_id = turn_id,
+        .notifications = &turn_update_notifications,
+    };
+    var raw_response_item_context = RawResponseItemNotificationContext{
+        .allocator = allocator,
+        .raw_enabled = !notificationMethodOptedOut(state, "rawResponseItem/completed"),
+        .item_started_enabled = !notificationMethodOptedOut(state, "item/started"),
+        .item_completed_enabled = !notificationMethodOptedOut(state, "item/completed"),
+        .thread_id = thread.id,
+        .turn_id = turn_id,
+        .notifications = &turn_update_notifications,
+    };
+    var reasoning_event_context = ReasoningEventNotificationContext{
+        .allocator = allocator,
+        .summary_text_delta_enabled = !notificationMethodOptedOut(state, "item/reasoning/summaryTextDelta"),
+        .summary_part_added_enabled = !notificationMethodOptedOut(state, "item/reasoning/summaryPartAdded"),
+        .text_delta_enabled = !notificationMethodOptedOut(state, "item/reasoning/textDelta"),
+        .thread_id = thread.id,
+        .turn_id = turn_id,
+        .notifications = &turn_update_notifications,
+    };
+    var model_notification_context = ModelNotificationContext{
+        .allocator = allocator,
+        .rerouted_enabled = !notificationMethodOptedOut(state, "model/rerouted"),
+        .verification_enabled = !notificationMethodOptedOut(state, "model/verification"),
+        .requested_model = cfg.model,
+        .thread_id = thread.id,
+        .turn_id = turn_id,
+        .notifications = &turn_update_notifications,
+    };
+    var mcp_startup_status_context = McpStartupStatusNotificationContext{
+        .allocator = allocator,
+        .enabled = !notificationMethodOptedOut(state, "mcpServer/startupStatus/updated"),
+        .notifications = &turn_update_notifications,
+    };
+    var mcp_tool_call_progress_context = McpToolCallProgressNotificationContext{
+        .allocator = allocator,
+        .enabled = !notificationMethodOptedOut(state, "item/mcpToolCall/progress"),
+        .thread_id = thread.id,
+        .turn_id = turn_id,
+        .notifications = &turn_update_notifications,
+    };
+
+    const review_progress_sent = try maybeSendReviewStartProgress(
+        allocator,
+        state,
+        thread,
+        turn_id,
+        response_payload,
+        &turn_start_response_sent,
+        started_notification,
+        &started_notification_moved,
+        display_text,
+        started_at_ms,
+    );
+
+    var hook_setup = prepareReviewStartHooks(allocator, state, thread, &cfg, turn_id, prompt, review_progress_sent) catch |err| {
+        if (review_progress_sent) {
+            const error_message = try std.fmt.allocPrint(allocator, "review/start failed to prepare review: {s}", .{@errorName(err)});
+            defer allocator.free(error_message);
+            try completeFailedReviewStartAfterProgress(allocator, state, thread, turn_id, display_text, error_message, started_at, review_next_turn_index);
+            return null;
+        }
+        return try renderJsonRpcErrorForFailure(allocator, id_value, "review/start failed to prepare review", err);
+    };
+    defer hook_setup.deinit(allocator);
+    const session_start_hooks = &hook_setup.session_start_hooks;
+    const user_prompt_hooks = &hook_setup.user_prompt_hooks;
+
+    var approval_context: AppServerApprovalContext = undefined;
+    const approval_callback: ?tool_runner.ApprovalCallback = if (state.server_request_transport) |transport| blk: {
+        approval_context = .{
+            .allocator = allocator,
+            .state = state,
+            .transport = transport,
+            .thread_id = thread.id,
+            .turn_id = turn_id,
+            .turn_start_response_payload = response_payload,
+            .turn_start_response_sent = &turn_start_response_sent,
+        };
+        break :blk .{
+            .ctx = &approval_context,
+            .on_approval_requested = handleAppServerApprovalRequest,
+        };
+    } else null;
+
+    var request_permissions_context: AppServerRequestPermissionsContext = undefined;
+    const request_permissions_callback: ?session_mod.RequestPermissionsCallback = if (state.server_request_transport) |transport| blk: {
+        request_permissions_context = .{
+            .allocator = allocator,
+            .state = state,
+            .transport = transport,
+            .thread = thread,
+            .turn_id = turn_id,
+            .turn_start_response_payload = response_payload,
+            .turn_start_response_sent = &turn_start_response_sent,
+        };
+        break :blk .{
+            .ctx = &request_permissions_context,
+            .on_request_permissions_requested = handleAppServerRequestPermissions,
+        };
+    } else null;
+
+    var request_user_input_context: AppServerRequestUserInputContext = undefined;
+    const request_user_input_callback: ?session_mod.RequestUserInputCallback = if (state.server_request_transport) |transport| blk: {
+        request_user_input_context = .{
+            .allocator = allocator,
+            .state = state,
+            .transport = transport,
+            .thread_id = thread.id,
+            .turn_id = turn_id,
+            .turn_start_response_payload = response_payload,
+            .turn_start_response_sent = &turn_start_response_sent,
+        };
+        break :blk .{
+            .ctx = &request_user_input_context,
+            .on_request_user_input_requested = handleAppServerRequestUserInput,
+        };
+    } else null;
+
+    var external_auth_refresh_context: AppServerExternalAuthRefreshContext = undefined;
+    const external_auth_refresh_callback: ?api.ExternalAuthRefreshCallback = if (state.server_request_transport) |transport| blk: {
+        external_auth_refresh_context = .{
+            .allocator = allocator,
+            .state = state,
+            .transport = transport,
+            .codex_home = cfg.codex_home,
+            .forced_chatgpt_workspace_id = cfg.forced_chatgpt_workspace_id,
+            .thread_id = thread.id,
+            .turn_id = turn_id,
+            .turn_start_response_payload = response_payload,
+            .turn_start_response_sent = &turn_start_response_sent,
+        };
+        break :blk .{
+            .ctx = &external_auth_refresh_context,
+            .on_refresh = handleAppServerExternalAuthRefresh,
+        };
+    } else null;
+
+    var mcp_elicitation_context: AppServerMcpElicitationContext = undefined;
+    const mcp_elicitation_callback: ?mcp_runtime.ElicitationCallback = if (state.server_request_transport) |transport| blk: {
+        mcp_elicitation_context = .{
+            .allocator = allocator,
+            .state = state,
+            .transport = transport,
+            .thread_id = thread.id,
+            .turn_id = turn_id,
+            .auto_decline = cfg.approval_policy == .never,
+            .turn_start_response_payload = response_payload,
+            .turn_start_response_sent = &turn_start_response_sent,
+        };
+        break :blk .{
+            .ctx = &mcp_elicitation_context,
+            .on_elicitation_requested = handleAppServerMcpElicitation,
+        };
+    } else null;
+
+    var turn_feature_overrides = try effectiveAppServerTurnFeatureOverrides(allocator, state, thread.collaboration_mode);
+    defer turn_feature_overrides.deinit(allocator);
+    try applyReviewStartFeatureOverrides(allocator, &turn_feature_overrides);
+
+    var review_transcript = session_mod.Transcript{};
+    defer review_transcript.deinit(allocator);
+    for (session_start_hooks.contexts.items) |context| {
+        try review_transcript.appendDeveloperMessage(allocator, context);
+    }
+
+    if (session_start_hooks.should_stop or user_prompt_hooks.should_stop) {
+        const completed_at_ms = currentUnixMilliseconds();
+        const completed_at = @divTrunc(completed_at_ms, std.time.ms_per_s);
+        const completed_notification = try renderTurnNotification(allocator, "turn/completed", thread.id, turn_id, "completed", started_at, completed_at);
+        var completed_notification_moved = false;
+        errdefer if (!completed_notification_moved) allocator.free(completed_notification);
+
+        try refreshLoadedThreadAfterUnpersistedTurn(allocator, thread, display_text, review_next_turn_index);
+        if (thread.path) |path| {
+            try session_store.saveTranscript(allocator, path, &thread.transcript);
+        }
+
+        if (!review_progress_sent) {
+            thread.status = .active;
+            try queueThreadStatusChangedNotification(allocator, state, thread.id, .active);
+            try queueTurnNotification(allocator, state, "turn/started", started_notification);
+            started_notification_moved = true;
+            try movePendingHookRuntimeNotifications(allocator, state, &session_start_hooks.notifications);
+            try movePendingHookRuntimeNotifications(allocator, state, &user_prompt_hooks.notifications);
+            try queueReviewModeItemNotification(allocator, state, "item/started", thread.id, turn_id, "enteredReviewMode", display_text, "startedAtMs", started_at_ms);
+            try queueReviewModeItemNotification(allocator, state, "item/completed", thread.id, turn_id, "enteredReviewMode", display_text, "completedAtMs", completed_at_ms);
+        }
+        try queueReviewModeItemNotification(allocator, state, "item/started", thread.id, turn_id, "exitedReviewMode", "Reviewer failed to output a response.", "startedAtMs", completed_at_ms);
+        try queueReviewModeItemNotification(allocator, state, "item/completed", thread.id, turn_id, "exitedReviewMode", "Reviewer failed to output a response.", "completedAtMs", completed_at_ms);
+        try queueTurnNotification(allocator, state, "turn/completed", completed_notification);
+        completed_notification_moved = true;
+        thread.status = .idle;
+        try queueThreadStatusChangedNotification(allocator, state, thread.id, .idle);
+
+        if (turn_start_response_sent) return null;
+        response_payload_moved = true;
+        return response_payload;
+    }
+
+    const answer = session_mod.runTurnWithOptions(allocator, cfg, &credentials, &review_transcript, prompt, .{
+        .prompt_for_approval = false,
+        .approval_callback = approval_callback,
+        .request_permissions_callback = request_permissions_callback,
+        .request_user_input_callback = request_user_input_callback,
+        .mcp_elicitation_callback = mcp_elicitation_callback,
+        .external_auth_refresh_callback = external_auth_refresh_callback,
+        .additional_writable_roots = &.{},
+        .include_cwd_write_root = false,
+        .network_enabled = false,
+        .developer_messages_after_user = user_prompt_hooks.contexts.items,
+        .plan_update_callback = .{
+            .ctx = &plan_update_context,
+            .on_plan_updated = handleSessionPlanUpdated,
+        },
+        .proposed_plan_callback = .{
+            .ctx = &proposed_plan_context,
+            .on_proposed_plan = handleSessionProposedPlan,
+        },
+        .diff_update_callback = .{
+            .ctx = &diff_update_context,
+            .on_diff_updated = handleSessionDiffUpdated,
+        },
+        .command_execution_output_callback = .{
+            .ctx = &command_execution_output_context,
+            .on_command_execution_output = handleSessionCommandExecutionOutput,
+        },
+        .terminal_interaction_callback = .{
+            .ctx = &terminal_interaction_context,
+            .on_terminal_interaction = handleSessionTerminalInteraction,
+        },
+        .file_change_patch_update_callback = .{
+            .ctx = &file_change_patch_update_context,
+            .on_file_change_patch_updated = handleSessionFileChangePatchUpdated,
+        },
+        .raw_response_item_callback = .{
+            .ctx = &raw_response_item_context,
+            .on_raw_response_item = handleSessionRawResponseItem,
+        },
+        .reasoning_event_callback = .{
+            .ctx = &reasoning_event_context,
+            .on_reasoning_event = handleSessionReasoningEvent,
+        },
+        .server_model_callback = .{
+            .ctx = &model_notification_context,
+            .on_server_model = handleSessionServerModel,
+        },
+        .model_verification_callback = .{
+            .ctx = &model_notification_context,
+            .on_model_verifications = handleSessionModelVerifications,
+        },
+        .mcp_tool_call_progress_callback = .{
+            .ctx = &mcp_tool_call_progress_context,
+            .on_mcp_tool_call_progress = handleSessionMcpToolCallProgress,
+        },
+        .mcp_startup_status_callback = .{
+            .ctx = &mcp_startup_status_context,
+            .on_startup_status = handleSessionMcpStartupStatus,
+        },
+        .feature_overrides = turn_feature_overrides,
+        .workdir = thread.cwd,
+        .background_terminal_owner = thread.id,
+    }) catch |err| {
+        if (err == error.AppServerApprovalCanceled) {
+            const completed_at_ms = currentUnixMilliseconds();
+            const completed_at = @divTrunc(completed_at_ms, std.time.ms_per_s);
+            const completed_notification = try renderTurnNotification(allocator, "turn/completed", thread.id, turn_id, "interrupted", started_at, completed_at);
+            var completed_notification_moved = false;
+            errdefer if (!completed_notification_moved) allocator.free(completed_notification);
+
+            try refreshLoadedThreadAfterUnpersistedTurn(allocator, thread, display_text, review_next_turn_index);
+            if (thread.path) |path| {
+                try session_store.saveTranscript(allocator, path, &thread.transcript);
+            }
+
+            if (!review_progress_sent) {
+                thread.status = .active;
+                try queueThreadStatusChangedNotification(allocator, state, thread.id, .active);
+                try queueTurnNotification(allocator, state, "turn/started", started_notification);
+                started_notification_moved = true;
+                try movePendingHookRuntimeNotifications(allocator, state, &session_start_hooks.notifications);
+                try movePendingHookRuntimeNotifications(allocator, state, &user_prompt_hooks.notifications);
+                try queueReviewModeItemNotification(allocator, state, "item/started", thread.id, turn_id, "enteredReviewMode", display_text, "startedAtMs", started_at_ms);
+                try queueReviewModeItemNotification(allocator, state, "item/completed", thread.id, turn_id, "enteredReviewMode", display_text, "completedAtMs", completed_at_ms);
+            }
+            try movePendingTurnUpdateNotifications(allocator, state, &turn_update_notifications);
+            try queueReviewModeItemNotification(allocator, state, "item/started", thread.id, turn_id, "exitedReviewMode", "Reviewer failed to output a response.", "startedAtMs", completed_at_ms);
+            try queueReviewModeItemNotification(allocator, state, "item/completed", thread.id, turn_id, "exitedReviewMode", "Reviewer failed to output a response.", "completedAtMs", completed_at_ms);
+            try queueTurnNotification(allocator, state, "turn/completed", completed_notification);
+            completed_notification_moved = true;
+            thread.status = .idle;
+            try queueThreadStatusChangedNotification(allocator, state, thread.id, .idle);
+
+            if (turn_start_response_sent) return null;
+            response_payload_moved = true;
+            return response_payload;
+        }
+
+        const error_message = try std.fmt.allocPrint(allocator, "review/start failed to run review: {s}", .{@errorName(err)});
+        defer allocator.free(error_message);
+        const should_emit_started = turn_start_response_sent or
+            session_start_hooks.notifications.items.len > 0 or
+            user_prompt_hooks.notifications.items.len > 0;
+        if (should_emit_started and !review_progress_sent) {
+            const completed_at_ms = currentUnixMilliseconds();
+            const completed_at = @divTrunc(completed_at_ms, std.time.ms_per_s);
+            const failed_notification = try renderTurnNotification(allocator, "turn/completed", thread.id, turn_id, "failed", started_at, completed_at);
+            var failed_notification_moved = false;
+            errdefer if (!failed_notification_moved) allocator.free(failed_notification);
+            thread.status = .active;
+            try queueThreadStatusChangedNotification(allocator, state, thread.id, .active);
+            try queueTurnNotification(allocator, state, "turn/started", started_notification);
+            started_notification_moved = true;
+            try movePendingHookRuntimeNotifications(allocator, state, &session_start_hooks.notifications);
+            try movePendingHookRuntimeNotifications(allocator, state, &user_prompt_hooks.notifications);
+            try queueReviewModeItemNotification(allocator, state, "item/started", thread.id, turn_id, "enteredReviewMode", display_text, "startedAtMs", started_at_ms);
+            try queueReviewModeItemNotification(allocator, state, "item/completed", thread.id, turn_id, "enteredReviewMode", display_text, "completedAtMs", completed_at_ms);
+            try movePendingTurnUpdateNotifications(allocator, state, &turn_update_notifications);
+            try queueReviewModeItemNotification(allocator, state, "item/started", thread.id, turn_id, "exitedReviewMode", "Reviewer failed to output a response.", "startedAtMs", completed_at_ms);
+            try queueReviewModeItemNotification(allocator, state, "item/completed", thread.id, turn_id, "exitedReviewMode", "Reviewer failed to output a response.", "completedAtMs", completed_at_ms);
+            try queueTurnNotification(allocator, state, "turn/completed", failed_notification);
+            failed_notification_moved = true;
+        } else if (review_progress_sent) {
+            const completed_at_ms = currentUnixMilliseconds();
+            const completed_at = @divTrunc(completed_at_ms, std.time.ms_per_s);
+            const failed_notification = try renderTurnNotification(allocator, "turn/completed", thread.id, turn_id, "failed", started_at, completed_at);
+            var failed_notification_moved = false;
+            errdefer if (!failed_notification_moved) allocator.free(failed_notification);
+            try movePendingTurnUpdateNotifications(allocator, state, &turn_update_notifications);
+            try queueReviewModeItemNotification(allocator, state, "item/started", thread.id, turn_id, "exitedReviewMode", "Reviewer failed to output a response.", "startedAtMs", completed_at_ms);
+            try queueReviewModeItemNotification(allocator, state, "item/completed", thread.id, turn_id, "exitedReviewMode", "Reviewer failed to output a response.", "completedAtMs", completed_at_ms);
+            try queueTurnNotification(allocator, state, "turn/completed", failed_notification);
+            failed_notification_moved = true;
+        }
+        thread.status = .system_error;
+        try refreshLoadedThreadAfterUnpersistedTurn(allocator, thread, display_text, review_next_turn_index);
+        if (thread.path) |path| {
+            try session_store.saveTranscript(allocator, path, &thread.transcript);
+        }
+        try queueErrorNotification(allocator, state, thread.id, turn_id, error_message, false);
+        try queueThreadStatusChangedNotification(allocator, state, thread.id, .system_error);
+        if (turn_start_response_sent) return null;
+        return try renderJsonRpcError(allocator, id_value, -32603, error_message);
+    };
+    defer allocator.free(answer);
+
+    const completed_at_ms = currentUnixMilliseconds();
+    const completed_at = @divTrunc(completed_at_ms, std.time.ms_per_s);
+    const completed_notification = try renderTurnNotification(allocator, "turn/completed", thread.id, turn_id, "completed", started_at, completed_at);
+    var completed_notification_moved = false;
+    errdefer if (!completed_notification_moved) allocator.free(completed_notification);
+
+    const review_output = try renderReviewStartOutputText(allocator, answer);
+    defer allocator.free(review_output);
+    const review_context = try renderReviewStartRolloutUserMessage(allocator, review_output);
+    defer allocator.free(review_context);
+    try thread.transcript.appendUserMessage(allocator, review_context);
+    try thread.transcript.appendAssistantMessage(allocator, review_output);
+    const assistant_item_index = thread.transcript.history.items.len - 1;
+
+    try refreshLoadedThreadAfterReviewTurn(allocator, thread, display_text, review_next_turn_index);
+    if (thread.path) |path| {
+        try session_store.saveTranscript(allocator, path, &thread.transcript);
+    }
+
+    if (!review_progress_sent) {
+        thread.status = .active;
+        try queueThreadStatusChangedNotification(allocator, state, thread.id, .active);
+        try queueTurnNotification(allocator, state, "turn/started", started_notification);
+        started_notification_moved = true;
+        try movePendingHookRuntimeNotifications(allocator, state, &session_start_hooks.notifications);
+        try movePendingHookRuntimeNotifications(allocator, state, &user_prompt_hooks.notifications);
+        try queueReviewModeItemNotification(allocator, state, "item/started", thread.id, turn_id, "enteredReviewMode", display_text, "startedAtMs", started_at_ms);
+        try queueReviewModeItemNotification(allocator, state, "item/completed", thread.id, turn_id, "enteredReviewMode", display_text, "completedAtMs", completed_at_ms);
+    }
+    try movePendingTurnUpdateNotifications(allocator, state, &turn_update_notifications);
+    try queueReviewModeItemNotification(allocator, state, "item/started", thread.id, turn_id, "exitedReviewMode", review_output, "startedAtMs", completed_at_ms);
+    try queueReviewModeItemNotification(allocator, state, "item/completed", thread.id, turn_id, "exitedReviewMode", review_output, "completedAtMs", completed_at_ms);
+    if (review_output.len > 0) {
+        try queueAgentMessageItemNotification(allocator, state, "item/started", thread.id, turn_id, assistant_item_index, review_output, "startedAtMs", completed_at_ms);
+        try queueAgentMessageItemNotification(allocator, state, "item/completed", thread.id, turn_id, assistant_item_index, review_output, "completedAtMs", completed_at_ms);
+    }
+    try queueTurnNotification(allocator, state, "turn/completed", completed_notification);
+    completed_notification_moved = true;
+    thread.status = .idle;
+    try queueThreadStatusChangedNotification(allocator, state, thread.id, .idle);
+
+    if (turn_start_response_sent) return null;
+    response_payload_moved = true;
+    return response_payload;
+}
+
+fn parseReviewStartDelivery(params: std.json.ObjectMap) !ReviewStartDelivery {
+    const delivery_value = params.get("delivery") orelse return .inline_delivery;
+    if (delivery_value == .null) return .inline_delivery;
+    if (delivery_value != .string) return error.InvalidReviewDelivery;
+    if (std.mem.eql(u8, delivery_value.string, "inline")) return .inline_delivery;
+    if (std.mem.eql(u8, delivery_value.string, "detached")) return .detached;
+    return error.InvalidReviewDelivery;
+}
+
+fn parseReviewStartTarget(allocator: std.mem.Allocator, params: std.json.ObjectMap) !ReviewStartTarget {
+    const target_value = params.get("target") orelse return error.InvalidReviewTarget;
+    if (target_value != .object) return error.InvalidReviewTarget;
+    const target = target_value.object;
+    const target_type_value = target.get("type") orelse return error.InvalidReviewTarget;
+    if (target_type_value != .string) return error.InvalidReviewTarget;
+    const target_type = target_type_value.string;
+    if (std.mem.eql(u8, target_type, "uncommittedChanges")) {
+        if (!reviewTargetObjectHasOnlyKeys(target, &.{"type"})) return error.InvalidReviewTarget;
+        return .uncommitted_changes;
+    }
+    if (std.mem.eql(u8, target_type, "baseBranch")) {
+        if (!reviewTargetObjectHasOnlyKeys(target, &.{ "type", "branch" })) return error.InvalidReviewTarget;
+        const branch_value = target.get("branch") orelse return error.InvalidReviewTarget;
+        if (branch_value != .string) return error.InvalidReviewTarget;
+        const branch = std.mem.trim(u8, branch_value.string, " \t\r\n");
+        if (branch.len == 0) return error.EmptyReviewBranch;
+        return .{ .base_branch = try allocator.dupe(u8, branch) };
+    }
+    if (std.mem.eql(u8, target_type, "commit")) {
+        if (!reviewTargetObjectHasOnlyKeys(target, &.{ "type", "sha", "title" })) return error.InvalidReviewTarget;
+        const sha_value = target.get("sha") orelse return error.InvalidReviewTarget;
+        if (sha_value != .string) return error.InvalidReviewTarget;
+        const sha = std.mem.trim(u8, sha_value.string, " \t\r\n");
+        if (sha.len == 0) return error.EmptyReviewSha;
+        const sha_copy = try allocator.dupe(u8, sha);
+        errdefer allocator.free(sha_copy);
+        var title_copy: ?[]const u8 = null;
+        errdefer if (title_copy) |title| allocator.free(title);
+        if (target.get("title")) |title_value| {
+            if (title_value != .null) {
+                if (title_value != .string) return error.InvalidReviewTarget;
+                const title = std.mem.trim(u8, title_value.string, " \t\r\n");
+                if (title.len > 0) {
+                    title_copy = try allocator.dupe(u8, title);
+                }
+            }
+        }
+        return .{ .commit = .{ .sha = sha_copy, .title = title_copy } };
+    }
+    if (std.mem.eql(u8, target_type, "custom")) {
+        if (!reviewTargetObjectHasOnlyKeys(target, &.{ "type", "instructions" })) return error.InvalidReviewTarget;
+        const instructions_value = target.get("instructions") orelse return error.InvalidReviewTarget;
+        if (instructions_value != .string) return error.InvalidReviewTarget;
+        const instructions = std.mem.trim(u8, instructions_value.string, " \t\r\n");
+        if (instructions.len == 0) return error.EmptyReviewInstructions;
+        return .{ .custom = try allocator.dupe(u8, instructions) };
+    }
+    return error.InvalidReviewTarget;
+}
+
+fn reviewTargetObjectHasOnlyKeys(target: std.json.ObjectMap, allowed_keys: []const []const u8) bool {
+    var iterator = target.iterator();
+    while (iterator.next()) |entry| {
+        var allowed = false;
+        for (allowed_keys) |allowed_key| {
+            if (std.mem.eql(u8, entry.key_ptr.*, allowed_key)) {
+                allowed = true;
+                break;
+            }
+        }
+        if (!allowed) return false;
+    }
+    return true;
+}
+
+fn applyReviewModelForTurn(allocator: std.mem.Allocator, cfg: *config.Config) !void {
+    const review_model = cfg.review_model orelse return;
+    try replaceOwnedString(allocator, &cfg.model, review_model);
+}
+
+fn buildReviewStartDisplayText(allocator: std.mem.Allocator, target: ReviewStartTarget) ![]const u8 {
+    switch (target) {
+        .uncommitted_changes => return allocator.dupe(u8, "current changes"),
+        .base_branch => |branch| return std.fmt.allocPrint(allocator, "changes against '{s}'", .{branch}),
+        .commit => |commit| {
+            const short_len = @min(commit.sha.len, 7);
+            const short_sha = commit.sha[0..short_len];
+            if (commit.title) |title| {
+                return std.fmt.allocPrint(allocator, "commit {s}: {s}", .{ short_sha, title });
+            }
+            return std.fmt.allocPrint(allocator, "commit {s}", .{short_sha});
+        },
+        .custom => |instructions| return allocator.dupe(u8, instructions),
+    }
+}
+
+fn buildReviewStartPrompt(allocator: std.mem.Allocator, cwd: []const u8, target: ReviewStartTarget) ![]const u8 {
+    switch (target) {
+        .uncommitted_changes => return allocator.dupe(u8, "Review the current code changes (staged, unstaged, and untracked files) and provide prioritized findings."),
+        .base_branch => |branch| {
+            const merge_base = git_diff.mergeBaseWithHead(allocator, cwd, branch) catch |err| switch (err) {
+                error.OutOfMemory => return err,
+                else => null,
+            };
+            defer if (merge_base) |base| allocator.free(base);
+            if (merge_base) |base| {
+                return std.fmt.allocPrint(allocator, "Review the code changes against the base branch '{s}'. The merge base commit for this comparison is {s}. Run `git diff {s}` to inspect the changes relative to {s}. Provide prioritized, actionable findings.", .{ branch, base, base, branch });
+            }
+            return std.fmt.allocPrint(allocator, "Review the code changes against the base branch '{s}'. The merge base could not be precomputed, so inspect it with read-only git commands: run `git rev-parse --abbrev-ref --symbolic-full-name {s}@{{upstream}}`; if that succeeds, run `git merge-base HEAD <upstream-ref>`, otherwise run `git merge-base HEAD {s}`; then run `git diff <merge-base-sha>` to see what changes we would merge into {s}. Provide prioritized, actionable findings.", .{ branch, branch, branch, branch });
+        },
+        .commit => |commit| {
+            if (commit.title) |title| {
+                return std.fmt.allocPrint(allocator, "Review the code changes introduced by commit {s} (\"{s}\"). Provide prioritized, actionable findings.", .{ commit.sha, title });
+            }
+            return std.fmt.allocPrint(allocator, "Review the code changes introduced by commit {s}. Provide prioritized, actionable findings.", .{commit.sha});
+        },
+        .custom => |instructions| return allocator.dupe(u8, instructions),
+    }
+}
+
+fn renderReviewStartOutputText(allocator: std.mem.Allocator, text: []const u8) ![]const u8 {
+    const trimmed = std.mem.trim(u8, text, " \t\r\n");
+    if (trimmed.len == 0) return allocator.dupe(u8, "Reviewer failed to output a response.");
+    if (try renderReviewOutputJsonText(allocator, trimmed)) |rendered| return rendered;
+    if (std.mem.indexOfScalar(u8, trimmed, '{')) |start| {
+        if (std.mem.lastIndexOfScalar(u8, trimmed, '}')) |end| {
+            if (start < end) {
+                if (try renderReviewOutputJsonText(allocator, trimmed[start .. end + 1])) |rendered| return rendered;
+            }
+        }
+    }
+    return allocator.dupe(u8, trimmed);
+}
+
+fn renderReviewOutputJsonText(allocator: std.mem.Allocator, bytes: []const u8) !?[]const u8 {
+    var parsed = std.json.parseFromSlice(std.json.Value, allocator, bytes, .{}) catch return null;
+    defer parsed.deinit();
+    return try renderReviewOutputJsonValue(allocator, parsed.value);
+}
+
+fn renderReviewOutputJsonValue(allocator: std.mem.Allocator, value: std.json.Value) !?[]const u8 {
+    if (value != .object) return null;
+    const object = value.object;
+    const explanation_value = object.get("overall_explanation") orelse return null;
+    if (explanation_value != .string) return null;
+    const findings_value = object.get("findings") orelse return null;
+    if (findings_value != .array) return null;
+
+    var out = std.ArrayList(u8).empty;
+    var out_moved = false;
+    defer if (!out_moved) out.deinit(allocator);
+    const explanation = std.mem.trim(u8, explanation_value.string, " \t\r\n");
+    if (explanation.len > 0) try out.appendSlice(allocator, explanation);
+    if (findings_value.array.items.len > 0) {
+        if (out.items.len > 0) try out.appendSlice(allocator, "\n\n");
+        if (findings_value.array.items.len > 1) {
+            try out.appendSlice(allocator, "Full review comments:");
+        } else {
+            try out.appendSlice(allocator, "Review comment:");
+        }
+        for (findings_value.array.items) |finding_value| {
+            if (finding_value != .object) return null;
+            const finding = finding_value.object;
+            const title = jsonStringField(finding, "title") orelse return null;
+            const body = jsonStringField(finding, "body") orelse return null;
+            const location_value = finding.get("code_location") orelse return null;
+            if (location_value != .object) return null;
+            const location = location_value.object;
+            const path = jsonStringField(location, "absolute_file_path") orelse return null;
+            const line_range_value = location.get("line_range") orelse return null;
+            if (line_range_value != .object) return null;
+            const line_range = line_range_value.object;
+            const start = jsonIntegerField(line_range, "start") orelse return null;
+            const end = jsonIntegerField(line_range, "end") orelse return null;
+
+            try out.appendSlice(allocator, "\n\n- ");
+            try out.appendSlice(allocator, title);
+            try out.appendSlice(allocator, " - ");
+            try out.appendSlice(allocator, path);
+            try out.append(allocator, ':');
+            try appendInt(allocator, &out, start);
+            try out.append(allocator, '-');
+            try appendInt(allocator, &out, end);
+            if (body.len > 0) {
+                var lines = std.mem.splitScalar(u8, body, '\n');
+                while (lines.next()) |line| {
+                    try out.appendSlice(allocator, "\n  ");
+                    try out.appendSlice(allocator, line);
+                }
+            }
+        }
+    }
+    if (out.items.len == 0) return @as(?[]const u8, try allocator.dupe(u8, "Reviewer failed to output a response."));
+    const rendered = try out.toOwnedSlice(allocator);
+    out_moved = true;
+    return @as(?[]const u8, rendered);
+}
+
+test "review output JSON fallback releases partial render buffer" {
+    const malformed =
+        \\{"overall_explanation":"Looks partial","findings":[{"title":"Missing body"}]}
+    ;
+
+    const rendered = try renderReviewStartOutputText(std.testing.allocator, malformed);
+    defer std.testing.allocator.free(rendered);
+
+    try std.testing.expectEqualStrings(malformed, rendered);
+}
+
+test "base branch review prompt falls back when merge base cannot be precomputed" {
+    const prompt = try buildReviewStartPrompt(std.testing.allocator, "/definitely-not-a-codex-zig-port-repo", .{ .base_branch = "main" });
+    defer std.testing.allocator.free(prompt);
+
+    try std.testing.expect(std.mem.indexOf(u8, prompt, "The merge base could not be precomputed") != null);
+    try std.testing.expect(std.mem.indexOf(u8, prompt, "git merge-base HEAD main") != null);
+}
+
+test "review target parser rejects extra target fields" {
+    var parsed = try std.json.parseFromSlice(std.json.Value, std.testing.allocator,
+        \\{"target":{"type":"baseBranch","branch":"main","sha":"abc123"}}
+    , .{});
+    defer parsed.deinit();
+
+    try std.testing.expectError(error.InvalidReviewTarget, parseReviewStartTarget(std.testing.allocator, parsed.value.object));
+}
+
+fn jsonStringField(object: std.json.ObjectMap, name: []const u8) ?[]const u8 {
+    const value = object.get(name) orelse return null;
+    if (value != .string) return null;
+    return value.string;
+}
+
+fn jsonIntegerField(object: std.json.ObjectMap, name: []const u8) ?i64 {
+    const value = object.get(name) orelse return null;
+    if (value != .integer) return null;
+    return value.integer;
+}
+
+fn renderReviewStartRolloutUserMessage(allocator: std.mem.Allocator, review_output: []const u8) ![]const u8 {
+    return std.fmt.allocPrint(allocator,
+        \\<user_action>
+        \\  <context>User initiated a review task. Here's the full review output from reviewer model. User may select one or more comments to resolve.</context>
+        \\  <action>review</action>
+        \\  <results>
+        \\  {s}
+        \\  </results>
+        \\  </user_action>
+        \\
+    , .{review_output});
+}
+
+fn renderReviewStartResponse(
+    allocator: std.mem.Allocator,
+    turn_id: []const u8,
+    display_text: []const u8,
+    review_thread_id: []const u8,
+) ![]const u8 {
+    var response = std.ArrayList(u8).empty;
+    errdefer response.deinit(allocator);
+    try response.appendSlice(allocator, "{\"turn\":");
+    try appendReviewStartTurnJson(allocator, &response, turn_id, display_text);
+    try response.appendSlice(allocator, ",\"reviewThreadId\":");
+    try appendJsonString(allocator, &response, review_thread_id);
+    try response.append(allocator, '}');
+    return response.toOwnedSlice(allocator);
+}
+
+fn appendReviewStartTurnJson(
+    allocator: std.mem.Allocator,
+    out: *std.ArrayList(u8),
+    turn_id: []const u8,
+    display_text: []const u8,
+) !void {
+    try out.appendSlice(allocator, "{\"id\":");
+    try appendJsonString(allocator, out, turn_id);
+    try out.appendSlice(allocator, ",\"items\":[{\"type\":\"userMessage\",\"id\":");
+    try appendJsonString(allocator, out, turn_id);
+    try out.appendSlice(allocator, ",\"content\":[{\"type\":\"text\",\"text\":");
+    try appendJsonString(allocator, out, display_text);
+    try out.appendSlice(allocator, ",\"text_elements\":[]}]}],\"itemsView\":\"notLoaded\",\"status\":\"inProgress\",\"error\":null,\"startedAt\":null,\"completedAt\":null,\"durationMs\":null}");
+}
+
+fn maybeSendReviewStartProgress(
+    allocator: std.mem.Allocator,
+    state: *AppServerState,
+    thread: *LoadedThread,
+    turn_id: []const u8,
+    response_payload: []const u8,
+    turn_start_response_sent: *bool,
+    started_notification: []const u8,
+    started_notification_moved: *bool,
+    display_text: []const u8,
+    started_at_ms: i64,
+) !bool {
+    const transport = state.server_request_transport orelse return false;
+    if (!turn_start_response_sent.*) {
+        try transport.send_payload(transport.ctx, response_payload);
+        turn_start_response_sent.* = true;
+    }
+
+    thread.status = .active;
+    try queueThreadStatusChangedNotification(allocator, state, thread.id, .active);
+    try queueTurnNotification(allocator, state, "turn/started", started_notification);
+    started_notification_moved.* = true;
+    try queueReviewModeItemNotification(allocator, state, "item/started", thread.id, turn_id, "enteredReviewMode", display_text, "startedAtMs", started_at_ms);
+    try queueReviewModeItemNotification(allocator, state, "item/completed", thread.id, turn_id, "enteredReviewMode", display_text, "completedAtMs", currentUnixMilliseconds());
+    try flushPendingNotificationsToTransport(allocator, state, transport);
+    return true;
+}
+
+const ReviewStartHookSetup = struct {
+    session_start_hooks: HookRuntimeResult = .{},
+    user_prompt_hooks: HookRuntimeResult = .{},
+
+    fn deinit(self: *ReviewStartHookSetup, allocator: std.mem.Allocator) void {
+        self.session_start_hooks.deinit(allocator);
+        self.user_prompt_hooks.deinit(allocator);
+    }
+};
+
+fn prepareReviewStartHooks(
+    allocator: std.mem.Allocator,
+    state: *AppServerState,
+    thread: *LoadedThread,
+    cfg: *const config.Config,
+    turn_id: []const u8,
+    prompt: []const u8,
+    review_progress_sent: bool,
+) !ReviewStartHookSetup {
+    var setup = ReviewStartHookSetup{};
+    errdefer setup.deinit(allocator);
+
+    try materializeHookTranscriptForThread(allocator, thread);
+    if (thread.pending_session_start_source) |source| {
+        thread.pending_session_start_source = null;
+        defer allocator.free(source);
+        setup.session_start_hooks = try runSessionStartHooks(
+            allocator,
+            cfg.codex_home,
+            thread.id,
+            turn_id,
+            thread.path,
+            thread.cwd,
+            cfg.model,
+            hookPermissionMode(cfg.approval_policy),
+            source,
+        );
+    }
+    if (setup.session_start_hooks.contexts.items.len > 0) {
+        try persistHookContextsForNextTurn(allocator, thread, setup.session_start_hooks.contexts.items);
+    }
+
+    if (!setup.session_start_hooks.should_stop) {
+        setup.user_prompt_hooks = try runUserPromptSubmitHooks(
+            allocator,
+            cfg.codex_home,
+            thread.id,
+            turn_id,
+            thread.path,
+            thread.cwd,
+            cfg.model,
+            hookPermissionMode(cfg.approval_policy),
+            prompt,
+        );
+    }
+    if (review_progress_sent) {
+        try movePendingHookRuntimeNotifications(allocator, state, &setup.session_start_hooks.notifications);
+        try movePendingHookRuntimeNotifications(allocator, state, &setup.user_prompt_hooks.notifications);
+        try flushPendingNotificationsToActiveTransport(allocator, state);
+    }
+
+    return setup;
+}
+
+fn completeFailedReviewStartAfterProgress(
+    allocator: std.mem.Allocator,
+    state: *AppServerState,
+    thread: *LoadedThread,
+    turn_id: []const u8,
+    display_text: []const u8,
+    error_message: []const u8,
+    started_at: i64,
+    minimum_next_turn_index: usize,
+) !void {
+    const completed_at_ms = currentUnixMilliseconds();
+    const completed_at = @divTrunc(completed_at_ms, std.time.ms_per_s);
+    const failed_notification = try renderTurnNotification(allocator, "turn/completed", thread.id, turn_id, "failed", started_at, completed_at);
+    var failed_notification_moved = false;
+    errdefer if (!failed_notification_moved) allocator.free(failed_notification);
+
+    try queueReviewModeItemNotification(allocator, state, "item/started", thread.id, turn_id, "exitedReviewMode", "Reviewer failed to output a response.", "startedAtMs", completed_at_ms);
+    try queueReviewModeItemNotification(allocator, state, "item/completed", thread.id, turn_id, "exitedReviewMode", "Reviewer failed to output a response.", "completedAtMs", completed_at_ms);
+    try queueTurnNotification(allocator, state, "turn/completed", failed_notification);
+    failed_notification_moved = true;
+    thread.status = .system_error;
+    try queueErrorNotification(allocator, state, thread.id, turn_id, error_message, false);
+    try queueThreadStatusChangedNotification(allocator, state, thread.id, .system_error);
+
+    refreshLoadedThreadAfterUnpersistedTurn(allocator, thread, display_text, minimum_next_turn_index) catch {};
+    if (thread.path) |path| {
+        session_store.saveTranscript(allocator, path, &thread.transcript) catch {};
+    }
+}
+
+fn flushPendingNotificationsToActiveTransport(allocator: std.mem.Allocator, state: *AppServerState) !void {
+    const transport = state.server_request_transport orelse return;
+    try flushPendingNotificationsToTransport(allocator, state, transport);
+}
+
+fn flushPendingNotificationsToTransport(
+    allocator: std.mem.Allocator,
+    state: *AppServerState,
+    transport: ServerRequestTransport,
+) !void {
+    var notifications = state.pending_notifications;
+    state.pending_notifications = .empty;
+    defer freePendingNotifications(allocator, &notifications);
+    for (notifications.items) |payload| {
+        try transport.send_payload(transport.ctx, payload);
+    }
+}
+
 fn isTurnMethod(method: []const u8) bool {
     return std.mem.eql(u8, method, "turn/start") or
         std.mem.eql(u8, method, "turn/steer") or
@@ -29845,6 +30850,12 @@ fn hookScopeLabel(event_name: hooks_list.HookEvent) []const u8 {
 
 fn allocateNextTurnIdForThread(allocator: std.mem.Allocator, thread: *LoadedThread) ![]const u8 {
     syncLoadedThreadNextTurnIndex(thread);
+    if (thread.reserved_next_turn_index) |reserved_next_turn_index| {
+        if (thread.next_turn_index < reserved_next_turn_index) {
+            thread.next_turn_index = reserved_next_turn_index;
+        }
+        thread.reserved_next_turn_index = null;
+    }
     const index = thread.next_turn_index;
     const turn_id = try std.fmt.allocPrint(allocator, "turn-{d}", .{index});
     thread.next_turn_index = index + 1;
@@ -29992,6 +31003,66 @@ fn testAppServerConfig(allocator: std.mem.Allocator, model: []const u8) !config.
         .tui_terminal_title = null,
         .tui_alternate_screen = .auto,
     };
+}
+
+fn applyLoadedThreadRuntimeToConfig(
+    allocator: std.mem.Allocator,
+    cfg: *config.Config,
+    thread: *const LoadedThread,
+) !void {
+    try replaceOwnedString(allocator, &cfg.model, thread.model);
+    cfg.model_context_window = thread.model_context_window;
+    cfg.model_auto_compact_token_limit = thread.model_auto_compact_token_limit;
+    if (thread.model_verbosity) |value| {
+        cfg.model_verbosity = config.Verbosity.parse(value) catch return error.InvalidLoadedThreadRuntime;
+    } else {
+        cfg.model_verbosity = null;
+    }
+    cfg.approval_policy = config.ApprovalPolicy.parse(thread.approval_policy) catch return error.InvalidLoadedThreadRuntime;
+    cfg.sandbox_mode = config.SandboxMode.parse(thread.sandbox_mode) catch return error.InvalidLoadedThreadRuntime;
+    if (cfg.service_tier) |existing| allocator.free(existing);
+    cfg.service_tier = null;
+    cfg.service_tier = if (thread.service_tier) |value| try allocator.dupe(u8, value) else null;
+    if (thread.reasoning_effort) |value| {
+        cfg.model_reasoning_effort = config.ReasoningEffort.parse(value) catch return error.InvalidLoadedThreadRuntime;
+    } else {
+        cfg.model_reasoning_effort = null;
+    }
+    if (thread.reasoning_summary) |value| {
+        cfg.model_reasoning_summary = config.ReasoningSummary.parse(value) catch return error.InvalidLoadedThreadRuntime;
+    } else {
+        cfg.model_reasoning_summary = null;
+    }
+    if (thread.personality) |value| {
+        cfg.personality = config.Personality.parse(value) catch return error.InvalidLoadedThreadRuntime;
+    } else {
+        cfg.personality = null;
+    }
+    if (thread.collaboration_developer_instructions) |value| {
+        try replaceConfigOptionalString(allocator, &cfg.developer_instructions, value);
+    }
+}
+
+fn applyReviewStartConstraints(allocator: std.mem.Allocator, cfg: *config.Config) !void {
+    cfg.web_search_mode = .disabled;
+    cfg.approval_policy = .never;
+    cfg.sandbox_mode = .read_only;
+    try replaceConfigOptionalString(allocator, &cfg.base_instructions, review_prompt.text);
+    clearOptionalOwnedString(allocator, &cfg.developer_instructions);
+}
+
+fn applyReviewStartFeatureOverrides(
+    allocator: std.mem.Allocator,
+    overrides: *features_cmd.FeatureOverrides,
+) !void {
+    try overrides.put(allocator, "multi_agent", false);
+    try overrides.put(allocator, "multi_agent_v2", false);
+    try overrides.put(allocator, "mcp_tools", false);
+    try overrides.put(allocator, "mcp_resource_tools", false);
+    try overrides.put(allocator, "write_stdin_tool", false);
+    try overrides.put(allocator, "request_permissions_tool", false);
+    try overrides.put(allocator, "request_user_input_tool", false);
+    try overrides.put(allocator, "default_mode_request_user_input", false);
 }
 
 fn applyTurnStartRuntimeOverrides(
@@ -30406,6 +31477,44 @@ fn refreshLoadedThreadAfterTurn(allocator: std.mem.Allocator, thread: *LoadedThr
     thread.turns_json = turns_json;
     syncLoadedThreadNextTurnIndex(thread);
     thread.updated_at = currentUnixSeconds();
+}
+
+fn refreshLoadedThreadAfterReviewTurn(
+    allocator: std.mem.Allocator,
+    thread: *LoadedThread,
+    prompt: []const u8,
+    minimum_next_turn_index: usize,
+) !void {
+    try refreshLoadedThreadAfterTurn(allocator, thread, prompt);
+    thread.next_turn_index = preserveReviewNextTurnIndex(thread.next_turn_index, minimum_next_turn_index);
+}
+
+fn preserveReviewNextTurnIndex(next_turn_index: usize, minimum_next_turn_index: usize) usize {
+    return if (next_turn_index < minimum_next_turn_index) minimum_next_turn_index else next_turn_index;
+}
+
+test "review turn refresh preserves allocated high-water mark" {
+    try std.testing.expectEqual(@as(usize, 3), preserveReviewNextTurnIndex(1, 3));
+    try std.testing.expectEqual(@as(usize, 4), preserveReviewNextTurnIndex(4, 3));
+}
+
+fn refreshLoadedThreadAfterUnpersistedTurn(
+    allocator: std.mem.Allocator,
+    thread: *LoadedThread,
+    prompt: []const u8,
+    minimum_next_turn_index: usize,
+) !void {
+    try refreshLoadedThreadAfterTurn(allocator, thread, prompt);
+    if (thread.next_turn_index < minimum_next_turn_index) {
+        thread.next_turn_index = minimum_next_turn_index;
+    }
+    if (thread.reserved_next_turn_index) |reserved_next_turn_index| {
+        if (reserved_next_turn_index < minimum_next_turn_index) {
+            thread.reserved_next_turn_index = minimum_next_turn_index;
+        }
+    } else {
+        thread.reserved_next_turn_index = minimum_next_turn_index;
+    }
 }
 
 fn rollbackLoadedThread(allocator: std.mem.Allocator, thread: *LoadedThread, num_turns: u32) !void {
@@ -30998,6 +32107,24 @@ fn queueContextCompactionItemNotification(
     notification_moved = true;
 }
 
+fn queueReviewModeItemNotification(
+    allocator: std.mem.Allocator,
+    state: *AppServerState,
+    method: []const u8,
+    thread_id: []const u8,
+    turn_id: []const u8,
+    item_type: []const u8,
+    review: []const u8,
+    timestamp_field: []const u8,
+    timestamp_ms: i64,
+) !void {
+    const notification = try renderReviewModeItemNotification(allocator, method, thread_id, turn_id, item_type, review, timestamp_field, timestamp_ms);
+    var notification_moved = false;
+    errdefer if (!notification_moved) allocator.free(notification);
+    try queueTurnNotification(allocator, state, method, notification);
+    notification_moved = true;
+}
+
 fn queueContextCompactedNotification(
     allocator: std.mem.Allocator,
     state: *AppServerState,
@@ -31087,6 +32214,38 @@ fn renderAgentMessageItemNotification(
     try notification.appendSlice(allocator, "\",\"text\":");
     try appendJsonString(allocator, &notification, text);
     try notification.appendSlice(allocator, ",\"phase\":null,\"memoryCitation\":null},\"threadId\":");
+    try appendJsonString(allocator, &notification, thread_id);
+    try notification.appendSlice(allocator, ",\"turnId\":");
+    try appendJsonString(allocator, &notification, turn_id);
+    try notification.append(allocator, ',');
+    try appendJsonString(allocator, &notification, timestamp_field);
+    try notification.append(allocator, ':');
+    try appendInt(allocator, &notification, timestamp_ms);
+    try notification.appendSlice(allocator, "}}");
+    return notification.toOwnedSlice(allocator);
+}
+
+fn renderReviewModeItemNotification(
+    allocator: std.mem.Allocator,
+    method: []const u8,
+    thread_id: []const u8,
+    turn_id: []const u8,
+    item_type: []const u8,
+    review: []const u8,
+    timestamp_field: []const u8,
+    timestamp_ms: i64,
+) ![]const u8 {
+    var notification = std.ArrayList(u8).empty;
+    errdefer notification.deinit(allocator);
+    try notification.appendSlice(allocator, "{\"jsonrpc\":\"2.0\",\"method\":");
+    try appendJsonString(allocator, &notification, method);
+    try notification.appendSlice(allocator, ",\"params\":{\"item\":{\"type\":");
+    try appendJsonString(allocator, &notification, item_type);
+    try notification.appendSlice(allocator, ",\"id\":");
+    try appendJsonString(allocator, &notification, turn_id);
+    try notification.appendSlice(allocator, ",\"review\":");
+    try appendJsonString(allocator, &notification, review);
+    try notification.appendSlice(allocator, "},\"threadId\":");
     try appendJsonString(allocator, &notification, thread_id);
     try notification.appendSlice(allocator, ",\"turnId\":");
     try appendJsonString(allocator, &notification, turn_id);
