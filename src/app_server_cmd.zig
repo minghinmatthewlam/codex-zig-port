@@ -65,7 +65,10 @@ const WEBSOCKET_MIN_SIGNED_BEARER_SECRET_BYTES: usize = 32;
 const net = std.Io.net;
 var app_server_stdout_mutex: std.Io.Mutex = .init;
 var app_server_shutdown_requested = std.atomic.Value(bool).init(false);
+var app_server_shutdown_active_connection_fd = std.atomic.Value(std.posix.fd_t).init(-1);
 var app_server_shutdown_wakeup_write_fd = std.atomic.Value(std.posix.fd_t).init(-1);
+var app_server_shutdown_connection_wakeup_write_fd = std.atomic.Value(std.posix.fd_t).init(-1);
+var app_server_shutdown_connection_watcher_stop = std.atomic.Value(bool).init(false);
 
 extern "c" fn openpty(
     amaster: *c_int,
@@ -91,6 +94,11 @@ fn requestAppServerShutdown(_: std.posix.SIG) callconv(.c) void {
         const byte = [_]u8{1};
         _ = std.c.write(wakeup_fd, &byte, byte.len);
     }
+    const connection_wakeup_fd = app_server_shutdown_connection_wakeup_write_fd.load(.acquire);
+    if (connection_wakeup_fd >= 0) {
+        const byte = [_]u8{1};
+        _ = std.c.write(connection_wakeup_fd, &byte, byte.len);
+    }
     if (was_requested) {
         std.c._exit(0);
     }
@@ -101,19 +109,38 @@ const AppServerShutdownSignalHandlers = struct {
     old_term: std.posix.Sigaction,
     wakeup_read_fd: std.posix.fd_t,
     wakeup_write_fd: std.posix.fd_t,
+    connection_wakeup_read_fd: std.posix.fd_t,
+    connection_wakeup_write_fd: std.posix.fd_t,
+    connection_watcher_thread: std.Thread,
 
     fn install() !AppServerShutdownSignalHandlers {
         const wakeup_pipe = try makeAppServerWakeupPipe();
         errdefer closeFd(wakeup_pipe[0]);
         errdefer closeFd(wakeup_pipe[1]);
+        const connection_wakeup_pipe = try makeAppServerWakeupPipe();
+        errdefer closeFd(connection_wakeup_pipe[0]);
+        errdefer closeFd(connection_wakeup_pipe[1]);
 
         try setFdCloexec(wakeup_pipe[0]);
         try setFdCloexec(wakeup_pipe[1]);
+        try setFdCloexec(connection_wakeup_pipe[0]);
+        try setFdCloexec(connection_wakeup_pipe[1]);
         try setFdNonblocking(wakeup_pipe[0], true);
         try setFdNonblocking(wakeup_pipe[1], true);
+        try setFdNonblocking(connection_wakeup_pipe[1], true);
+
+        app_server_shutdown_connection_watcher_stop.store(false, .release);
+        const connection_watcher_thread = try std.Thread.spawn(.{}, appServerShutdownConnectionWatcher, .{connection_wakeup_pipe[0]});
+        errdefer {
+            app_server_shutdown_connection_watcher_stop.store(true, .release);
+            const byte = [_]u8{1};
+            _ = std.c.write(connection_wakeup_pipe[1], &byte, byte.len);
+            connection_watcher_thread.join();
+        }
 
         app_server_shutdown_requested.store(false, .release);
         app_server_shutdown_wakeup_write_fd.store(wakeup_pipe[1], .release);
+        app_server_shutdown_connection_wakeup_write_fd.store(connection_wakeup_pipe[1], .release);
         const action = std.posix.Sigaction{
             .handler = .{ .handler = requestAppServerShutdown },
             .mask = std.posix.sigemptyset(),
@@ -124,6 +151,9 @@ const AppServerShutdownSignalHandlers = struct {
         std.posix.sigaction(.TERM, &action, &handlers.old_term);
         handlers.wakeup_read_fd = wakeup_pipe[0];
         handlers.wakeup_write_fd = wakeup_pipe[1];
+        handlers.connection_wakeup_read_fd = connection_wakeup_pipe[0];
+        handlers.connection_wakeup_write_fd = connection_wakeup_pipe[1];
+        handlers.connection_watcher_thread = connection_watcher_thread;
         return handlers;
     }
 
@@ -131,8 +161,17 @@ const AppServerShutdownSignalHandlers = struct {
         std.posix.sigaction(.INT, &self.old_int, null);
         std.posix.sigaction(.TERM, &self.old_term, null);
         app_server_shutdown_wakeup_write_fd.store(-1, .release);
+        app_server_shutdown_connection_wakeup_write_fd.store(-1, .release);
+        app_server_shutdown_active_connection_fd.store(-1, .release);
+        app_server_shutdown_connection_watcher_stop.store(true, .release);
+        const byte = [_]u8{1};
+        _ = std.c.write(self.connection_wakeup_write_fd, &byte, byte.len);
+        self.connection_watcher_thread.join();
+        app_server_shutdown_connection_watcher_stop.store(false, .release);
         closeFd(self.wakeup_read_fd);
         closeFd(self.wakeup_write_fd);
+        closeFd(self.connection_wakeup_read_fd);
+        closeFd(self.connection_wakeup_write_fd);
         app_server_shutdown_requested.store(false, .release);
     }
 };
@@ -263,6 +302,35 @@ fn makeAppServerWakeupPipe() ![2]std.posix.fd_t {
             else => return error.Unexpected,
         }
     }
+}
+
+fn appServerShutdownConnectionWatcher(read_fd: std.posix.fd_t) void {
+    var buffer: [64]u8 = undefined;
+    while (true) {
+        const rc = std.c.read(read_fd, &buffer, buffer.len);
+        switch (std.c.errno(rc)) {
+            .SUCCESS => {
+                if (rc == 0) return;
+                if (app_server_shutdown_connection_watcher_stop.load(.acquire)) return;
+                const active_fd = app_server_shutdown_active_connection_fd.load(.acquire);
+                if (active_fd >= 0) {
+                    _ = std.c.shutdown(active_fd, std.c.SHUT.RDWR);
+                }
+            },
+            .INTR => continue,
+            .BADF => return,
+            else => continue,
+        }
+    }
+}
+
+fn appServerConnectionReadable(fd: std.posix.fd_t, timeout_ms: i32) !bool {
+    var fds = [_]std.posix.pollfd{
+        .{ .fd = fd, .events = @intCast(relay_poll_read_events), .revents = 0 },
+    };
+    const ready = try std.posix.poll(&fds, timeout_ms);
+    if (ready == 0) return false;
+    return pollReventsInclude(fds[0].revents, relay_poll_read_events);
 }
 
 const WebsocketAuthArgs = struct {
@@ -25202,14 +25270,16 @@ const UnixServer = struct {
         while (!appServerShutdownRequested()) {
             var stream = (try acceptAppServerStream(&server, &shutdown_handlers)) orelse break;
             self.handleConnection(&state, io, &stream) catch |err| {
-                const message = std.fmt.allocPrint(
-                    self.allocator,
-                    "[app-server] unix connection error: {s}\n",
-                    .{@errorName(err)},
-                ) catch null;
-                if (message) |stderr_message| {
-                    defer self.allocator.free(stderr_message);
-                    cli_utils.writeStderr(stderr_message) catch {};
+                if (!appServerShutdownRequested()) {
+                    const message = std.fmt.allocPrint(
+                        self.allocator,
+                        "[app-server] unix connection error: {s}\n",
+                        .{@errorName(err)},
+                    ) catch null;
+                    if (message) |stderr_message| {
+                        defer self.allocator.free(stderr_message);
+                        cli_utils.writeStderr(stderr_message) catch {};
+                    }
                 }
                 stream.close(io);
                 continue;
@@ -25224,6 +25294,9 @@ const UnixServer = struct {
         io: std.Io,
         stream: *net.Stream,
     ) !void {
+        app_server_shutdown_active_connection_fd.store(stream.socket.handle, .release);
+        defer app_server_shutdown_active_connection_fd.store(-1, .release);
+        if (appServerShutdownRequested()) return;
         defer clearAppServerConnectionState(self.allocator, state);
 
         var input_buffer: [64 * 1024]u8 = undefined;
@@ -25249,10 +25322,29 @@ const UnixServer = struct {
         state.connection_output = output_state;
         defer state.connection_output = null;
 
+        var line_buffer = std.ArrayList(u8).empty;
+        defer line_buffer.deinit(self.allocator);
         while (!appServerShutdownRequested()) {
-            const line_opt = try reader.interface.takeDelimiter('\n');
-            const line = line_opt orelse break;
-            const trimmed = std.mem.trim(u8, line, " \t\r\n");
+            if (!readerHasBufferedTransportBytes(&reader.interface) and
+                !try appServerConnectionReadable(stream.socket.handle, 100))
+            {
+                continue;
+            }
+            const byte_or_null: ?u8 = reader.interface.takeByte() catch |err| switch (err) {
+                error.EndOfStream => null,
+                else => return err,
+            };
+            if (byte_or_null) |byte| {
+                if (byte != '\n') {
+                    if (line_buffer.items.len >= 64 * 1024) return error.StreamTooLong;
+                    try line_buffer.append(self.allocator, byte);
+                    continue;
+                }
+            } else if (line_buffer.items.len == 0) {
+                break;
+            }
+            const trimmed = std.mem.trim(u8, line_buffer.items, " \t\r\n");
+            defer line_buffer.clearRetainingCapacity();
             if (trimmed.len == 0) continue;
             const response = handleJsonRpcLine(self.allocator, state, trimmed) catch |err| {
                 const message = try std.fmt.allocPrint(self.allocator, "[app-server] failed to handle message: {s}\n", .{@errorName(err)});
@@ -25298,14 +25390,16 @@ const WebSocketServer = struct {
         while (!appServerShutdownRequested()) {
             var stream = (try acceptAppServerStream(&server, &shutdown_handlers)) orelse break;
             self.handleConnection(&state, io, &stream) catch |err| {
-                const message = std.fmt.allocPrint(
-                    self.allocator,
-                    "[app-server] websocket connection error: {s}\n",
-                    .{@errorName(err)},
-                ) catch null;
-                if (message) |stderr_message| {
-                    defer self.allocator.free(stderr_message);
-                    cli_utils.writeStderr(stderr_message) catch {};
+                if (!appServerShutdownRequested()) {
+                    const message = std.fmt.allocPrint(
+                        self.allocator,
+                        "[app-server] websocket connection error: {s}\n",
+                        .{@errorName(err)},
+                    ) catch null;
+                    if (message) |stderr_message| {
+                        defer self.allocator.free(stderr_message);
+                        cli_utils.writeStderr(stderr_message) catch {};
+                    }
                 }
                 stream.close(io);
                 continue;
@@ -25320,6 +25414,9 @@ const WebSocketServer = struct {
         io: std.Io,
         stream: *net.Stream,
     ) !void {
+        app_server_shutdown_active_connection_fd.store(stream.socket.handle, .release);
+        defer app_server_shutdown_active_connection_fd.store(-1, .release);
+        if (appServerShutdownRequested()) return;
         defer clearAppServerConnectionState(self.allocator, state);
 
         var input_buffer: [64 * 1024]u8 = undefined;
