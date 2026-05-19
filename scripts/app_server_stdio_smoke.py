@@ -17711,6 +17711,242 @@ description: Summarize plugin smoke threads
         ).exists()
         config_text = codex_home.joinpath("config.toml").read_text(encoding="utf-8")
         assert '[plugins."git-installable@local-market"]' in config_text
+
+        github_git_remote = root / "github-plugin-source"
+        github_git_plugin_root = (
+            github_git_remote / "plugins" / "github-git-installable"
+        )
+        github_git_plugin_root.joinpath(".codex-plugin").mkdir(parents=True)
+        github_git_plugin_root.joinpath("skills", "github-installer").mkdir(
+            parents=True
+        )
+        github_git_plugin_root.joinpath(".codex-plugin", "plugin.json").write_text(
+            json.dumps(
+                {
+                    "name": "github-git-installable",
+                    "version": "2.4.6",
+                    "interface": {"displayName": "GitHub Git Installable"},
+                }
+            ),
+            encoding="utf-8",
+        )
+        github_git_plugin_root.joinpath(
+            "skills", "github-installer", "SKILL.md"
+        ).write_text("# GitHub Git Installer\n", encoding="utf-8")
+        git(github_git_remote, "init")
+        git(github_git_remote, "config", "user.email", "codex-test@example.com")
+        git(github_git_remote, "config", "user.name", "Codex Test")
+        git(github_git_remote, "add", ".")
+        git(github_git_remote, "commit", "-m", "initial")
+        github_git_url = "https://github.com/owner/repo.git"
+        repo.joinpath(".agents", "plugins", "marketplace.json").write_text(
+            json.dumps(
+                {
+                    "name": "local-market",
+                    "plugins": [
+                        {
+                            "name": "github-git-installable",
+                            "source": {
+                                "source": "git-subdir",
+                                "url": "owner/repo.git",
+                                "path": "./plugins/github-git-installable",
+                            },
+                            "policy": {"authentication": "ON_USE"},
+                        }
+                    ],
+                }
+            ),
+            encoding="utf-8",
+        )
+        github_git_listed = request_stdio_app_server(
+            binary,
+            {
+                "jsonrpc": "2.0",
+                "id": "plugin-list-github-git",
+                "method": "plugin/list",
+                "params": {
+                    "cwds": [str(repo)],
+                    "marketplaceKinds": ["local"],
+                },
+            },
+            env,
+        )
+        local_marketplace = next(
+            market
+            for market in github_git_listed["result"]["marketplaces"]
+            if market["name"] == "local-market"
+        )
+        github_summary = next(
+            plugin
+            for plugin in local_marketplace["plugins"]
+            if plugin["name"] == "github-git-installable"
+        )
+        assert github_summary["source"] == {
+            "type": "git",
+            "url": github_git_url,
+            "path": "plugins/github-git-installable",
+            "refName": None,
+            "sha": None,
+        }
+        env["GIT_CONFIG_NOSYSTEM"] = "1"
+        env["GIT_CONFIG_COUNT"] = "2"
+        env["GIT_CONFIG_KEY_0"] = "protocol.file.allow"
+        env["GIT_CONFIG_VALUE_0"] = "always"
+        env["GIT_CONFIG_KEY_1"] = f"url.{github_git_remote.resolve().as_uri()}.insteadOf"
+        env["GIT_CONFIG_VALUE_1"] = github_git_url
+        github_git_install = request_stdio_app_server(
+            binary,
+            {
+                "jsonrpc": "2.0",
+                "id": "plugin-install-github-git",
+                "method": "plugin/install",
+                "params": {
+                    "marketplacePath": str(
+                        repo / ".agents" / "plugins" / "marketplace.json"
+                    ),
+                    "remoteMarketplaceName": None,
+                    "pluginName": "github-git-installable",
+                },
+            },
+            env,
+        )
+        assert github_git_install["id"] == "plugin-install-github-git"
+        assert "result" in github_git_install, github_git_install
+        assert github_git_install["result"] == {
+            "authPolicy": "ON_USE",
+            "appsNeedingAuth": [],
+        }
+        installed_github_git_plugin = (
+            codex_home
+            / "plugins"
+            / "cache"
+            / "local-market"
+            / "github-git-installable"
+            / "2.4.6"
+        )
+        assert installed_github_git_plugin.joinpath(
+            ".codex-plugin", "plugin.json"
+        ).is_file()
+        assert installed_github_git_plugin.joinpath(
+            "skills", "github-installer", "SKILL.md"
+        ).is_file()
+        config_text = codex_home.joinpath("config.toml").read_text(encoding="utf-8")
+        assert '[plugins."github-git-installable@local-market"]' in config_text
+
+        relative_git_remote = repo / "remotes" / "relative-plugin-source"
+        relative_git_plugin_root = (
+            relative_git_remote / "plugins" / "relative-git-installable"
+        )
+        relative_git_plugin_root.joinpath(".codex-plugin").mkdir(parents=True)
+        relative_git_plugin_root.joinpath("skills", "relative-installer").mkdir(
+            parents=True
+        )
+        relative_git_plugin_root.joinpath(".codex-plugin", "plugin.json").write_text(
+            json.dumps(
+                {
+                    "name": "relative-git-installable",
+                    "version": "3.4.5",
+                    "interface": {"displayName": "Relative Git Installable"},
+                }
+            ),
+            encoding="utf-8",
+        )
+        relative_git_plugin_root.joinpath(
+            "skills", "relative-installer", "SKILL.md"
+        ).write_text("# Relative Git Installer\n", encoding="utf-8")
+        git(relative_git_remote, "init")
+        git(relative_git_remote, "config", "user.email", "codex-test@example.com")
+        git(relative_git_remote, "config", "user.name", "Codex Test")
+        git(relative_git_remote, "add", ".")
+        git(relative_git_remote, "commit", "-m", "initial")
+        relative_git_sha = git_output(relative_git_remote, "rev-parse", "HEAD")
+        repo.joinpath(".agents", "plugins", "marketplace.json").write_text(
+            json.dumps(
+                {
+                    "name": "local-market",
+                    "plugins": [
+                        {
+                            "name": "relative-git-installable",
+                            "source": {
+                                "source": "git-subdir",
+                                "url": "./remotes/relative-plugin-source",
+                                "path": "./plugins/relative-git-installable",
+                                "sha": f" {relative_git_sha} ",
+                            },
+                            "policy": {"authentication": "ON_USE"},
+                        }
+                    ],
+                }
+            ),
+            encoding="utf-8",
+        )
+        relative_listed = request_stdio_app_server(
+            binary,
+            {
+                "jsonrpc": "2.0",
+                "id": "plugin-list-relative-git",
+                "method": "plugin/list",
+                "params": {
+                    "cwds": [str(repo)],
+                    "marketplaceKinds": ["local"],
+                },
+            },
+            env,
+        )
+        local_marketplace = next(
+            market
+            for market in relative_listed["result"]["marketplaces"]
+            if market["name"] == "local-market"
+        )
+        relative_summary = next(
+            plugin
+            for plugin in local_marketplace["plugins"]
+            if plugin["name"] == "relative-git-installable"
+        )
+        assert relative_summary["source"] == {
+            "type": "git",
+            "url": str(relative_git_remote),
+            "path": "plugins/relative-git-installable",
+            "refName": None,
+            "sha": relative_git_sha,
+        }, relative_summary["source"]
+        relative_git_install = request_stdio_app_server(
+            binary,
+            {
+                "jsonrpc": "2.0",
+                "id": "plugin-install-relative-git",
+                "method": "plugin/install",
+                "params": {
+                    "marketplacePath": str(
+                        repo / ".agents" / "plugins" / "marketplace.json"
+                    ),
+                    "remoteMarketplaceName": None,
+                    "pluginName": "relative-git-installable",
+                },
+            },
+            env,
+        )
+        assert relative_git_install["id"] == "plugin-install-relative-git"
+        assert relative_git_install["result"] == {
+            "authPolicy": "ON_USE",
+            "appsNeedingAuth": [],
+        }
+        installed_relative_git_plugin = (
+            codex_home
+            / "plugins"
+            / "cache"
+            / "local-market"
+            / "relative-git-installable"
+            / "3.4.5"
+        )
+        assert installed_relative_git_plugin.joinpath(
+            ".codex-plugin", "plugin.json"
+        ).is_file()
+        assert installed_relative_git_plugin.joinpath(
+            "skills", "relative-installer", "SKILL.md"
+        ).is_file()
+        config_text = codex_home.joinpath("config.toml").read_text(encoding="utf-8")
+        assert '[plugins."relative-git-installable@local-market"]' in config_text
     finally:
         shutil.rmtree(root, ignore_errors=True)
 
