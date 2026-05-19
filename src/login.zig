@@ -4,6 +4,7 @@ const auth = @import("auth.zig");
 const config = @import("config.zig");
 
 const DEFAULT_ISSUER = "https://auth.openai.com";
+pub const default_issuer = DEFAULT_ISSUER;
 const DEFAULT_CALLBACK_PORT: u16 = 1455;
 const FALLBACK_CALLBACK_PORT: u16 = 1457;
 const LOGIN_SCOPE = "openid profile email offline_access api.connectors.read api.connectors.invoke";
@@ -77,7 +78,44 @@ pub const BrowserAuthHandle = struct {
     }
 };
 
-const DeviceCode = struct {
+pub const DeviceAuthOptions = struct {
+    codex_home: []const u8,
+    issuer: []const u8 = DEFAULT_ISSUER,
+    client_id: []const u8 = auth.chatgpt_client_id,
+};
+
+pub const DeviceAuthHandle = struct {
+    codex_home: []const u8,
+    issuer: []const u8,
+    client_id: []const u8,
+    device_code: DeviceCode,
+
+    pub fn deinit(self: *DeviceAuthHandle, allocator: std.mem.Allocator) void {
+        allocator.free(self.codex_home);
+        allocator.free(self.issuer);
+        allocator.free(self.client_id);
+        self.device_code.deinit(allocator);
+    }
+
+    pub fn completeAndSave(
+        self: *DeviceAuthHandle,
+        allocator: std.mem.Allocator,
+        cancel_token: ?*const std.atomic.Value(bool),
+    ) !void {
+        var code = try pollForCodeCancelable(allocator, self.issuer, self.device_code, cancel_token);
+        defer code.deinit(allocator);
+
+        const redirect_uri = try std.fmt.allocPrint(allocator, "{s}/deviceauth/callback", .{std.mem.trimEnd(u8, self.issuer, "/")});
+        defer allocator.free(redirect_uri);
+
+        var tokens = try exchangeCodeForTokens(allocator, self.issuer, self.client_id, code.authorization_code, redirect_uri, code.code_verifier);
+        defer tokens.deinit(allocator);
+
+        try saveChatGptTokens(allocator, self.codex_home, tokens);
+    }
+};
+
+pub const DeviceCode = struct {
     verification_url: []const u8,
     user_code: []const u8,
     device_auth_id: []const u8,
@@ -410,6 +448,25 @@ pub fn cancelBrowserAuth(port: u16) !void {
     try writer.interface.flush();
 }
 
+pub fn startDeviceAuth(allocator: std.mem.Allocator, options: DeviceAuthOptions) !DeviceAuthHandle {
+    var device_code = try requestDeviceCode(allocator, options.issuer, options.client_id);
+    errdefer device_code.deinit(allocator);
+
+    const codex_home = try allocator.dupe(u8, options.codex_home);
+    errdefer allocator.free(codex_home);
+    const issuer = try allocator.dupe(u8, options.issuer);
+    errdefer allocator.free(issuer);
+    const client_id = try allocator.dupe(u8, options.client_id);
+    errdefer allocator.free(client_id);
+
+    return .{
+        .codex_home = codex_home,
+        .issuer = issuer,
+        .client_id = client_id,
+        .device_code = device_code,
+    };
+}
+
 fn bindCallbackServer(port: u16) !net.Server {
     const io = std.Io.Threaded.global_single_threaded.io();
     var address: net.IpAddress = .{ .ip4 = net.Ip4Address.loopback(port) };
@@ -719,6 +776,15 @@ fn requestDeviceCode(allocator: std.mem.Allocator, issuer: []const u8, client_id
 }
 
 fn pollForCode(allocator: std.mem.Allocator, issuer: []const u8, device_code: DeviceCode) !CodeSuccess {
+    return pollForCodeCancelable(allocator, issuer, device_code, null);
+}
+
+fn pollForCodeCancelable(
+    allocator: std.mem.Allocator,
+    issuer: []const u8,
+    device_code: DeviceCode,
+    cancel_token: ?*const std.atomic.Value(bool),
+) !CodeSuccess {
     const api_base = try apiAccountsBase(allocator, issuer);
     defer allocator.free(api_base);
     const url = try std.fmt.allocPrint(allocator, "{s}/deviceauth/token", .{api_base});
@@ -727,6 +793,10 @@ fn pollForCode(allocator: std.mem.Allocator, issuer: []const u8, device_code: De
     const max_wait_seconds: u64 = 15 * 60;
     var waited_seconds: u64 = 0;
     while (waited_seconds < max_wait_seconds) {
+        if (cancel_token) |token| {
+            if (token.load(.acquire)) return error.DeviceAuthCancelled;
+        }
+
         const body = try std.json.Stringify.valueAlloc(allocator, .{
             .device_auth_id = device_code.device_auth_id,
             .user_code = device_code.user_code,
@@ -751,13 +821,18 @@ fn pollForCode(allocator: std.mem.Allocator, issuer: []const u8, device_code: De
             return error.DeviceAuthFailed;
         }
 
-        const sleep_for = @min(device_code.interval_seconds, max_wait_seconds - waited_seconds);
+        const poll_interval_seconds = @max(device_code.interval_seconds, 1);
+        const sleep_for = @min(poll_interval_seconds, max_wait_seconds - waited_seconds);
         std.Io.sleep(
             std.Io.Threaded.global_single_threaded.io(),
             .{ .nanoseconds = @intCast(sleep_for * std.time.ns_per_s) },
             .awake,
         ) catch return error.DeviceAuthInterrupted;
         waited_seconds += sleep_for;
+
+        if (cancel_token) |token| {
+            if (token.load(.acquire)) return error.DeviceAuthCancelled;
+        }
     }
 
     return error.DeviceAuthTimedOut;
