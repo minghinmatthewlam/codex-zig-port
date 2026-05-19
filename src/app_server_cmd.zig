@@ -52743,7 +52743,7 @@ fn handleAccountLogout(
     defer cfg.deinit(allocator);
 
     clearActiveAccountLogin(allocator, state, true);
-    _ = auth_mod.deleteAuthJson(allocator, cfg.codex_home) catch |err| {
+    _ = auth_mod.logoutWithRevoke(allocator, cfg.codex_home) catch |err| {
         return renderJsonRpcErrorForFailure(allocator, id_value, "account/logout failed to delete auth", err);
     };
 

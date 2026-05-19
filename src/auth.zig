@@ -5,6 +5,10 @@ const config = @import("config.zig");
 pub const chatgpt_client_id = "app_EMoamEEZ73f0CkXaXp7hrann";
 const refresh_token_url = "https://auth.openai.com/oauth/token";
 const refresh_token_url_override_env = "CODEX_REFRESH_TOKEN_URL_OVERRIDE";
+const revoke_token_url = "https://auth.openai.com/oauth/revoke";
+const revoke_token_url_override_env = "CODEX_REVOKE_TOKEN_URL_OVERRIDE";
+const revoke_token_timeout_ms_override_env = "CODEX_REVOKE_TOKEN_TIMEOUT_MS_OVERRIDE";
+const revoke_http_timeout_ms = 10_000;
 const token_refresh_interval_days = 8;
 const seconds_per_day = 24 * 60 * 60;
 
@@ -111,6 +115,33 @@ const HttpResponse = struct {
     fn deinit(self: HttpResponse, allocator: std.mem.Allocator) void {
         allocator.free(self.body);
     }
+};
+
+const RevokeTokenKind = enum {
+    access,
+    refresh,
+
+    fn tokenTypeHint(self: RevokeTokenKind) []const u8 {
+        return switch (self) {
+            .access => "access_token",
+            .refresh => "refresh_token",
+        };
+    }
+};
+
+const RevokeToken = struct {
+    kind: RevokeTokenKind,
+    token: []const u8,
+};
+
+const PostJsonTimeoutContext = struct {
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    url: []const u8,
+    payload: []const u8,
+    done: std.Io.Event = .unset,
+    result: ?HttpResponse = null,
+    err: ?anyerror = null,
 };
 
 pub fn load(allocator: std.mem.Allocator, codex_home: []const u8) !Credentials {
@@ -557,16 +588,70 @@ fn refreshTokenEndpoint(allocator: std.mem.Allocator) ![]const u8 {
 }
 
 fn postJson(allocator: std.mem.Allocator, url: []const u8, payload: []const u8) !HttpResponse {
+    var io_instance: std.Io.Threaded = .init(allocator, .{});
+    defer io_instance.deinit();
+    return postJsonWithIo(allocator, io_instance.io(), url, payload);
+}
+
+fn postJsonWithTimeout(allocator: std.mem.Allocator, url: []const u8, payload: []const u8, timeout_ms: u64) !HttpResponse {
+    var io_instance: std.Io.Threaded = .init(allocator, .{ .async_limit = .limited(1) });
+    defer io_instance.deinit();
+    const io = io_instance.io();
+    var context = PostJsonTimeoutContext{
+        .allocator = allocator,
+        .io = io,
+        .url = url,
+        .payload = payload,
+    };
+    var future = try io.concurrent(postJsonTimeoutWorker, .{&context});
+    const deadline = requestDeadline(io, timeout_ms);
+    while (true) {
+        context.done.waitTimeout(io, .{ .deadline = deadline }) catch |err| switch (err) {
+            error.Timeout => {
+                if (context.done.isSet()) break;
+                const now = std.Io.Clock.Timestamp.now(io, .awake);
+                if (std.Io.Clock.Timestamp.compare(now, .lt, deadline)) continue;
+                _ = future.cancel(io);
+                if (context.result) |response| response.deinit(allocator);
+                return error.Timeout;
+            },
+            else => |e| {
+                _ = future.cancel(io);
+                if (context.result) |response| response.deinit(allocator);
+                return e;
+            },
+        };
+        break;
+    }
+    _ = future.await(io);
+    if (context.result) |response| return response;
+    return context.err orelse error.Canceled;
+}
+
+fn postJsonTimeoutWorker(context: *PostJsonTimeoutContext) void {
+    defer context.done.set(context.io);
+    context.result = postJsonWithIo(context.allocator, context.io, context.url, context.payload) catch |err| {
+        context.err = err;
+        return;
+    };
+}
+
+fn requestDeadline(io: std.Io, timeout_ms: u64) std.Io.Clock.Timestamp {
+    const timeout_ms_i64 = std.math.cast(i64, timeout_ms) orelse std.math.maxInt(i64);
+    return std.Io.Clock.Timestamp.fromNow(io, .{
+        .raw = std.Io.Duration.fromMilliseconds(timeout_ms_i64),
+        .clock = .awake,
+    });
+}
+
+fn postJsonWithIo(allocator: std.mem.Allocator, io: std.Io, url: []const u8, payload: []const u8) !HttpResponse {
     var headers = std.ArrayList(std.http.Header).empty;
     defer headers.deinit(allocator);
     try headers.append(allocator, .{ .name = "Content-Type", .value = "application/json" });
     try headers.append(allocator, .{ .name = "Accept", .value = "application/json" });
     try headers.append(allocator, .{ .name = "User-Agent", .value = "codex-zig-port/0.0.1" });
 
-    var io_instance: std.Io.Threaded = .init(allocator, .{});
-    defer io_instance.deinit();
-
-    var client = std.http.Client{ .allocator = allocator, .io = io_instance.io() };
+    var client = std.http.Client{ .allocator = allocator, .io = io };
     defer client.deinit();
 
     var response_body: std.Io.Writer.Allocating = .init(allocator);
@@ -632,6 +717,11 @@ pub fn saveChatGptAuthTokensJson(
     try writeAuthJson(allocator, codex_home, json);
 }
 
+pub fn logoutWithRevoke(allocator: std.mem.Allocator, codex_home: []const u8) !bool {
+    revokeStoredAuthTokens(allocator, codex_home) catch {};
+    return deleteAuthJson(allocator, codex_home);
+}
+
 pub fn deleteAuthJson(allocator: std.mem.Allocator, codex_home: []const u8) !bool {
     const path = try std.fs.path.join(allocator, &.{ codex_home, "auth.json" });
     defer allocator.free(path);
@@ -640,6 +730,96 @@ pub fn deleteAuthJson(allocator: std.mem.Allocator, codex_home: []const u8) !boo
         else => return err,
     };
     return true;
+}
+
+fn revokeStoredAuthTokens(allocator: std.mem.Allocator, codex_home: []const u8) !void {
+    const path = try std.fs.path.join(allocator, &.{ codex_home, "auth.json" });
+    defer allocator.free(path);
+
+    const bytes = std.Io.Dir.cwd().readFileAlloc(std.Io.Threaded.global_single_threaded.io(), path, allocator, .limited(1024 * 1024)) catch |err| switch (err) {
+        error.FileNotFound => return,
+        else => return err,
+    };
+    defer allocator.free(bytes);
+
+    var parsed = try std.json.parseFromSlice(AuthJson, allocator, bytes, .{ .ignore_unknown_fields = true });
+    defer parsed.deinit();
+
+    const token = managedChatGptTokenForRevoke(parsed.value) orelse return;
+    try revokeOAuthToken(allocator, token);
+}
+
+fn managedChatGptTokenForRevoke(auth_json: AuthJson) ?RevokeToken {
+    if (!isManagedChatGptAuth(auth_json)) return null;
+    const tokens = auth_json.tokens orelse return null;
+    if (tokens.refresh_token) |refresh_token| {
+        if (refresh_token.len > 0) return .{ .kind = .refresh, .token = refresh_token };
+    }
+    if (tokens.access_token.len > 0) return .{ .kind = .access, .token = tokens.access_token };
+    return null;
+}
+
+fn isManagedChatGptAuth(auth_json: AuthJson) bool {
+    if (auth_json.auth_mode) |mode| return isChatGptAuthMode(mode);
+    if (auth_json.OPENAI_API_KEY != null) return false;
+    return true;
+}
+
+fn isChatGptAuthMode(mode: []const u8) bool {
+    return std.mem.eql(u8, mode, "chatgpt");
+}
+
+fn revokeOAuthToken(allocator: std.mem.Allocator, token: RevokeToken) !void {
+    const endpoint = try revokeTokenEndpoint(allocator);
+    defer allocator.free(endpoint);
+
+    const request_body = switch (token.kind) {
+        .access => try std.json.Stringify.valueAlloc(allocator, .{
+            .token = token.token,
+            .token_type_hint = token.kind.tokenTypeHint(),
+        }, .{}),
+        .refresh => try std.json.Stringify.valueAlloc(allocator, .{
+            .token = token.token,
+            .token_type_hint = token.kind.tokenTypeHint(),
+            .client_id = chatgpt_client_id,
+        }, .{}),
+    };
+    defer allocator.free(request_body);
+
+    const timeout_ms = try revokeRequestTimeoutMs(allocator);
+    var response = try postJsonWithTimeout(allocator, endpoint, request_body, timeout_ms);
+    defer response.deinit(allocator);
+    if (@intFromEnum(response.status) < 200 or @intFromEnum(response.status) >= 300) return error.RevokeTokenFailed;
+}
+
+fn revokeTokenEndpoint(allocator: std.mem.Allocator) ![]const u8 {
+    if (try env.getOwned(allocator, revoke_token_url_override_env)) |override| return override;
+
+    if (try env.getOwned(allocator, refresh_token_url_override_env)) |refresh_endpoint| {
+        defer allocator.free(refresh_endpoint);
+        if (try deriveRevokeTokenEndpoint(allocator, refresh_endpoint)) |endpoint| return endpoint;
+    }
+
+    return allocator.dupe(u8, revoke_token_url);
+}
+
+fn revokeRequestTimeoutMs(allocator: std.mem.Allocator) !u64 {
+    if (try env.getOwned(allocator, revoke_token_timeout_ms_override_env)) |override| {
+        defer allocator.free(override);
+        const trimmed = std.mem.trim(u8, override, " \t\r\n");
+        const parsed = std.fmt.parseUnsigned(u64, trimmed, 10) catch return revoke_http_timeout_ms;
+        if (parsed > 0) return parsed;
+    }
+    return revoke_http_timeout_ms;
+}
+
+fn deriveRevokeTokenEndpoint(allocator: std.mem.Allocator, refresh_endpoint: []const u8) !?[]const u8 {
+    var uri = std.Uri.parse(refresh_endpoint) catch return null;
+    uri.path = .{ .percent_encoded = "/oauth/revoke" };
+    uri.query = null;
+    uri.fragment = null;
+    const endpoint = try std.fmt.allocPrint(allocator, "{f}", .{std.Uri.fmt(&uri, .all)});
+    return endpoint;
 }
 
 fn parseJwtExpiration(allocator: std.mem.Allocator, jwt: []const u8) !?u64 {
@@ -1001,6 +1181,39 @@ test "jwt expiration parser reads exp claim" {
 
     const expires_at = try parseJwtExpiration(allocator, jwt);
     try std.testing.expectEqual(@as(u64, 4102444800), expires_at.?);
+}
+
+test "derives revoke endpoint from refresh endpoint override" {
+    const allocator = std.testing.allocator;
+    const endpoint = (try deriveRevokeTokenEndpoint(allocator, "http://127.0.0.1:1234/oauth/token?unified=true")).?;
+    defer allocator.free(endpoint);
+    try std.testing.expectEqualStrings("http://127.0.0.1:1234/oauth/revoke", endpoint);
+}
+
+test "managed chatgpt revoke token selection matches Rust logout" {
+    const managed_refresh = managedChatGptTokenForRevoke(.{
+        .auth_mode = "chatgpt",
+        .OPENAI_API_KEY = "sk-preserved",
+        .tokens = .{ .access_token = "access-token", .refresh_token = "refresh-token" },
+    }).?;
+    try std.testing.expectEqual(RevokeTokenKind.refresh, managed_refresh.kind);
+    try std.testing.expectEqualStrings("refresh-token", managed_refresh.token);
+
+    const managed_access = managedChatGptTokenForRevoke(.{
+        .auth_mode = "chatgpt",
+        .tokens = .{ .access_token = "access-token", .refresh_token = "" },
+    }).?;
+    try std.testing.expectEqual(RevokeTokenKind.access, managed_access.kind);
+    try std.testing.expectEqualStrings("access-token", managed_access.token);
+
+    try std.testing.expect(managedChatGptTokenForRevoke(.{
+        .auth_mode = "chatgptAuthTokens",
+        .tokens = .{ .access_token = "external-token", .refresh_token = "" },
+    }) == null);
+    try std.testing.expect(managedChatGptTokenForRevoke(.{
+        .OPENAI_API_KEY = "test-api-key",
+        .tokens = .{ .access_token = "access-token", .refresh_token = "refresh-token" },
+    }) == null);
 }
 
 test "chatgpt refresh decision uses expired access token with refresh token" {

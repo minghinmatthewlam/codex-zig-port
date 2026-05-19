@@ -239,7 +239,7 @@ pub fn runLogout(allocator: std.mem.Allocator) !void {
     var cfg = try config.load(allocator);
     defer cfg.deinit(allocator);
 
-    if (try auth.deleteAuthJson(allocator, cfg.codex_home)) {
+    if (try auth.logoutWithRevoke(allocator, cfg.codex_home)) {
         std.debug.print("Successfully logged out\n", .{});
     } else {
         std.debug.print("Not logged in\n", .{});
