@@ -999,14 +999,16 @@ Additional app-server thread-fork coverage: `thread/fork` now forks from a threa
 Additional app-server thread rollback coverage: `thread/rollback` validates `threadId` and `numTurns`, preserves Rust-shaped `numTurns must be >= 1` rejection, returns Rust-shaped `thread not found` responses for unloaded threads, rejects ephemeral loaded threads without persisted rollout history, rolls back persistent loaded threads by trimming the last requested user-message turns from the in-memory transcript, refreshes loaded-thread preview/turns, appends Rust-shaped `thread_rolled_back` markers for persistent Zig transcripts, reconstructs simple Zig/Rust transcript history through append-only rollback markers when loading sessions, and is included in current TypeScript and JSON schema generation as an opaque-thread response until full thread schema parity lands. Active-turn rejection, pending-rollback tracking, complete compaction/context reconstruction, and full thread schema parity remain planned.
 
 Additional app-server loaded-thread compaction coverage:
-`thread/compact/start` now validates and loads already-loaded threads, runs a
-no-tools compact turn through the configured Responses provider, replaces and
-persists the loaded transcript with a compacted summary, refreshes loaded-thread
-preview/turns, and emits Rust-shaped `turn/*` plus `contextCompaction`
-`item/started` / `item/completed` notifications, followed by the deprecated
-`thread/compacted` notification. True async return-before-work semantics,
-remote compaction variants, hooks, analytics, and complete
-compaction/context reconstruction remain planned.
+`thread/compact/start` now exposes Rust-shaped thread-id-only params, validates
+and loads already-loaded threads, runs a no-tools compact turn through the
+configured Responses provider using the loaded thread runtime state rather than
+request-local runtime overrides, replaces and persists the loaded transcript with
+a compacted summary, refreshes loaded-thread preview/turns, and emits
+Rust-shaped `turn/*` plus `contextCompaction` `item/started` /
+`item/completed` notifications, followed by the deprecated `thread/compacted`
+notification. True async return-before-work semantics, remote compaction
+variants, hooks, analytics, and complete compaction/context reconstruction
+remain planned.
 
 Additional app-server thread item-injection coverage: `thread/inject_items` validates `threadId` and `items` array shape, returns Rust-shaped `thread not found` responses for unloaded threads before response-item validation, appends supported raw message/function-call/function-call-output response items to already-loaded threads, persists the updated Zig transcript, includes injected items in subsequent `turn/start` model requests, and is included in current TypeScript and JSON schema generation as an opaque item-list request. Full raw response-item schema parity remains planned.
 

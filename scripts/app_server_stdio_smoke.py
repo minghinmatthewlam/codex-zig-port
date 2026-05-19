@@ -5447,9 +5447,9 @@ def run_turn_start_rpc_smoke(binary: Path) -> None:
                         "method": "thread/compact/start",
                         "params": {
                             "threadId": thread_id,
-                            "model": "gpt-compact",
-                            "serviceTier": "priority",
-                            "personality": "friendly",
+                            "model": 1,
+                            "serviceTier": ["priority"],
+                            "personality": {"type": "friendly"},
                         },
                     },
                 )
@@ -5499,30 +5499,11 @@ def run_turn_start_rpc_smoke(binary: Path) -> None:
                 )
                 assert server.request_paths == ["/responses"] * 6
                 compact_request = server.request_bodies[-1]
-                assert compact_request["model"] == "gpt-compact"
-                assert compact_request["service_tier"] == "priority"
-                assert "<personality_spec>" in compact_request["instructions"]
-                assert "supportive teammate" in compact_request["instructions"]
+                assert compact_request["model"] == "gpt-turn-smoke"
+                assert "service_tier" not in compact_request
+                assert "supportive teammate" not in compact_request["instructions"]
                 compact_text = compact_request["input"][-1]["content"][0]["text"]
                 assert compact_text.startswith("Summarize this conversation")
-
-                write_json_line(
-                    proc,
-                    {
-                        "jsonrpc": "2.0",
-                        "id": "thread-compact-invalid-model",
-                        "method": "thread/compact/start",
-                        "params": {"threadId": thread_id, "model": 1},
-                    },
-                )
-                compact_invalid_model = read_json_line(proc, 5)
-                assert compact_invalid_model["id"] == "thread-compact-invalid-model"
-                assert compact_invalid_model["error"]["code"] == -32602
-                assert (
-                    "model must be a string or null"
-                    in compact_invalid_model["error"]["message"]
-                )
-                assert server.request_paths == ["/responses"] * 6
 
                 write_json_line(
                     proc,
@@ -35246,20 +35227,7 @@ def run_json_schema_smoke(binary: Path) -> None:
             (out_dir / "ThreadCompactStartParams.json").read_text(encoding="utf-8")
         )
         assert thread_compact_start["required"] == ["threadId"]
-        assert thread_compact_start["properties"]["model"]["type"] == [
-            "string",
-            "null",
-        ]
-        assert thread_compact_start["properties"]["serviceTier"]["type"] == [
-            "string",
-            "null",
-        ]
-        assert thread_compact_start["properties"]["personality"]["enum"] == [
-            "none",
-            "friendly",
-            "pragmatic",
-            None,
-        ]
+        assert set(thread_compact_start["properties"]) == {"threadId"}
         thread_compact_start_response = json.loads(
             (out_dir / "ThreadCompactStartResponse.json").read_text(encoding="utf-8")
         )
@@ -36707,12 +36675,9 @@ def run_json_schema_smoke(binary: Path) -> None:
             "enum"
         ] == ["none", "friendly", "pragmatic", None]
         assert "ThreadForkResponse" in bundle["$defs"]
-        assert bundle["$defs"]["ThreadCompactStartParams"]["properties"][
-            "serviceTier"
-        ]["type"] == ["string", "null"]
-        assert bundle["$defs"]["ThreadCompactStartParams"]["properties"][
-            "personality"
-        ]["enum"] == ["none", "friendly", "pragmatic", None]
+        assert set(bundle["$defs"]["ThreadCompactStartParams"]["properties"]) == {
+            "threadId"
+        }
         v2_bundle = json.loads(
             (out_dir / "codex_app_server_protocol.v2.schemas.json").read_text(encoding="utf-8")
         )
@@ -40085,9 +40050,9 @@ def run_typescript_generation_smoke(binary: Path) -> None:
             out_dir / "v2" / "ThreadCompactStartParams.ts"
         ).read_text(encoding="utf-8")
         assert "threadId: string;" in thread_compact_start
-        assert "model?: string | null;" in thread_compact_start
-        assert "serviceTier?: string | null;" in thread_compact_start
-        assert "personality?: Personality | null;" in thread_compact_start
+        assert "model?:" not in thread_compact_start
+        assert "serviceTier?:" not in thread_compact_start
+        assert "personality?:" not in thread_compact_start
         thread_compact_start_response = (
             out_dir / "v2" / "ThreadCompactStartResponse.ts"
         ).read_text(encoding="utf-8")

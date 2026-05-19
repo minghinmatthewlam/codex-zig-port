@@ -3896,14 +3896,6 @@ def run_remote_unix_tui_smoke(
     ]
     if not compact_runtime_matching:
         raise AssertionError("remote TUI did not send compact prompt through app-server")
-    compact_runtime_body = compact_runtime_matching[-1]
-    if compact_runtime_body.get("model") != "gpt-remote-compact":
-        raise AssertionError("remote TUI slash compact did not use slash-updated model")
-    if compact_runtime_body.get("service_tier") != "priority":
-        raise AssertionError("remote TUI slash compact did not use slash-updated fast mode")
-    compact_instructions = compact_runtime_body.get("instructions", "")
-    if "supportive teammate" not in compact_instructions:
-        raise AssertionError("remote TUI slash compact did not use slash-updated personality")
     slash_compact_matching = [
         body
         for body in bodies
@@ -3911,7 +3903,15 @@ def run_remote_unix_tui_smoke(
     ]
     if not slash_compact_matching:
         raise AssertionError("remote TUI slash compact did not send prompt through app-server")
-    slash_compact_body = json.dumps(slash_compact_matching[-1])
+    slash_compact_request = slash_compact_matching[-1]
+    if slash_compact_request.get("model") != "gpt-remote-compact":
+        raise AssertionError("remote TUI post-compact turn did not use slash-updated model")
+    if slash_compact_request.get("service_tier") != "priority":
+        raise AssertionError("remote TUI post-compact turn did not use slash-updated fast mode")
+    slash_compact_instructions = slash_compact_request.get("instructions", "")
+    if "supportive teammate" not in slash_compact_instructions:
+        raise AssertionError("remote TUI post-compact turn did not use slash-updated personality")
+    slash_compact_body = json.dumps(slash_compact_request)
     if "Compacted conversation summary" not in slash_compact_body:
         raise AssertionError("remote TUI slash compact did not preserve the compacted summary")
     if "compact summary" not in slash_compact_body:
