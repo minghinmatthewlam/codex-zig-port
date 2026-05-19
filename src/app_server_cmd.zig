@@ -35421,9 +35421,21 @@ fn threadResumeHasModelRuntimeOverride(params: std.json.ObjectMap) bool {
     if (optionalStringParam(params, "modelProvider") != null) return true;
     const config_value = params.get("config") orelse return false;
     if (config_value != .object) return false;
-    return config_value.object.get("model") != null or
+    return config_value.object.get("profile") != null or
+        config_value.object.get("model") != null or
         config_value.object.get("model_provider") != null or
         config_value.object.get("model_reasoning_effort") != null;
+}
+
+test "thread resume treats request profile as model runtime override" {
+    const allocator = std.testing.allocator;
+    var with_profile = try std.json.parseFromSlice(std.json.Value, allocator, "{\"config\":{\"profile\":\"work\"}}", .{});
+    defer with_profile.deinit();
+    try std.testing.expect(threadResumeHasModelRuntimeOverride(with_profile.value.object));
+
+    var with_web_search = try std.json.parseFromSlice(std.json.Value, allocator, "{\"config\":{\"web_search\":\"live\"}}", .{});
+    defer with_web_search.deinit();
+    try std.testing.expect(!threadResumeHasModelRuntimeOverride(with_web_search.value.object));
 }
 
 fn replaceStateMetadataGitInfo(allocator: std.mem.Allocator, slot: *?[]const u8, value: ?[]const u8) !void {
