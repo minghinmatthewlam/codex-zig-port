@@ -51961,6 +51961,7 @@ fn handleAccountLoginStartChatGptDeviceCode(
     var device_handle = login_mod.startDeviceAuth(allocator, .{
         .codex_home = cfg.codex_home,
         .issuer = issuer,
+        .forced_chatgpt_workspace_id = cfg.forced_chatgpt_workspace_id,
     }) catch |err| switch (err) {
         error.DeviceAuthUnsupported => return renderJsonRpcError(allocator, id_value, -32600, "device auth is not supported by this issuer"),
         else => return renderJsonRpcErrorForFailure(allocator, id_value, "account/login/start failed to start ChatGPT device-code login", err),
@@ -52295,13 +52296,14 @@ fn spawnAccountDeviceCodeWorker(
 }
 
 fn accountLoginWorker(allocator: std.mem.Allocator, worker: *AccountLoginWorker) void {
-    const maybe_error = if (worker.handle.waitAndSave(allocator)) |_| null else |err| accountLoginErrorMessage(err);
+    var maybe_error = if (worker.handle.waitAndSave(allocator)) |_| null else |err| accountLoginErrorText(allocator, err, worker.handle.forced_chatgpt_workspace_id);
+    defer if (maybe_error) |*message| message.deinit(allocator);
     clearMatchingActiveAccountLogin(allocator, worker.login_registry, worker.login_id, false);
 
     var notification_storage: [4096]u8 = undefined;
     var notification_writer = std.Io.Writer.fixed(&notification_storage);
     if (maybe_error) |message| {
-        writeAccountLoginCompletedNotification(&notification_writer, worker.login_id, false, message) catch {
+        writeAccountLoginCompletedNotification(&notification_writer, worker.login_id, false, message.text) catch {
             worker.deinit(allocator);
             allocator.destroy(worker);
             return;
@@ -52338,13 +52340,14 @@ fn accountLoginWorker(allocator: std.mem.Allocator, worker: *AccountLoginWorker)
 }
 
 fn accountDeviceCodeWorker(allocator: std.mem.Allocator, worker: *AccountDeviceCodeWorker) void {
-    const maybe_error = if (worker.handle.completeAndSave(allocator, &worker.cancel_token.canceled)) |_| null else |err| accountLoginErrorMessage(err);
+    var maybe_error = if (worker.handle.completeAndSave(allocator, &worker.cancel_token.canceled)) |_| null else |err| accountLoginErrorText(allocator, err, worker.handle.forced_chatgpt_workspace_id);
+    defer if (maybe_error) |*message| message.deinit(allocator);
     clearMatchingActiveAccountLogin(allocator, worker.login_registry, worker.login_id, false);
 
     var notification_storage: [4096]u8 = undefined;
     var notification_writer = std.Io.Writer.fixed(&notification_storage);
     if (maybe_error) |message| {
-        writeAccountLoginCompletedNotification(&notification_writer, worker.login_id, false, message) catch {
+        writeAccountLoginCompletedNotification(&notification_writer, worker.login_id, false, message.text) catch {
             worker.deinit(allocator);
             allocator.destroy(worker);
             return;
@@ -52387,8 +52390,33 @@ fn accountLoginErrorMessage(err: anyerror) []const u8 {
         error.DeviceAuthCancelled => "Login was not completed",
         error.MissingAuthorizationCode => login_mod.missing_authorization_code_message,
         error.MissingCodexEntitlement => login_mod.missing_codex_entitlement_message,
+        error.WorkspaceRestrictionMissingAccount => login_mod.missing_workspace_account_message,
         else => @errorName(err),
     };
+}
+
+const AccountLoginErrorText = struct {
+    text: []const u8,
+    owned: bool = false,
+
+    fn deinit(self: *AccountLoginErrorText, allocator: std.mem.Allocator) void {
+        if (self.owned) allocator.free(self.text);
+    }
+};
+
+fn accountLoginErrorText(
+    allocator: std.mem.Allocator,
+    err: anyerror,
+    forced_chatgpt_workspace_id: ?[]const u8,
+) AccountLoginErrorText {
+    if (err == error.WorkspaceRestriction) {
+        if (forced_chatgpt_workspace_id) |workspace_id| {
+            if (login_mod.workspaceRestrictionMessage(allocator, workspace_id)) |message| {
+                return .{ .text = message, .owned = true };
+            } else |_| {}
+        }
+    }
+    return .{ .text = accountLoginErrorMessage(err) };
 }
 
 fn accountLoginIssuerOverride(allocator: std.mem.Allocator) !?[]const u8 {
