@@ -58,6 +58,7 @@ const APP_SERVER_COMPACT_PROMPT =
     \\Be concise but specific. Do not include generic advice.
 ;
 const EXTERNAL_AUTH_ACTIVE_LOGIN_MESSAGE = "External auth is active. Use account/login/start (chatgptAuthTokens) to update it or account/logout to clear it.";
+const EXTERNAL_AUTH_REFRESH_TIMEOUT_MS: u64 = 10_000;
 const WEBSOCKET_DEFAULT_MAX_CLOCK_SKEW_SECONDS: u64 = 30;
 const WEBSOCKET_MIN_SIGNED_BEARER_SECRET_BYTES: usize = 32;
 const net = std.Io.net;
@@ -267,6 +268,13 @@ const ServerRequestTransport = struct {
     ctx: *anyopaque,
     send_payload: *const fn (ctx: *anyopaque, payload: []const u8) anyerror!void,
     read_payload: *const fn (ctx: *anyopaque, allocator: std.mem.Allocator) anyerror!?[]const u8,
+    read_payload_with_timeout: *const fn (ctx: *anyopaque, allocator: std.mem.Allocator, timeout_ms: u64) anyerror!TimedTransportPayload,
+};
+
+const TimedTransportPayload = union(enum) {
+    payload: []const u8,
+    closed,
+    timed_out,
 };
 
 const JsonRpcTransportKind = enum {
@@ -278,6 +286,7 @@ const JsonRpcTransportKind = enum {
 const JsonRpcTransportContext = struct {
     kind: JsonRpcTransportKind,
     reader: *std.Io.Reader,
+    read_fd: std.posix.fd_t,
     writer: ?*std.Io.Writer = null,
     output: ?*AppServerConnectionOutputState = null,
 };
@@ -24944,11 +24953,13 @@ const StdioServer = struct {
         var transport_context = JsonRpcTransportContext{
             .kind = .stdout_line,
             .reader = &stdin_reader.interface,
+            .read_fd = std.Io.File.stdin().handle,
         };
         state.server_request_transport = .{
             .ctx = &transport_context,
             .send_payload = sendJsonRpcTransportPayload,
             .read_payload = readJsonRpcTransportPayload,
+            .read_payload_with_timeout = readJsonRpcTransportPayloadWithTimeout,
         };
 
         while (true) {
@@ -25031,6 +25042,7 @@ const UnixServer = struct {
         var transport_context = JsonRpcTransportContext{
             .kind = .stream_line,
             .reader = &reader.interface,
+            .read_fd = stream.socket.handle,
             .writer = &writer.interface,
             .output = output_state,
         };
@@ -25038,6 +25050,7 @@ const UnixServer = struct {
             .ctx = &transport_context,
             .send_payload = sendJsonRpcTransportPayload,
             .read_payload = readJsonRpcTransportPayload,
+            .read_payload_with_timeout = readJsonRpcTransportPayloadWithTimeout,
         };
         defer state.server_request_transport = null;
         state.connection_output = output_state;
@@ -25172,6 +25185,7 @@ const WebSocketServer = struct {
         var transport_context = JsonRpcTransportContext{
             .kind = .websocket,
             .reader = &reader.interface,
+            .read_fd = stream.socket.handle,
             .writer = &writer.interface,
             .output = output_state,
         };
@@ -25179,6 +25193,7 @@ const WebSocketServer = struct {
             .ctx = &transport_context,
             .send_payload = sendJsonRpcTransportPayload,
             .read_payload = readJsonRpcTransportPayload,
+            .read_payload_with_timeout = readJsonRpcTransportPayloadWithTimeout,
         };
         defer state.server_request_transport = null;
         state.connection_output = output_state;
@@ -25498,6 +25513,219 @@ fn readJsonRpcTransportPayload(ctx: *anyopaque, allocator: std.mem.Allocator) !?
     }
 }
 
+fn readJsonRpcTransportPayloadWithTimeout(ctx: *anyopaque, allocator: std.mem.Allocator, timeout_ms: u64) !TimedTransportPayload {
+    const context: *JsonRpcTransportContext = @ptrCast(@alignCast(ctx));
+    const deadline_ms = appServerAwakeDeadlineMs(timeout_ms);
+    return switch (context.kind) {
+        .stdout_line, .stream_line => readJsonRpcLineTransportPayloadWithDeadline(context, allocator, deadline_ms),
+        .websocket => readJsonRpcWebSocketTransportPayloadWithDeadline(context, allocator, deadline_ms),
+    };
+}
+
+fn readJsonRpcLineTransportPayloadWithDeadline(
+    context: *JsonRpcTransportContext,
+    allocator: std.mem.Allocator,
+    deadline_ms: i64,
+) !TimedTransportPayload {
+    var line = std.ArrayList(u8).empty;
+    errdefer line.deinit(allocator);
+
+    while (true) {
+        switch (try takeReaderByteWithDeadline(context, deadline_ms)) {
+            .byte => |byte| {
+                if (byte == '\n') {
+                    const trimmed = std.mem.trim(u8, line.items, " \t\r\n");
+                    const payload = try allocator.dupe(u8, trimmed);
+                    line.deinit(allocator);
+                    return .{ .payload = payload };
+                }
+                if (line.items.len >= 64 * 1024) return error.StreamTooLong;
+                try line.append(allocator, byte);
+            },
+            .closed => {
+                if (line.items.len == 0) {
+                    line.deinit(allocator);
+                    return .closed;
+                }
+                const trimmed = std.mem.trim(u8, line.items, " \t\r\n");
+                const payload = try allocator.dupe(u8, trimmed);
+                line.deinit(allocator);
+                return .{ .payload = payload };
+            },
+            .timed_out => {
+                line.deinit(allocator);
+                return .timed_out;
+            },
+        }
+    }
+}
+
+fn readJsonRpcWebSocketTransportPayloadWithDeadline(
+    context: *JsonRpcTransportContext,
+    allocator: std.mem.Allocator,
+    deadline_ms: i64,
+) !TimedTransportPayload {
+    while (true) {
+        const first = switch (try takeReaderByteWithDeadline(context, deadline_ms)) {
+            .byte => |byte| byte,
+            .closed => return .closed,
+            .timed_out => return .timed_out,
+        };
+        const second = switch (try takeReaderByteWithDeadline(context, deadline_ms)) {
+            .byte => |byte| byte,
+            .closed => return .closed,
+            .timed_out => return .timed_out,
+        };
+        const fin = (first & 0x80) != 0;
+        const opcode = first & 0x0f;
+        const masked = (second & 0x80) != 0;
+        var payload_len: u64 = second & 0x7f;
+        if (payload_len == 126) {
+            var len_bytes: [2]u8 = undefined;
+            switch (try readReaderBytesWithDeadline(context, deadline_ms, &len_bytes)) {
+                .ok => {},
+                .closed => return .closed,
+                .timed_out => return .timed_out,
+            }
+            payload_len = std.mem.readInt(u16, &len_bytes, .big);
+        } else if (payload_len == 127) {
+            var len_bytes: [8]u8 = undefined;
+            switch (try readReaderBytesWithDeadline(context, deadline_ms, &len_bytes)) {
+                .ok => {},
+                .closed => return .closed,
+                .timed_out => return .timed_out,
+            }
+            payload_len = std.mem.readInt(u64, &len_bytes, .big);
+        }
+        if (!fin) return error.UnsupportedWebSocketFragment;
+        if (!masked) return error.UnmaskedWebSocketClientFrame;
+        if (payload_len > 16 * 1024 * 1024) return error.WebSocketFrameTooLarge;
+
+        var mask: [4]u8 = undefined;
+        switch (try readReaderBytesWithDeadline(context, deadline_ms, &mask)) {
+            .ok => {},
+            .closed => return .closed,
+            .timed_out => return .timed_out,
+        }
+
+        const payload = try allocator.alloc(u8, @intCast(payload_len));
+        errdefer allocator.free(payload);
+        for (payload, 0..) |*byte, index| {
+            byte.* = switch (try takeReaderByteWithDeadline(context, deadline_ms)) {
+                .byte => |value| value ^ mask[index % 4],
+                .closed => {
+                    allocator.free(payload);
+                    return .closed;
+                },
+                .timed_out => {
+                    allocator.free(payload);
+                    return .timed_out;
+                },
+            };
+        }
+
+        const writer = context.writer orelse return error.AppServerTransportMissingWriter;
+        switch (opcode) {
+            0x1 => return .{ .payload = try trimOwnedTransportPayload(allocator, payload) },
+            0x8 => {
+                try writeWebSocketFrameWithConnection(context.output, writer, 0x8, payload);
+                allocator.free(payload);
+                return .closed;
+            },
+            0x9 => {
+                try writeWebSocketFrameWithConnection(context.output, writer, 0xA, payload);
+                allocator.free(payload);
+                continue;
+            },
+            0xA => {
+                allocator.free(payload);
+                continue;
+            },
+            else => {
+                return error.UnsupportedWebSocketOpcode;
+            },
+        }
+    }
+}
+
+const TimedTransportReadStatus = enum {
+    ok,
+    closed,
+    timed_out,
+};
+
+fn readReaderBytesWithDeadline(context: *JsonRpcTransportContext, deadline_ms: i64, dest: []u8) !TimedTransportReadStatus {
+    for (dest) |*byte| {
+        byte.* = switch (try takeReaderByteWithDeadline(context, deadline_ms)) {
+            .byte => |value| value,
+            .closed => return .closed,
+            .timed_out => return .timed_out,
+        };
+    }
+    return .ok;
+}
+
+const TimedTransportByte = union(enum) {
+    byte: u8,
+    closed,
+    timed_out,
+};
+
+fn takeReaderByteWithDeadline(context: *JsonRpcTransportContext, deadline_ms: i64) !TimedTransportByte {
+    if (!readerHasBufferedTransportBytes(context.reader)) {
+        if (!try jsonRpcTransportPayloadReady(context, deadline_ms)) return .timed_out;
+    }
+    const byte = context.reader.takeByte() catch |err| switch (err) {
+        error.EndOfStream => return .closed,
+        else => return err,
+    };
+    return .{ .byte = byte };
+}
+
+fn jsonRpcTransportPayloadReady(context: *const JsonRpcTransportContext, deadline_ms: i64) !bool {
+    if (readerHasBufferedTransportBytes(context.reader)) return true;
+    const remaining_ms = remainingAppServerAwakeMillis(deadline_ms) orelse return false;
+
+    var fds = [_]std.posix.pollfd{
+        .{ .fd = context.read_fd, .events = @intCast(std.posix.POLL.IN), .revents = 0 },
+    };
+    const max_poll_timeout_ms: u64 = @intCast(std.math.maxInt(i32));
+    const poll_timeout: i32 = if (remaining_ms > max_poll_timeout_ms) std.math.maxInt(i32) else @intCast(remaining_ms);
+    const ready = try std.posix.poll(&fds, poll_timeout);
+    if (ready == 0) return false;
+    return pollReventsInclude(fds[0].revents, std.posix.POLL.IN | std.posix.POLL.HUP | std.posix.POLL.ERR | std.posix.POLL.NVAL);
+}
+
+fn trimOwnedTransportPayload(allocator: std.mem.Allocator, payload: []u8) ![]const u8 {
+    const trimmed = std.mem.trim(u8, payload, " \t\r\n");
+    if (trimmed.len == payload.len) return payload;
+    const owned = try allocator.dupe(u8, trimmed);
+    allocator.free(payload);
+    return owned;
+}
+
+fn readerHasBufferedTransportBytes(reader: *const std.Io.Reader) bool {
+    return reader.seek < reader.end;
+}
+
+fn appServerAwakeDeadlineMs(timeout_ms: u64) i64 {
+    const now = currentAppServerAwakeMillis();
+    const delta = std.math.cast(i64, timeout_ms) orelse std.math.maxInt(i64);
+    if (delta > std.math.maxInt(i64) - now) return std.math.maxInt(i64);
+    return now + delta;
+}
+
+fn remainingAppServerAwakeMillis(deadline_ms: i64) ?u64 {
+    const now = currentAppServerAwakeMillis();
+    if (now >= deadline_ms) return null;
+    return @intCast(deadline_ms - now);
+}
+
+fn currentAppServerAwakeMillis() i64 {
+    const now_ns = std.Io.Timestamp.now(std.Io.Threaded.global_single_threaded.io(), .awake).nanoseconds;
+    return @intCast(@divTrunc(now_ns, std.time.ns_per_ms));
+}
+
 fn handleJsonRpcLine(allocator: std.mem.Allocator, state: *AppServerState, line: []const u8) !?[]const u8 {
     var parsed = std.json.parseFromSlice(std.json.Value, allocator, line, .{}) catch {
         return try renderJsonRpcError(allocator, null, -32700, "Parse error");
@@ -25689,6 +25917,36 @@ fn trackPendingServerRequest(
     });
 }
 
+fn trackPendingServerRequestWithThreadId(
+    allocator: std.mem.Allocator,
+    state: *AppServerState,
+    request_json: []const u8,
+    thread_id_value: []const u8,
+) !void {
+    var parsed = try std.json.parseFromSlice(std.json.Value, allocator, request_json, .{});
+    defer parsed.deinit();
+    if (parsed.value != .object) return error.InvalidServerRequest;
+    const object = parsed.value.object;
+    const id_value = object.get("id") orelse return error.InvalidServerRequest;
+    if (!isJsonRpcRequestIdValue(id_value)) return error.InvalidServerRequest;
+    if (thread_id_value.len == 0) return error.InvalidServerRequest;
+
+    const request_id_json = try std.json.Stringify.valueAlloc(allocator, id_value, .{});
+    errdefer allocator.free(request_id_json);
+    const thread_id = try allocator.dupe(u8, thread_id_value);
+    errdefer allocator.free(thread_id);
+
+    if (takePendingServerRequest(state, request_id_json)) |existing_request| {
+        var existing = existing_request;
+        existing.deinit(allocator);
+    }
+
+    try state.pending_server_requests.append(allocator, .{
+        .request_id_json = request_id_json,
+        .thread_id = thread_id,
+    });
+}
+
 fn takePendingServerRequest(state: *AppServerState, request_id_json: []const u8) ?PendingServerRequest {
     for (state.pending_server_requests.items, 0..) |request, index| {
         if (std.mem.eql(u8, request.request_id_json, request_id_json)) {
@@ -25737,6 +25995,18 @@ const AppServerRequestUserInputContext = struct {
     allocator: std.mem.Allocator,
     state: *AppServerState,
     transport: ServerRequestTransport,
+    thread_id: []const u8,
+    turn_id: []const u8,
+    turn_start_response_payload: []const u8,
+    turn_start_response_sent: *bool,
+};
+
+const AppServerExternalAuthRefreshContext = struct {
+    allocator: std.mem.Allocator,
+    state: *AppServerState,
+    transport: ServerRequestTransport,
+    codex_home: []const u8,
+    forced_chatgpt_workspace_id: ?[]const u8,
     thread_id: []const u8,
     turn_id: []const u8,
     turn_start_response_payload: []const u8,
@@ -26743,6 +27013,168 @@ fn emptyRequestUserInputResult(allocator: std.mem.Allocator, output: []const u8)
     return .{ .output_json = try allocator.dupe(u8, output) };
 }
 
+const ExternalAuthRefreshPayload = struct {
+    access_token: []const u8,
+    account_id: []const u8,
+
+    fn deinit(self: ExternalAuthRefreshPayload, allocator: std.mem.Allocator) void {
+        allocator.free(self.access_token);
+        allocator.free(self.account_id);
+    }
+};
+
+fn handleAppServerExternalAuthRefresh(
+    ctx: *anyopaque,
+    allocator: std.mem.Allocator,
+    previous_account_id: ?[]const u8,
+) !auth_mod.Credentials {
+    _ = allocator;
+    const context: *AppServerExternalAuthRefreshContext = @ptrCast(@alignCast(ctx));
+    try sendExternalAuthRefreshTurnStartResponse(context);
+
+    const request_id = try std.fmt.allocPrint(context.allocator, "auth-refresh-{s}", .{context.turn_id});
+    defer context.allocator.free(request_id);
+    const request_id_json = try std.json.Stringify.valueAlloc(context.allocator, request_id, .{});
+    defer context.allocator.free(request_id_json);
+
+    const request_json = try renderChatGptAuthTokensRefreshRequest(context.allocator, request_id, previous_account_id);
+    defer context.allocator.free(request_json);
+
+    try trackPendingServerRequestWithThreadId(context.allocator, context.state, request_json, context.thread_id);
+    var pending_tracked = true;
+    defer if (pending_tracked) {
+        if (takePendingServerRequest(context.state, request_id_json)) |pending_request| {
+            var pending = pending_request;
+            pending.deinit(context.allocator);
+        }
+    };
+
+    const visible_request = try renderServerRequestForConnection(context.allocator, context.state.experimental_api_enabled, request_json);
+    defer context.allocator.free(visible_request);
+    try context.transport.send_payload(context.transport.ctx, visible_request);
+
+    const refresh_deadline_ms = appServerAwakeDeadlineMs(EXTERNAL_AUTH_REFRESH_TIMEOUT_MS);
+    while (true) {
+        const read_timeout_ms = remainingAppServerAwakeMillis(refresh_deadline_ms) orelse {
+            try sendServerRequestResolvedForRequest(context.allocator, context.state, context.transport, request_id_json);
+            pending_tracked = false;
+            return error.AppServerExternalAuthRefreshTimedOut;
+        };
+        const payload = switch (try context.transport.read_payload_with_timeout(context.transport.ctx, context.allocator, read_timeout_ms)) {
+            .payload => |payload| payload,
+            .closed => return error.AppServerExternalAuthRefreshClientClosed,
+            .timed_out => {
+                try sendServerRequestResolvedForRequest(context.allocator, context.state, context.transport, request_id_json);
+                pending_tracked = false;
+                return error.AppServerExternalAuthRefreshTimedOut;
+            },
+        };
+        defer context.allocator.free(payload);
+        if (payload.len == 0) continue;
+
+        if (try externalAuthRefreshResponseMatchesRequest(context.allocator, payload, request_id_json)) {
+            try sendServerRequestResolvedForRequest(context.allocator, context.state, context.transport, request_id_json);
+            pending_tracked = false;
+            const refresh_payload = (try externalAuthRefreshPayloadFromResponse(context.allocator, payload, request_id_json)) orelse return error.InvalidExternalAuthRefreshResponse;
+            defer refresh_payload.deinit(context.allocator);
+            if (context.forced_chatgpt_workspace_id) |expected_workspace| {
+                if (!std.mem.eql(u8, refresh_payload.account_id, expected_workspace)) return error.WorkspaceRestriction;
+            }
+            try auth_mod.saveChatGptAuthTokensJson(context.allocator, context.codex_home, refresh_payload.access_token, refresh_payload.account_id);
+            var credentials = try auth_mod.loadNoRefresh(context.allocator, context.codex_home);
+            errdefer credentials.deinit(context.allocator);
+            const refreshed_credentials = credentials;
+            credentials = undefined;
+            return refreshed_credentials;
+        }
+
+        if (try renderPendingApprovalInterruptResponse(context.allocator, payload, context.thread_id, context.turn_id)) |interrupt_response| {
+            defer context.allocator.free(interrupt_response.payload);
+            try context.transport.send_payload(context.transport.ctx, interrupt_response.payload);
+            if (interrupt_response.cancel_approval) {
+                try sendServerRequestResolvedForRequest(context.allocator, context.state, context.transport, request_id_json);
+                pending_tracked = false;
+                return error.AppServerApprovalCanceled;
+            }
+            continue;
+        }
+
+        if (try renderPendingApprovalJsonRpcResponse(context.allocator, payload)) |response_payload| {
+            defer context.allocator.free(response_payload);
+            try context.transport.send_payload(context.transport.ctx, response_payload);
+        }
+    }
+}
+
+fn sendExternalAuthRefreshTurnStartResponse(context: *AppServerExternalAuthRefreshContext) !void {
+    if (context.turn_start_response_sent.*) return;
+    try context.transport.send_payload(context.transport.ctx, context.turn_start_response_payload);
+    context.turn_start_response_sent.* = true;
+}
+
+fn renderChatGptAuthTokensRefreshRequest(
+    allocator: std.mem.Allocator,
+    request_id: []const u8,
+    previous_account_id: ?[]const u8,
+) ![]const u8 {
+    var out = std.ArrayList(u8).empty;
+    errdefer out.deinit(allocator);
+    try out.appendSlice(allocator, "{\"jsonrpc\":\"2.0\",\"id\":");
+    try appendJsonString(allocator, &out, request_id);
+    try out.appendSlice(allocator, ",\"method\":\"account/chatgptAuthTokens/refresh\",\"params\":{\"reason\":\"unauthorized\",\"previousAccountId\":");
+    try appendOptionalJsonString(allocator, &out, previous_account_id);
+    try out.appendSlice(allocator, "}}");
+    return out.toOwnedSlice(allocator);
+}
+
+fn externalAuthRefreshPayloadFromResponse(
+    allocator: std.mem.Allocator,
+    payload: []const u8,
+    request_id_json: []const u8,
+) !?ExternalAuthRefreshPayload {
+    var parsed = std.json.parseFromSlice(std.json.Value, allocator, payload, .{}) catch return null;
+    defer parsed.deinit();
+    if (parsed.value != .object) return null;
+    const object = parsed.value.object;
+    if (!isJsonRpcResponseEnvelope(object)) return null;
+    const id_value = object.get("id") orelse return null;
+    const id_json = try std.json.Stringify.valueAlloc(allocator, id_value, .{});
+    defer allocator.free(id_json);
+    if (!std.mem.eql(u8, id_json, request_id_json)) return null;
+    if (object.get("error") != null) return error.AppServerExternalAuthRefreshRejected;
+    const result = object.get("result") orelse return error.InvalidExternalAuthRefreshResponse;
+    if (result != .object) return error.InvalidExternalAuthRefreshResponse;
+    const access_token = requiredJsonStringField(result.object, "accessToken") orelse return error.InvalidExternalAuthRefreshResponse;
+    const account_id = requiredJsonStringField(result.object, "chatgptAccountId") orelse return error.InvalidExternalAuthRefreshResponse;
+    if (access_token.len == 0 or account_id.len == 0) return error.InvalidExternalAuthRefreshResponse;
+
+    const access_token_owned = try allocator.dupe(u8, access_token);
+    errdefer allocator.free(access_token_owned);
+    const account_id_owned = try allocator.dupe(u8, account_id);
+    errdefer allocator.free(account_id_owned);
+
+    return .{
+        .access_token = access_token_owned,
+        .account_id = account_id_owned,
+    };
+}
+
+fn externalAuthRefreshResponseMatchesRequest(
+    allocator: std.mem.Allocator,
+    payload: []const u8,
+    request_id_json: []const u8,
+) !bool {
+    var parsed = std.json.parseFromSlice(std.json.Value, allocator, payload, .{}) catch return false;
+    defer parsed.deinit();
+    if (parsed.value != .object) return false;
+    const object = parsed.value.object;
+    if (!isJsonRpcResponseEnvelope(object)) return false;
+    const id_value = object.get("id") orelse return false;
+    const id_json = try std.json.Stringify.valueAlloc(allocator, id_value, .{});
+    defer allocator.free(id_json);
+    return std.mem.eql(u8, id_json, request_id_json);
+}
+
 fn handleAppServerMcpElicitation(ctx: *anyopaque, request: mcp_runtime.ElicitationRequest) !mcp_runtime.ElicitationResponse {
     const context: *AppServerMcpElicitationContext = @ptrCast(@alignCast(ctx));
     if (context.auto_decline) return emptyMcpElicitationResult(context.allocator, "decline");
@@ -27700,6 +28132,25 @@ fn handleTurnStart(
         };
     } else null;
 
+    var external_auth_refresh_context: AppServerExternalAuthRefreshContext = undefined;
+    const external_auth_refresh_callback: ?api.ExternalAuthRefreshCallback = if (state.server_request_transport) |transport| blk: {
+        external_auth_refresh_context = .{
+            .allocator = allocator,
+            .state = state,
+            .transport = transport,
+            .codex_home = cfg.codex_home,
+            .forced_chatgpt_workspace_id = cfg.forced_chatgpt_workspace_id,
+            .thread_id = thread.id,
+            .turn_id = turn_id,
+            .turn_start_response_payload = response_payload,
+            .turn_start_response_sent = &turn_start_response_sent,
+        };
+        break :blk .{
+            .ctx = &external_auth_refresh_context,
+            .on_refresh = handleAppServerExternalAuthRefresh,
+        };
+    } else null;
+
     var mcp_elicitation_context: AppServerMcpElicitationContext = undefined;
     const mcp_elicitation_callback: ?mcp_runtime.ElicitationCallback = if (state.server_request_transport) |transport| blk: {
         mcp_elicitation_context = .{
@@ -27727,6 +28178,7 @@ fn handleTurnStart(
         .request_permissions_callback = request_permissions_callback,
         .request_user_input_callback = request_user_input_callback,
         .mcp_elicitation_callback = mcp_elicitation_callback,
+        .external_auth_refresh_callback = external_auth_refresh_callback,
         .additional_writable_roots = thread.sandbox_writable_roots.items,
         .include_cwd_write_root = thread.sandbox_include_cwd_write_root,
         .network_enabled = thread.sandbox_network_enabled,
