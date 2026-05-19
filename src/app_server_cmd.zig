@@ -55973,7 +55973,13 @@ fn handleModelList(allocator: std.mem.Allocator, id_value: std.json.Value, param
     else
         0;
 
-    const total = modelListTotal(include_hidden);
+    var cached_models = try loadFreshModelCatalogCache(allocator);
+    defer if (cached_models) |*cache| cache.deinit(allocator);
+    if (cached_models) |*cache| {
+        return handleCachedModelList(allocator, id_value, start, limit, include_hidden, cache);
+    }
+
+    const total = bundledModelListTotal(include_hidden);
     if (start > total) {
         const message = try std.fmt.allocPrint(allocator, "cursor {d} exceeds total models {d}", .{ start, total });
         defer allocator.free(message);
@@ -56053,7 +56059,504 @@ fn optionalModelListParams(params_value: ?std.json.Value) OptionalObjectParams {
     return .{ .object = params.object };
 }
 
-fn modelListTotal(include_hidden: bool) usize {
+const MODEL_CACHE_FILE_NAME = "models_cache.json";
+const MODEL_CACHE_CLIENT_VERSION = "0.0.1";
+const MODEL_CACHE_RUST_SOURCE_CLIENT_VERSION = "0.0.0";
+const MODEL_CACHE_MIN_RUST_RELEASE_CLIENT_VERSION = Semver{ .major = 0, .minor = 98, .patch = 0 };
+const MODEL_CACHE_TTL_MS: i64 = 300_000;
+const MODEL_CACHE_MAX_BYTES: usize = 4 * 1024 * 1024;
+const MODEL_PERSONALITY_PLACEHOLDER = "{{ personality }}";
+const DEFAULT_MODEL_INPUT_MODALITIES = [_][]const u8{ "text", "image" };
+
+const Semver = struct {
+    major: u32,
+    minor: u32,
+    patch: u32,
+};
+
+const CachedModelCatalog = struct {
+    bytes: []u8,
+    parsed: std.json.Parsed(std.json.Value),
+    models: []const std.json.Value,
+
+    fn deinit(self: *CachedModelCatalog, allocator: std.mem.Allocator) void {
+        self.parsed.deinit();
+        allocator.free(self.bytes);
+    }
+};
+
+fn loadFreshModelCatalogCache(allocator: std.mem.Allocator) !?CachedModelCatalog {
+    const codex_home = resolveCodexHome(allocator) catch return null;
+    defer allocator.free(codex_home);
+    const path = try std.fs.path.join(allocator, &.{ codex_home, MODEL_CACHE_FILE_NAME });
+    defer allocator.free(path);
+
+    const bytes = std.Io.Dir.cwd().readFileAlloc(
+        std.Io.Threaded.global_single_threaded.io(),
+        path,
+        allocator,
+        .limited(MODEL_CACHE_MAX_BYTES),
+    ) catch return null;
+
+    var parsed = std.json.parseFromSlice(std.json.Value, allocator, bytes, .{}) catch {
+        allocator.free(bytes);
+        return null;
+    };
+    var keep = false;
+    defer if (!keep) {
+        parsed.deinit();
+        allocator.free(bytes);
+    };
+
+    if (parsed.value != .object) return null;
+    const object = parsed.value.object;
+    const client_version = cachedStringField(object, "client_version") orelse return null;
+    if (!modelCacheClientVersionIsCompatible(client_version)) return null;
+    const fetched_at = cachedStringField(object, "fetched_at") orelse return null;
+    const fetched_at_ms = parseThreadListRfc3339Milliseconds(fetched_at) orelse return null;
+    if (!modelCacheTimestampIsFresh(fetched_at_ms)) return null;
+    const models_value = object.get("models") orelse return null;
+    if (models_value != .array) return null;
+    for (models_value.array.items) |model| {
+        if (!cachedModelIsUsable(model)) return null;
+    }
+
+    keep = true;
+    return .{
+        .bytes = bytes,
+        .parsed = parsed,
+        .models = models_value.array.items,
+    };
+}
+
+fn modelCacheClientVersionIsCompatible(client_version: []const u8) bool {
+    if (std.mem.eql(u8, client_version, MODEL_CACHE_CLIENT_VERSION)) return true;
+    if (std.mem.eql(u8, client_version, MODEL_CACHE_RUST_SOURCE_CLIENT_VERSION)) return true;
+    const parsed = parseWholeSemver(client_version) orelse return false;
+    return semverAtLeast(parsed, MODEL_CACHE_MIN_RUST_RELEASE_CLIENT_VERSION);
+}
+
+fn parseWholeSemver(value: []const u8) ?Semver {
+    var parts = std.mem.splitScalar(u8, value, '.');
+    const major_text = parts.next() orelse return null;
+    const minor_text = parts.next() orelse return null;
+    const patch_text = parts.next() orelse return null;
+    if (parts.next() != null) return null;
+    if (major_text.len == 0 or minor_text.len == 0 or patch_text.len == 0) return null;
+    return .{
+        .major = std.fmt.parseUnsigned(u32, major_text, 10) catch return null,
+        .minor = std.fmt.parseUnsigned(u32, minor_text, 10) catch return null,
+        .patch = std.fmt.parseUnsigned(u32, patch_text, 10) catch return null,
+    };
+}
+
+fn semverAtLeast(version: Semver, minimum: Semver) bool {
+    if (version.major != minimum.major) return version.major > minimum.major;
+    if (version.minor != minimum.minor) return version.minor > minimum.minor;
+    return version.patch >= minimum.patch;
+}
+
+fn modelCacheTimestampIsFresh(fetched_at_ms: i64) bool {
+    const age_ms = currentUnixMilliseconds() - fetched_at_ms;
+    return age_ms <= MODEL_CACHE_TTL_MS;
+}
+
+const ModelListEntry = union(enum) {
+    bundled: model_catalog.Entry,
+    cached: std.json.Value,
+};
+
+const IndexedModelListEntry = struct {
+    entry: ModelListEntry,
+    order: usize,
+};
+
+fn handleCachedModelList(
+    allocator: std.mem.Allocator,
+    id_value: std.json.Value,
+    start: usize,
+    limit: ?usize,
+    include_hidden: bool,
+    cache: *const CachedModelCatalog,
+) ![]const u8 {
+    var entries = std.ArrayList(IndexedModelListEntry).empty;
+    defer entries.deinit(allocator);
+
+    const uses_codex_backend = cachedModelListUsesCodexBackend(allocator);
+    var order: usize = 0;
+    for (model_catalog.bundled_models) |bundled_model| {
+        const entry = if (cachedModelForSlug(cache.models, bundled_model.slug)) |cached_model|
+            ModelListEntry{ .cached = cached_model }
+        else
+            ModelListEntry{ .bundled = bundled_model };
+        if (!uses_codex_backend and !modelListEntrySupportedInApi(entry)) {
+            order += 1;
+            continue;
+        }
+        try entries.append(allocator, .{ .entry = entry, .order = order });
+        order += 1;
+    }
+    for (cache.models) |cached_model| {
+        const slug = cachedModelSlug(cached_model).?;
+        if (model_catalog.bundledModel(slug) != null) continue;
+        const entry = ModelListEntry{ .cached = cached_model };
+        if (!uses_codex_backend and !modelListEntrySupportedInApi(entry)) continue;
+        try entries.append(allocator, .{ .entry = entry, .order = order });
+        order += 1;
+    }
+    std.mem.sort(IndexedModelListEntry, entries.items, {}, indexedModelListEntryLessThan);
+
+    const total = modelListEntryTotal(entries.items, include_hidden);
+    if (start > total) {
+        const message = try std.fmt.allocPrint(allocator, "cursor {d} exceeds total models {d}", .{ start, total });
+        defer allocator.free(message);
+        return renderJsonRpcError(allocator, id_value, -32600, message);
+    }
+
+    const effective_limit = @min(@max(limit orelse total, 1), total);
+    const end = @min(start + effective_limit, total);
+    const default_slug = modelListDefaultSlug(entries.items);
+
+    var result = std.ArrayList(u8).empty;
+    defer result.deinit(allocator);
+    try result.appendSlice(allocator, "{\"data\":[");
+    var visible_index: usize = 0;
+    var emitted = false;
+    for (entries.items) |indexed| {
+        if (!include_hidden and modelListEntryHidden(indexed.entry)) continue;
+        if (visible_index >= start and visible_index < end) {
+            if (emitted) try result.appendSlice(allocator, ",");
+            const is_default = if (default_slug) |slug| std.mem.eql(u8, modelListEntrySlug(indexed.entry), slug) else false;
+            try appendModelListEntryJson(allocator, &result, indexed.entry, is_default);
+            emitted = true;
+        }
+        visible_index += 1;
+    }
+    try result.appendSlice(allocator, "],\"nextCursor\":");
+    if (end < total) {
+        const next_cursor = try std.fmt.allocPrint(allocator, "{d}", .{end});
+        defer allocator.free(next_cursor);
+        const next_cursor_json = try std.json.Stringify.valueAlloc(allocator, next_cursor, .{});
+        defer allocator.free(next_cursor_json);
+        try result.appendSlice(allocator, next_cursor_json);
+    } else {
+        try result.appendSlice(allocator, "null");
+    }
+    try result.appendSlice(allocator, "}");
+
+    return renderJsonRpcResult(allocator, id_value, result.items);
+}
+
+fn cachedModelListUsesCodexBackend(allocator: std.mem.Allocator) bool {
+    var cfg = config.loadWithOptions(allocator, .{}) catch return false;
+    defer cfg.deinit(allocator);
+    var credentials = auth_mod.loadCliAuthNoRefreshForConfig(allocator, &cfg) catch return false;
+    defer credentials.deinit(allocator);
+    return switch (credentials.mode) {
+        .chatgpt, .chatgpt_auth_tokens, .agent_identity => true,
+        .api_key, .local_oss => false,
+    };
+}
+
+fn cachedModelForSlug(models: []const std.json.Value, slug: []const u8) ?std.json.Value {
+    for (models) |model| {
+        if (cachedModelSlug(model)) |model_slug| {
+            if (std.mem.eql(u8, model_slug, slug)) return model;
+        }
+    }
+    return null;
+}
+
+fn modelListEntryTotal(entries: []const IndexedModelListEntry, include_hidden: bool) usize {
+    var total: usize = 0;
+    for (entries) |entry| {
+        if (include_hidden or !modelListEntryHidden(entry.entry)) total += 1;
+    }
+    return total;
+}
+
+fn modelListDefaultSlug(entries: []const IndexedModelListEntry) ?[]const u8 {
+    for (entries) |entry| {
+        if (!modelListEntryHidden(entry.entry)) return modelListEntrySlug(entry.entry);
+    }
+    if (entries.len > 0) return modelListEntrySlug(entries[0].entry);
+    return null;
+}
+
+fn indexedModelListEntryLessThan(_: void, lhs: IndexedModelListEntry, rhs: IndexedModelListEntry) bool {
+    const lhs_priority = modelListEntryPriority(lhs.entry);
+    const rhs_priority = modelListEntryPriority(rhs.entry);
+    if (lhs_priority != rhs_priority) return lhs_priority < rhs_priority;
+    return lhs.order < rhs.order;
+}
+
+fn modelListEntrySlug(entry: ModelListEntry) []const u8 {
+    return switch (entry) {
+        .bundled => |model| model.slug,
+        .cached => |model| cachedModelSlug(model).?,
+    };
+}
+
+fn modelListEntryHidden(entry: ModelListEntry) bool {
+    return switch (entry) {
+        .bundled => |model| model.hidden(),
+        .cached => |model| cachedModelHidden(model),
+    };
+}
+
+fn modelListEntrySupportedInApi(entry: ModelListEntry) bool {
+    return switch (entry) {
+        .bundled => |model| model.supported_in_api,
+        .cached => |model| cachedModelSupportedInApi(model),
+    };
+}
+
+fn modelListEntryPriority(entry: ModelListEntry) i64 {
+    return switch (entry) {
+        .bundled => |model| @intCast(model.priority),
+        .cached => |model| cachedModelPriority(model),
+    };
+}
+
+fn appendModelListEntryJson(
+    allocator: std.mem.Allocator,
+    result: *std.ArrayList(u8),
+    entry: ModelListEntry,
+    is_default: bool,
+) !void {
+    switch (entry) {
+        .bundled => |model| try appendAppServerModelJson(allocator, result, model, is_default),
+        .cached => |model| try appendAppServerCachedModelJson(allocator, result, model, is_default),
+    }
+}
+
+fn cachedModelIsUsable(value: std.json.Value) bool {
+    if (value != .object) return false;
+    const object = value.object;
+    return cachedStringField(object, "slug") != null and
+        cachedStringField(object, "display_name") != null and
+        cachedStringField(object, "visibility") != null and
+        cachedBoolFieldValue(object, "supported_in_api") != null and
+        cachedIntegerField(object, "priority") != null and
+        cachedArrayField(object, "supported_reasoning_levels") != null;
+}
+
+fn cachedModelSlug(value: std.json.Value) ?[]const u8 {
+    if (value != .object) return null;
+    return cachedStringField(value.object, "slug");
+}
+
+fn cachedModelHidden(value: std.json.Value) bool {
+    if (value != .object) return true;
+    const visibility = cachedStringField(value.object, "visibility") orelse return true;
+    return !std.mem.eql(u8, visibility, "list");
+}
+
+fn cachedModelSupportedInApi(value: std.json.Value) bool {
+    if (value != .object) return false;
+    return cachedBoolField(value.object, "supported_in_api", false);
+}
+
+fn cachedModelPriority(value: std.json.Value) i64 {
+    if (value != .object) return std.math.maxInt(i64);
+    return cachedIntegerField(value.object, "priority") orelse std.math.maxInt(i64);
+}
+
+fn appendAppServerCachedModelJson(
+    allocator: std.mem.Allocator,
+    result: *std.ArrayList(u8),
+    value: std.json.Value,
+    is_default: bool,
+) !void {
+    const object = value.object;
+    const slug = cachedStringField(object, "slug").?;
+    const display_name = cachedStringField(object, "display_name").?;
+    const description = cachedStringField(object, "description") orelse "";
+    const default_reasoning = cachedStringField(object, "default_reasoning_level") orelse "none";
+
+    try result.appendSlice(allocator, "{\"id\":");
+    try appendJsonString(allocator, result, slug);
+    try result.appendSlice(allocator, ",\"model\":");
+    try appendJsonString(allocator, result, slug);
+    try appendCachedUpgradeFields(allocator, result, cachedObjectField(object, "upgrade"));
+    try result.appendSlice(allocator, ",\"availabilityNux\":");
+    if (cachedObjectField(object, "availability_nux")) |nux| {
+        if (cachedStringField(nux, "message")) |message| {
+            try result.appendSlice(allocator, "{\"message\":");
+            try appendJsonString(allocator, result, message);
+            try result.appendSlice(allocator, "}");
+        } else {
+            try result.appendSlice(allocator, "null");
+        }
+    } else {
+        try result.appendSlice(allocator, "null");
+    }
+    try result.appendSlice(allocator, ",\"displayName\":");
+    try appendJsonString(allocator, result, display_name);
+    try result.appendSlice(allocator, ",\"description\":");
+    try appendJsonString(allocator, result, description);
+    try result.appendSlice(allocator, ",\"hidden\":");
+    try result.appendSlice(allocator, if (cachedModelHidden(value)) "true" else "false");
+    try result.appendSlice(allocator, ",\"supportedReasoningEfforts\":");
+    try appendCachedReasoningEfforts(allocator, result, cachedArrayField(object, "supported_reasoning_levels"));
+    try result.appendSlice(allocator, ",\"defaultReasoningEffort\":");
+    try appendJsonString(allocator, result, default_reasoning);
+    try result.appendSlice(allocator, ",\"inputModalities\":");
+    try appendCachedStringArray(allocator, result, cachedArrayField(object, "input_modalities"), DEFAULT_MODEL_INPUT_MODALITIES[0..]);
+    try result.appendSlice(allocator, ",\"supportsPersonality\":");
+    try result.appendSlice(allocator, if (cachedModelSupportsPersonality(object)) "true" else "false");
+    try result.appendSlice(allocator, ",\"additionalSpeedTiers\":");
+    try appendCachedStringArray(allocator, result, cachedArrayField(object, "additional_speed_tiers"), &.{});
+    try result.appendSlice(allocator, ",\"serviceTiers\":");
+    try appendCachedServiceTiers(allocator, result, cachedArrayField(object, "service_tiers"));
+    try result.appendSlice(allocator, ",\"isDefault\":");
+    try result.appendSlice(allocator, if (is_default) "true" else "false");
+    try result.appendSlice(allocator, "}");
+}
+
+fn appendCachedUpgradeFields(
+    allocator: std.mem.Allocator,
+    result: *std.ArrayList(u8),
+    upgrade: ?std.json.ObjectMap,
+) !void {
+    try result.appendSlice(allocator, ",\"upgrade\":");
+    if (upgrade) |object| {
+        if (cachedStringField(object, "model")) |model| {
+            try appendJsonString(allocator, result, model);
+            try result.appendSlice(allocator, ",\"upgradeInfo\":{\"model\":");
+            try appendJsonString(allocator, result, model);
+            try result.appendSlice(allocator, ",\"upgradeCopy\":null,\"modelLink\":null,\"migrationMarkdown\":");
+            try appendOptionalJsonString(allocator, result, cachedStringField(object, "migration_markdown"));
+            try result.appendSlice(allocator, "}");
+            return;
+        }
+    }
+    try result.appendSlice(allocator, "null,\"upgradeInfo\":null");
+}
+
+fn appendCachedReasoningEfforts(
+    allocator: std.mem.Allocator,
+    result: *std.ArrayList(u8),
+    values: ?[]const std.json.Value,
+) !void {
+    try result.appendSlice(allocator, "[");
+    var emitted = false;
+    if (values) |items| {
+        for (items) |item| {
+            if (item != .object) continue;
+            const effort = cachedStringField(item.object, "effort") orelse continue;
+            const description = cachedStringField(item.object, "description") orelse "";
+            if (emitted) try result.appendSlice(allocator, ",");
+            try result.appendSlice(allocator, "{\"reasoningEffort\":");
+            try appendJsonString(allocator, result, effort);
+            try result.appendSlice(allocator, ",\"description\":");
+            try appendJsonString(allocator, result, description);
+            try result.appendSlice(allocator, "}");
+            emitted = true;
+        }
+    }
+    try result.appendSlice(allocator, "]");
+}
+
+fn appendCachedStringArray(
+    allocator: std.mem.Allocator,
+    result: *std.ArrayList(u8),
+    values: ?[]const std.json.Value,
+    default_values: []const []const u8,
+) !void {
+    if (values) |items| {
+        try result.appendSlice(allocator, "[");
+        var emitted = false;
+        for (items) |item| {
+            if (item != .string) continue;
+            if (emitted) try result.appendSlice(allocator, ",");
+            try appendJsonString(allocator, result, item.string);
+            emitted = true;
+        }
+        try result.appendSlice(allocator, "]");
+        return;
+    }
+    try appendJsonStringArray(allocator, result, default_values);
+}
+
+fn appendCachedServiceTiers(
+    allocator: std.mem.Allocator,
+    result: *std.ArrayList(u8),
+    values: ?[]const std.json.Value,
+) !void {
+    try result.appendSlice(allocator, "[");
+    var emitted = false;
+    if (values) |items| {
+        for (items) |item| {
+            if (item != .object) continue;
+            const id = cachedStringField(item.object, "id") orelse continue;
+            const name = cachedStringField(item.object, "name") orelse continue;
+            const description = cachedStringField(item.object, "description") orelse continue;
+            if (emitted) try result.appendSlice(allocator, ",");
+            try result.appendSlice(allocator, "{\"id\":");
+            try appendJsonString(allocator, result, id);
+            try result.appendSlice(allocator, ",\"name\":");
+            try appendJsonString(allocator, result, name);
+            try result.appendSlice(allocator, ",\"description\":");
+            try appendJsonString(allocator, result, description);
+            try result.appendSlice(allocator, "}");
+            emitted = true;
+        }
+    }
+    try result.appendSlice(allocator, "]");
+}
+
+fn cachedModelSupportsPersonality(object: std.json.ObjectMap) bool {
+    const messages = cachedObjectField(object, "model_messages") orelse return false;
+    const template = cachedStringField(messages, "instructions_template") orelse return false;
+    if (std.mem.indexOf(u8, template, MODEL_PERSONALITY_PLACEHOLDER) == null) return false;
+    const variables = cachedObjectField(messages, "instructions_variables") orelse return false;
+    return cachedStringField(variables, "personality_default") != null and
+        cachedStringField(variables, "personality_friendly") != null and
+        cachedStringField(variables, "personality_pragmatic") != null;
+}
+
+fn cachedStringField(object: std.json.ObjectMap, name: []const u8) ?[]const u8 {
+    const value = object.get(name) orelse return null;
+    if (value == .null) return null;
+    if (value != .string) return null;
+    return value.string;
+}
+
+fn cachedBoolField(object: std.json.ObjectMap, name: []const u8, default_value: bool) bool {
+    return cachedBoolFieldValue(object, name) orelse default_value;
+}
+
+fn cachedBoolFieldValue(object: std.json.ObjectMap, name: []const u8) ?bool {
+    const value = object.get(name) orelse return null;
+    if (value != .bool) return null;
+    return value.bool;
+}
+
+fn cachedIntegerField(object: std.json.ObjectMap, name: []const u8) ?i64 {
+    const value = object.get(name) orelse return null;
+    return switch (value) {
+        .integer => |integer| integer,
+        .number_string => |number| std.fmt.parseInt(i64, number, 10) catch null,
+        else => null,
+    };
+}
+
+fn cachedObjectField(object: std.json.ObjectMap, name: []const u8) ?std.json.ObjectMap {
+    const value = object.get(name) orelse return null;
+    if (value == .null) return null;
+    if (value != .object) return null;
+    return value.object;
+}
+
+fn cachedArrayField(object: std.json.ObjectMap, name: []const u8) ?[]const std.json.Value {
+    const value = object.get(name) orelse return null;
+    if (value == .null) return null;
+    if (value != .array) return null;
+    return value.array.items;
+}
+
+fn bundledModelListTotal(include_hidden: bool) usize {
     var total: usize = 0;
     for (model_catalog.bundled_models) |model| {
         if (include_hidden or !model.hidden()) total += 1;

@@ -29520,10 +29520,83 @@ def run_model_rpc_smoke(binary: Path) -> None:
     def rpc(request_id: str, method: str, params: dict) -> dict:
         env = os.environ.copy()
         env["CODEX_HOME"] = str(codex_home)
+        env.pop("CODEX_ACCESS_TOKEN", None)
+        env.pop("OPENAI_API_KEY", None)
         return request_stdio_app_server(
             binary,
             {"jsonrpc": "2.0", "id": request_id, "method": method, "params": params},
             env,
+        )
+
+    def write_models_cache(
+        client_version: str = "0.131.0",
+        fetched_at: str | None = None,
+    ) -> None:
+        if fetched_at is None:
+            fetched_at = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+        models = [
+            {
+                "slug": "cache-hidden",
+                "display_name": "Cache Hidden",
+                "description": "Hidden cached model",
+                "default_reasoning_level": "medium",
+                "supported_reasoning_levels": [
+                    {"effort": "medium", "description": "Balanced cached reasoning"}
+                ],
+                "visibility": "hide",
+                "supported_in_api": True,
+                "priority": 3,
+                "input_modalities": ["text", "image"],
+            },
+            {
+                "slug": "cache-alpha",
+                "display_name": "Cache Alpha",
+                "description": "Fresh cached model",
+                "default_reasoning_level": "high",
+                "supported_reasoning_levels": [
+                    {"effort": "low", "description": "Low cached reasoning"},
+                    {"effort": "high", "description": "High cached reasoning"},
+                ],
+                "visibility": "list",
+                "supported_in_api": True,
+                "priority": 1,
+                "additional_speed_tiers": ["fast"],
+                "service_tiers": [
+                    {"id": "flex", "name": "Flex", "description": "Lower priority"}
+                ],
+                "availability_nux": {"message": "Cache alpha available"},
+                "upgrade": {"model": "cache-beta", "migration_markdown": "Move to beta"},
+                "model_messages": {
+                    "instructions_template": "Use {{ personality }} when present.",
+                    "instructions_variables": {
+                        "personality_default": "default tone",
+                        "personality_friendly": "friendly tone",
+                        "personality_pragmatic": "pragmatic tone",
+                    },
+                },
+                "input_modalities": ["text"],
+            },
+            {
+                "slug": "cache-beta",
+                "display_name": "Cache Beta",
+                "description": None,
+                "supported_reasoning_levels": [],
+                "visibility": "list",
+                "supported_in_api": True,
+                "priority": 5,
+            },
+        ]
+        (codex_home / "models_cache.json").write_text(
+            json.dumps(
+                {
+                    "fetched_at": fetched_at,
+                    "etag": None,
+                    "client_version": client_version,
+                    "models": models,
+                },
+                separators=(",", ":"),
+            ),
+            encoding="utf-8",
         )
 
     try:
@@ -29558,6 +29631,95 @@ def run_model_rpc_smoke(binary: Path) -> None:
         assert [item["id"] for item in second_page["result"]["data"]] == ["gpt-5.4-mini", "gpt-5.3-codex"]
         assert second_page["result"]["data"][1]["upgrade"] == "gpt-5.4"
         assert second_page["result"]["data"][1]["upgradeInfo"]["model"] == "gpt-5.4"
+
+        write_models_cache()
+        cached_models = rpc("model-list-cache", "model/list", {"limit": 5})
+        assert cached_models["id"] == "model-list-cache"
+        assert cached_models["result"]["nextCursor"] == "5"
+        assert [item["id"] for item in cached_models["result"]["data"]] == [
+            "gpt-5.5",
+            "cache-alpha",
+            "gpt-5.4",
+            "gpt-5.4-mini",
+            "cache-beta",
+        ]
+        assert cached_models["result"]["data"][0]["isDefault"] is True
+        cached_alpha = cached_models["result"]["data"][1]
+        assert cached_alpha["model"] == "cache-alpha"
+        assert cached_alpha["displayName"] == "Cache Alpha"
+        assert cached_alpha["description"] == "Fresh cached model"
+        assert cached_alpha["isDefault"] is False
+        assert cached_alpha["hidden"] is False
+        assert cached_alpha["defaultReasoningEffort"] == "high"
+        assert cached_alpha["supportedReasoningEfforts"] == [
+            {"reasoningEffort": "low", "description": "Low cached reasoning"},
+            {"reasoningEffort": "high", "description": "High cached reasoning"},
+        ]
+        assert cached_alpha["inputModalities"] == ["text"]
+        assert cached_alpha["supportsPersonality"] is True
+        assert cached_alpha["additionalSpeedTiers"] == ["fast"]
+        assert cached_alpha["serviceTiers"] == [
+            {"id": "flex", "name": "Flex", "description": "Lower priority"}
+        ]
+        assert cached_alpha["availabilityNux"] == {"message": "Cache alpha available"}
+        assert cached_alpha["upgrade"] == "cache-beta"
+        assert cached_alpha["upgradeInfo"] == {
+            "model": "cache-beta",
+            "upgradeCopy": None,
+            "modelLink": None,
+            "migrationMarkdown": "Move to beta",
+        }
+        cached_beta = cached_models["result"]["data"][4]
+        assert cached_beta["description"] == ""
+        assert cached_beta["defaultReasoningEffort"] == "none"
+        assert cached_beta["inputModalities"] == ["text", "image"]
+
+        cached_hidden = rpc(
+            "model-list-cache-hidden",
+            "model/list",
+            {"limit": 100, "includeHidden": True},
+        )
+        assert cached_hidden["id"] == "model-list-cache-hidden"
+        assert cached_hidden["result"]["nextCursor"] is None
+        assert [item["id"] for item in cached_hidden["result"]["data"][:4]] == [
+            "gpt-5.5",
+            "cache-alpha",
+            "gpt-5.4",
+            "cache-hidden",
+        ]
+        assert any(
+            item["id"] == "codex-auto-review" and item["hidden"]
+            for item in cached_hidden["result"]["data"]
+        )
+        assert cached_hidden["result"]["data"][3]["hidden"] is True
+        assert cached_hidden["result"]["data"][0]["isDefault"] is True
+
+        cached_second_page = rpc(
+            "model-list-cache-second-page",
+            "model/list",
+            {"limit": 5, "cursor": "5"},
+        )
+        assert cached_second_page["id"] == "model-list-cache-second-page"
+        assert cached_second_page["result"]["nextCursor"] is None
+        assert [item["id"] for item in cached_second_page["result"]["data"]] == [
+            "gpt-5.3-codex",
+            "gpt-5.2",
+        ]
+
+        write_models_cache(fetched_at="1970-01-01T00:00:00Z")
+        cache_stale_fallback = rpc("model-list-cache-stale", "model/list", {"limit": 1})
+        assert cache_stale_fallback["id"] == "model-list-cache-stale"
+        assert cache_stale_fallback["result"]["data"][0]["id"] == "gpt-5.5"
+
+        write_models_cache(client_version="0.97.0")
+        cache_old_release_fallback = rpc("model-list-cache-old-release", "model/list", {"limit": 1})
+        assert cache_old_release_fallback["id"] == "model-list-cache-old-release"
+        assert cache_old_release_fallback["result"]["data"][0]["id"] == "gpt-5.5"
+
+        write_models_cache(client_version="old-client")
+        cache_mismatch_fallback = rpc("model-list-cache-mismatch", "model/list", {"limit": 1})
+        assert cache_mismatch_fallback["id"] == "model-list-cache-mismatch"
+        assert cache_mismatch_fallback["result"]["data"][0]["id"] == "gpt-5.5"
 
         default_capabilities = rpc(
             "model-capabilities-default",
