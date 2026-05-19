@@ -524,9 +524,11 @@ codex-zig login --device-auth
 codex-zig logout
 ```
 
-`login` starts a local browser OAuth callback flow on macOS and writes the
-resulting ChatGPT tokens to `auth.json`. `login --device-auth` implements the
-ChatGPT device-code fallback directly in Zig.
+`login` starts a local browser OAuth callback flow on macOS, writes the
+resulting ChatGPT tokens to `auth.json`, and persists a best-effort
+token-exchanged `OPENAI_API_KEY` when the issuer returns one. `login
+--device-auth` implements the ChatGPT device-code fallback directly in Zig and
+does not request the browser-login API-key exchange.
 `login --with-access-token` stores the token in the Rust CLI-compatible
 `agent_identity` auth shape; full upstream JWT/JWKS verification and
 agent-task authorization are still tracked as parity work. `CODEX_ACCESS_TOKEN`
