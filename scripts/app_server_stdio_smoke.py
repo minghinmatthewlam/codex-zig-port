@@ -1242,6 +1242,93 @@ class AddCreditsNudgeBackendHandler(BaseHTTPRequestHandler):
         return
 
 
+class DeviceAuthBackendHandler(BaseHTTPRequestHandler):
+    requests: list[dict[str, object]] = []
+    mode: str = "success"
+
+    def do_POST(self) -> None:
+        content_length = int(self.headers.get("Content-Length", "0"))
+        body_bytes = self.rfile.read(content_length)
+        body_text = body_bytes.decode("utf-8")
+        content_type = self.headers.get("Content-Type")
+        if content_type == "application/json" and body_text:
+            body: object = json.loads(body_text)
+        elif content_type == "application/x-www-form-urlencoded" and body_text:
+            body = urllib.parse.parse_qs(body_text)
+        else:
+            body = body_text
+
+        DeviceAuthBackendHandler.requests.append(
+            {
+                "path": self.path,
+                "content_type": content_type,
+                "body": body,
+            }
+        )
+
+        if self.path == "/api/accounts/deviceauth/usercode":
+            interval = 1 if DeviceAuthBackendHandler.mode == "cancel" else 0
+            self._send_json(
+                200,
+                {
+                    "user_code": "CODE-12345",
+                    "device_auth_id": "device-auth-123",
+                    "interval": interval,
+                },
+            )
+            return
+
+        if self.path == "/api/accounts/deviceauth/token":
+            if DeviceAuthBackendHandler.mode == "success":
+                self._send_json(
+                    200,
+                    {
+                        "authorization_code": "authorization-code-123",
+                        "code_verifier": "code-verifier-123",
+                    },
+                )
+                return
+            if DeviceAuthBackendHandler.mode == "failure":
+                self._send_json(500, {"error": "device-auth-failed"})
+                return
+            self._send_json(404, {"error": "authorization-pending"})
+            return
+
+        if self.path == "/oauth/token":
+            id_token = encode_unsigned_jwt(
+                {
+                    "email": "device@example.com",
+                    "https://api.openai.com/auth": {
+                        "chatgpt_plan_type": "pro",
+                        "chatgpt_account_id": "org-device",
+                    },
+                }
+            )
+            access_token = encode_unsigned_jwt({"exp": 4_102_444_800})
+            self._send_json(
+                200,
+                {
+                    "id_token": id_token,
+                    "access_token": access_token,
+                    "refresh_token": "device-refresh-token",
+                },
+            )
+            return
+
+        self._send_json(404, {"error": "not-found"})
+
+    def _send_json(self, status_code: int, payload: dict[str, object]) -> None:
+        body = json.dumps(payload, separators=(",", ":")).encode("utf-8")
+        self.send_response(status_code)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def log_message(self, format: str, *args: object) -> None:
+        return
+
+
 class CommandExecNetworkHandler(BaseHTTPRequestHandler):
     requests: list[str] = []
 
@@ -29393,6 +29480,14 @@ def start_add_credits_nudge_backend(status_code: int = 200) -> tuple[ThreadingHT
     return server, f"http://127.0.0.1:{server.server_port}"
 
 
+def start_device_auth_backend(mode: str) -> tuple[ThreadingHTTPServer, str]:
+    DeviceAuthBackendHandler.requests = []
+    DeviceAuthBackendHandler.mode = mode
+    server = ThreadingHTTPServer(("127.0.0.1", 0), DeviceAuthBackendHandler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    return server, f"http://127.0.0.1:{server.server_port}"
+
+
 def start_command_exec_network_backend() -> tuple[ThreadingHTTPServer, str]:
     CommandExecNetworkHandler.requests = []
     server = ThreadingHTTPServer(("127.0.0.1", 0), CommandExecNetworkHandler)
@@ -30240,6 +30335,204 @@ def run_account_login_cancel_rpc_smoke(binary: Path) -> None:
                 proc.wait(timeout=5)
     finally:
         shutil.rmtree(codex_home, ignore_errors=True)
+
+
+def run_account_login_device_code_rpc_smoke(binary: Path) -> None:
+    def start_device_login(
+        proc: subprocess.Popen[str],
+        request_id: str,
+    ) -> dict:
+        write_json_line(
+            proc,
+            {
+                "jsonrpc": "2.0",
+                "id": request_id,
+                "method": "account/login/start",
+                "params": {"type": "chatgptDeviceCode"},
+            },
+        )
+        messages = read_json_lines_until(
+            proc,
+            5,
+            lambda received: any(message.get("id") == request_id for message in received),
+        )
+        return next(message for message in messages if message.get("id") == request_id)
+
+    def make_env(codex_home: Path, issuer: str) -> dict[str, str]:
+        env = os.environ.copy()
+        env.pop("OPENAI_API_KEY", None)
+        env.pop("CODEX_ACCESS_TOKEN", None)
+        env["CODEX_HOME"] = str(codex_home)
+        env["CODEX_APP_SERVER_LOGIN_ISSUER"] = issuer
+        return env
+
+    success_server, success_issuer = start_device_auth_backend("success")
+    success_home = Path(tempfile.mkdtemp(prefix="codex-zig-app-server-device-login-success-", dir="/tmp"))
+    try:
+        proc = subprocess.Popen(
+            [str(binary), "app-server"],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            env=make_env(success_home, success_issuer),
+        )
+        try:
+            write_json_line(
+                proc,
+                {
+                    "jsonrpc": "2.0",
+                    "id": "device-success-start",
+                    "method": "account/login/start",
+                    "params": {"type": "chatgptDeviceCode"},
+                },
+            )
+            success_messages = read_json_lines_until(
+                proc,
+                5,
+                lambda received: any(message.get("id") == "device-success-start" for message in received)
+                and any(message.get("method") == "account/login/completed" for message in received)
+                and any(message.get("method") == "account/updated" for message in received),
+            )
+            started = next(message for message in success_messages if message.get("id") == "device-success-start")
+            assert started["result"]["type"] == "chatgptDeviceCode"
+            assert started["result"]["verificationUrl"] == f"{success_issuer}/codex/device"
+            assert started["result"]["userCode"] == "CODE-12345"
+            login_id = started["result"]["loginId"]
+            assert isinstance(login_id, str)
+
+            completed = next(message for message in success_messages if message.get("method") == "account/login/completed")
+            assert completed["params"] == {"loginId": login_id, "success": True, "error": None}
+            updated = next(message for message in success_messages if message.get("method") == "account/updated")
+            assert updated["params"] == {"authMode": "chatgpt", "planType": "pro"}
+
+            auth_json = json.loads((success_home / "auth.json").read_text(encoding="utf-8"))
+            assert auth_json["auth_mode"] == "chatgpt"
+            assert auth_json["tokens"]["refresh_token"] == "device-refresh-token"
+            assert auth_json["tokens"]["account_id"] == "org-device"
+            assert [request["path"] for request in DeviceAuthBackendHandler.requests] == [
+                "/api/accounts/deviceauth/usercode",
+                "/api/accounts/deviceauth/token",
+                "/oauth/token",
+            ]
+
+            assert proc.stdin is not None
+            proc.stdin.close()
+            proc.wait(timeout=5)
+            if proc.returncode != 0:
+                raise AssertionError(f"device success app-server exited {proc.returncode}: {proc.stderr.read()}")
+        finally:
+            if proc.poll() is None:
+                proc.kill()
+                proc.wait(timeout=5)
+    finally:
+        success_server.shutdown()
+        success_server.server_close()
+        shutil.rmtree(success_home, ignore_errors=True)
+
+    cancel_server, cancel_issuer = start_device_auth_backend("cancel")
+    cancel_home = Path(tempfile.mkdtemp(prefix="codex-zig-app-server-device-login-cancel-", dir="/tmp"))
+    try:
+        proc = subprocess.Popen(
+            [str(binary), "app-server"],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            env=make_env(cancel_home, cancel_issuer),
+        )
+        try:
+            started = start_device_login(proc, "device-cancel-start")
+            assert started["result"]["type"] == "chatgptDeviceCode"
+            login_id = started["result"]["loginId"]
+
+            write_json_line(
+                proc,
+                {
+                    "jsonrpc": "2.0",
+                    "id": "device-cancel-active",
+                    "method": "account/login/cancel",
+                    "params": {"loginId": login_id},
+                },
+            )
+            cancel_messages = read_json_lines_until(
+                proc,
+                7,
+                lambda received: any(message.get("id") == "device-cancel-active" for message in received)
+                and any(message.get("method") == "account/login/completed" for message in received),
+            )
+            canceled = next(message for message in cancel_messages if message.get("id") == "device-cancel-active")
+            assert canceled["result"] == {"status": "canceled"}
+            completed = next(message for message in cancel_messages if message.get("method") == "account/login/completed")
+            assert completed["params"]["loginId"] == login_id
+            assert completed["params"]["success"] is False
+            assert completed["params"]["error"] == "Login was not completed"
+            assert not (cancel_home / "auth.json").exists()
+            assert "/oauth/token" not in [request["path"] for request in DeviceAuthBackendHandler.requests]
+
+            assert proc.stdin is not None
+            proc.stdin.close()
+            proc.wait(timeout=5)
+            if proc.returncode != 0:
+                raise AssertionError(f"device cancel app-server exited {proc.returncode}: {proc.stderr.read()}")
+        finally:
+            if proc.poll() is None:
+                proc.kill()
+                proc.wait(timeout=5)
+    finally:
+        cancel_server.shutdown()
+        cancel_server.server_close()
+        shutil.rmtree(cancel_home, ignore_errors=True)
+
+    failure_server, failure_issuer = start_device_auth_backend("failure")
+    failure_home = Path(tempfile.mkdtemp(prefix="codex-zig-app-server-device-login-failure-", dir="/tmp"))
+    try:
+        proc = subprocess.Popen(
+            [str(binary), "app-server"],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            env=make_env(failure_home, failure_issuer),
+        )
+        try:
+            write_json_line(
+                proc,
+                {
+                    "jsonrpc": "2.0",
+                    "id": "device-failure-start",
+                    "method": "account/login/start",
+                    "params": {"type": "chatgptDeviceCode"},
+                },
+            )
+            failure_messages = read_json_lines_until(
+                proc,
+                5,
+                lambda received: any(message.get("id") == "device-failure-start" for message in received)
+                and any(message.get("method") == "account/login/completed" for message in received),
+            )
+            started = next(message for message in failure_messages if message.get("id") == "device-failure-start")
+            assert started["result"]["type"] == "chatgptDeviceCode"
+            completed = next(message for message in failure_messages if message.get("method") == "account/login/completed")
+            assert completed["params"]["loginId"] == started["result"]["loginId"]
+            assert completed["params"]["success"] is False
+            assert completed["params"]["error"] == "DeviceAuthFailed"
+            assert not (failure_home / "auth.json").exists()
+            assert "/oauth/token" not in [request["path"] for request in DeviceAuthBackendHandler.requests]
+
+            assert proc.stdin is not None
+            proc.stdin.close()
+            proc.wait(timeout=5)
+            if proc.returncode != 0:
+                raise AssertionError(f"device failure app-server exited {proc.returncode}: {proc.stderr.read()}")
+        finally:
+            if proc.poll() is None:
+                proc.kill()
+                proc.wait(timeout=5)
+    finally:
+        failure_server.shutdown()
+        failure_server.server_close()
+        shutil.rmtree(failure_home, ignore_errors=True)
 
 
 def run_account_rate_limits_rpc_smoke(binary: Path) -> None:
@@ -41808,6 +42101,8 @@ def main() -> None:
     print("app-server-account-login-rpc-e2e: ok")
     run_account_login_cancel_rpc_smoke(binary)
     print("app-server-account-login-cancel-rpc-e2e: ok")
+    run_account_login_device_code_rpc_smoke(binary)
+    print("app-server-account-login-device-code-rpc-e2e: ok")
     run_account_rate_limits_rpc_smoke(binary)
     print("app-server-account-rate-limits-rpc-e2e: ok")
     run_account_add_credits_nudge_rpc_smoke(binary)
