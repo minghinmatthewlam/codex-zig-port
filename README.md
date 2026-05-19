@@ -168,6 +168,10 @@ The first demo slice targets macOS and focuses on the interactive CLI surface:
 - start app-server API-key and external ChatGPT-token login with
   `account/login/start`, respect forced account-login config, and emit account
   login/update notifications
+- refresh external ChatGPT app-server auth tokens on Responses `401` with
+  `account/chatgptAuthTokens/refresh`, persist the returned token, and retry
+  the turn, with bounded failure handling when clients reject or do not answer
+  the refresh request
 - handle app-server login cancellation requests with `account/login/cancel`
 - read app-server account rate limits with `account/rateLimits/read`
 - notify workspace owners about credit or usage-limit issues with

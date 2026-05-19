@@ -424,6 +424,12 @@ starts against the configured issuer, returns a Rust-shaped `loginId` /
 saving completed ChatGPT tokens, emits completion/account-update notifications,
 and supports cancellation. Browser and device-code background completions clear
 matching active-login state so later cancel requests return `notFound`.
+Externally managed ChatGPT-token turns now handle Responses `401` statuses by
+emitting `account/chatgptAuthTokens/refresh`, passing the previous account id
+and unauthorized reason, saving the returned access token, retrying the turn
+with the refreshed bearer token, resolving the server request, and failing the
+turn cleanly for rejected refreshes, unanswered refresh requests, malformed
+returned tokens, and forced workspace mismatches.
 
 Additional app-server filesystem generation coverage: `fs/readFile`,
 `fs/writeFile`, `fs/createDirectory`, `fs/getMetadata`, `fs/readDirectory`,
