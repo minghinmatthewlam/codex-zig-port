@@ -1280,7 +1280,12 @@ class DeviceAuthBackendHandler(BaseHTTPRequestHandler):
             return
 
         if self.path == "/api/accounts/deviceauth/token":
-            if DeviceAuthBackendHandler.mode == "success":
+            if DeviceAuthBackendHandler.mode in (
+                "success",
+                "large-token",
+                "workspace-mismatch",
+                "workspace-missing-account",
+            ):
                 self._send_json(
                     200,
                     {
@@ -1306,6 +1311,10 @@ class DeviceAuthBackendHandler(BaseHTTPRequestHandler):
             }
             if DeviceAuthBackendHandler.mode == "large-token":
                 auth_claims["large_claim"] = "x" * 8192
+            if DeviceAuthBackendHandler.mode == "workspace-mismatch":
+                auth_claims["chatgpt_account_id"] = "org-actual"
+            if DeviceAuthBackendHandler.mode == "workspace-missing-account":
+                del auth_claims["chatgpt_account_id"]
             id_token = encode_unsigned_jwt(
                 {
                     "email": "device@example.com",
@@ -30489,10 +30498,15 @@ def run_account_login_browser_callback_error_rpc_smoke(binary: Path) -> None:
         expected_body_parts: list[str],
         expected_error: str,
         unexpected_body_parts: list[str] | None = None,
+        backend_mode: str = "success",
+        config_text: str | None = None,
+        expected_request_paths: list[str] | None = None,
     ) -> None:
-        server, issuer = start_device_auth_backend("success")
+        server, issuer = start_device_auth_backend(backend_mode)
         codex_home = Path(tempfile.mkdtemp(prefix=f"codex-zig-app-server-browser-login-{name}-", dir="/tmp"))
         try:
+            if config_text is not None:
+                (codex_home / "config.toml").write_text(config_text, encoding="utf-8")
             env = os.environ.copy()
             env.pop("OPENAI_API_KEY", None)
             env.pop("CODEX_ACCESS_TOKEN", None)
@@ -30549,7 +30563,9 @@ def run_account_login_browser_callback_error_rpc_smoke(binary: Path) -> None:
                     "success": False,
                     "error": expected_error,
                 }
-                assert DeviceAuthBackendHandler.requests == []
+                assert [request["path"] for request in DeviceAuthBackendHandler.requests] == (
+                    expected_request_paths or []
+                )
                 assert not (codex_home / "auth.json").exists()
 
                 write_json_line(
@@ -30599,6 +30615,32 @@ def run_account_login_browser_callback_error_rpc_smoke(binary: Path) -> None:
         ],
         "Codex is not enabled for your workspace. Contact your workspace administrator to request access to Codex.",
         ["missing_codex_entitlement"],
+    )
+    assert_callback_failure(
+        "workspace-mismatch",
+        "&code=browser-code-123",
+        [
+            "Sign-in could not be completed",
+            "Login is restricted to workspace id org-required.",
+            "workspace_restriction",
+        ],
+        "Login is restricted to workspace id org-required.",
+        backend_mode="workspace-mismatch",
+        config_text='forced_chatgpt_workspace_id = "org-required"\n',
+        expected_request_paths=["/oauth/token"],
+    )
+    assert_callback_failure(
+        "workspace-missing-account",
+        "&code=browser-code-123",
+        [
+            "Sign-in could not be completed",
+            "Login is restricted to a specific workspace, but the token did not include an chatgpt_account_id claim.",
+            "workspace_restriction",
+        ],
+        "Login is restricted to a specific workspace, but the token did not include an chatgpt_account_id claim.",
+        backend_mode="workspace-missing-account",
+        config_text='forced_chatgpt_workspace_id = "org-required"\n',
+        expected_request_paths=["/oauth/token"],
     )
 
 
@@ -30707,6 +30749,85 @@ def run_account_login_device_code_rpc_smoke(binary: Path) -> None:
         success_server.shutdown()
         success_server.server_close()
         shutil.rmtree(success_home, ignore_errors=True)
+
+    mismatch_server, mismatch_issuer = start_device_auth_backend("workspace-mismatch")
+    mismatch_home = Path(tempfile.mkdtemp(prefix="codex-zig-app-server-device-login-workspace-mismatch-", dir="/tmp"))
+    try:
+        (mismatch_home / "config.toml").write_text(
+            'forced_chatgpt_workspace_id = "org-required"\n',
+            encoding="utf-8",
+        )
+        proc = subprocess.Popen(
+            [str(binary), "app-server"],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            env=make_env(mismatch_home, mismatch_issuer),
+        )
+        try:
+            write_json_line(
+                proc,
+                {
+                    "jsonrpc": "2.0",
+                    "id": "device-workspace-mismatch-start",
+                    "method": "account/login/start",
+                    "params": {"type": "chatgptDeviceCode"},
+                },
+            )
+            mismatch_messages = read_json_lines_until(
+                proc,
+                5,
+                lambda received: any(message.get("id") == "device-workspace-mismatch-start" for message in received)
+                and any(message.get("method") == "account/login/completed" for message in received),
+            )
+            started = next(
+                message for message in mismatch_messages if message.get("id") == "device-workspace-mismatch-start"
+            )
+            assert started["result"]["type"] == "chatgptDeviceCode"
+            completed = next(
+                message for message in mismatch_messages if message.get("method") == "account/login/completed"
+            )
+            assert completed["params"] == {
+                "loginId": started["result"]["loginId"],
+                "success": False,
+                "error": "Login is restricted to workspace id org-required.",
+            }
+            assert not (mismatch_home / "auth.json").exists()
+            assert [request["path"] for request in DeviceAuthBackendHandler.requests] == [
+                "/api/accounts/deviceauth/usercode",
+                "/api/accounts/deviceauth/token",
+                "/oauth/token",
+            ]
+
+            write_json_line(
+                proc,
+                {
+                    "jsonrpc": "2.0",
+                    "id": "device-workspace-mismatch-cancel-completed",
+                    "method": "account/login/cancel",
+                    "params": {"loginId": started["result"]["loginId"]},
+                },
+            )
+            cancel_completed = read_json_line(proc, 5)
+            assert cancel_completed["id"] == "device-workspace-mismatch-cancel-completed"
+            assert cancel_completed["result"] == {"status": "notFound"}
+
+            assert proc.stdin is not None
+            proc.stdin.close()
+            proc.wait(timeout=5)
+            if proc.returncode != 0:
+                raise AssertionError(
+                    f"device workspace mismatch app-server exited {proc.returncode}: {proc.stderr.read()}"
+                )
+        finally:
+            if proc.poll() is None:
+                proc.kill()
+                proc.wait(timeout=5)
+    finally:
+        mismatch_server.shutdown()
+        mismatch_server.server_close()
+        shutil.rmtree(mismatch_home, ignore_errors=True)
 
     cancel_server, cancel_issuer = start_device_auth_backend("cancel")
     cancel_home = Path(tempfile.mkdtemp(prefix="codex-zig-app-server-device-login-cancel-", dir="/tmp"))
