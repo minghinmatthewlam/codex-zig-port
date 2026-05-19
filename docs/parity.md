@@ -688,10 +688,11 @@ origin/layer metadata.
 
 Additional remote TUI slash-command coverage: remote app-server TUI sessions now
 support `/status`, `/compact`, `/model [MODEL]`, `/fast [on|off|status]`,
-`/rename <TITLE>`, `/personality`, `/permissions`, `/approval [MODE]`, `/sandbox [MODE]`,
+`/rename <TITLE>`, `/history [N]`, `/personality`, `/permissions`, `/approval [MODE]`, `/sandbox [MODE]`,
 `/sessions [N]`, `/clear`, `/new`, `/resume [TARGET|last]`, and
 `/fork [TARGET|last]` against the remote app-server thread APIs. The PTY TUI E2E
 covers status printing, remote thread renaming through `thread/name/set`,
+remote history rendering through `thread/turns/list`,
 remote runtime override updates for model, service tier,
 personality, approval policy, and sandbox mode, remote session listing,
 in-session fresh-thread start without carrying prior transcript history, remote

@@ -849,6 +849,11 @@ fn handleRemoteSlashCommand(
         return .handled;
     }
 
+    if (std.ascii.eqlIgnoreCase(parts.name, "history")) {
+        try printRemoteHistory(allocator, transport, thread_id.*, try parseHistoryLimit(parts.args));
+        return .handled;
+    }
+
     if (std.ascii.eqlIgnoreCase(parts.name, "model")) {
         try handleRemoteModel(allocator, state, parts.args);
         return .handled;
@@ -931,6 +936,7 @@ fn printRemoteSlashHelp() void {
         \\  /status
         \\  /compact
         \\  /rename <title>
+        \\  /history [n]
         \\  /model [MODEL]
         \\  /fast [on|off|status]
         \\  /personality [status|list|none|friendly|pragmatic]
@@ -1257,6 +1263,36 @@ fn renameRemoteThread(
     response.deinit();
 }
 
+fn printRemoteHistory(
+    allocator: std.mem.Allocator,
+    transport: *RemoteTransport,
+    thread_id: []const u8,
+    limit: usize,
+) !void {
+    const request = try renderRemoteThreadTurnsListRequest(allocator, thread_id, remoteHistoryRequestLimit(limit));
+    defer allocator.free(request);
+    try transport.writeJson(request);
+
+    var response = try readRemoteResponse(transport, "thread-turns-list");
+    defer response.deinit();
+    const turns = try remoteResultDataItems(response.value);
+    std.debug.print("remote history: showing {d} turn(s)\n", .{turns.len});
+    if (turns.len == 0) {
+        std.debug.print("  <empty>\n", .{});
+        return;
+    }
+
+    var index = turns.len;
+    while (index > 0) {
+        index -= 1;
+        try printRemoteTurnHistory(turns[index]);
+    }
+}
+
+fn remoteHistoryRequestLimit(limit: usize) usize {
+    return if (limit == 0) 100 else limit;
+}
+
 fn promptRemoteSessionPicker(
     allocator: std.mem.Allocator,
     transport: *RemoteTransport,
@@ -1311,12 +1347,108 @@ fn renderRemoteThreadListRequest(allocator: std.mem.Allocator, limit: usize) ![]
 }
 
 fn remoteThreadListItems(value: std.json.Value) ![]std.json.Value {
+    return remoteResultDataItems(value);
+}
+
+fn remoteResultDataItems(value: std.json.Value) ![]std.json.Value {
     if (value != .object) return error.InvalidRemoteAppServerResponse;
     const result = value.object.get("result") orelse return error.InvalidRemoteAppServerResponse;
     if (result != .object) return error.InvalidRemoteAppServerResponse;
     const data = result.object.get("data") orelse return error.InvalidRemoteAppServerResponse;
     if (data != .array) return error.InvalidRemoteAppServerResponse;
     return data.array.items;
+}
+
+fn printRemoteTurnHistory(turn: std.json.Value) !void {
+    if (turn != .object) return error.InvalidRemoteAppServerResponse;
+    const turn_id = remoteObjectOptionalString(turn, "id") orelse "unknown";
+    std.debug.print("\nturn {s}\n", .{turn_id});
+    const items = turn.object.get("items") orelse return;
+    if (items != .array) return error.InvalidRemoteAppServerResponse;
+    if (items.array.items.len == 0) {
+        std.debug.print("  <empty>\n", .{});
+        return;
+    }
+    for (items.array.items) |item| {
+        try printRemoteThreadItemHistory(item);
+    }
+}
+
+fn printRemoteThreadItemHistory(item: std.json.Value) !void {
+    if (item != .object) return error.InvalidRemoteAppServerResponse;
+    const item_type = remoteObjectOptionalString(item, "type") orelse "item";
+    if (std.mem.eql(u8, item_type, "userMessage")) {
+        std.debug.print("user:\n", .{});
+        try printRemoteUserInputHistory(item.object.get("content"));
+        return;
+    }
+    if (std.mem.eql(u8, item_type, "agentMessage")) {
+        std.debug.print("assistant:\n", .{});
+        printIndented(remoteObjectOptionalString(item, "text") orelse "", 1200);
+        return;
+    }
+    if (std.mem.eql(u8, item_type, "plan")) {
+        std.debug.print("plan:\n", .{});
+        printIndented(remoteObjectOptionalString(item, "text") orelse "", 1200);
+        return;
+    }
+    if (std.mem.eql(u8, item_type, "reasoning")) {
+        std.debug.print("reasoning:\n", .{});
+        try printRemoteStringArrayHistory(item.object.get("summary"));
+        try printRemoteStringArrayHistory(item.object.get("content"));
+        return;
+    }
+    if (std.mem.eql(u8, item_type, "commandExecution")) {
+        std.debug.print("command:\n", .{});
+        printIndented(remoteObjectOptionalString(item, "command") orelse "", 800);
+        return;
+    }
+    if (std.mem.eql(u8, item_type, "webSearch")) {
+        std.debug.print("web search:\n", .{});
+        printIndented(remoteObjectOptionalString(item, "query") orelse "", 400);
+        return;
+    }
+    std.debug.print("{s}\n", .{item_type});
+}
+
+fn printRemoteUserInputHistory(value: ?std.json.Value) !void {
+    const content = value orelse {
+        std.debug.print("  <empty>\n", .{});
+        return;
+    };
+    if (content != .array) return error.InvalidRemoteAppServerResponse;
+    if (content.array.items.len == 0) {
+        std.debug.print("  <empty>\n", .{});
+        return;
+    }
+    for (content.array.items) |entry| {
+        if (entry != .object) return error.InvalidRemoteAppServerResponse;
+        const entry_type = remoteObjectOptionalString(entry, "type") orelse "input";
+        if (std.mem.eql(u8, entry_type, "text")) {
+            printIndented(remoteObjectOptionalString(entry, "text") orelse "", 1200);
+        } else if (std.mem.eql(u8, entry_type, "localImage")) {
+            const path = remoteObjectOptionalString(entry, "path") orelse "";
+            std.debug.print("  [local image] {s}\n", .{path});
+        } else if (std.mem.eql(u8, entry_type, "image")) {
+            std.debug.print("  [image]\n", .{});
+        } else if (std.mem.eql(u8, entry_type, "skill")) {
+            const name = remoteObjectOptionalString(entry, "name") orelse remoteObjectOptionalString(entry, "path") orelse "";
+            std.debug.print("  [skill] {s}\n", .{name});
+        } else if (std.mem.eql(u8, entry_type, "mention")) {
+            const name = remoteObjectOptionalString(entry, "name") orelse remoteObjectOptionalString(entry, "path") orelse "";
+            std.debug.print("  [mention] {s}\n", .{name});
+        } else {
+            std.debug.print("  [{s}]\n", .{entry_type});
+        }
+    }
+}
+
+fn printRemoteStringArrayHistory(value: ?std.json.Value) !void {
+    const array = value orelse return;
+    if (array != .array) return error.InvalidRemoteAppServerResponse;
+    for (array.array.items) |entry| {
+        if (entry == .string) printIndented(entry.string, 1200);
+    }
 }
 
 fn printRemoteSessionSummary(index: usize, entry: std.json.Value) !void {
@@ -1407,6 +1539,23 @@ fn renderRemoteThreadNameSetRequest(
     var first = true;
     try appendJsonStringField(allocator, &out, &first, "threadId", thread_id);
     try appendJsonStringField(allocator, &out, &first, "name", title);
+    try out.appendSlice(allocator, "}}");
+    return out.toOwnedSlice(allocator);
+}
+
+fn renderRemoteThreadTurnsListRequest(
+    allocator: std.mem.Allocator,
+    thread_id: []const u8,
+    limit: usize,
+) ![]const u8 {
+    var out = std.ArrayList(u8).empty;
+    errdefer out.deinit(allocator);
+
+    try out.appendSlice(allocator, "{\"jsonrpc\":\"2.0\",\"id\":\"thread-turns-list\",\"method\":\"thread/turns/list\",\"params\":{");
+    var first = true;
+    try appendJsonStringField(allocator, &out, &first, "threadId", thread_id);
+    try appendJsonNumberField(allocator, &out, &first, "limit", limit);
+    try appendJsonStringField(allocator, &out, &first, "sortDirection", "desc");
     try out.appendSlice(allocator, "}}");
     return out.toOwnedSlice(allocator);
 }
@@ -2138,6 +2287,26 @@ fn appendJsonBoolField(
     try out.appendSlice(allocator, name);
     try out.appendSlice(allocator, "\":");
     try out.appendSlice(allocator, if (value) "true" else "false");
+}
+
+fn appendJsonNumberField(
+    allocator: std.mem.Allocator,
+    out: *std.ArrayList(u8),
+    first: *bool,
+    name: []const u8,
+    value: usize,
+) !void {
+    if (first.*) {
+        first.* = false;
+    } else {
+        try out.append(allocator, ',');
+    }
+    try out.append(allocator, '"');
+    try out.appendSlice(allocator, name);
+    try out.appendSlice(allocator, "\":");
+    var buffer: [32]u8 = undefined;
+    const rendered = try std.fmt.bufPrint(&buffer, "{d}", .{value});
+    try out.appendSlice(allocator, rendered);
 }
 
 fn appendJsonString(allocator: std.mem.Allocator, out: *std.ArrayList(u8), value: []const u8) !void {
@@ -4212,6 +4381,19 @@ test "remote TUI serializes supported runtime overrides" {
     const name_set_params = parsed_name_set.value.object.get("params").?.object;
     try std.testing.expectEqualStrings("11111111-1111-4111-8111-111111111111", name_set_params.get("threadId").?.string);
     try std.testing.expectEqualStrings("Remote demo", name_set_params.get("name").?.string);
+
+    const thread_turns_list = try renderRemoteThreadTurnsListRequest(allocator, "11111111-1111-4111-8111-111111111111", 5);
+    defer allocator.free(thread_turns_list);
+
+    var parsed_turns_list = try std.json.parseFromSlice(std.json.Value, allocator, thread_turns_list, .{});
+    defer parsed_turns_list.deinit();
+    try std.testing.expectEqualStrings("thread/turns/list", parsed_turns_list.value.object.get("method").?.string);
+    const turns_list_params = parsed_turns_list.value.object.get("params").?.object;
+    try std.testing.expectEqualStrings("11111111-1111-4111-8111-111111111111", turns_list_params.get("threadId").?.string);
+    try std.testing.expectEqual(@as(i64, 5), turns_list_params.get("limit").?.integer);
+    try std.testing.expectEqualStrings("desc", turns_list_params.get("sortDirection").?.string);
+    try std.testing.expectEqual(@as(usize, 100), remoteHistoryRequestLimit(0));
+    try std.testing.expectEqual(@as(usize, 7), remoteHistoryRequestLimit(7));
 
     const thread_resume = try renderRemoteThreadLifecycleRequest(allocator, "thread-resume", "thread/resume", "/tmp/rollout.jsonl", "/tmp/work", .{
         .model = "gpt-resume",
