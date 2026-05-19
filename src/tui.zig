@@ -22,6 +22,7 @@ const tools = @import("tools.zig");
 const agents_filename = "AGENTS.md";
 const mention_file_limit = 128 * 1024;
 const remote_line_limit = 16 * 1024 * 1024;
+const remote_history_page_limit = 100;
 const terminal_title_limit = 240;
 const default_status_line_ids = [_][]const u8{ "model-with-reasoning", "current-dir" };
 const init_prompt =
@@ -1269,28 +1270,64 @@ fn printRemoteHistory(
     thread_id: []const u8,
     limit: usize,
 ) !void {
-    const request = try renderRemoteThreadTurnsListRequest(allocator, thread_id, remoteHistoryRequestLimit(limit));
-    defer allocator.free(request);
-    try transport.writeJson(request);
+    var pages = std.ArrayList(std.json.Parsed(std.json.Value)).empty;
+    defer {
+        for (pages.items) |*page| page.deinit();
+        pages.deinit(allocator);
+    }
 
-    var response = try readRemoteResponse(transport, "thread-turns-list");
-    defer response.deinit();
-    const turns = try remoteResultDataItems(response.value);
-    std.debug.print("remote history: showing {d} turn(s)\n", .{turns.len});
-    if (turns.len == 0) {
+    var cursor: ?[]const u8 = null;
+    defer if (cursor) |value| allocator.free(value);
+
+    var remaining = limit;
+    var total_turns: usize = 0;
+    while (limit == 0 or remaining > 0) {
+        const request_limit = remoteHistoryRequestLimit(remaining);
+        const request = try renderRemoteThreadTurnsListRequest(allocator, thread_id, request_limit, cursor);
+        defer allocator.free(request);
+        try transport.writeJson(request);
+
+        var response = try readRemoteResponse(transport, "thread-turns-list");
+        errdefer response.deinit();
+        const turns = try remoteResultDataItems(response.value);
+        const next_cursor = if (try remoteResultNextCursor(response.value)) |value|
+            try allocator.dupe(u8, value)
+        else
+            null;
+        errdefer if (next_cursor) |value| allocator.free(value);
+
+        total_turns += turns.len;
+        if (limit != 0) remaining -= @min(remaining, turns.len);
+
+        try pages.append(allocator, response);
+
+        if (cursor) |value| allocator.free(value);
+        cursor = next_cursor;
+
+        if (cursor == null or turns.len == 0) break;
+    }
+
+    std.debug.print("remote history: showing {d} turn(s)\n", .{total_turns});
+    if (total_turns == 0) {
         std.debug.print("  <empty>\n", .{});
         return;
     }
 
-    var index = turns.len;
-    while (index > 0) {
-        index -= 1;
-        try printRemoteTurnHistory(turns[index]);
+    var page_index = pages.items.len;
+    while (page_index > 0) {
+        page_index -= 1;
+        const turns = try remoteResultDataItems(pages.items[page_index].value);
+        var turn_index = turns.len;
+        while (turn_index > 0) {
+            turn_index -= 1;
+            try printRemoteTurnHistory(turns[turn_index]);
+        }
     }
 }
 
-fn remoteHistoryRequestLimit(limit: usize) usize {
-    return if (limit == 0) 100 else limit;
+fn remoteHistoryRequestLimit(remaining: usize) usize {
+    if (remaining == 0 or remaining > remote_history_page_limit) return remote_history_page_limit;
+    return remaining;
 }
 
 fn promptRemoteSessionPicker(
@@ -1547,6 +1584,7 @@ fn renderRemoteThreadTurnsListRequest(
     allocator: std.mem.Allocator,
     thread_id: []const u8,
     limit: usize,
+    cursor: ?[]const u8,
 ) ![]const u8 {
     var out = std.ArrayList(u8).empty;
     errdefer out.deinit(allocator);
@@ -1554,6 +1592,7 @@ fn renderRemoteThreadTurnsListRequest(
     try out.appendSlice(allocator, "{\"jsonrpc\":\"2.0\",\"id\":\"thread-turns-list\",\"method\":\"thread/turns/list\",\"params\":{");
     var first = true;
     try appendJsonStringField(allocator, &out, &first, "threadId", thread_id);
+    if (cursor) |value| try appendJsonStringField(allocator, &out, &first, "cursor", value);
     try appendJsonNumberField(allocator, &out, &first, "limit", limit);
     try appendJsonStringField(allocator, &out, &first, "sortDirection", "desc");
     try out.appendSlice(allocator, "}}");
@@ -2182,6 +2221,16 @@ fn remoteObjectOptionalString(value: std.json.Value, key: []const u8) ?[]const u
     const field = value.object.get(key) orelse return null;
     if (field != .string) return null;
     return field.string;
+}
+
+fn remoteResultNextCursor(value: std.json.Value) !?[]const u8 {
+    if (value != .object) return error.InvalidRemoteAppServerResponse;
+    const result = value.object.get("result") orelse return error.InvalidRemoteAppServerResponse;
+    if (result != .object) return error.InvalidRemoteAppServerResponse;
+    const next_cursor = result.object.get("nextCursor") orelse return error.InvalidRemoteAppServerResponse;
+    if (next_cursor == .null) return null;
+    if (next_cursor != .string) return error.InvalidRemoteAppServerResponse;
+    return next_cursor.string;
 }
 
 fn remoteErrorMessage(object: std.json.ObjectMap) ?[]const u8 {
@@ -4382,7 +4431,7 @@ test "remote TUI serializes supported runtime overrides" {
     try std.testing.expectEqualStrings("11111111-1111-4111-8111-111111111111", name_set_params.get("threadId").?.string);
     try std.testing.expectEqualStrings("Remote demo", name_set_params.get("name").?.string);
 
-    const thread_turns_list = try renderRemoteThreadTurnsListRequest(allocator, "11111111-1111-4111-8111-111111111111", 5);
+    const thread_turns_list = try renderRemoteThreadTurnsListRequest(allocator, "11111111-1111-4111-8111-111111111111", 5, "{\"turnId\":\"turn-5\",\"includeAnchor\":false}");
     defer allocator.free(thread_turns_list);
 
     var parsed_turns_list = try std.json.parseFromSlice(std.json.Value, allocator, thread_turns_list, .{});
@@ -4390,10 +4439,12 @@ test "remote TUI serializes supported runtime overrides" {
     try std.testing.expectEqualStrings("thread/turns/list", parsed_turns_list.value.object.get("method").?.string);
     const turns_list_params = parsed_turns_list.value.object.get("params").?.object;
     try std.testing.expectEqualStrings("11111111-1111-4111-8111-111111111111", turns_list_params.get("threadId").?.string);
+    try std.testing.expectEqualStrings("{\"turnId\":\"turn-5\",\"includeAnchor\":false}", turns_list_params.get("cursor").?.string);
     try std.testing.expectEqual(@as(i64, 5), turns_list_params.get("limit").?.integer);
     try std.testing.expectEqualStrings("desc", turns_list_params.get("sortDirection").?.string);
     try std.testing.expectEqual(@as(usize, 100), remoteHistoryRequestLimit(0));
     try std.testing.expectEqual(@as(usize, 7), remoteHistoryRequestLimit(7));
+    try std.testing.expectEqual(@as(usize, 100), remoteHistoryRequestLimit(101));
 
     const thread_resume = try renderRemoteThreadLifecycleRequest(allocator, "thread-resume", "thread/resume", "/tmp/rollout.jsonl", "/tmp/work", .{
         .model = "gpt-resume",
@@ -4563,6 +4614,45 @@ test "remote TUI slash permissions update runtime overrides" {
     try std.testing.expectError(error.InvalidApprovalPolicy, updateRemoteApprovalOverride(&overrides, "bogus"));
     try std.testing.expectError(error.InvalidSandboxMode, updateRemoteSandboxOverride(&overrides, "bogus"));
     try std.testing.expectError(error.InvalidPermissionsArgument, updateRemotePermissionsOverrides(&overrides, "mode=bogus"));
+}
+
+test "remote TUI history follows turns-list cursors" {
+    const allocator = std.testing.allocator;
+    const first_cursor = "{\"turnId\":\"turn-2\",\"includeAnchor\":false}";
+    const input =
+        \\{"jsonrpc":"2.0","id":"thread-turns-list","result":{"data":[{"id":"turn-2","items":[]}],"nextCursor":"{\"turnId\":\"turn-2\",\"includeAnchor\":false}","backwardsCursor":null}}
+        \\{"jsonrpc":"2.0","id":"thread-turns-list","result":{"data":[{"id":"turn-1","items":[]}],"nextCursor":null,"backwardsCursor":null}}
+        \\
+    ;
+
+    var reader: std.Io.Reader = .fixed(input);
+    var output = std.Io.Writer.Allocating.init(allocator);
+    defer output.deinit();
+    var transport = RemoteTransport{
+        .allocator = allocator,
+        .kind = .jsonl,
+        .reader = &reader,
+        .writer = &output.writer,
+    };
+
+    try printRemoteHistory(allocator, &transport, "11111111-1111-4111-8111-111111111111", 0);
+
+    const written = output.writer.buffer[0..output.writer.end];
+    var lines = std.mem.splitScalar(u8, written, '\n');
+    const first_request = lines.next() orelse return error.TestExpectedEqual;
+    const second_request = lines.next() orelse return error.TestExpectedEqual;
+
+    var parsed_first = try std.json.parseFromSlice(std.json.Value, allocator, first_request, .{});
+    defer parsed_first.deinit();
+    const first_params = parsed_first.value.object.get("params").?.object;
+    try std.testing.expect(first_params.get("cursor") == null);
+    try std.testing.expectEqual(@as(i64, 100), first_params.get("limit").?.integer);
+
+    var parsed_second = try std.json.parseFromSlice(std.json.Value, allocator, second_request, .{});
+    defer parsed_second.deinit();
+    const second_params = parsed_second.value.object.get("params").?.object;
+    try std.testing.expectEqualStrings(first_cursor, second_params.get("cursor").?.string);
+    try std.testing.expectEqual(@as(i64, 100), second_params.get("limit").?.integer);
 }
 
 test "remote TUI waits past many ignored notifications" {
