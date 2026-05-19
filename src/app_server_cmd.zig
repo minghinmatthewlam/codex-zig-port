@@ -25343,6 +25343,7 @@ const UnixServer = struct {
             } else {
                 if (line_buffer.items.len == 0 or appServerShutdownRequested()) break;
             }
+            if (appServerShutdownRequested()) break;
             const trimmed = std.mem.trim(u8, line_buffer.items, " \t\r\n");
             defer line_buffer.clearRetainingCapacity();
             if (trimmed.len == 0) continue;
