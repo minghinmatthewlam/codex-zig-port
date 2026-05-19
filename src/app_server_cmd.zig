@@ -65,6 +65,7 @@ const WEBSOCKET_MIN_SIGNED_BEARER_SECRET_BYTES: usize = 32;
 const net = std.Io.net;
 var app_server_stdout_mutex: std.Io.Mutex = .init;
 var app_server_shutdown_requested = std.atomic.Value(bool).init(false);
+var app_server_shutdown_wakeup_write_fd = std.atomic.Value(std.posix.fd_t).init(-1);
 
 extern "c" fn openpty(
     amaster: *c_int,
@@ -84,7 +85,13 @@ fn appServerShutdownRequested() bool {
 }
 
 fn requestAppServerShutdown(_: std.posix.SIG) callconv(.c) void {
-    if (app_server_shutdown_requested.swap(true, .acq_rel)) {
+    const was_requested = app_server_shutdown_requested.swap(true, .acq_rel);
+    const wakeup_fd = app_server_shutdown_wakeup_write_fd.load(.acquire);
+    if (wakeup_fd >= 0) {
+        const byte = [_]u8{1};
+        _ = std.c.write(wakeup_fd, &byte, byte.len);
+    }
+    if (was_requested) {
         std.c._exit(0);
     }
 }
@@ -92,9 +99,21 @@ fn requestAppServerShutdown(_: std.posix.SIG) callconv(.c) void {
 const AppServerShutdownSignalHandlers = struct {
     old_int: std.posix.Sigaction,
     old_term: std.posix.Sigaction,
+    wakeup_read_fd: std.posix.fd_t,
+    wakeup_write_fd: std.posix.fd_t,
 
-    fn install() AppServerShutdownSignalHandlers {
+    fn install() !AppServerShutdownSignalHandlers {
+        const wakeup_pipe = try makeAppServerWakeupPipe();
+        errdefer closeFd(wakeup_pipe[0]);
+        errdefer closeFd(wakeup_pipe[1]);
+
+        try setFdCloexec(wakeup_pipe[0]);
+        try setFdCloexec(wakeup_pipe[1]);
+        try setFdNonblocking(wakeup_pipe[0], true);
+        try setFdNonblocking(wakeup_pipe[1], true);
+
         app_server_shutdown_requested.store(false, .release);
+        app_server_shutdown_wakeup_write_fd.store(wakeup_pipe[1], .release);
         const action = std.posix.Sigaction{
             .handler = .{ .handler = requestAppServerShutdown },
             .mask = std.posix.sigemptyset(),
@@ -103,24 +122,31 @@ const AppServerShutdownSignalHandlers = struct {
         var handlers: AppServerShutdownSignalHandlers = undefined;
         std.posix.sigaction(.INT, &action, &handlers.old_int);
         std.posix.sigaction(.TERM, &action, &handlers.old_term);
+        handlers.wakeup_read_fd = wakeup_pipe[0];
+        handlers.wakeup_write_fd = wakeup_pipe[1];
         return handlers;
     }
 
     fn deinit(self: *const AppServerShutdownSignalHandlers) void {
         std.posix.sigaction(.INT, &self.old_int, null);
         std.posix.sigaction(.TERM, &self.old_term, null);
+        app_server_shutdown_wakeup_write_fd.store(-1, .release);
+        closeFd(self.wakeup_read_fd);
+        closeFd(self.wakeup_write_fd);
         app_server_shutdown_requested.store(false, .release);
     }
 };
 
-fn acceptAppServerStream(server: *net.Server) net.Server.AcceptError!?net.Stream {
+fn acceptAppServerStream(server: *net.Server, shutdown_handlers: *const AppServerShutdownSignalHandlers) net.Server.AcceptError!?net.Stream {
     while (true) {
+        if (!try waitForAppServerAccept(server, shutdown_handlers)) return null;
         const rc = std.posix.system.accept(server.socket.handle, null, null);
         switch (std.posix.errno(rc)) {
             .SUCCESS => {
                 const fd: std.posix.fd_t = @intCast(rc);
                 errdefer closeFd(fd);
                 try setFdCloexec(fd);
+                try setFdNonblocking(fd, false);
                 return .{ .socket = .{ .handle = fd, .address = server.socket.address } };
             },
             .INTR => {
@@ -128,7 +154,7 @@ fn acceptAppServerStream(server: *net.Server) net.Server.AcceptError!?net.Stream
                 continue;
             },
             else => |err| switch (err) {
-                .AGAIN => return error.WouldBlock,
+                .AGAIN => continue,
                 .BADF => return error.SocketNotListening,
                 .CONNABORTED => return error.ConnectionAborted,
                 .INVAL => return error.SocketNotListening,
@@ -143,12 +169,98 @@ fn acceptAppServerStream(server: *net.Server) net.Server.AcceptError!?net.Stream
     }
 }
 
+fn waitForAppServerAccept(server: *net.Server, shutdown_handlers: *const AppServerShutdownSignalHandlers) !bool {
+    var fds = [_]std.posix.pollfd{
+        .{
+            .fd = server.socket.handle,
+            .events = @intCast(relay_poll_read_events),
+            .revents = 0,
+        },
+        .{
+            .fd = shutdown_handlers.wakeup_read_fd,
+            .events = @intCast(relay_poll_read_events),
+            .revents = 0,
+        },
+    };
+
+    while (true) {
+        if (appServerShutdownRequested()) return false;
+        fds[0].revents = 0;
+        fds[1].revents = 0;
+        _ = try std.posix.poll(&fds, -1);
+        if (pollReventsInclude(fds[1].revents, relay_poll_read_events)) {
+            drainAppServerShutdownWakeup(shutdown_handlers.wakeup_read_fd);
+            return false;
+        }
+        if (appServerShutdownRequested()) return false;
+        if (pollReventsInclude(fds[0].revents, relay_poll_read_events)) return true;
+    }
+}
+
+fn drainAppServerShutdownWakeup(fd: std.posix.fd_t) void {
+    var buffer: [64]u8 = undefined;
+    while (true) {
+        const rc = std.c.read(fd, &buffer, buffer.len);
+        switch (std.c.errno(rc)) {
+            .SUCCESS => {
+                if (rc <= 0 or rc < buffer.len) return;
+            },
+            .INTR => continue,
+            .AGAIN => return,
+            else => return,
+        }
+    }
+}
+
 fn setFdCloexec(fd: std.posix.fd_t) net.Server.AcceptError!void {
     while (true) {
         switch (std.posix.errno(std.posix.system.fcntl(fd, std.posix.F.SETFD, @as(usize, std.posix.FD_CLOEXEC)))) {
             .SUCCESS => return,
             .INTR => continue,
             else => |err| return std.posix.unexpectedErrno(err),
+        }
+    }
+}
+
+fn setFdNonblocking(fd: std.posix.fd_t, enabled: bool) net.Server.AcceptError!void {
+    const nonblocking_flag = @as(usize, 1) << @bitOffsetOf(std.posix.O, "NONBLOCK");
+    var flags: usize = undefined;
+    while (true) {
+        const rc = std.posix.system.fcntl(fd, std.posix.F.GETFL, @as(usize, 0));
+        switch (std.posix.errno(rc)) {
+            .SUCCESS => {
+                flags = @intCast(rc);
+                break;
+            },
+            .INTR => continue,
+            else => |err| return std.posix.unexpectedErrno(err),
+        }
+    }
+
+    if (enabled) {
+        flags |= nonblocking_flag;
+    } else {
+        flags &= ~nonblocking_flag;
+    }
+
+    while (true) {
+        switch (std.posix.errno(std.posix.system.fcntl(fd, std.posix.F.SETFL, flags))) {
+            .SUCCESS => return,
+            .INTR => continue,
+            else => |err| return std.posix.unexpectedErrno(err),
+        }
+    }
+}
+
+fn makeAppServerWakeupPipe() ![2]std.posix.fd_t {
+    var fds: [2]std.c.fd_t = undefined;
+    while (true) {
+        switch (std.c.errno(std.c.pipe(&fds))) {
+            .SUCCESS => return .{ fds[0], fds[1] },
+            .INTR => continue,
+            .MFILE => return error.ProcessFdQuotaExceeded,
+            .NFILE => return error.SystemFdQuotaExceeded,
+            else => return error.Unexpected,
         }
     }
 }
@@ -25068,7 +25180,7 @@ const UnixServer = struct {
     invocation_options: InvocationOptions = .{},
 
     fn run(self: *UnixServer) !void {
-        const shutdown_handlers = AppServerShutdownSignalHandlers.install();
+        const shutdown_handlers = try AppServerShutdownSignalHandlers.install();
         defer shutdown_handlers.deinit();
 
         const io = std.Io.Threaded.global_single_threaded.io();
@@ -25082,12 +25194,13 @@ const UnixServer = struct {
         };
         defer server.deinit(io);
         defer deleteSocketFileIfSocket(self.allocator, io, self.socket_path) catch {};
+        try setFdNonblocking(server.socket.handle, true);
 
         var state = try initAppServerState(self.allocator, self.invocation_options, false);
         defer state.deinit(self.allocator);
 
         while (!appServerShutdownRequested()) {
-            var stream = (try acceptAppServerStream(&server)) orelse break;
+            var stream = (try acceptAppServerStream(&server, &shutdown_handlers)) orelse break;
             self.handleConnection(&state, io, &stream) catch |err| {
                 const message = std.fmt.allocPrint(
                     self.allocator,
@@ -25165,13 +25278,14 @@ const WebSocketServer = struct {
     invocation_options: InvocationOptions = .{},
 
     fn run(self: *WebSocketServer) !void {
-        const shutdown_handlers = AppServerShutdownSignalHandlers.install();
+        const shutdown_handlers = try AppServerShutdownSignalHandlers.install();
         defer shutdown_handlers.deinit();
 
         const io = std.Io.Threaded.global_single_threaded.io();
         var address = net.IpAddress.parse(self.address.host, self.address.port) catch return error.UnsupportedAppServerListenUrl;
         var server = try address.listen(io, .{ .reuse_address = true });
         defer server.deinit(io);
+        try setFdNonblocking(server.socket.handle, true);
 
         const actual_port = server.socket.address.getPort();
         const bind_message = try std.fmt.allocPrint(self.allocator, "app-server websocket listening on ws://{s}:{d}\n", .{ self.address.host, actual_port });
@@ -25182,7 +25296,7 @@ const WebSocketServer = struct {
         defer state.deinit(self.allocator);
 
         while (!appServerShutdownRequested()) {
-            var stream = (try acceptAppServerStream(&server)) orelse break;
+            var stream = (try acceptAppServerStream(&server, &shutdown_handlers)) orelse break;
             self.handleConnection(&state, io, &stream) catch |err| {
                 const message = std.fmt.allocPrint(
                     self.allocator,
