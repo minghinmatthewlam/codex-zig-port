@@ -55,6 +55,7 @@ pub const ParsedResponse = struct {
     reasoning_events: []const ReasoningEvent,
     server_model: ?[]const u8,
     model_verifications: []const ModelVerification,
+    token_usage: ?ResponseTokenUsageInfo,
 
     pub fn deinit(self: *ParsedResponse, allocator: std.mem.Allocator) void {
         allocator.free(self.text);
@@ -67,6 +68,19 @@ pub const ParsedResponse = struct {
         if (self.server_model) |server_model| allocator.free(server_model);
         allocator.free(self.model_verifications);
     }
+};
+
+pub const ResponseTokenUsage = struct {
+    input_tokens: i64 = 0,
+    cached_input_tokens: i64 = 0,
+    output_tokens: i64 = 0,
+    reasoning_output_tokens: i64 = 0,
+    total_tokens: i64 = 0,
+};
+
+pub const ResponseTokenUsageInfo = struct {
+    usage: ResponseTokenUsage,
+    model_context_window: ?i64 = null,
 };
 
 pub const StreamCallback = struct {
@@ -903,6 +917,7 @@ pub fn parseSseResponse(allocator: std.mem.Allocator, bytes: []const u8) !Parsed
     errdefer if (server_model) |model| allocator.free(model);
     var model_verifications = std.ArrayList(ModelVerification).empty;
     errdefer model_verifications.deinit(allocator);
+    var token_usage: ?ResponseTokenUsageInfo = null;
 
     var iter = std.mem.splitScalar(u8, bytes, '\n');
     while (iter.next()) |line_raw| {
@@ -925,6 +940,9 @@ pub fn parseSseResponse(allocator: std.mem.Allocator, bytes: []const u8) !Parsed
         }
         if (std.mem.eql(u8, event_type.string, "response.metadata")) {
             try appendModelVerifications(&model_verifications, allocator, object);
+        }
+        if (parseResponseTokenUsageInfo(object)) |usage_info| {
+            token_usage = usage_info;
         }
 
         if (std.mem.eql(u8, event_type.string, "response.output_text.delta")) {
@@ -967,6 +985,7 @@ pub fn parseSseResponse(allocator: std.mem.Allocator, bytes: []const u8) !Parsed
         .reasoning_events = try reasoning_events.toOwnedSlice(allocator),
         .server_model = server_model,
         .model_verifications = try model_verifications.toOwnedSlice(allocator),
+        .token_usage = token_usage,
     };
 }
 
@@ -1011,6 +1030,62 @@ fn parseServerModelFromObject(allocator: std.mem.Allocator, object: std.json.Obj
         return try allocator.dupe(u8, model);
     }
     return null;
+}
+
+fn parseResponseTokenUsageInfo(object: std.json.ObjectMap) ?ResponseTokenUsageInfo {
+    if (object.get("response")) |response| {
+        if (response == .object) {
+            if (parseResponseTokenUsageInfoFromObject(response.object)) |usage_info| return usage_info;
+        }
+    }
+    return parseResponseTokenUsageInfoFromObject(object);
+}
+
+fn parseResponseTokenUsageInfoFromObject(object: std.json.ObjectMap) ?ResponseTokenUsageInfo {
+    const usage_value = object.get("usage") orelse return null;
+    if (usage_value != .object) return null;
+    const usage = parseResponseTokenUsage(usage_value.object) orelse return null;
+    return .{
+        .usage = usage,
+        .model_context_window = jsonIntegerFieldAny(object, "model_context_window", "modelContextWindow"),
+    };
+}
+
+fn parseResponseTokenUsage(object: std.json.ObjectMap) ?ResponseTokenUsage {
+    const input_tokens = jsonIntegerFieldAny(object, "input_tokens", "inputTokens") orelse return null;
+    const output_tokens = jsonIntegerFieldAny(object, "output_tokens", "outputTokens") orelse return null;
+    const total_tokens = jsonIntegerFieldAny(object, "total_tokens", "totalTokens") orelse return null;
+    return .{
+        .input_tokens = input_tokens,
+        .cached_input_tokens = jsonNestedIntegerFieldAny(
+            object,
+            "input_tokens_details",
+            "inputTokensDetails",
+            "cached_tokens",
+            "cachedTokens",
+        ) orelse 0,
+        .output_tokens = output_tokens,
+        .reasoning_output_tokens = jsonNestedIntegerFieldAny(
+            object,
+            "output_tokens_details",
+            "outputTokensDetails",
+            "reasoning_tokens",
+            "reasoningTokens",
+        ) orelse 0,
+        .total_tokens = total_tokens,
+    };
+}
+
+fn jsonNestedIntegerFieldAny(
+    object: std.json.ObjectMap,
+    snake_object_name: []const u8,
+    camel_object_name: []const u8,
+    snake_field_name: []const u8,
+    camel_field_name: []const u8,
+) ?i64 {
+    const value = object.get(snake_object_name) orelse object.get(camel_object_name) orelse return null;
+    if (value != .object) return null;
+    return jsonIntegerFieldAny(value.object, snake_field_name, camel_field_name);
 }
 
 fn jsonStringOrFirstArrayString(value: std.json.Value) ?[]const u8 {
@@ -1432,6 +1507,24 @@ test "parses SSE model metadata" {
     try std.testing.expectEqualStrings("gpt-rerouted", parsed.server_model.?);
     try std.testing.expectEqual(@as(usize, 1), parsed.model_verifications.len);
     try std.testing.expectEqual(ModelVerification.trusted_access_for_cyber, parsed.model_verifications[0]);
+}
+
+test "parses SSE completed response token usage" {
+    const allocator = std.testing.allocator;
+    const body =
+        "data: {\"type\":\"response.output_text.delta\",\"delta\":\"hi\"}\n" ++
+        "data: {\"type\":\"response.completed\",\"response\":{\"usage\":{\"input_tokens\":12,\"input_tokens_details\":{\"cached_tokens\":3},\"output_tokens\":5,\"output_tokens_details\":{\"reasoning_tokens\":2},\"total_tokens\":17},\"model_context_window\":200000}}\n" ++
+        "data: [DONE]\n";
+    var parsed = try parseSseResponse(allocator, body);
+    defer parsed.deinit(allocator);
+
+    const usage_info = parsed.token_usage.?;
+    try std.testing.expectEqual(@as(i64, 12), usage_info.usage.input_tokens);
+    try std.testing.expectEqual(@as(i64, 3), usage_info.usage.cached_input_tokens);
+    try std.testing.expectEqual(@as(i64, 5), usage_info.usage.output_tokens);
+    try std.testing.expectEqual(@as(i64, 2), usage_info.usage.reasoning_output_tokens);
+    try std.testing.expectEqual(@as(i64, 17), usage_info.usage.total_tokens);
+    try std.testing.expectEqual(@as(i64, 200000), usage_info.model_context_window.?);
 }
 
 test "parses SSE failed response as API failure" {
