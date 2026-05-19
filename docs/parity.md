@@ -717,6 +717,11 @@ explicit request `web_search` overrides. Focused PTY/app-server smokes verify
 the remote TUI emits the config object and app-server turns use the profile
 model plus native web-search tool.
 
+Additional core approval-reviewer prompt coverage: model request construction
+now appends Rust-compatible `approvals_reviewer = "auto_review"` guidance when
+the effective reviewer is auto-review and the approval policy is not `never`,
+and omits that guidance for non-prompting `never` approval mode.
+
 Additional exec-server remote rendezvous coverage: registry-backed
 `exec-server --remote ... --executor-id ...` now connects to both plain
 `ws://` and TLS `wss://` rendezvous URLs, including a loopback self-signed TLS

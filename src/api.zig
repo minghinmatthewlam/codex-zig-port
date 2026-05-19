@@ -1097,6 +1097,8 @@ const friendlyPersonalityInstructions =
     "You optimize for team morale and being a supportive teammate as much as code quality.";
 const pragmaticPersonalityInstructions =
     "You are a deeply pragmatic, effective software engineer.";
+const autoReviewApprovalSuffix =
+    "`approvals_reviewer` is `auto_review`: Sandbox escalations with require_escalated will be reviewed for compliance with the policy. If a rejection happens, you should proceed only with a materially safer alternative, or inform the user of the risk and send a final message to ask for approval.";
 
 fn baseInstructionsForConfig(
     allocator: std.mem.Allocator,
@@ -1139,7 +1141,93 @@ fn baseInstructionsForConfig(
         }
     }
 
+    if (cfg.approvals_reviewer == .auto_review and cfg.approval_policy != .never) {
+        try out.appendSlice(allocator, "\n");
+        try out.appendSlice(allocator, autoReviewApprovalSuffix);
+        try out.append(allocator, '\n');
+    }
+
     return out.toOwnedSlice(allocator);
+}
+
+test "auto-review approvals append reviewer guidance when approvals can prompt" {
+    const allocator = std.testing.allocator;
+    const cfg = config.Config{
+        .codex_home = ".",
+        .active_profile = null,
+        .model = "demo-model",
+        .openai_base_url = "https://example.invalid/v1",
+        .chatgpt_base_url = "https://example.invalid/backend-api/codex",
+        .oss_provider = null,
+        .installation_id = "install-test",
+        .approval_policy = .on_request,
+        .approvals_reviewer = .auto_review,
+        .sandbox_mode = .workspace_write,
+        .web_search_mode = null,
+        .model_reasoning_effort = null,
+        .service_tier = null,
+        .syntax_theme = null,
+        .personality = null,
+        .tui_status_line = null,
+        .tui_terminal_title = null,
+        .tui_alternate_screen = .auto,
+    };
+    const history = [_]HistoryItem{
+        .{
+            .kind = .message,
+            .role = "user",
+            .content_type = "input_text",
+            .text = "hello",
+        },
+    };
+
+    const body = try buildRequestBody(allocator, cfg, history[0..]);
+    defer allocator.free(body);
+
+    var parsed = try std.json.parseFromSlice(std.json.Value, allocator, body, .{});
+    defer parsed.deinit();
+    const instructions = parsed.value.object.get("instructions").?.string;
+    try std.testing.expect(std.mem.indexOf(u8, instructions, autoReviewApprovalSuffix) != null);
+}
+
+test "auto-review approvals omit reviewer guidance when approval policy is never" {
+    const allocator = std.testing.allocator;
+    const cfg = config.Config{
+        .codex_home = ".",
+        .active_profile = null,
+        .model = "demo-model",
+        .openai_base_url = "https://example.invalid/v1",
+        .chatgpt_base_url = "https://example.invalid/backend-api/codex",
+        .oss_provider = null,
+        .installation_id = "install-test",
+        .approval_policy = .never,
+        .approvals_reviewer = .auto_review,
+        .sandbox_mode = .workspace_write,
+        .web_search_mode = null,
+        .model_reasoning_effort = null,
+        .service_tier = null,
+        .syntax_theme = null,
+        .personality = null,
+        .tui_status_line = null,
+        .tui_terminal_title = null,
+        .tui_alternate_screen = .auto,
+    };
+    const history = [_]HistoryItem{
+        .{
+            .kind = .message,
+            .role = "user",
+            .content_type = "input_text",
+            .text = "hello",
+        },
+    };
+
+    const body = try buildRequestBody(allocator, cfg, history[0..]);
+    defer allocator.free(body);
+
+    var parsed = try std.json.parseFromSlice(std.json.Value, allocator, body, .{});
+    defer parsed.deinit();
+    const instructions = parsed.value.object.get("instructions").?.string;
+    try std.testing.expect(std.mem.indexOf(u8, instructions, autoReviewApprovalSuffix) == null);
 }
 
 test "developer instructions config adds collaboration mode instructions" {

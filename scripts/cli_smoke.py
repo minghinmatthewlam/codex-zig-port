@@ -6649,6 +6649,63 @@ def run_exec_equals_options_smoke(binary: Path) -> None:
         assert len(server.request_bodies) == 4
         assert server.request_bodies[3]["input"][-1]["content"][0]["text"] == "ignored config"
         assert_shell_tools_enabled(server.request_bodies[3])
+
+        config_path.write_text(
+            f'openai_base_url = "{base_url}"\n'
+            'approvals_reviewer = "auto_review"\n'
+            "\n[features]\n"
+            "shell_tool = false\n",
+            encoding="utf-8",
+        )
+        auto_review_result = subprocess.run(
+            [
+                str(binary.resolve()),
+                "exec",
+                "--skip-git-repo-check",
+                "--approval-policy=on-request",
+                "auto",
+                "review",
+                "guidance",
+            ],
+            cwd=temp_root,
+            env=env,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=5,
+            check=True,
+        )
+        assert auto_review_result.stdout == "stored reply\n"
+        assert len(server.request_bodies) == 5
+        assert (
+            "`approvals_reviewer` is `auto_review`"
+            in server.request_bodies[4]["instructions"]
+        )
+
+        no_prompt_result = subprocess.run(
+            [
+                str(binary.resolve()),
+                "exec",
+                "--skip-git-repo-check",
+                "--approval-policy=never",
+                "auto",
+                "review",
+                "never",
+            ],
+            cwd=temp_root,
+            env=env,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=5,
+            check=True,
+        )
+        assert no_prompt_result.stdout == "stored reply\n"
+        assert len(server.request_bodies) == 6
+        assert (
+            "`approvals_reviewer` is `auto_review`"
+            not in server.request_bodies[5]["instructions"]
+        )
     finally:
         server.shutdown()
         server.server_close()
