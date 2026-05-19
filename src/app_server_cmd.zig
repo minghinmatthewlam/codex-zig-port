@@ -34737,6 +34737,15 @@ fn handleThreadStart(
     };
     applyThreadRequestConfigOverrides(&cfg, request_config);
 
+    var mcp_startup_check = runThreadStartMcpStartupCheck(allocator, state, &cfg) catch |err| {
+        return renderJsonRpcErrorForFailure(allocator, id_value, "thread/start failed to initialize MCP servers", err);
+    };
+    defer mcp_startup_check.deinit(allocator);
+    if (mcp_startup_check.required_failure_message) |message| {
+        try queueThreadStartMcpStartupNotifications(allocator, state, &mcp_startup_check);
+        return renderJsonRpcError(allocator, id_value, -32603, message);
+    }
+
     var thread = createLoadedThreadFromStartParams(allocator, cfg, params) catch |err| {
         return renderJsonRpcErrorForFailure(allocator, id_value, "thread/start failed to create thread", err);
     };
@@ -34759,11 +34768,262 @@ fn handleThreadStart(
     subscription_committed = true;
     try queueThreadStartedNotification(allocator, state, started_notification);
     notification_moved = true;
+    try queueThreadLifecycleMcpStartupSuccess(allocator, state, cfg.codex_home, &mcp_startup_check);
     try queueConfigStartupNotifications(allocator, state, cfg, thread.id);
     try queueDeprecatedApprovalPolicyWarningNotification(allocator, state, &thread);
     try queueHookStartupWarningNotifications(allocator, state, cfg.codex_home, thread.id);
 
     return renderJsonRpcResult(allocator, id_value, result);
+}
+
+const ThreadStartMcpStartupCheck = struct {
+    notifications: std.ArrayList([]const u8) = .empty,
+    required_failure_message: ?[]const u8 = null,
+
+    fn deinit(self: *ThreadStartMcpStartupCheck, allocator: std.mem.Allocator) void {
+        for (self.notifications.items) |notification| allocator.free(notification);
+        self.notifications.deinit(allocator);
+        if (self.required_failure_message) |message| allocator.free(message);
+    }
+};
+
+const ThreadStartMcpStartupContext = struct {
+    allocator: std.mem.Allocator,
+    notification_enabled: bool,
+    servers: *const mcp_cmd.McpServers,
+    notifications: *std.ArrayList([]const u8),
+    required_failures: *std.ArrayList([]const u8),
+};
+
+fn runThreadStartMcpStartupCheck(
+    allocator: std.mem.Allocator,
+    state: *AppServerState,
+    cfg: *const config.Config,
+) !ThreadStartMcpStartupCheck {
+    var check = ThreadStartMcpStartupCheck{};
+    errdefer check.deinit(allocator);
+
+    var servers = try mcp_cmd.loadServers(allocator, cfg.codex_home);
+    defer servers.deinit(allocator);
+    if (!mcpServersIncludeEnabledRequired(servers)) return check;
+
+    var required_failures = std.ArrayList([]const u8).empty;
+    defer {
+        for (required_failures.items) |failure| allocator.free(failure);
+        required_failures.deinit(allocator);
+    }
+
+    var context = ThreadStartMcpStartupContext{
+        .allocator = allocator,
+        .notification_enabled = !notificationMethodOptedOut(state, "mcpServer/startupStatus/updated"),
+        .servers = &servers,
+        .notifications = &check.notifications,
+        .required_failures = &required_failures,
+    };
+    var catalog = try mcp_runtime.loadCatalogWithOptions(allocator, cfg.codex_home, .{
+        .server_filter = .required,
+        .startup_status_callback = .{
+            .ctx = &context,
+            .on_startup_status = handleThreadStartMcpStartupStatus,
+        },
+    });
+    catalog.deinit(allocator);
+
+    if (required_failures.items.len > 0) {
+        check.required_failure_message = try renderRequiredMcpStartupFailureMessage(allocator, required_failures.items);
+    }
+    return check;
+}
+
+fn mcpServersIncludeEnabledRequired(servers: mcp_cmd.McpServers) bool {
+    for (servers.items.items) |server| {
+        if (server.enabled and server.required) return true;
+    }
+    return false;
+}
+
+fn handleThreadStartMcpStartupStatus(
+    ctx: *anyopaque,
+    server_name: []const u8,
+    status: mcp_runtime.StartupStatus,
+    error_message: ?[]const u8,
+) anyerror!void {
+    const context: *ThreadStartMcpStartupContext = @ptrCast(@alignCast(ctx));
+
+    if (context.notification_enabled) {
+        const notification = try renderMcpServerStatusUpdatedNotification(context.allocator, server_name, status, error_message);
+        errdefer context.allocator.free(notification);
+        try context.notifications.append(context.allocator, notification);
+    }
+
+    if (status == .failed and mcpServerIsRequired(context.servers.*, server_name)) {
+        const failure = try std.fmt.allocPrint(
+            context.allocator,
+            "{s}: {s}",
+            .{ server_name, error_message orelse "unknown startup error" },
+        );
+        errdefer context.allocator.free(failure);
+        try context.required_failures.append(context.allocator, failure);
+    }
+}
+
+fn mcpServerIsRequired(servers: mcp_cmd.McpServers, server_name: []const u8) bool {
+    for (servers.items.items) |server| {
+        if (std.mem.eql(u8, server.name, server_name)) return server.enabled and server.required;
+    }
+    return false;
+}
+
+fn renderRequiredMcpStartupFailureMessage(allocator: std.mem.Allocator, failures: []const []const u8) ![]const u8 {
+    var result = std.ArrayList(u8).empty;
+    errdefer result.deinit(allocator);
+    try result.appendSlice(allocator, "required MCP servers failed to initialize: ");
+    for (failures, 0..) |failure, index| {
+        if (index > 0) try result.appendSlice(allocator, "; ");
+        try result.appendSlice(allocator, failure);
+    }
+    return result.toOwnedSlice(allocator);
+}
+
+fn queueThreadLifecycleMcpStartupSuccess(
+    allocator: std.mem.Allocator,
+    state: *AppServerState,
+    codex_home: []const u8,
+    check: *const ThreadStartMcpStartupCheck,
+) !void {
+    try queueThreadStartMcpStartupNotifications(allocator, state, check);
+    if (try queueThreadStartOptionalMcpStartingNotifications(allocator, state, codex_home)) {
+        spawnThreadStartOptionalMcpStartupWorkerForConnection(allocator, state, codex_home) catch {};
+    }
+}
+
+fn queueThreadStartMcpStartupNotifications(
+    allocator: std.mem.Allocator,
+    state: *AppServerState,
+    check: *const ThreadStartMcpStartupCheck,
+) !void {
+    for (check.notifications.items) |notification| {
+        const owned = try allocator.dupe(u8, notification);
+        errdefer allocator.free(owned);
+        try state.pending_notifications.append(allocator, owned);
+    }
+}
+
+fn queueThreadStartOptionalMcpStartingNotifications(
+    allocator: std.mem.Allocator,
+    state: *AppServerState,
+    codex_home: []const u8,
+) !bool {
+    if (notificationMethodOptedOut(state, "mcpServer/startupStatus/updated")) return false;
+
+    var servers = try mcp_cmd.loadServers(allocator, codex_home);
+    defer servers.deinit(allocator);
+
+    var queued_any = false;
+    for (servers.items.items) |server| {
+        if (!server.enabled or server.required) continue;
+        const notification = try renderMcpServerStatusUpdatedNotification(allocator, server.name, .starting, null);
+        try queuePendingServerNotification(allocator, state, "mcpServer/startupStatus/updated", notification);
+        queued_any = true;
+    }
+    return queued_any;
+}
+
+const ThreadStartOptionalMcpStartupWorker = struct {
+    codex_home: []const u8,
+    completion_target: AppServerBackgroundNotificationTarget,
+
+    fn deinit(self: *ThreadStartOptionalMcpStartupWorker, allocator: std.mem.Allocator) void {
+        allocator.free(self.codex_home);
+        self.completion_target.deinit(allocator);
+    }
+};
+
+const ThreadStartOptionalMcpStartupContext = struct {
+    allocator: std.mem.Allocator,
+    completion_target: *AppServerBackgroundNotificationTarget,
+};
+
+fn spawnThreadStartOptionalMcpStartupWorkerForConnection(
+    allocator: std.mem.Allocator,
+    state: *AppServerState,
+    codex_home: []const u8,
+) !void {
+    var completion_target = try makeAppServerBackgroundNotificationTarget(allocator, state.connection_output);
+    var completion_target_moved = false;
+    errdefer if (!completion_target_moved) completion_target.deinit(allocator);
+    try spawnThreadStartOptionalMcpStartupWorker(allocator, codex_home, completion_target);
+    completion_target_moved = true;
+}
+
+fn spawnThreadStartOptionalMcpStartupWorker(
+    allocator: std.mem.Allocator,
+    codex_home: []const u8,
+    completion_target: AppServerBackgroundNotificationTarget,
+) !void {
+    var target = completion_target;
+    var target_moved = false;
+    errdefer if (!target_moved) target.deinit(allocator);
+
+    const worker = try allocator.create(ThreadStartOptionalMcpStartupWorker);
+    var worker_initialized = false;
+    errdefer {
+        if (worker_initialized) worker.deinit(allocator);
+        allocator.destroy(worker);
+    }
+
+    const codex_home_owned = try allocator.dupe(u8, codex_home);
+    errdefer if (!worker_initialized) allocator.free(codex_home_owned);
+
+    worker.* = .{
+        .codex_home = codex_home_owned,
+        .completion_target = target,
+    };
+    worker_initialized = true;
+    target_moved = true;
+
+    const thread = try std.Thread.spawn(.{ .allocator = allocator }, threadStartOptionalMcpStartupWorker, .{ allocator, worker });
+    thread.detach();
+}
+
+fn threadStartOptionalMcpStartupWorker(allocator: std.mem.Allocator, worker: *ThreadStartOptionalMcpStartupWorker) void {
+    defer {
+        worker.deinit(allocator);
+        allocator.destroy(worker);
+    }
+
+    std.Io.sleep(
+        std.Io.Threaded.global_single_threaded.io(),
+        .{ .nanoseconds = 10 * std.time.ns_per_ms },
+        .awake,
+    ) catch {};
+
+    var context = ThreadStartOptionalMcpStartupContext{
+        .allocator = allocator,
+        .completion_target = &worker.completion_target,
+    };
+    var catalog = mcp_runtime.loadCatalogWithOptions(allocator, worker.codex_home, .{
+        .server_filter = .optional,
+        .startup_status_callback = .{
+            .ctx = &context,
+            .on_startup_status = handleThreadStartOptionalMcpStartupStatus,
+        },
+    }) catch return;
+    catalog.deinit(allocator);
+}
+
+fn handleThreadStartOptionalMcpStartupStatus(
+    ctx: *anyopaque,
+    server_name: []const u8,
+    status: mcp_runtime.StartupStatus,
+    error_message: ?[]const u8,
+) anyerror!void {
+    if (status == .starting) return;
+
+    const context: *ThreadStartOptionalMcpStartupContext = @ptrCast(@alignCast(ctx));
+    const notification = try renderMcpServerStatusUpdatedNotification(context.allocator, server_name, status, error_message);
+    defer context.allocator.free(notification);
+    context.completion_target.send(notification) catch {};
 }
 
 fn handleThreadResume(
@@ -34797,6 +35057,18 @@ fn handleThreadResume(
             var thread_moved = false;
             errdefer if (!thread_moved) thread.deinit(allocator);
 
+            var mcp_startup_check = runThreadStartMcpStartupCheck(allocator, state, &cfg) catch |err| {
+                return renderJsonRpcErrorForFailure(allocator, id_value, "thread/resume failed to initialize MCP servers", err);
+            };
+            defer mcp_startup_check.deinit(allocator);
+            if (mcp_startup_check.required_failure_message) |message| {
+                try queueThreadStartMcpStartupNotifications(allocator, state, &mcp_startup_check);
+                const response = try renderJsonRpcError(allocator, id_value, -32603, message);
+                thread.deinit(allocator);
+                thread_moved = true;
+                return response;
+            }
+
             const include_turns = !(optionalBoolParam(object, "excludeTurns") orelse false);
             const result = try renderThreadLifecycleResponse(allocator, &thread, include_turns, state.experimental_api_enabled);
             defer allocator.free(result);
@@ -34810,6 +35082,7 @@ fn handleThreadResume(
             thread_moved = true;
             subscription_committed = true;
             if (include_turns) try queueThreadTokenUsageNotification(allocator, state, &thread);
+            try queueThreadLifecycleMcpStartupSuccess(allocator, state, cfg.codex_home, &mcp_startup_check);
             try queueConfigStartupNotifications(allocator, state, cfg, thread.id);
             try queueDeprecatedApprovalPolicyWarningNotification(allocator, state, &thread);
             try queueHookStartupWarningNotifications(allocator, state, cfg.codex_home, thread.id);
@@ -34842,6 +35115,18 @@ fn handleThreadResume(
         return renderJsonRpcErrorForFailure(allocator, id_value, "thread/resume failed to apply state metadata", err);
     };
 
+    var mcp_startup_check = runThreadStartMcpStartupCheck(allocator, state, &cfg) catch |err| {
+        return renderJsonRpcErrorForFailure(allocator, id_value, "thread/resume failed to initialize MCP servers", err);
+    };
+    defer mcp_startup_check.deinit(allocator);
+    if (mcp_startup_check.required_failure_message) |message| {
+        try queueThreadStartMcpStartupNotifications(allocator, state, &mcp_startup_check);
+        const response = try renderJsonRpcError(allocator, id_value, -32603, message);
+        thread.deinit(allocator);
+        thread_moved = true;
+        return response;
+    }
+
     const include_turns = !(optionalBoolParam(object, "excludeTurns") orelse false);
     const result = try renderThreadLifecycleResponse(allocator, &thread, include_turns, state.experimental_api_enabled);
     defer allocator.free(result);
@@ -34855,6 +35140,7 @@ fn handleThreadResume(
     thread_moved = true;
     subscription_committed = true;
     if (include_turns) try queueThreadTokenUsageNotification(allocator, state, &thread);
+    try queueThreadLifecycleMcpStartupSuccess(allocator, state, cfg.codex_home, &mcp_startup_check);
     try queueConfigStartupNotifications(allocator, state, cfg, thread.id);
     try queueDeprecatedApprovalPolicyWarningNotification(allocator, state, &thread);
     try queueHookStartupWarningNotifications(allocator, state, cfg.codex_home, thread.id);
