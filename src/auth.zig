@@ -72,6 +72,10 @@ pub const ChatGptClaims = struct {
     chatgpt_user_id: ?[]const u8 = null,
     email: ?[]const u8 = null,
     plan_type: ?[]const u8 = null,
+    organization_id: ?[]const u8 = null,
+    project_id: ?[]const u8 = null,
+    completed_platform_onboarding: ?bool = null,
+    is_org_owner: ?bool = null,
     fedramp: bool = false,
 
     pub fn deinit(self: ChatGptClaims, allocator: std.mem.Allocator) void {
@@ -79,6 +83,8 @@ pub const ChatGptClaims = struct {
         if (self.chatgpt_user_id) |chatgpt_user_id| allocator.free(chatgpt_user_id);
         if (self.email) |email| allocator.free(email);
         if (self.plan_type) |plan_type| allocator.free(plan_type);
+        if (self.organization_id) |organization_id| allocator.free(organization_id);
+        if (self.project_id) |project_id| allocator.free(project_id);
     }
 };
 
@@ -675,12 +681,57 @@ pub fn parseChatGptClaims(allocator: std.mem.Allocator, jwt: []const u8) !ChatGp
         null;
     errdefer if (plan_type) |value| allocator.free(value);
 
+    const organization_id = if (auth_object.get("organization_id")) |value|
+        if (value == .string) try allocator.dupe(u8, value.string) else null
+    else
+        null;
+    errdefer if (organization_id) |id| allocator.free(id);
+
+    const project_id = if (auth_object.get("project_id")) |value|
+        if (value == .string) try allocator.dupe(u8, value.string) else null
+    else
+        null;
+    errdefer if (project_id) |id| allocator.free(id);
+
+    const completed_platform_onboarding = if (auth_object.get("completed_platform_onboarding")) |value|
+        if (value == .bool) value.bool else null
+    else
+        null;
+
+    const is_org_owner = if (auth_object.get("is_org_owner")) |value|
+        if (value == .bool) value.bool else null
+    else
+        null;
+
     const fedramp = if (auth_object.get("chatgpt_account_is_fedramp")) |value|
         value == .bool and value.bool
     else
         false;
 
-    return .{ .account_id = account_id, .chatgpt_user_id = chatgpt_user_id, .email = email, .plan_type = plan_type, .fedramp = fedramp };
+    return .{
+        .account_id = account_id,
+        .chatgpt_user_id = chatgpt_user_id,
+        .email = email,
+        .plan_type = plan_type,
+        .organization_id = organization_id,
+        .project_id = project_id,
+        .completed_platform_onboarding = completed_platform_onboarding,
+        .is_org_owner = is_org_owner,
+        .fedramp = fedramp,
+    };
+}
+
+pub fn parseChatGptRawPlanType(allocator: std.mem.Allocator, jwt: []const u8) !?[]const u8 {
+    var parsed = try parseJwtPayload(allocator, jwt);
+    defer parsed.deinit();
+    if (parsed.value != .object) return null;
+    const object = parsed.value.object;
+
+    const auth_value = object.get("https://api.openai.com/auth") orelse return null;
+    if (auth_value != .object) return null;
+    const value = auth_value.object.get("chatgpt_plan_type") orelse return null;
+    if (value != .string) return null;
+    return try allocator.dupe(u8, value.string);
 }
 
 fn parseChatGptEmailClaim(allocator: std.mem.Allocator, object: std.json.ObjectMap) !?[]const u8 {
@@ -842,7 +893,7 @@ test "saves externally managed chatgpt auth tokens" {
     defer dir.cleanup();
 
     const payload =
-        \\{"email":"external@example.com","https://api.openai.com/auth":{"chatgpt_account_id":"acct_external","chatgpt_user_id":"user_external","chatgpt_plan_type":"pro"}}
+        \\{"email":"external@example.com","https://api.openai.com/auth":{"chatgpt_account_id":"acct_external","chatgpt_user_id":"user_external","chatgpt_plan_type":"pro","organization_id":"org_external","project_id":"proj_external","completed_platform_onboarding":false,"is_org_owner":true}}
     ;
     var encoded_buffer: [512]u8 = undefined;
     const encoded = std.base64.url_safe_no_pad.Encoder.encode(&encoded_buffer, payload);
@@ -864,6 +915,17 @@ test "saves externally managed chatgpt auth tokens" {
     defer info.deinit(allocator);
     try std.testing.expectEqualStrings("external@example.com", info.email);
     try std.testing.expectEqualStrings("pro", info.plan_type);
+
+    var claims = try parseChatGptClaims(allocator, jwt);
+    defer claims.deinit(allocator);
+    try std.testing.expectEqualStrings("org_external", claims.organization_id.?);
+    try std.testing.expectEqualStrings("proj_external", claims.project_id.?);
+    try std.testing.expectEqual(false, claims.completed_platform_onboarding.?);
+    try std.testing.expectEqual(true, claims.is_org_owner.?);
+
+    const raw_plan_type = (try parseChatGptRawPlanType(allocator, jwt)).?;
+    defer allocator.free(raw_plan_type);
+    try std.testing.expectEqualStrings("pro", raw_plan_type);
 }
 
 test "parses chatgpt user id fallback claim" {
