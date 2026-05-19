@@ -2676,7 +2676,7 @@ def run_remote_flag_smoke(
             str(binary),
             "--remote",
             "unix:///tmp/codex-zig-missing.sock",
-            "--search",
+            "--oss",
             "--no-alt-screen",
         ],
         cwd=workspace,
@@ -2687,7 +2687,7 @@ def run_remote_flag_smoke(
     )
     if unsupported_remote_override.returncode == 0:
         raise AssertionError("unsupported remote override unexpectedly succeeded")
-    if "remote app-server TUI does not support `--search` yet" not in unsupported_remote_override.stderr:
+    if "remote app-server TUI does not support `--oss` yet" not in unsupported_remote_override.stderr:
         raise AssertionError(
             "expected unsupported remote override rejection before connecting:\n"
             f"{unsupported_remote_override.stderr}"
@@ -3044,6 +3044,9 @@ def run_remote_wss_tui_smoke(
                 "--remote-auth-token-env",
                 "CODEX_REMOTE_AUTH_TOKEN",
                 "--no-alt-screen",
+                "-p",
+                "remote-work",
+                "--search",
                 "--add-dir",
                 extra_root.name,
                 "side question from remote wss",
@@ -3067,6 +3070,17 @@ def run_remote_wss_tui_smoke(
             raise AssertionError(f"remote wss TUI smoke exited with {exit_code}\n\n{rendered}")
         os.close(master_fd)
         master_fd = -1
+
+        thread_requests = [
+            request for request in wss_server.requests if request.get("method") == "thread/start"
+        ]
+        if not thread_requests:
+            raise AssertionError(f"remote wss TUI did not send thread/start: {wss_server.requests!r}")
+        request_config = thread_requests[-1]["params"].get("config")
+        if request_config != {"profile": "remote-work", "web_search": "live"}:
+            raise AssertionError(
+                f"remote wss TUI did not forward profile/search config: {request_config!r}"
+            )
 
         turn_requests = [
             request for request in wss_server.requests if request.get("method") == "turn/start"
@@ -4152,7 +4166,7 @@ def run_session_command_option_smoke(
     )
     if resume_result.returncode == 0:
         raise AssertionError("resume option-placement smoke unexpectedly succeeded")
-    if "remote app-server TUI does not support `--profile` yet" not in resume_result.stderr:
+    if "remote app-server TUI does not support `--oss` yet" not in resume_result.stderr:
         raise AssertionError(
             f"expected resume remote unsupported-option message:\n{resume_result.stderr}"
         )
@@ -4165,7 +4179,7 @@ def run_session_command_option_smoke(
             "--yolo",
             "--no-alt-screen",
             "--search",
-            "--remote=ws://127.0.0.1:4500",
+            f"--remote=unix://{workspace / 'missing-fork-app-server.sock'}",
         ],
         cwd=workspace,
         env=env,
@@ -4175,10 +4189,12 @@ def run_session_command_option_smoke(
     )
     if fork_result.returncode == 0:
         raise AssertionError("fork option-placement smoke unexpectedly succeeded")
-    if "remote app-server TUI does not support `--search` yet" not in fork_result.stderr:
+    if "remote app-server TUI does not support `--search` yet" in fork_result.stderr:
         raise AssertionError(
-            f"expected fork remote unsupported-option message:\n{fork_result.stderr}"
+            f"fork --search was still rejected as unsupported:\n{fork_result.stderr}"
         )
+    if "error:" not in fork_result.stderr:
+        raise AssertionError(f"expected fork remote connection failure:\n{fork_result.stderr}")
 
 
 def git(repo: Path, *args: str) -> None:

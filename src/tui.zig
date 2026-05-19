@@ -621,7 +621,7 @@ fn runRemoteTui(allocator: std.mem.Allocator, options: Options, remote: []const 
     var initialize_response = try readRemoteResponse(&transport, "initialize");
     initialize_response.deinit();
 
-    var remote_state = RemoteTuiState.init(options.runtime_overrides, remote_additional_writable_roots);
+    var remote_state = RemoteTuiState.init(options.runtime_overrides, remote_additional_writable_roots, remoteRequestConfigOverrides(options));
     defer remote_state.deinit(allocator);
 
     var thread_id = (try openRemoteThread(allocator, &transport, cwd, options, &remote_state)) orelse return;
@@ -671,8 +671,25 @@ const RemoteSlashAction = enum {
     quit,
 };
 
+const RemoteRequestConfigOverrides = struct {
+    profile: ?[]const u8 = null,
+    web_search_mode: ?config.WebSearchMode = null,
+
+    fn isEmpty(self: RemoteRequestConfigOverrides) bool {
+        return self.profile == null and self.web_search_mode == null;
+    }
+};
+
+fn remoteRequestConfigOverrides(options: Options) RemoteRequestConfigOverrides {
+    return .{
+        .profile = options.profile,
+        .web_search_mode = options.runtime_overrides.web_search_mode,
+    };
+}
+
 const RemoteTuiState = struct {
     overrides: config.RuntimeOverrides,
+    request_config: RemoteRequestConfigOverrides = .{},
     additional_writable_roots: []const []const u8 = &.{},
     effective_sandbox_mode: ?config.SandboxMode = null,
     effective_workspace_sandbox: ?RemoteEffectiveWorkspaceSandbox = null,
@@ -681,9 +698,10 @@ const RemoteTuiState = struct {
     owned_effective_service_tier: ?[]const u8 = null,
     service_tier_cleared: bool = false,
 
-    fn init(overrides: config.RuntimeOverrides, additional_writable_roots: []const []const u8) RemoteTuiState {
+    fn init(overrides: config.RuntimeOverrides, additional_writable_roots: []const []const u8, request_config: RemoteRequestConfigOverrides) RemoteTuiState {
         return .{
             .overrides = overrides,
+            .request_config = request_config,
             .additional_writable_roots = additional_writable_roots,
             .effective_service_tier = overrides.service_tier,
         };
@@ -1192,7 +1210,7 @@ fn startRemoteThread(
     cwd: []const u8,
     state: *RemoteTuiState,
 ) ![]const u8 {
-    const thread_start = try renderRemoteThreadStartRequest(allocator, cwd, state.overrides, state.service_tier_cleared);
+    const thread_start = try renderRemoteThreadStartRequest(allocator, cwd, state.overrides, state.service_tier_cleared, state.request_config);
     defer allocator.free(thread_start);
     try transport.writeJson(thread_start);
     var thread_response = try readRemoteResponse(transport, "thread-start");
@@ -1300,7 +1318,7 @@ fn openRemoteLifecycleThread(
     cwd: []const u8,
     state: *RemoteTuiState,
 ) ![]const u8 {
-    const request = try renderRemoteThreadLifecycleRequest(allocator, request_id, method, target, cwd, state.overrides, state.service_tier_cleared);
+    const request = try renderRemoteThreadLifecycleRequest(allocator, request_id, method, target, cwd, state.overrides, state.service_tier_cleared, state.request_config);
     defer allocator.free(request);
     try transport.writeJson(request);
     var response = try readRemoteResponse(transport, request_id);
@@ -1311,7 +1329,6 @@ fn openRemoteLifecycleThread(
 }
 
 fn validateRemoteTuiSupportedOptions(options: Options) !void {
-    if (options.profile != null) return rejectUnsupportedRemoteTuiOption("--profile");
     if (options.oss) return rejectUnsupportedRemoteTuiOption("--oss");
     if (options.oss_provider != null) return rejectUnsupportedRemoteTuiOption("--local-provider");
 
@@ -1319,7 +1336,6 @@ fn validateRemoteTuiSupportedOptions(options: Options) !void {
     if (overrides.openai_base_url != null) return rejectUnsupportedRemoteTuiOption("-c openai_base_url");
     if (overrides.chatgpt_base_url != null) return rejectUnsupportedRemoteTuiOption("-c chatgpt_base_url");
     if (overrides.oss_provider != null) return rejectUnsupportedRemoteTuiOption("-c oss_provider");
-    if (overrides.web_search_mode != null) return rejectUnsupportedRemoteTuiOption("--search");
     if (overrides.syntax_theme != null) return rejectUnsupportedRemoteTuiOption("-c syntax_theme");
 }
 
@@ -1359,6 +1375,7 @@ fn renderRemoteThreadStartRequest(
     cwd: []const u8,
     overrides: config.RuntimeOverrides,
     service_tier_cleared: bool,
+    request_config: RemoteRequestConfigOverrides,
 ) ![]const u8 {
     var out = std.ArrayList(u8).empty;
     errdefer out.deinit(allocator);
@@ -1366,6 +1383,7 @@ fn renderRemoteThreadStartRequest(
     try out.appendSlice(allocator, "{\"jsonrpc\":\"2.0\",\"id\":\"thread-start\",\"method\":\"thread/start\",\"params\":{");
     var first = true;
     try appendJsonStringField(allocator, &out, &first, "cwd", cwd);
+    try appendRemoteThreadRequestConfig(allocator, &out, &first, request_config);
     try appendRemoteThreadRuntimeOverrides(allocator, &out, &first, overrides, service_tier_cleared, &.{}, null, null);
     try out.appendSlice(allocator, "}}");
     return out.toOwnedSlice(allocator);
@@ -1379,6 +1397,7 @@ fn renderRemoteThreadLifecycleRequest(
     cwd: []const u8,
     overrides: config.RuntimeOverrides,
     service_tier_cleared: bool,
+    request_config: RemoteRequestConfigOverrides,
 ) ![]const u8 {
     var out = std.ArrayList(u8).empty;
     errdefer out.deinit(allocator);
@@ -1395,9 +1414,33 @@ fn renderRemoteThreadLifecycleRequest(
     if (target_path) |path| try appendJsonStringField(allocator, &out, &first, "path", path);
     try appendJsonStringField(allocator, &out, &first, "cwd", cwd);
     try appendJsonBoolField(allocator, &out, &first, "excludeTurns", true);
+    try appendRemoteThreadRequestConfig(allocator, &out, &first, request_config);
     try appendRemoteThreadRuntimeOverrides(allocator, &out, &first, overrides, service_tier_cleared, &.{}, null, null);
     try out.appendSlice(allocator, "}}");
     return out.toOwnedSlice(allocator);
+}
+
+fn appendRemoteThreadRequestConfig(
+    allocator: std.mem.Allocator,
+    out: *std.ArrayList(u8),
+    first: *bool,
+    request_config: RemoteRequestConfigOverrides,
+) !void {
+    if (request_config.isEmpty()) return;
+    if (first.*) {
+        first.* = false;
+    } else {
+        try out.append(allocator, ',');
+    }
+    try out.appendSlice(allocator, "\"config\":{");
+    var config_first = true;
+    if (request_config.profile) |profile| {
+        try appendJsonStringField(allocator, out, &config_first, "profile", profile);
+    }
+    if (request_config.web_search_mode) |mode| {
+        try appendJsonStringField(allocator, out, &config_first, "web_search", mode.label());
+    }
+    try out.append(allocator, '}');
 }
 
 fn appendRemoteThreadRuntimeOverrides(
@@ -4035,11 +4078,21 @@ test "remote auth token transport is limited to secure or loopback URLs" {
 }
 
 test "remote TUI rejects unsupported local-only options" {
-    try std.testing.expectError(error.RemoteTuiUnsupportedOption, validateRemoteTuiSupportedOptions(.{
+    try validateRemoteTuiSupportedOptions(.{
         .profile = "work",
+        .runtime_overrides = .{ .web_search_mode = .live },
+    });
+    try std.testing.expectError(error.RemoteTuiUnsupportedOption, validateRemoteTuiSupportedOptions(.{
+        .oss = true,
     }));
     try std.testing.expectError(error.RemoteTuiUnsupportedOption, validateRemoteTuiSupportedOptions(.{
-        .runtime_overrides = .{ .web_search_mode = .live },
+        .oss_provider = "ollama",
+    }));
+    try std.testing.expectError(error.RemoteTuiUnsupportedOption, validateRemoteTuiSupportedOptions(.{
+        .runtime_overrides = .{ .openai_base_url = "http://127.0.0.1:11434/v1" },
+    }));
+    try std.testing.expectError(error.RemoteTuiUnsupportedOption, validateRemoteTuiSupportedOptions(.{
+        .runtime_overrides = .{ .syntax_theme = "dark" },
     }));
 }
 
@@ -4071,7 +4124,10 @@ test "remote TUI serializes supported runtime overrides" {
         .sandbox_mode = .read_only,
         .service_tier = "flex",
         .personality = .friendly,
-    }, false);
+    }, false, .{
+        .profile = "work",
+        .web_search_mode = .live,
+    });
     defer allocator.free(thread_start);
 
     var parsed_thread = try std.json.parseFromSlice(std.json.Value, allocator, thread_start, .{});
@@ -4082,8 +4138,11 @@ test "remote TUI serializes supported runtime overrides" {
     try std.testing.expectEqualStrings("read-only", thread_params.get("sandbox").?.string);
     try std.testing.expectEqualStrings("flex", thread_params.get("serviceTier").?.string);
     try std.testing.expectEqualStrings("friendly", thread_params.get("personality").?.string);
+    const thread_config = thread_params.get("config").?.object;
+    try std.testing.expectEqualStrings("work", thread_config.get("profile").?.string);
+    try std.testing.expectEqualStrings("live", thread_config.get("web_search").?.string);
 
-    const cleared_thread_start = try renderRemoteThreadStartRequest(allocator, "/tmp/work", .{}, true);
+    const cleared_thread_start = try renderRemoteThreadStartRequest(allocator, "/tmp/work", .{}, true, .{});
     defer allocator.free(cleared_thread_start);
 
     var parsed_cleared_thread = try std.json.parseFromSlice(std.json.Value, allocator, cleared_thread_start, .{});
@@ -4106,7 +4165,10 @@ test "remote TUI serializes supported runtime overrides" {
     const thread_resume = try renderRemoteThreadLifecycleRequest(allocator, "thread-resume", "thread/resume", "/tmp/rollout.jsonl", "/tmp/work", .{
         .model = "gpt-resume",
         .sandbox_mode = .workspace_write,
-    }, false);
+    }, false, .{
+        .profile = "research",
+        .web_search_mode = .cached,
+    });
     defer allocator.free(thread_resume);
 
     var parsed_resume = try std.json.parseFromSlice(std.json.Value, allocator, thread_resume, .{});
@@ -4119,8 +4181,11 @@ test "remote TUI serializes supported runtime overrides" {
     try std.testing.expect(resume_params.get("excludeTurns").?.bool);
     try std.testing.expectEqualStrings("gpt-resume", resume_params.get("model").?.string);
     try std.testing.expectEqualStrings("workspace-write", resume_params.get("sandbox").?.string);
+    const resume_config = resume_params.get("config").?.object;
+    try std.testing.expectEqualStrings("research", resume_config.get("profile").?.string);
+    try std.testing.expectEqualStrings("cached", resume_config.get("web_search").?.string);
 
-    const thread_resume_relative = try renderRemoteThreadLifecycleRequest(allocator, "thread-resume", "thread/resume", "./rollout.jsonl", "/tmp/work", .{}, false);
+    const thread_resume_relative = try renderRemoteThreadLifecycleRequest(allocator, "thread-resume", "thread/resume", "./rollout.jsonl", "/tmp/work", .{}, false, .{});
     defer allocator.free(thread_resume_relative);
 
     var parsed_resume_relative = try std.json.parseFromSlice(std.json.Value, allocator, thread_resume_relative, .{});
@@ -4129,7 +4194,7 @@ test "remote TUI serializes supported runtime overrides" {
     try std.testing.expectEqualStrings("./rollout.jsonl", resume_relative_params.get("threadId").?.string);
     try std.testing.expectEqualStrings("/tmp/work/./rollout.jsonl", resume_relative_params.get("path").?.string);
 
-    const thread_fork = try renderRemoteThreadLifecycleRequest(allocator, "thread-fork", "thread/fork", "11111111-1111-4111-8111-111111111111", "/tmp/work", .{}, false);
+    const thread_fork = try renderRemoteThreadLifecycleRequest(allocator, "thread-fork", "thread/fork", "11111111-1111-4111-8111-111111111111", "/tmp/work", .{}, false, .{});
     defer allocator.free(thread_fork);
 
     var parsed_fork = try std.json.parseFromSlice(std.json.Value, allocator, thread_fork, .{});
@@ -4240,7 +4305,7 @@ test "remote TUI serializes supported runtime overrides" {
     const turn_clear_params = parsed_turn_clear.value.object.get("params").?.object;
     try std.testing.expect(turn_clear_params.get("serviceTier").? == .null);
 
-    const resume_clear_service_tier = try renderRemoteThreadLifecycleRequest(allocator, "thread-resume", "thread/resume", "/tmp/rollout.jsonl", "/tmp/work", .{}, true);
+    const resume_clear_service_tier = try renderRemoteThreadLifecycleRequest(allocator, "thread-resume", "thread/resume", "/tmp/rollout.jsonl", "/tmp/work", .{}, true, .{});
     defer allocator.free(resume_clear_service_tier);
 
     var parsed_resume_clear = try std.json.parseFromSlice(std.json.Value, allocator, resume_clear_service_tier, .{});
