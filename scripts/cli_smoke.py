@@ -8208,7 +8208,7 @@ def run_cli_auth_keyring_store_smoke(binary: Path) -> None:
             [str(binary.resolve()), "login", "--with-api-key"],
             cwd=temp_root,
             env=env,
-            input="sk-keyring-test-123456789\n",
+            input="keyring-test-api-key\n",
             text=True,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
@@ -8223,7 +8223,7 @@ def run_cli_auth_keyring_store_smoke(binary: Path) -> None:
         assert keyring_read.returncode == 0, keyring_read.stderr
         stored_auth = json.loads(keyring_read.stdout)
         assert stored_auth["auth_mode"] == "apikey"
-        assert stored_auth["OPENAI_API_KEY"] == "sk-keyring-test-123456789"
+        assert stored_auth["OPENAI_API_KEY"] == "keyring-test-api-key"
 
         status = subprocess.run(
             [str(binary.resolve()), "login", "status"],
@@ -8237,7 +8237,7 @@ def run_cli_auth_keyring_store_smoke(binary: Path) -> None:
         )
         assert status.stdout == ""
         assert "Logged in using an API key" in status.stderr
-        assert "sk-keyri" in status.stderr
+        assert "keyring-" in status.stderr
 
         logout = subprocess.run(
             [str(binary.resolve()), "logout"],
