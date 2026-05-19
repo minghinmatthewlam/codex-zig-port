@@ -53,6 +53,7 @@ pub const McpServer = struct {
     url: ?[]const u8 = null,
     bearer_token_env_var: ?[]const u8 = null,
     enabled: bool = true,
+    required: bool = false,
     args: std.ArrayList([]const u8) = .empty,
     env_vars: std.ArrayList(KeyValue) = .empty,
     http_headers: std.ArrayList(KeyValue) = .empty,
@@ -1243,6 +1244,7 @@ fn cloneMcpServer(allocator: std.mem.Allocator, server: McpServer) !McpServer {
     if (server.url) |value| cloned.url = try allocator.dupe(u8, value);
     if (server.bearer_token_env_var) |value| cloned.bearer_token_env_var = try allocator.dupe(u8, value);
     cloned.enabled = server.enabled;
+    cloned.required = server.required;
     if (server.oauth_resource) |value| cloned.oauth_resource = try allocator.dupe(u8, value);
     cloned.scopes_configured = server.scopes_configured;
     for (server.args.items) |arg| try appendClonedString(allocator, &cloned.args, arg);
@@ -2038,6 +2040,9 @@ fn parseServers(allocator: std.mem.Allocator, bytes: []const u8) !McpServers {
         } else if (std.mem.eql(u8, key, "enabled")) {
             if (std.mem.eql(u8, value, "true")) server.enabled = true;
             if (std.mem.eql(u8, value, "false")) server.enabled = false;
+        } else if (std.mem.eql(u8, key, "required")) {
+            if (std.mem.eql(u8, value, "true")) server.required = true;
+            if (std.mem.eql(u8, value, "false")) server.required = false;
         } else if (std.mem.eql(u8, key, "args")) {
             try replaceArgs(allocator, server, value);
         }
@@ -2129,6 +2134,9 @@ fn parsePluginMcpServer(allocator: std.mem.Allocator, name: []const u8, value: s
     try appendJsonStringMap(allocator, &server.env_http_headers, value.object.get("envHttpHeaders"));
     if (value.object.get("enabled")) |enabled| {
         if (enabled == .bool) server.enabled = enabled.bool;
+    }
+    if (value.object.get("required")) |required| {
+        if (required == .bool) server.required = required.bool;
     }
     if (value.object.get("args")) |args_value| {
         if (args_value == .array) {
@@ -2344,6 +2352,7 @@ fn appendServersToml(allocator: std.mem.Allocator, output: *std.ArrayList(u8), s
             }
         }
         if (!server.enabled) try output.appendSlice(allocator, "enabled = false\n");
+        if (server.required) try output.appendSlice(allocator, "required = true\n");
         if (server.env_vars.items.len > 0) {
             try appendTomlKeyValueTable(allocator, output, server.name, "env", server.env_vars.items);
         }
@@ -2741,6 +2750,7 @@ test "mcp config parses and renders stdio and http servers" {
         \\url = "https://example.com/mcp"
         \\bearer_token_env_var = "TOKEN_ENV"
         \\enabled = false
+        \\required = true
         \\
     ;
 
@@ -2751,12 +2761,14 @@ test "mcp config parses and renders stdio and http servers" {
     try std.testing.expectEqualStrings("--stdio", servers.get("docs").?.args.items[0]);
     try std.testing.expectEqualStrings("https://example.com/mcp", servers.get("remote").?.url.?);
     try std.testing.expect(!servers.get("remote").?.enabled);
+    try std.testing.expect(servers.get("remote").?.required);
 
     const rendered = try renderUpdatedConfig(allocator, original, servers);
     defer allocator.free(rendered);
     try std.testing.expect(std.mem.indexOf(u8, rendered, "model = \"demo\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, rendered, "[mcp_servers.docs]") != null);
     try std.testing.expect(std.mem.indexOf(u8, rendered, "[mcp_servers.remote]") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rendered, "required = true") != null);
 }
 
 test "mcp oauth store key matches Rust fallback format" {
