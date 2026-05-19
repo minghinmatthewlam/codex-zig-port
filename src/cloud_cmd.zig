@@ -1178,7 +1178,7 @@ fn initRuntime(allocator: std.mem.Allocator, parsed: ParsedOptions) !CloudRuntim
     errdefer cfg.deinit(allocator);
     try config.applyRuntimeOverrides(&cfg, allocator, parsed.runtime_overrides);
 
-    var credentials = try auth.load(allocator, cfg.codex_home);
+    var credentials = try auth.loadCliAuthForConfig(allocator, &cfg);
     errdefer credentials.deinit(allocator);
     if (credentials.mode != .chatgpt and credentials.mode != .chatgpt_auth_tokens and credentials.mode != .agent_identity) {
         return error.ChatGptBackendAuthRequired;

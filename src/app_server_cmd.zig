@@ -26309,6 +26309,7 @@ const AppServerExternalAuthRefreshContext = struct {
     state: *AppServerState,
     transport: ServerRequestTransport,
     codex_home: []const u8,
+    auth_store_mode: config.AuthCredentialsStoreMode,
     forced_chatgpt_workspace_id: ?[]const u8,
     thread_id: []const u8,
     turn_id: []const u8,
@@ -27319,10 +27320,12 @@ fn emptyRequestUserInputResult(allocator: std.mem.Allocator, output: []const u8)
 const ExternalAuthRefreshPayload = struct {
     access_token: []const u8,
     account_id: []const u8,
+    plan_type: ?[]const u8 = null,
 
     fn deinit(self: ExternalAuthRefreshPayload, allocator: std.mem.Allocator) void {
         allocator.free(self.access_token);
         allocator.free(self.account_id);
+        if (self.plan_type) |value| allocator.free(value);
     }
 };
 
@@ -27383,8 +27386,8 @@ fn handleAppServerExternalAuthRefresh(
             if (context.forced_chatgpt_workspace_id) |expected_workspace| {
                 if (!std.mem.eql(u8, refresh_payload.account_id, expected_workspace)) return error.WorkspaceRestriction;
             }
-            try auth_mod.saveChatGptAuthTokensJson(context.allocator, context.codex_home, refresh_payload.access_token, refresh_payload.account_id);
-            var credentials = try auth_mod.loadNoRefresh(context.allocator, context.codex_home);
+            try auth_mod.saveChatGptAuthTokensJsonWithMode(context.allocator, context.codex_home, .ephemeral, refresh_payload.access_token, refresh_payload.account_id, refresh_payload.plan_type);
+            var credentials = (try auth_mod.loadActiveStoredWithMode(context.allocator, context.codex_home, context.auth_store_mode)) orelse return error.NoUsableAuth;
             errdefer credentials.deinit(context.allocator);
             const refreshed_credentials = credentials;
             credentials = undefined;
@@ -27450,15 +27453,23 @@ fn externalAuthRefreshPayloadFromResponse(
     const access_token = requiredJsonStringField(result.object, "accessToken") orelse return error.InvalidExternalAuthRefreshResponse;
     const account_id = requiredJsonStringField(result.object, "chatgptAccountId") orelse return error.InvalidExternalAuthRefreshResponse;
     if (access_token.len == 0 or account_id.len == 0) return error.InvalidExternalAuthRefreshResponse;
+    const plan_type = if (result.object.get("chatgptPlanType")) |value| blk: {
+        if (value == .null) break :blk null;
+        if (value != .string) return error.InvalidExternalAuthRefreshResponse;
+        break :blk value.string;
+    } else null;
 
     const access_token_owned = try allocator.dupe(u8, access_token);
     errdefer allocator.free(access_token_owned);
     const account_id_owned = try allocator.dupe(u8, account_id);
     errdefer allocator.free(account_id_owned);
+    const plan_type_owned = if (plan_type) |value| try allocator.dupe(u8, value) else null;
+    errdefer if (plan_type_owned) |value| allocator.free(value);
 
     return .{
         .access_token = access_token_owned,
         .account_id = account_id_owned,
+        .plan_type = plan_type_owned,
     };
 }
 
@@ -28504,6 +28515,7 @@ fn handleReviewStart(
             .state = state,
             .transport = transport,
             .codex_home = cfg.codex_home,
+            .auth_store_mode = cfg.cli_auth_credentials_store_mode,
             .forced_chatgpt_workspace_id = cfg.forced_chatgpt_workspace_id,
             .thread_id = thread.id,
             .turn_id = turn_id,
@@ -29511,6 +29523,7 @@ fn handleTurnStart(
             .state = state,
             .transport = transport,
             .codex_home = cfg.codex_home,
+            .auth_store_mode = cfg.cli_auth_credentials_store_mode,
             .forced_chatgpt_workspace_id = cfg.forced_chatgpt_workspace_id,
             .thread_id = thread.id,
             .turn_id = turn_id,
@@ -40330,7 +40343,7 @@ fn handlePluginSkillRead(allocator: std.mem.Allocator, id_value: std.json.Value,
         return renderJsonRpcError(allocator, id_value, -32600, message);
     }
 
-    var credentials = auth_mod.load(allocator, cfg.codex_home) catch |err| switch (err) {
+    var credentials = auth_mod.loadCliAuthForConfig(allocator, &cfg) catch |err| switch (err) {
         error.NoUsableAuth => return renderJsonRpcError(allocator, id_value, -32602, "chatgpt authentication required to read remote plugin skill details"),
         else => return renderJsonRpcErrorForFailure(allocator, id_value, "plugin/skill/read failed to load auth", err),
     };
@@ -40493,7 +40506,7 @@ fn loadRemotePluginShareContext(allocator: std.mem.Allocator) !RemotePluginShare
         return error.RemotePluginShareFeatureDisabled;
     }
 
-    var credentials = auth_mod.load(allocator, cfg.codex_home) catch |err| switch (err) {
+    var credentials = auth_mod.loadCliAuthForConfig(allocator, &cfg) catch |err| switch (err) {
         error.NoUsableAuth => return error.RemotePluginShareAuthRequired,
         else => return err,
     };
@@ -40606,7 +40619,7 @@ fn handlePluginInstall(allocator: std.mem.Allocator, state: *AppServerState, id_
             return renderJsonRpcError(allocator, id_value, -32600, message);
         }
 
-        var credentials = auth_mod.load(allocator, cfg.codex_home) catch |err| switch (err) {
+        var credentials = auth_mod.loadCliAuthForConfig(allocator, &cfg) catch |err| switch (err) {
             error.NoUsableAuth => return renderJsonRpcError(allocator, id_value, -32602, "chatgpt authentication required to install remote plugin"),
             else => return renderJsonRpcErrorForFailure(allocator, id_value, "plugin/install failed to load auth", err),
         };
@@ -40715,7 +40728,7 @@ fn handlePluginUninstall(allocator: std.mem.Allocator, state: *AppServerState, i
         return renderJsonRpcError(allocator, id_value, -32600, "remote plugin uninstall is not enabled");
     }
 
-    var credentials = auth_mod.load(allocator, cfg.codex_home) catch |err| switch (err) {
+    var credentials = auth_mod.loadCliAuthForConfig(allocator, &cfg) catch |err| switch (err) {
         error.NoUsableAuth => return renderJsonRpcError(allocator, id_value, -32602, "chatgpt authentication required to uninstall remote plugin"),
         else => return renderJsonRpcErrorForFailure(allocator, id_value, "plugin/uninstall failed to load auth", err),
     };
@@ -40889,7 +40902,7 @@ fn handlePluginList(allocator: std.mem.Allocator, id_value: std.json.Value, para
     if (plugin_config.pluginsFeatureEnabled(raw_config_bytes)) {
         const remote_sources = params.remoteSources(raw_config_bytes);
         if (!remote_sources.isEmpty()) {
-            remote_marketplaces_json = fetchRemotePluginListMarketplaces(allocator, codex_home, remote_sources) catch null;
+            remote_marketplaces_json = fetchRemotePluginListMarketplaces(allocator, remote_sources) catch null;
         }
     }
 
@@ -40942,13 +40955,12 @@ fn parsePluginListMarketplaceKinds(value_opt: ?std.json.Value) !PluginListMarket
 
 fn fetchRemotePluginListMarketplaces(
     allocator: std.mem.Allocator,
-    codex_home: []const u8,
     remote_sources: remote_plugin.MarketplaceSources,
 ) ![]const u8 {
     var cfg = try config.loadWithOptions(allocator, .{});
     defer cfg.deinit(allocator);
 
-    var credentials = try auth_mod.load(allocator, codex_home);
+    var credentials = try auth_mod.loadCliAuthForConfig(allocator, &cfg);
     defer credentials.deinit(allocator);
     switch (credentials.mode) {
         .chatgpt, .chatgpt_auth_tokens, .agent_identity => {},
@@ -41000,7 +41012,7 @@ fn handlePluginRead(allocator: std.mem.Allocator, id_value: std.json.Value, para
             return renderJsonRpcError(allocator, id_value, -32600, message);
         }
 
-        var credentials = auth_mod.load(allocator, cfg.codex_home) catch |err| switch (err) {
+        var credentials = auth_mod.loadCliAuthForConfig(allocator, &cfg) catch |err| switch (err) {
             error.NoUsableAuth => return renderJsonRpcError(allocator, id_value, -32602, "chatgpt authentication required to read remote plugin details"),
             else => return renderJsonRpcErrorForFailure(allocator, id_value, "plugin/read failed to load auth", err),
         };
@@ -44044,9 +44056,10 @@ fn handleFeedbackUpload(
     defer metadata_tags.deinit(allocator);
     var feedback_credentials: ?auth_mod.Credentials = null;
     defer if (feedback_credentials) |*credentials| credentials.deinit(allocator);
-    if (resolveCodexHome(allocator)) |codex_home| {
-        defer allocator.free(codex_home);
-        feedback_credentials = auth_mod.loadNoRefresh(allocator, codex_home) catch |err| switch (err) {
+    if (config.loadWithOptions(allocator, .{})) |cfg| {
+        var loaded_cfg = cfg;
+        defer loaded_cfg.deinit(allocator);
+        feedback_credentials = auth_mod.loadCliAuthNoRefreshForConfig(allocator, &loaded_cfg) catch |err| switch (err) {
             error.OutOfMemory => return err,
             else => null,
         };
@@ -54415,7 +54428,7 @@ fn handleAccountLoginStartApiKey(
         return renderJsonRpcErrorForFailure(allocator, id_value, "account/login/start failed to load config", err);
     };
     defer cfg.deinit(allocator);
-    if (try externalChatGptAuthActive(allocator, cfg.codex_home)) {
+    if (try externalChatGptAuthActive(allocator, &cfg)) {
         return renderJsonRpcError(allocator, id_value, -32600, EXTERNAL_AUTH_ACTIVE_LOGIN_MESSAGE);
     }
     if (cfg.forced_login_method == .chatgpt) {
@@ -54423,7 +54436,7 @@ fn handleAccountLoginStartApiKey(
     }
     clearActiveAccountLogin(allocator, state, true);
 
-    auth_mod.saveApiKeyAuthJson(allocator, cfg.codex_home, api_key_value.string) catch |err| {
+    auth_mod.saveApiKeyAuth(allocator, cfg.codex_home, cfg.cli_auth_credentials_store_mode, api_key_value.string) catch |err| {
         return renderJsonRpcErrorForFailure(allocator, id_value, "account/login/start failed to save API key", err);
     };
 
@@ -54446,7 +54459,7 @@ fn handleAccountLoginStartChatGpt(
         return renderJsonRpcErrorForFailure(allocator, id_value, "account/login/start failed to load config", err);
     };
     defer cfg.deinit(allocator);
-    if (try externalChatGptAuthActive(allocator, cfg.codex_home)) {
+    if (try externalChatGptAuthActive(allocator, &cfg)) {
         return renderJsonRpcError(allocator, id_value, -32600, EXTERNAL_AUTH_ACTIVE_LOGIN_MESSAGE);
     }
     if (cfg.forced_login_method == .api) {
@@ -54458,6 +54471,7 @@ fn handleAccountLoginStartChatGpt(
     const issuer = issuer_override orelse login_mod.default_issuer;
     var login_handle = login_mod.startBrowserAuthReturnUrl(allocator, .{
         .codex_home = cfg.codex_home,
+        .auth_store_mode = cfg.cli_auth_credentials_store_mode,
         .issuer = issuer,
         .forced_chatgpt_workspace_id = cfg.forced_chatgpt_workspace_id,
         .codex_streamlined_login = codex_streamlined_login,
@@ -54492,7 +54506,7 @@ fn handleAccountLoginStartChatGptDeviceCode(
         return renderJsonRpcErrorForFailure(allocator, id_value, "account/login/start failed to load config", err);
     };
     defer cfg.deinit(allocator);
-    if (try externalChatGptAuthActive(allocator, cfg.codex_home)) {
+    if (try externalChatGptAuthActive(allocator, &cfg)) {
         return renderJsonRpcError(allocator, id_value, -32600, EXTERNAL_AUTH_ACTIVE_LOGIN_MESSAGE);
     }
     if (cfg.forced_login_method == .api) {
@@ -54504,6 +54518,7 @@ fn handleAccountLoginStartChatGptDeviceCode(
     const issuer = issuer_override orelse login_mod.default_issuer;
     var device_handle = login_mod.startDeviceAuth(allocator, .{
         .codex_home = cfg.codex_home,
+        .auth_store_mode = cfg.cli_auth_credentials_store_mode,
         .issuer = issuer,
         .forced_chatgpt_workspace_id = cfg.forced_chatgpt_workspace_id,
     }) catch |err| switch (err) {
@@ -54578,7 +54593,7 @@ fn handleAccountLoginStartChatGptAuthTokens(
     }
     clearActiveAccountLogin(allocator, state, true);
 
-    auth_mod.saveChatGptAuthTokensJson(allocator, cfg.codex_home, access_token_value.string, account_id_value.string) catch |err| {
+    auth_mod.saveChatGptAuthTokensJsonWithMode(allocator, cfg.codex_home, .ephemeral, access_token_value.string, account_id_value.string, plan_type) catch |err| {
         return renderJsonRpcErrorForFailure(allocator, id_value, "account/login/start failed to save ChatGPT auth tokens", err);
     };
 
@@ -54858,7 +54873,7 @@ fn accountLoginWorker(allocator: std.mem.Allocator, worker: *AccountLoginWorker)
             allocator.destroy(worker);
             return;
         };
-        const plan_type = accountLoginCompletedPlanType(allocator, worker.handle.codex_home) catch null;
+        const plan_type = accountLoginCompletedPlanType(allocator, worker.handle.codex_home, worker.handle.auth_store_mode) catch null;
         defer if (plan_type) |value| allocator.free(value);
         notification_writer.writeAll("\n") catch {
             worker.deinit(allocator);
@@ -54902,7 +54917,7 @@ fn accountDeviceCodeWorker(allocator: std.mem.Allocator, worker: *AccountDeviceC
             allocator.destroy(worker);
             return;
         };
-        const plan_type = accountLoginCompletedPlanType(allocator, worker.handle.codex_home) catch null;
+        const plan_type = accountLoginCompletedPlanType(allocator, worker.handle.codex_home, worker.handle.auth_store_mode) catch null;
         defer if (plan_type) |value| allocator.free(value);
         notification_writer.writeAll("\n") catch {
             worker.deinit(allocator);
@@ -54977,8 +54992,12 @@ fn accountLoginIssuerOverride(allocator: std.mem.Allocator) !?[]const u8 {
     return owned;
 }
 
-fn accountLoginCompletedPlanType(allocator: std.mem.Allocator, codex_home: []const u8) !?[]const u8 {
-    var info = (try auth_mod.loadStoredChatGptAccountInfo(allocator, codex_home)) orelse return null;
+fn accountLoginCompletedPlanType(
+    allocator: std.mem.Allocator,
+    codex_home: []const u8,
+    store_mode: config.AuthCredentialsStoreMode,
+) !?[]const u8 {
+    var info = (try auth_mod.loadStoredChatGptAccountInfoWithMode(allocator, codex_home, store_mode)) orelse return null;
     defer info.deinit(allocator);
     const plan_type = try allocator.dupe(u8, info.plan_type);
     return plan_type;
@@ -55023,8 +55042,8 @@ fn writeAccountUpdatedNotification(
     try writer.writeAll("}}");
 }
 
-fn externalChatGptAuthActive(allocator: std.mem.Allocator, codex_home: []const u8) !bool {
-    var credentials = (try auth_mod.loadStored(allocator, codex_home)) orelse return false;
+fn externalChatGptAuthActive(allocator: std.mem.Allocator, cfg: *const config.Config) !bool {
+    var credentials = (try auth_mod.loadActiveStoredWithMode(allocator, cfg.codex_home, cfg.cli_auth_credentials_store_mode)) orelse return false;
     defer credentials.deinit(allocator);
     return credentials.mode == .chatgpt_auth_tokens;
 }
@@ -55101,7 +55120,7 @@ fn handleAccountRateLimitsRead(allocator: std.mem.Allocator, id_value: std.json.
     };
     defer cfg.deinit(allocator);
 
-    var credentials = auth_mod.load(allocator, cfg.codex_home) catch |err| switch (err) {
+    var credentials = auth_mod.loadCliAuthForConfig(allocator, &cfg) catch |err| switch (err) {
         error.NoUsableAuth => return renderJsonRpcError(allocator, id_value, -32602, "codex account authentication required to read rate limits"),
         else => return renderJsonRpcErrorForFailure(allocator, id_value, "account/rateLimits/read failed to load auth", err),
     };
@@ -55135,7 +55154,7 @@ fn handleSendAddCreditsNudgeEmail(allocator: std.mem.Allocator, id_value: std.js
     };
     defer cfg.deinit(allocator);
 
-    var credentials = auth_mod.load(allocator, cfg.codex_home) catch |err| switch (err) {
+    var credentials = auth_mod.loadCliAuthForConfig(allocator, &cfg) catch |err| switch (err) {
         error.NoUsableAuth => return renderJsonRpcError(allocator, id_value, -32602, "codex account authentication required to notify workspace owner"),
         else => return renderJsonRpcErrorForFailure(allocator, id_value, "account/sendAddCreditsNudgeEmail failed to load auth", err),
     };
@@ -55191,9 +55210,9 @@ fn handleGetAuthStatus(allocator: std.mem.Allocator, id_value: std.json.Value, p
 
     var credentials = blk: {
         const loaded = if (refresh_token)
-            auth_mod.load(allocator, cfg.codex_home)
+            auth_mod.loadCliAuthForConfig(allocator, &cfg)
         else
-            auth_mod.loadNoRefresh(allocator, cfg.codex_home);
+            auth_mod.loadCliAuthNoRefreshForConfig(allocator, &cfg);
         break :blk loaded catch |err| switch (err) {
             error.NoUsableAuth => null,
             else => return renderJsonRpcErrorForFailure(allocator, id_value, "getAuthStatus failed to load auth", err),
@@ -55287,7 +55306,7 @@ fn handleAccountLogout(
     defer cfg.deinit(allocator);
 
     clearActiveAccountLogin(allocator, state, true);
-    _ = auth_mod.logoutWithRevoke(allocator, cfg.codex_home) catch |err| {
+    _ = auth_mod.logoutWithRevokeWithMode(allocator, cfg.codex_home, cfg.cli_auth_credentials_store_mode) catch |err| {
         return renderJsonRpcErrorForFailure(allocator, id_value, "account/logout failed to delete auth", err);
     };
 
@@ -55327,7 +55346,7 @@ fn handleAccountRead(allocator: std.mem.Allocator, id_value: std.json.Value, par
     };
     const requires_openai_auth = cfg.oss_provider == null and provider_requires_openai_auth;
     const account_json = if (requires_openai_auth)
-        try renderOpenAiAccountJson(allocator, cfg.codex_home, refresh_token)
+        try renderOpenAiAccountJson(allocator, &cfg, refresh_token)
     else if (is_bedrock)
         try allocator.dupe(u8, "{\"type\":\"amazonBedrock\"}")
     else
@@ -55350,12 +55369,12 @@ fn optionalAccountReadParams(params_value: ?std.json.Value) OptionalObjectParams
     return .{ .object = params.object };
 }
 
-fn renderOpenAiAccountJson(allocator: std.mem.Allocator, codex_home: []const u8, refresh_token: bool) ![]const u8 {
+fn renderOpenAiAccountJson(allocator: std.mem.Allocator, cfg: *const config.Config, refresh_token: bool) ![]const u8 {
     var credentials = blk: {
         const loaded = if (refresh_token)
-            auth_mod.load(allocator, codex_home)
+            auth_mod.loadCliAuthForConfig(allocator, cfg)
         else
-            auth_mod.loadNoRefresh(allocator, codex_home);
+            auth_mod.loadCliAuthNoRefreshForConfig(allocator, cfg);
         break :blk loaded catch |err| switch (err) {
             error.NoUsableAuth => return allocator.dupe(u8, "null"),
             else => return err,
@@ -55366,7 +55385,7 @@ fn renderOpenAiAccountJson(allocator: std.mem.Allocator, codex_home: []const u8,
     switch (credentials.mode) {
         .api_key => return allocator.dupe(u8, "{\"type\":\"apiKey\"}"),
         .chatgpt, .chatgpt_auth_tokens, .agent_identity => {
-            if (try auth_mod.loadStoredChatGptAccountInfo(allocator, codex_home)) |info| {
+            if (try auth_mod.loadActiveStoredChatGptAccountInfoWithMode(allocator, cfg.codex_home, cfg.cli_auth_credentials_store_mode)) |info| {
                 defer info.deinit(allocator);
                 return renderChatGptAccountJson(allocator, info);
             }

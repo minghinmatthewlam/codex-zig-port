@@ -1356,7 +1356,7 @@ fn printLogoutHelp() void {
         \\Usage:
         \\  codex-zig logout
         \\
-        \\Removes the selected CODEX_HOME/auth.json file.
+        \\Removes the selected auth store entry.
         \\
     , .{});
 }

@@ -40,7 +40,7 @@ pub fn runWithOptions(allocator: std.mem.Allocator, args: *std.process.Args.Iter
     try config.applyRuntimeOverrides(&cfg, allocator, options.runtime_overrides);
     try config.applyRuntimeOverrides(&cfg, allocator, parsed.runtime_overrides);
 
-    var credentials = try auth.load(allocator, cfg.codex_home);
+    var credentials = try auth.loadCliAuthForConfig(allocator, &cfg);
     defer credentials.deinit(allocator);
 
     const response_body = try fetchTask(allocator, cfg, credentials, task_id);

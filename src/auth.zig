@@ -1,8 +1,11 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const env = @import("env.zig");
 const config = @import("config.zig");
 
 pub const chatgpt_client_id = "app_EMoamEEZ73f0CkXaXp7hrann";
+const cli_auth_keyring_service = "Codex Auth";
+const security_binary = "/usr/bin/security";
 const refresh_token_url = "https://auth.openai.com/oauth/token";
 const refresh_token_url_override_env = "CODEX_REFRESH_TOKEN_URL_OVERRIDE";
 const revoke_token_url = "https://auth.openai.com/oauth/revoke";
@@ -11,6 +14,9 @@ const revoke_token_timeout_ms_override_env = "CODEX_REVOKE_TOKEN_TIMEOUT_MS_OVER
 const revoke_http_timeout_ms = 10_000;
 const token_refresh_interval_days = 8;
 const seconds_per_day = 24 * 60 * 60;
+
+var ephemeral_auth_mutex: std.Io.Mutex = .init;
+var ephemeral_auth_store: std.StringHashMapUnmanaged([]const u8) = .empty;
 
 pub const Credentials = struct {
     mode: Mode,
@@ -58,6 +64,7 @@ const TokenData = struct {
     refresh_token: ?[]const u8 = null,
     account_id: ?[]const u8 = null,
     id_token: ?[]const u8 = null,
+    chatgpt_plan_type: ?[]const u8 = null,
 };
 
 const AgentIdentityClaims = struct {
@@ -145,7 +152,7 @@ const PostJsonTimeoutContext = struct {
 };
 
 pub fn load(allocator: std.mem.Allocator, codex_home: []const u8) !Credentials {
-    return loadWithProviderAuth(allocator, codex_home, null, null, null, true);
+    return loadWithProviderAuth(allocator, codex_home, null, null, null, .file, true);
 }
 
 pub fn loadForConfig(allocator: std.mem.Allocator, cfg: *const config.Config) !Credentials {
@@ -155,12 +162,45 @@ pub fn loadForConfig(allocator: std.mem.Allocator, cfg: *const config.Config) !C
         cfg.model_provider_env_key,
         cfg.model_provider_bearer_token,
         cfg.model_provider_auth_command,
+        cfg.cli_auth_credentials_store_mode,
         true,
     );
 }
 
+pub fn loadCliAuthForConfig(allocator: std.mem.Allocator, cfg: *const config.Config) !Credentials {
+    return loadCliAuthForConfigWithRefresh(allocator, cfg, true);
+}
+
+pub fn loadCliAuthNoRefreshForConfig(allocator: std.mem.Allocator, cfg: *const config.Config) !Credentials {
+    return loadCliAuthForConfigWithRefresh(allocator, cfg, false);
+}
+
+fn loadCliAuthForConfigWithRefresh(allocator: std.mem.Allocator, cfg: *const config.Config, refresh_chatgpt: bool) !Credentials {
+    return loadWithProviderAuth(
+        allocator,
+        cfg.codex_home,
+        null,
+        null,
+        null,
+        cfg.cli_auth_credentials_store_mode,
+        refresh_chatgpt,
+    );
+}
+
 pub fn loadNoRefresh(allocator: std.mem.Allocator, codex_home: []const u8) !Credentials {
-    return loadWithProviderAuth(allocator, codex_home, null, null, null, false);
+    return loadWithProviderAuth(allocator, codex_home, null, null, null, .file, false);
+}
+
+pub fn loadNoRefreshForConfig(allocator: std.mem.Allocator, cfg: *const config.Config) !Credentials {
+    return loadWithProviderAuth(
+        allocator,
+        cfg.codex_home,
+        cfg.model_provider_env_key,
+        cfg.model_provider_bearer_token,
+        cfg.model_provider_auth_command,
+        cfg.cli_auth_credentials_store_mode,
+        false,
+    );
 }
 
 fn loadWithProviderAuth(
@@ -169,6 +209,7 @@ fn loadWithProviderAuth(
     provider_env_key: ?[]const u8,
     provider_bearer_token: ?[]const u8,
     provider_auth_command: ?config.ProviderAuthCommand,
+    store_mode: config.AuthCredentialsStoreMode,
     refresh_chatgpt: bool,
 ) !Credentials {
     if (provider_env_key) |key| {
@@ -187,7 +228,7 @@ fn loadWithProviderAuth(
         return loadProviderCommandCredentials(allocator, command);
     }
 
-    if (try loadStoredWithOptions(allocator, codex_home, .{ .refresh_chatgpt = refresh_chatgpt })) |credentials| {
+    if (try loadStoredWithOptions(allocator, codex_home, .{ .store_mode = store_mode, .refresh_chatgpt = refresh_chatgpt, .include_ephemeral_external = true })) |credentials| {
         return credentials;
     }
 
@@ -304,14 +345,37 @@ pub fn loadStored(allocator: std.mem.Allocator, codex_home: []const u8) !?Creden
     return loadStoredWithOptions(allocator, codex_home, .{});
 }
 
-pub fn loadStoredChatGptAccountInfo(allocator: std.mem.Allocator, codex_home: []const u8) !?ChatGptAccountInfo {
-    const path = try std.fs.path.join(allocator, &.{ codex_home, "auth.json" });
-    defer allocator.free(path);
+pub fn loadStoredWithMode(allocator: std.mem.Allocator, codex_home: []const u8, store_mode: config.AuthCredentialsStoreMode) !?Credentials {
+    return loadStoredWithOptions(allocator, codex_home, .{ .store_mode = store_mode });
+}
 
-    const bytes = std.Io.Dir.cwd().readFileAlloc(std.Io.Threaded.global_single_threaded.io(), path, allocator, .limited(1024 * 1024)) catch |err| switch (err) {
-        error.FileNotFound => return null,
-        else => return err,
-    };
+pub fn loadActiveStoredWithMode(allocator: std.mem.Allocator, codex_home: []const u8, store_mode: config.AuthCredentialsStoreMode) !?Credentials {
+    return loadStoredWithOptions(allocator, codex_home, .{ .store_mode = store_mode, .include_ephemeral_external = true });
+}
+
+pub fn loadStoredChatGptAccountInfo(allocator: std.mem.Allocator, codex_home: []const u8) !?ChatGptAccountInfo {
+    return loadStoredChatGptAccountInfoWithMode(allocator, codex_home, .file);
+}
+
+pub fn loadStoredChatGptAccountInfoWithMode(
+    allocator: std.mem.Allocator,
+    codex_home: []const u8,
+    store_mode: config.AuthCredentialsStoreMode,
+) !?ChatGptAccountInfo {
+    const bytes = (try readAuthJsonBytesWithMode(allocator, codex_home, store_mode)) orelse return null;
+    return loadChatGptAccountInfoFromBytes(allocator, bytes);
+}
+
+pub fn loadActiveStoredChatGptAccountInfoWithMode(
+    allocator: std.mem.Allocator,
+    codex_home: []const u8,
+    store_mode: config.AuthCredentialsStoreMode,
+) !?ChatGptAccountInfo {
+    const bytes = (try readActiveAuthJsonBytesWithMode(allocator, codex_home, store_mode)) orelse return null;
+    return loadChatGptAccountInfoFromBytes(allocator, bytes);
+}
+
+fn loadChatGptAccountInfoFromBytes(allocator: std.mem.Allocator, bytes: []const u8) !?ChatGptAccountInfo {
     defer allocator.free(bytes);
 
     var parsed = try std.json.parseFromSlice(AuthJson, allocator, bytes, .{ .ignore_unknown_fields = true });
@@ -327,8 +391,13 @@ pub fn loadStoredChatGptAccountInfo(allocator: std.mem.Allocator, codex_home: []
 
     const email = claims.email orelse return null;
     claims.email = null;
-    const plan_type = if (claims.plan_type) |value| value else try allocator.dupe(u8, "unknown");
-    claims.plan_type = null;
+    const plan_type = if (tokens.chatgpt_plan_type) |value|
+        try normalizeChatGptPlanType(allocator, value)
+    else if (claims.plan_type) |value|
+        value
+    else
+        try allocator.dupe(u8, "unknown");
+    if (tokens.chatgpt_plan_type == null) claims.plan_type = null;
     errdefer allocator.free(email);
     errdefer allocator.free(plan_type);
 
@@ -336,7 +405,9 @@ pub fn loadStoredChatGptAccountInfo(allocator: std.mem.Allocator, codex_home: []
 }
 
 const LoadStoredOptions = struct {
+    store_mode: config.AuthCredentialsStoreMode = .file,
     refresh_chatgpt: bool = false,
+    include_ephemeral_external: bool = false,
 };
 
 fn loadStoredWithOptions(
@@ -344,49 +415,45 @@ fn loadStoredWithOptions(
     codex_home: []const u8,
     options: LoadStoredOptions,
 ) !?Credentials {
-    const path = try std.fs.path.join(allocator, &.{ codex_home, "auth.json" });
-    defer allocator.free(path);
+    const bytes = if (options.include_ephemeral_external)
+        (try readActiveAuthJsonBytesWithMode(allocator, codex_home, options.store_mode)) orelse return null
+    else
+        (try readAuthJsonBytesWithMode(allocator, codex_home, options.store_mode)) orelse return null;
+    defer allocator.free(bytes);
 
-    if (std.Io.Dir.cwd().readFileAlloc(std.Io.Threaded.global_single_threaded.io(), path, allocator, .limited(1024 * 1024))) |bytes| {
-        defer allocator.free(bytes);
+    var parsed = try std.json.parseFromSlice(AuthJson, allocator, bytes, .{ .ignore_unknown_fields = true });
+    defer parsed.deinit();
 
-        var parsed = try std.json.parseFromSlice(AuthJson, allocator, bytes, .{ .ignore_unknown_fields = true });
-        defer parsed.deinit();
-
-        if (parsed.value.auth_mode) |mode| {
-            if (isAgentIdentityAuthMode(mode)) {
-                if (parsed.value.agent_identity) |agent_identity| {
-                    return try agentIdentityCredentials(allocator, agent_identity);
-                }
-                return null;
+    if (parsed.value.auth_mode) |mode| {
+        if (isAgentIdentityAuthMode(mode)) {
+            if (parsed.value.agent_identity) |agent_identity| {
+                return try agentIdentityCredentials(allocator, agent_identity);
             }
+            return null;
         }
+    }
 
-        if (parsed.value.tokens) |tokens| {
-            const credentials_mode: Credentials.Mode = if (parsed.value.auth_mode) |mode|
-                if (isChatGptAuthTokensMode(mode)) .chatgpt_auth_tokens else .chatgpt
-            else
-                .chatgpt;
-            if (credentials_mode == .chatgpt and options.refresh_chatgpt and try shouldRefreshChatGptToken(allocator, tokens, parsed.value.last_refresh)) {
-                refreshChatGptAuth(allocator, codex_home, parsed.value) catch |err| switch (err) {
-                    error.OutOfMemory => return err,
-                    else => std.debug.print("warning: could not refresh ChatGPT auth token: {s}\n", .{@errorName(err)}),
-                };
-                if (try loadStoredWithOptions(allocator, codex_home, .{})) |refreshed| return refreshed;
-            }
-            return try chatGptCredentials(allocator, tokens, credentials_mode);
+    if (parsed.value.tokens) |tokens| {
+        const credentials_mode: Credentials.Mode = if (parsed.value.auth_mode) |mode|
+            if (isChatGptAuthTokensMode(mode)) .chatgpt_auth_tokens else .chatgpt
+        else
+            .chatgpt;
+        if (credentials_mode == .chatgpt and options.refresh_chatgpt and try shouldRefreshChatGptToken(allocator, tokens, parsed.value.last_refresh)) {
+            refreshChatGptAuth(allocator, codex_home, options.store_mode, parsed.value) catch |err| switch (err) {
+                error.OutOfMemory => return err,
+                else => std.debug.print("warning: could not refresh ChatGPT auth token: {s}\n", .{@errorName(err)}),
+            };
+            if (try loadStoredWithOptions(allocator, codex_home, .{ .store_mode = options.store_mode })) |refreshed| return refreshed;
         }
+        return try chatGptCredentials(allocator, tokens, credentials_mode);
+    }
 
-        if (parsed.value.OPENAI_API_KEY) |api_key| {
-            return .{ .mode = .api_key, .token = try allocator.dupe(u8, api_key) };
-        }
+    if (parsed.value.OPENAI_API_KEY) |api_key| {
+        return .{ .mode = .api_key, .token = try allocator.dupe(u8, api_key) };
+    }
 
-        if (parsed.value.agent_identity) |agent_identity| {
-            return try agentIdentityCredentials(allocator, agent_identity);
-        }
-    } else |err| switch (err) {
-        error.FileNotFound => {},
-        else => return err,
+    if (parsed.value.agent_identity) |agent_identity| {
+        return try agentIdentityCredentials(allocator, agent_identity);
     }
 
     return null;
@@ -521,7 +588,12 @@ fn shouldRefreshChatGptTokenAt(
     return refreshed_at < now - interval_seconds;
 }
 
-fn refreshChatGptAuth(allocator: std.mem.Allocator, codex_home: []const u8, auth_json: AuthJson) !void {
+fn refreshChatGptAuth(
+    allocator: std.mem.Allocator,
+    codex_home: []const u8,
+    store_mode: config.AuthCredentialsStoreMode,
+    auth_json: AuthJson,
+) !void {
     const tokens = auth_json.tokens orelse return error.MissingChatGptTokens;
     const existing_refresh = tokens.refresh_token orelse return error.MissingRefreshToken;
 
@@ -579,7 +651,7 @@ fn refreshChatGptAuth(allocator: std.mem.Allocator, codex_home: []const u8, auth
     }, .{ .whitespace = .indent_2, .emit_null_optional_fields = false });
     defer allocator.free(output);
 
-    try writeAuthJson(allocator, codex_home, output);
+    try writeAuthJsonWithMode(allocator, codex_home, store_mode, output);
 }
 
 fn refreshTokenEndpoint(allocator: std.mem.Allocator) ![]const u8 {
@@ -669,6 +741,29 @@ fn postJsonWithIo(allocator: std.mem.Allocator, io: std.Io, url: []const u8, pay
 }
 
 pub fn writeAuthJson(allocator: std.mem.Allocator, codex_home: []const u8, json: []const u8) !void {
+    return writeAuthJsonFile(allocator, codex_home, json);
+}
+
+pub fn writeAuthJsonWithMode(
+    allocator: std.mem.Allocator,
+    codex_home: []const u8,
+    store_mode: config.AuthCredentialsStoreMode,
+    json: []const u8,
+) !void {
+    switch (store_mode) {
+        .file => return writeAuthJsonFile(allocator, codex_home, json),
+        .keyring => return writeCliAuthKeyringJsonAndRemoveFile(allocator, codex_home, json),
+        .auto => {
+            writeCliAuthKeyringJsonAndRemoveFile(allocator, codex_home, json) catch |err| switch (err) {
+                error.OutOfMemory => return err,
+                else => return writeAuthJsonFile(allocator, codex_home, json),
+            };
+        },
+        .ephemeral => return writeEphemeralAuthJson(allocator, codex_home, json),
+    }
+}
+
+fn writeAuthJsonFile(allocator: std.mem.Allocator, codex_home: []const u8, json: []const u8) !void {
     const io = std.Io.Threaded.global_single_threaded.io();
     try std.Io.Dir.cwd().createDirPath(io, codex_home);
 
@@ -683,12 +778,21 @@ pub fn writeAuthJson(allocator: std.mem.Allocator, codex_home: []const u8, json:
 }
 
 pub fn saveApiKeyAuthJson(allocator: std.mem.Allocator, codex_home: []const u8, api_key: []const u8) !void {
+    return saveApiKeyAuth(allocator, codex_home, .file, api_key);
+}
+
+pub fn saveApiKeyAuth(
+    allocator: std.mem.Allocator,
+    codex_home: []const u8,
+    store_mode: config.AuthCredentialsStoreMode,
+    api_key: []const u8,
+) !void {
     const json = try std.json.Stringify.valueAlloc(allocator, .{
         .auth_mode = "apikey",
         .OPENAI_API_KEY = api_key,
     }, .{ .whitespace = .indent_2 });
     defer allocator.free(json);
-    try writeAuthJson(allocator, codex_home, json);
+    try writeAuthJsonWithMode(allocator, codex_home, store_mode, json);
 }
 
 pub fn saveChatGptAuthTokensJson(
@@ -697,8 +801,22 @@ pub fn saveChatGptAuthTokensJson(
     access_token: []const u8,
     chatgpt_account_id: []const u8,
 ) !void {
+    return saveChatGptAuthTokensJsonWithMode(allocator, codex_home, .file, access_token, chatgpt_account_id, null);
+}
+
+pub fn saveChatGptAuthTokensJsonWithMode(
+    allocator: std.mem.Allocator,
+    codex_home: []const u8,
+    store_mode: config.AuthCredentialsStoreMode,
+    access_token: []const u8,
+    chatgpt_account_id: []const u8,
+    chatgpt_plan_type: ?[]const u8,
+) !void {
+    _ = store_mode;
     var claims = try parseChatGptClaims(allocator, access_token);
     defer claims.deinit(allocator);
+    const plan_type = if (chatgpt_plan_type) |value| try normalizeChatGptPlanType(allocator, value) else null;
+    defer if (plan_type) |value| allocator.free(value);
 
     const last_refresh = try currentRfc3339(allocator);
     defer allocator.free(last_refresh);
@@ -710,16 +828,32 @@ pub fn saveChatGptAuthTokensJson(
             .access_token = access_token,
             .refresh_token = "",
             .account_id = chatgpt_account_id,
+            .chatgpt_plan_type = plan_type orelse claims.plan_type,
         },
         .last_refresh = last_refresh,
-    }, .{ .whitespace = .indent_2 });
+    }, .{ .whitespace = .indent_2, .emit_null_optional_fields = false });
     defer allocator.free(json);
-    try writeAuthJson(allocator, codex_home, json);
+    try writeAuthJsonWithMode(allocator, codex_home, .ephemeral, json);
 }
 
 pub fn logoutWithRevoke(allocator: std.mem.Allocator, codex_home: []const u8) !bool {
-    revokeStoredAuthTokens(allocator, codex_home) catch {};
-    return deleteAuthJson(allocator, codex_home);
+    return logoutWithRevokeWithMode(allocator, codex_home, .file);
+}
+
+pub fn logoutWithRevokeWithMode(
+    allocator: std.mem.Allocator,
+    codex_home: []const u8,
+    store_mode: config.AuthCredentialsStoreMode,
+) !bool {
+    if (store_mode == .ephemeral) {
+        revokeStoredAuthTokensWithMode(allocator, codex_home, .ephemeral) catch {};
+        return deleteAuthWithMode(allocator, codex_home, .ephemeral);
+    }
+
+    revokeStoredAuthTokensWithMode(allocator, codex_home, store_mode) catch {};
+    const ephemeral_removed = try deleteAuthWithMode(allocator, codex_home, .ephemeral);
+    const managed_removed = try deleteAuthWithMode(allocator, codex_home, store_mode);
+    return ephemeral_removed or managed_removed;
 }
 
 pub fn deleteAuthJson(allocator: std.mem.Allocator, codex_home: []const u8) !bool {
@@ -732,14 +866,322 @@ pub fn deleteAuthJson(allocator: std.mem.Allocator, codex_home: []const u8) !boo
     return true;
 }
 
-fn revokeStoredAuthTokens(allocator: std.mem.Allocator, codex_home: []const u8) !void {
+fn deleteAuthWithMode(
+    allocator: std.mem.Allocator,
+    codex_home: []const u8,
+    store_mode: config.AuthCredentialsStoreMode,
+) !bool {
+    return switch (store_mode) {
+        .file => deleteAuthJson(allocator, codex_home),
+        .keyring => deleteCliAuthKeyringJsonAndFile(allocator, codex_home),
+        .auto => deleteCliAuthAuto(allocator, codex_home),
+        .ephemeral => deleteEphemeralAuthJson(allocator, codex_home),
+    };
+}
+
+fn deleteCliAuthAuto(allocator: std.mem.Allocator, codex_home: []const u8) !bool {
+    const keyring_removed = deleteCliAuthKeyringJsonAndFile(allocator, codex_home) catch |err| switch (err) {
+        error.OutOfMemory => return err,
+        else => return deleteAuthJson(allocator, codex_home),
+    };
+    return keyring_removed;
+}
+
+fn readAuthJsonBytesWithMode(
+    allocator: std.mem.Allocator,
+    codex_home: []const u8,
+    store_mode: config.AuthCredentialsStoreMode,
+) !?[]const u8 {
+    return switch (store_mode) {
+        .file => readAuthJsonFileBytes(allocator, codex_home),
+        .keyring => readCliAuthKeyringJson(allocator, codex_home),
+        .auto => readCliAuthAuto(allocator, codex_home),
+        .ephemeral => readEphemeralAuthJson(allocator, codex_home),
+    };
+}
+
+fn readActiveAuthJsonBytesWithMode(
+    allocator: std.mem.Allocator,
+    codex_home: []const u8,
+    store_mode: config.AuthCredentialsStoreMode,
+) !?[]const u8 {
+    if (store_mode != .ephemeral) {
+        if (try readAuthJsonBytesWithMode(allocator, codex_home, .ephemeral)) |bytes| return bytes;
+    }
+    return readAuthJsonBytesWithMode(allocator, codex_home, store_mode);
+}
+
+fn readCliAuthAuto(allocator: std.mem.Allocator, codex_home: []const u8) !?[]const u8 {
+    if (readCliAuthKeyringJson(allocator, codex_home)) |bytes| {
+        if (bytes) |value| {
+            var parsed = std.json.parseFromSlice(AuthJson, allocator, value, .{ .ignore_unknown_fields = true }) catch |err| switch (err) {
+                error.OutOfMemory => return err,
+                else => {
+                    allocator.free(value);
+                    return readAuthJsonFileBytes(allocator, codex_home);
+                },
+            };
+            parsed.deinit();
+            return value;
+        }
+    } else |err| switch (err) {
+        error.OutOfMemory => return err,
+        else => {},
+    }
+    return readAuthJsonFileBytes(allocator, codex_home);
+}
+
+fn readAuthJsonFileBytes(allocator: std.mem.Allocator, codex_home: []const u8) !?[]const u8 {
     const path = try std.fs.path.join(allocator, &.{ codex_home, "auth.json" });
     defer allocator.free(path);
 
-    const bytes = std.Io.Dir.cwd().readFileAlloc(std.Io.Threaded.global_single_threaded.io(), path, allocator, .limited(1024 * 1024)) catch |err| switch (err) {
-        error.FileNotFound => return,
+    return std.Io.Dir.cwd().readFileAlloc(std.Io.Threaded.global_single_threaded.io(), path, allocator, .limited(1024 * 1024)) catch |err| switch (err) {
+        error.FileNotFound => null,
         else => return err,
     };
+}
+
+fn cliAuthKeyringSupported() bool {
+    return builtin.os.tag == .macos;
+}
+
+fn readCliAuthKeyringJson(allocator: std.mem.Allocator, codex_home: []const u8) !?[]const u8 {
+    if (!cliAuthKeyringSupported()) return error.UnsupportedCliAuthKeyring;
+
+    const key = try computeCliAuthStoreKey(allocator, codex_home);
+    defer allocator.free(key);
+    const argv = [_][]const u8{ security_binary, "find-generic-password", "-w", "-s", cli_auth_keyring_service, "-a", key };
+    var result = try runSecurityCommand(allocator, argv[0..]);
+    defer result.deinit(allocator);
+
+    switch (result.term) {
+        .exited => |code| switch (code) {
+            0 => {
+                const serialized = std.mem.trim(u8, result.stdout, " \t\r\n");
+                if (serialized.len == 0) return null;
+                return try allocator.dupe(u8, serialized);
+            },
+            44 => return null,
+            else => return error.CliAuthKeyringUnavailable,
+        },
+        else => return error.CliAuthKeyringUnavailable,
+    }
+}
+
+fn writeCliAuthKeyringJsonAndRemoveFile(
+    allocator: std.mem.Allocator,
+    codex_home: []const u8,
+    json: []const u8,
+) !void {
+    try writeCliAuthKeyringJson(allocator, codex_home, json);
+    _ = deleteAuthJson(allocator, codex_home) catch false;
+}
+
+fn writeCliAuthKeyringJson(
+    allocator: std.mem.Allocator,
+    codex_home: []const u8,
+    json: []const u8,
+) !void {
+    if (!cliAuthKeyringSupported()) return error.UnsupportedCliAuthKeyring;
+
+    const key = try computeCliAuthStoreKey(allocator, codex_home);
+    defer allocator.free(key);
+    const serialized = try compactAuthJsonForKeyring(allocator, json);
+    defer allocator.free(serialized);
+
+    const argv = cliAuthKeyringWriteArgv(key);
+    const term = try runSecurityCommandWithPromptedPassword(allocator, argv[0..], serialized);
+    switch (term) {
+        .exited => |code| if (code == 0) return,
+        else => {},
+    }
+    return error.CliAuthKeyringUnavailable;
+}
+
+fn cliAuthKeyringWriteArgv(key: []const u8) [8][]const u8 {
+    return .{ security_binary, "add-generic-password", "-U", "-s", cli_auth_keyring_service, "-a", key, "-w" };
+}
+
+fn runSecurityCommandWithPromptedPassword(
+    allocator: std.mem.Allocator,
+    argv: []const []const u8,
+    password: []const u8,
+) !std.process.Child.Term {
+    var io_instance: std.Io.Threaded = .init(allocator, .{});
+    defer io_instance.deinit();
+
+    var child = try std.process.spawn(io_instance.io(), .{
+        .argv = argv,
+        .stdin = .pipe,
+        .stdout = .ignore,
+        .stderr = .ignore,
+    });
+    var child_alive = true;
+    errdefer if (child_alive) child.kill(io_instance.io());
+
+    if (child.stdin) |stdin_file| {
+        try stdin_file.writeStreamingAll(io_instance.io(), password);
+        try stdin_file.writeStreamingAll(io_instance.io(), "\n");
+        try stdin_file.writeStreamingAll(io_instance.io(), password);
+        try stdin_file.writeStreamingAll(io_instance.io(), "\n");
+        stdin_file.close(io_instance.io());
+        child.stdin = null;
+    }
+
+    const term = try child.wait(io_instance.io());
+    child_alive = false;
+    return term;
+}
+
+fn compactAuthJsonForKeyring(allocator: std.mem.Allocator, json: []const u8) ![]const u8 {
+    var parsed = try std.json.parseFromSlice(std.json.Value, allocator, json, .{});
+    defer parsed.deinit();
+    return std.json.Stringify.valueAlloc(allocator, parsed.value, .{});
+}
+
+fn deleteCliAuthKeyringJsonAndFile(allocator: std.mem.Allocator, codex_home: []const u8) !bool {
+    const keyring_removed = try deleteCliAuthKeyringJson(allocator, codex_home);
+    const file_removed = try deleteAuthJson(allocator, codex_home);
+    return keyring_removed or file_removed;
+}
+
+fn deleteCliAuthKeyringJson(allocator: std.mem.Allocator, codex_home: []const u8) !bool {
+    if (!cliAuthKeyringSupported()) return error.UnsupportedCliAuthKeyring;
+
+    const key = try computeCliAuthStoreKey(allocator, codex_home);
+    defer allocator.free(key);
+    const argv = [_][]const u8{ security_binary, "delete-generic-password", "-s", cli_auth_keyring_service, "-a", key };
+    var result = try runSecurityCommand(allocator, argv[0..]);
+    defer result.deinit(allocator);
+    return classifySecurityGenericPasswordResult(result.term);
+}
+
+const SecurityCommandOutput = struct {
+    stdout: []const u8,
+    stderr: []const u8,
+    term: std.process.Child.Term,
+
+    fn deinit(self: *const SecurityCommandOutput, allocator: std.mem.Allocator) void {
+        allocator.free(self.stdout);
+        allocator.free(self.stderr);
+    }
+};
+
+fn runSecurityCommand(allocator: std.mem.Allocator, argv: []const []const u8) !SecurityCommandOutput {
+    var io_instance: std.Io.Threaded = .init(allocator, .{});
+    defer io_instance.deinit();
+
+    const result = try std.process.run(allocator, io_instance.io(), .{
+        .argv = argv,
+        .stdout_limit = .limited(32 * 1024),
+        .stderr_limit = .limited(32 * 1024),
+        .timeout = .{ .duration = .{
+            .raw = std.Io.Duration.fromMilliseconds(5_000),
+            .clock = .awake,
+        } },
+    });
+    errdefer allocator.free(result.stdout);
+    errdefer allocator.free(result.stderr);
+
+    return .{
+        .stdout = result.stdout,
+        .stderr = result.stderr,
+        .term = result.term,
+    };
+}
+
+fn classifySecurityGenericPasswordResult(term: std.process.Child.Term) !bool {
+    return switch (term) {
+        .exited => |code| switch (code) {
+            0 => true,
+            44 => false,
+            else => error.CliAuthKeyringUnavailable,
+        },
+        else => error.CliAuthKeyringUnavailable,
+    };
+}
+
+fn computeCliAuthStoreKey(allocator: std.mem.Allocator, codex_home: []const u8) ![]const u8 {
+    var path_buffer: [std.fs.max_path_bytes]u8 = undefined;
+    const canonical = if (std.Io.Dir.cwd().realPathFile(std.Io.Threaded.global_single_threaded.io(), codex_home, &path_buffer)) |len|
+        try allocator.dupe(u8, path_buffer[0..len])
+    else |err| switch (err) {
+        else => try allocator.dupe(u8, codex_home),
+    };
+    defer allocator.free(canonical);
+
+    var digest: [std.crypto.hash.sha2.Sha256.digest_length]u8 = undefined;
+    std.crypto.hash.sha2.Sha256.hash(canonical, &digest, .{});
+    const hex = "0123456789abcdef";
+    var prefix: [16]u8 = undefined;
+    for (digest[0..8], 0..) |byte, index| {
+        prefix[index * 2] = hex[byte >> 4];
+        prefix[index * 2 + 1] = hex[byte & 0x0f];
+    }
+    return std.fmt.allocPrint(allocator, "cli|{s}", .{prefix[0..]});
+}
+
+fn readEphemeralAuthJson(allocator: std.mem.Allocator, codex_home: []const u8) !?[]const u8 {
+    const key = try computeCliAuthStoreKey(allocator, codex_home);
+    defer allocator.free(key);
+
+    const io = std.Io.Threaded.global_single_threaded.io();
+    ephemeral_auth_mutex.lockUncancelable(io);
+    defer ephemeral_auth_mutex.unlock(io);
+
+    const json = ephemeral_auth_store.get(key) orelse return null;
+    return try allocator.dupe(u8, json);
+}
+
+fn writeEphemeralAuthJson(allocator: std.mem.Allocator, codex_home: []const u8, json: []const u8) !void {
+    _ = allocator;
+    const page_allocator = std.heap.page_allocator;
+    const key = try computeCliAuthStoreKey(page_allocator, codex_home);
+    errdefer page_allocator.free(key);
+    const value = try page_allocator.dupe(u8, json);
+    errdefer page_allocator.free(value);
+
+    const io = std.Io.Threaded.global_single_threaded.io();
+    ephemeral_auth_mutex.lockUncancelable(io);
+    defer ephemeral_auth_mutex.unlock(io);
+
+    if (ephemeral_auth_store.getEntry(key)) |entry| {
+        page_allocator.free(entry.value_ptr.*);
+        entry.value_ptr.* = value;
+        page_allocator.free(key);
+        return;
+    }
+    try ephemeral_auth_store.put(page_allocator, key, value);
+}
+
+fn deleteEphemeralAuthJson(allocator: std.mem.Allocator, codex_home: []const u8) !bool {
+    const key = try computeCliAuthStoreKey(allocator, codex_home);
+    defer allocator.free(key);
+    const page_allocator = std.heap.page_allocator;
+
+    const io = std.Io.Threaded.global_single_threaded.io();
+    ephemeral_auth_mutex.lockUncancelable(io);
+    defer ephemeral_auth_mutex.unlock(io);
+
+    const entry = ephemeral_auth_store.getEntry(key) orelse return false;
+    const stored_key = entry.key_ptr.*;
+    const stored_value = entry.value_ptr.*;
+    _ = ephemeral_auth_store.remove(key);
+    page_allocator.free(stored_key);
+    page_allocator.free(stored_value);
+    return true;
+}
+
+fn revokeStoredAuthTokens(allocator: std.mem.Allocator, codex_home: []const u8) !void {
+    return revokeStoredAuthTokensWithMode(allocator, codex_home, .file);
+}
+
+fn revokeStoredAuthTokensWithMode(
+    allocator: std.mem.Allocator,
+    codex_home: []const u8,
+    store_mode: config.AuthCredentialsStoreMode,
+) !void {
+    const bytes = (try readAuthJsonBytesWithMode(allocator, codex_home, store_mode)) orelse return;
     defer allocator.free(bytes);
 
     var parsed = try std.json.parseFromSlice(AuthJson, allocator, bytes, .{ .ignore_unknown_fields = true });
@@ -1068,13 +1510,83 @@ test "parses chatgpt auth" {
     try std.testing.expectEqualStrings("acct", creds.account_id.?);
 }
 
+test "cli auth store key uses cli prefix and stable short hash" {
+    const allocator = std.testing.allocator;
+    var dir = std.testing.tmpDir(.{});
+    defer dir.cleanup();
+    const root = try dir.dir.realPathFileAlloc(std.Io.Threaded.global_single_threaded.io(), ".", allocator);
+    defer allocator.free(root);
+
+    const first = try computeCliAuthStoreKey(allocator, root);
+    defer allocator.free(first);
+    const second = try computeCliAuthStoreKey(allocator, root);
+    defer allocator.free(second);
+    try std.testing.expectEqualStrings(first, second);
+    try std.testing.expect(std.mem.startsWith(u8, first, "cli|"));
+    try std.testing.expectEqual(@as(usize, 20), first.len);
+}
+
+test "ephemeral cli auth store is process-local" {
+    const allocator = std.testing.allocator;
+    var dir = std.testing.tmpDir(.{});
+    defer dir.cleanup();
+    const root = try dir.dir.realPathFileAlloc(std.Io.Threaded.global_single_threaded.io(), ".", allocator);
+    defer allocator.free(root);
+    _ = try deleteEphemeralAuthJson(allocator, root);
+
+    try saveApiKeyAuth(allocator, root, .ephemeral, "test-ephemeral-api-key");
+    var credentials = (try loadStoredWithMode(allocator, root, .ephemeral)).?;
+    defer credentials.deinit(allocator);
+    try std.testing.expectEqual(Credentials.Mode.api_key, credentials.mode);
+    try std.testing.expectEqualStrings("test-ephemeral-api-key", credentials.token);
+    try std.testing.expect((try loadStored(allocator, root)) == null);
+
+    const path = try std.fs.path.join(allocator, &.{ root, "auth.json" });
+    defer allocator.free(path);
+    const file_bytes = std.Io.Dir.cwd().readFileAlloc(std.Io.Threaded.global_single_threaded.io(), path, allocator, .limited(1024)) catch |err| switch (err) {
+        error.FileNotFound => null,
+        else => return err,
+    };
+    defer if (file_bytes) |bytes| allocator.free(bytes);
+    try std.testing.expect(file_bytes == null);
+
+    try std.testing.expect(try logoutWithRevokeWithMode(allocator, root, .ephemeral));
+    try std.testing.expect((try loadStoredWithMode(allocator, root, .ephemeral)) == null);
+}
+
+test "cli auth keyring security exit classification" {
+    try std.testing.expect(try classifySecurityGenericPasswordResult(.{ .exited = 0 }));
+    try std.testing.expect(!(try classifySecurityGenericPasswordResult(.{ .exited = 44 })));
+    try std.testing.expectError(error.CliAuthKeyringUnavailable, classifySecurityGenericPasswordResult(.{ .exited = 1 }));
+    try std.testing.expectError(error.CliAuthKeyringUnavailable, classifySecurityGenericPasswordResult(.{ .unknown = 9 }));
+}
+
+test "cli auth keyring payload is compact json" {
+    const allocator = std.testing.allocator;
+    const compact = try compactAuthJsonForKeyring(
+        allocator,
+        "{\n  \"auth_mode\": \"apikey\",\n  \"OPENAI_API_KEY\": \"sk-test\"\n}",
+    );
+    defer allocator.free(compact);
+    try std.testing.expectEqualStrings("{\"auth_mode\":\"apikey\",\"OPENAI_API_KEY\":\"sk-test\"}", compact);
+}
+
+test "cli auth keyring write argv prompts for password" {
+    const argv = cliAuthKeyringWriteArgv("cli|test");
+    try std.testing.expectEqualStrings(security_binary, argv[0]);
+    try std.testing.expectEqualStrings("-w", argv[argv.len - 1]);
+    for (argv) |arg| {
+        try std.testing.expect(!std.mem.eql(u8, arg, "secret-auth-json"));
+    }
+}
+
 test "saves externally managed chatgpt auth tokens" {
     const allocator = std.testing.allocator;
     var dir = std.testing.tmpDir(.{});
     defer dir.cleanup();
 
     const payload =
-        \\{"email":"external@example.com","https://api.openai.com/auth":{"chatgpt_account_id":"acct_external","chatgpt_user_id":"user_external","chatgpt_plan_type":"pro","organization_id":"org_external","project_id":"proj_external","completed_platform_onboarding":false,"is_org_owner":true}}
+        \\{"email":"external@example.com","https://api.openai.com/auth":{"chatgpt_account_id":"acct_external","chatgpt_user_id":"user_external","organization_id":"org_external","project_id":"proj_external","completed_platform_onboarding":false,"is_org_owner":true}}
     ;
     var encoded_buffer: [512]u8 = undefined;
     const encoded = std.base64.url_safe_no_pad.Encoder.encode(&encoded_buffer, payload);
@@ -1083,7 +1595,8 @@ test "saves externally managed chatgpt auth tokens" {
 
     const root = try dir.dir.realPathFileAlloc(std.Io.Threaded.global_single_threaded.io(), ".", allocator);
     defer allocator.free(root);
-    try saveChatGptAuthTokensJson(allocator, root, jwt, "acct_external");
+    try saveApiKeyAuthJson(allocator, root, "persistent-api-key");
+    try saveChatGptAuthTokensJsonWithMode(allocator, root, .file, jwt, "acct_external", "pro");
 
     var creds = try load(allocator, root);
     defer creds.deinit(allocator);
@@ -1092,10 +1605,19 @@ test "saves externally managed chatgpt auth tokens" {
     try std.testing.expectEqualStrings("acct_external", creds.account_id.?);
     try std.testing.expectEqualStrings("user_external", creds.chatgpt_user_id.?);
 
-    var info = (try loadStoredChatGptAccountInfo(allocator, root)).?;
+    var file_creds = (try loadStored(allocator, root)).?;
+    defer file_creds.deinit(allocator);
+    try std.testing.expectEqual(Credentials.Mode.api_key, file_creds.mode);
+    try std.testing.expectEqualStrings("persistent-api-key", file_creds.token);
+
+    var info = (try loadActiveStoredChatGptAccountInfoWithMode(allocator, root, .file)).?;
     defer info.deinit(allocator);
     try std.testing.expectEqualStrings("external@example.com", info.email);
     try std.testing.expectEqualStrings("pro", info.plan_type);
+
+    try std.testing.expect(try logoutWithRevokeWithMode(allocator, root, .file));
+    try std.testing.expect((try loadStored(allocator, root)) == null);
+    try std.testing.expect((try loadActiveStoredWithMode(allocator, root, .file)) == null);
 
     var claims = try parseChatGptClaims(allocator, jwt);
     defer claims.deinit(allocator);
@@ -1104,9 +1626,7 @@ test "saves externally managed chatgpt auth tokens" {
     try std.testing.expectEqual(false, claims.completed_platform_onboarding.?);
     try std.testing.expectEqual(true, claims.is_org_owner.?);
 
-    const raw_plan_type = (try parseChatGptRawPlanType(allocator, jwt)).?;
-    defer allocator.free(raw_plan_type);
-    try std.testing.expectEqualStrings("pro", raw_plan_type);
+    try std.testing.expect((try parseChatGptRawPlanType(allocator, jwt)) == null);
 }
 
 test "parses chatgpt user id fallback claim" {

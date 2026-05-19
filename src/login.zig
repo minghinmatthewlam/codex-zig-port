@@ -41,6 +41,7 @@ const LoginArgs = struct {
 
 pub const BrowserAuthOptions = struct {
     codex_home: []const u8,
+    auth_store_mode: config.AuthCredentialsStoreMode = .file,
     issuer: []const u8 = DEFAULT_ISSUER,
     client_id: []const u8 = auth.chatgpt_client_id,
     callback_port: u16 = DEFAULT_CALLBACK_PORT,
@@ -51,6 +52,7 @@ pub const BrowserAuthOptions = struct {
 
 pub const BrowserAuthHandle = struct {
     codex_home: []const u8,
+    auth_store_mode: config.AuthCredentialsStoreMode,
     issuer: []const u8,
     client_id: []const u8,
     callback_server: net.Server,
@@ -78,6 +80,7 @@ pub const BrowserAuthHandle = struct {
         return waitForBrowserCallback(
             allocator,
             self.codex_home,
+            self.auth_store_mode,
             &self.callback_server,
             self.issuer,
             self.client_id,
@@ -93,6 +96,7 @@ pub const BrowserAuthHandle = struct {
 
 pub const DeviceAuthOptions = struct {
     codex_home: []const u8,
+    auth_store_mode: config.AuthCredentialsStoreMode = .file,
     issuer: []const u8 = DEFAULT_ISSUER,
     client_id: []const u8 = auth.chatgpt_client_id,
     forced_chatgpt_workspace_id: ?[]const u8 = null,
@@ -100,6 +104,7 @@ pub const DeviceAuthOptions = struct {
 
 pub const DeviceAuthHandle = struct {
     codex_home: []const u8,
+    auth_store_mode: config.AuthCredentialsStoreMode,
     issuer: []const u8,
     client_id: []const u8,
     forced_chatgpt_workspace_id: ?[]const u8,
@@ -128,7 +133,7 @@ pub const DeviceAuthHandle = struct {
         defer tokens.deinit(allocator);
 
         try ensureWorkspaceAllowed(allocator, self.forced_chatgpt_workspace_id, tokens.id_token);
-        try saveChatGptTokens(allocator, self.codex_home, tokens, null);
+        try saveChatGptTokens(allocator, self.codex_home, self.auth_store_mode, tokens, null);
     }
 };
 
@@ -212,7 +217,7 @@ pub fn run(allocator: std.mem.Allocator, args: *std.process.Args.Iterator) !void
     if (parsed.with_api_key) {
         const api_key = try readSecretFromStdin(allocator, "No API key provided via stdin.");
         defer allocator.free(api_key);
-        try auth.saveApiKeyAuthJson(allocator, cfg.codex_home, api_key);
+        try auth.saveApiKeyAuth(allocator, cfg.codex_home, cfg.cli_auth_credentials_store_mode, api_key);
         std.debug.print("Successfully logged in\n", .{});
         return;
     }
@@ -220,18 +225,18 @@ pub fn run(allocator: std.mem.Allocator, args: *std.process.Args.Iterator) !void
     if (parsed.with_access_token) {
         const access_token = try readSecretFromStdin(allocator, "No access token provided via stdin.");
         defer allocator.free(access_token);
-        try saveAgentIdentity(allocator, cfg.codex_home, access_token);
+        try saveAgentIdentity(allocator, cfg.codex_home, cfg.cli_auth_credentials_store_mode, access_token);
         std.debug.print("Successfully logged in\n", .{});
         return;
     }
 
     if (parsed.device_auth) {
-        try runDeviceAuth(allocator, cfg.codex_home, parsed.issuer, parsed.client_id, cfg.forced_chatgpt_workspace_id);
+        try runDeviceAuth(allocator, cfg.codex_home, cfg.cli_auth_credentials_store_mode, parsed.issuer, parsed.client_id, cfg.forced_chatgpt_workspace_id);
         std.debug.print("Successfully logged in\n", .{});
         return;
     }
 
-    try runBrowserAuth(allocator, cfg.codex_home, parsed, cfg.forced_chatgpt_workspace_id);
+    try runBrowserAuth(allocator, cfg.codex_home, cfg.cli_auth_credentials_store_mode, parsed, cfg.forced_chatgpt_workspace_id);
     std.debug.print("Successfully logged in\n", .{});
 }
 
@@ -239,7 +244,7 @@ pub fn runLogout(allocator: std.mem.Allocator) !void {
     var cfg = try config.load(allocator);
     defer cfg.deinit(allocator);
 
-    if (try auth.logoutWithRevoke(allocator, cfg.codex_home)) {
+    if (try auth.logoutWithRevokeWithMode(allocator, cfg.codex_home, cfg.cli_auth_credentials_store_mode)) {
         std.debug.print("Successfully logged out\n", .{});
     } else {
         std.debug.print("Not logged in\n", .{});
@@ -322,7 +327,7 @@ fn parseArgs(allocator: std.mem.Allocator, args: []const []const u8) !LoginArgs 
 }
 
 fn runStatus(allocator: std.mem.Allocator, cfg: config.Config) !void {
-    var credentials = (try auth.loadStored(allocator, cfg.codex_home)) orelse {
+    var credentials = (try auth.loadStoredWithMode(allocator, cfg.codex_home, cfg.cli_auth_credentials_store_mode)) orelse {
         std.debug.print("Not logged in\n", .{});
         std.process.exit(1);
     };
@@ -361,6 +366,7 @@ fn readSecretFromStdin(allocator: std.mem.Allocator, empty_message: []const u8) 
 fn runBrowserAuth(
     allocator: std.mem.Allocator,
     codex_home: []const u8,
+    auth_store_mode: config.AuthCredentialsStoreMode,
     args: LoginArgs,
     forced_chatgpt_workspace_id: ?[]const u8,
 ) !void {
@@ -410,6 +416,7 @@ fn runBrowserAuth(
     try waitForBrowserCallback(
         allocator,
         codex_home,
+        auth_store_mode,
         &callback_server,
         args.issuer,
         args.client_id,
@@ -467,6 +474,7 @@ pub fn startBrowserAuthReturnUrl(allocator: std.mem.Allocator, options: BrowserA
 
     return .{
         .codex_home = codex_home,
+        .auth_store_mode = options.auth_store_mode,
         .issuer = issuer,
         .client_id = client_id,
         .callback_server = callback_server,
@@ -515,6 +523,7 @@ pub fn startDeviceAuth(allocator: std.mem.Allocator, options: DeviceAuthOptions)
 
     return .{
         .codex_home = codex_home,
+        .auth_store_mode = options.auth_store_mode,
         .issuer = issuer,
         .client_id = client_id,
         .forced_chatgpt_workspace_id = forced_chatgpt_workspace_id,
@@ -538,6 +547,7 @@ fn bindCallbackServer(port: u16) !net.Server {
 fn waitForBrowserCallback(
     allocator: std.mem.Allocator,
     codex_home: []const u8,
+    auth_store_mode: config.AuthCredentialsStoreMode,
     server: *net.Server,
     issuer: []const u8,
     client_id: []const u8,
@@ -567,6 +577,7 @@ fn waitForBrowserCallback(
         const completed = try handleBrowserLoginRequest(
             allocator,
             codex_home,
+            auth_store_mode,
             &request,
             issuer,
             client_id,
@@ -585,6 +596,7 @@ fn waitForBrowserCallback(
 fn handleBrowserLoginRequest(
     allocator: std.mem.Allocator,
     codex_home: []const u8,
+    auth_store_mode: config.AuthCredentialsStoreMode,
     request: *std.http.Server.Request,
     issuer: []const u8,
     client_id: []const u8,
@@ -691,7 +703,7 @@ fn handleBrowserLoginRequest(
     };
     defer if (api_key) |value| allocator.free(value);
 
-    try saveChatGptTokens(allocator, codex_home, tokens, api_key);
+    try saveChatGptTokens(allocator, codex_home, auth_store_mode, tokens, api_key);
     const success_url = try composeSuccessUrl(allocator, actual_port, issuer, tokens, codex_streamlined_login);
     defer allocator.free(success_url);
     callback_completed.* = true;
@@ -1152,6 +1164,7 @@ fn openBrowser(allocator: std.mem.Allocator, url: []const u8) !void {
 fn runDeviceAuth(
     allocator: std.mem.Allocator,
     codex_home: []const u8,
+    auth_store_mode: config.AuthCredentialsStoreMode,
     issuer: []const u8,
     client_id: []const u8,
     forced_chatgpt_workspace_id: ?[]const u8,
@@ -1171,7 +1184,7 @@ fn runDeviceAuth(
     defer tokens.deinit(allocator);
 
     try ensureWorkspaceAllowed(allocator, forced_chatgpt_workspace_id, tokens.id_token);
-    try saveChatGptTokens(allocator, codex_home, tokens, null);
+    try saveChatGptTokens(allocator, codex_home, auth_store_mode, tokens, null);
 }
 
 fn requestDeviceCode(allocator: std.mem.Allocator, issuer: []const u8, client_id: []const u8) !DeviceCode {
@@ -1364,7 +1377,13 @@ fn post(allocator: std.mem.Allocator, url: []const u8, content_type: []const u8,
     return .{ .status = result.status, .body = try response_body.toOwnedSlice() };
 }
 
-fn saveChatGptTokens(allocator: std.mem.Allocator, codex_home: []const u8, tokens: Tokens, api_key: ?[]const u8) !void {
+fn saveChatGptTokens(
+    allocator: std.mem.Allocator,
+    codex_home: []const u8,
+    auth_store_mode: config.AuthCredentialsStoreMode,
+    tokens: Tokens,
+    api_key: ?[]const u8,
+) !void {
     var claims = try auth.parseChatGptClaims(allocator, tokens.id_token);
     defer claims.deinit(allocator);
 
@@ -1383,16 +1402,21 @@ fn saveChatGptTokens(allocator: std.mem.Allocator, codex_home: []const u8, token
         .last_refresh = last_refresh,
     }, .{ .whitespace = .indent_2, .emit_null_optional_fields = false });
     defer allocator.free(json);
-    try auth.writeAuthJson(allocator, codex_home, json);
+    try auth.writeAuthJsonWithMode(allocator, codex_home, auth_store_mode, json);
 }
 
-fn saveAgentIdentity(allocator: std.mem.Allocator, codex_home: []const u8, access_token: []const u8) !void {
+fn saveAgentIdentity(
+    allocator: std.mem.Allocator,
+    codex_home: []const u8,
+    auth_store_mode: config.AuthCredentialsStoreMode,
+    access_token: []const u8,
+) !void {
     const json = try std.json.Stringify.valueAlloc(allocator, .{
         .auth_mode = "agentIdentity",
         .agent_identity = access_token,
     }, .{ .whitespace = .indent_2 });
     defer allocator.free(json);
-    try auth.writeAuthJson(allocator, codex_home, json);
+    try auth.writeAuthJsonWithMode(allocator, codex_home, auth_store_mode, json);
 }
 
 fn apiAccountsBase(allocator: std.mem.Allocator, issuer: []const u8) ![]const u8 {
@@ -1744,7 +1768,7 @@ test "chatgpt token save persists exchanged api key when provided" {
     );
     defer allocator.free(id_token);
 
-    try saveChatGptTokens(allocator, root, .{
+    try saveChatGptTokens(allocator, root, .file, .{
         .id_token = id_token,
         .access_token = "chatgpt-access-token",
         .refresh_token = "chatgpt-refresh-token",
@@ -1776,7 +1800,7 @@ test "chatgpt token save omits exchanged api key when absent" {
     );
     defer allocator.free(id_token);
 
-    try saveChatGptTokens(allocator, root, .{
+    try saveChatGptTokens(allocator, root, .file, .{
         .id_token = id_token,
         .access_token = "chatgpt-access-token",
         .refresh_token = "chatgpt-refresh-token",
@@ -1797,7 +1821,7 @@ test "access token login writes agent identity auth json load can reuse" {
     const root = try dir.dir.realPathFileAlloc(std.Io.Threaded.global_single_threaded.io(), ".", allocator);
     defer allocator.free(root);
 
-    try saveAgentIdentity(allocator, root, "agent-token");
+    try saveAgentIdentity(allocator, root, .file, "agent-token");
     var credentials = try auth.load(allocator, root);
     defer credentials.deinit(allocator);
     try std.testing.expectEqual(auth.Credentials.Mode.agent_identity, credentials.mode);
