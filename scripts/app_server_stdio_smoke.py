@@ -31954,6 +31954,7 @@ def run_config_batch_write_rpc_smoke(binary: Path) -> None:
         default_thread = rpc("config-batch-default-thread-start", "thread/start", {})
         assert default_thread["id"] == "config-batch-default-thread-start"
         assert default_thread["result"]["model"] == "gpt-old"
+        assert default_thread["result"]["modelProvider"] == "openai"
         assert default_thread["result"]["serviceTier"] is None
         assert default_thread["result"]["reasoningEffort"] is None
         assert default_thread["result"]["approvalsReviewer"] == "user"
@@ -31976,6 +31977,7 @@ def run_config_batch_write_rpc_smoke(binary: Path) -> None:
             "thread/start",
             {
                 "model": "gpt-explicit",
+                "modelProvider": "explicit-provider",
                 "serviceTier": "priority",
                 "approvalPolicy": "on-request",
                 "approvalsReviewer": "user",
@@ -31984,6 +31986,7 @@ def run_config_batch_write_rpc_smoke(binary: Path) -> None:
         )
         assert explicit_thread["id"] == "config-batch-explicit-thread-start"
         assert explicit_thread["result"]["model"] == "gpt-explicit"
+        assert explicit_thread["result"]["modelProvider"] == "explicit-provider"
         assert explicit_thread["result"]["serviceTier"] == "priority"
         assert explicit_thread["result"]["approvalPolicy"] == "on-request"
         assert explicit_thread["result"]["approvalsReviewer"] == "user"
@@ -32008,6 +32011,7 @@ def run_config_batch_write_rpc_smoke(binary: Path) -> None:
             {
                 "edits": [
                     {"keyPath": "model", "value": "gpt-batch", "mergeStrategy": "replace"},
+                    {"keyPath": "model_provider", "value": "custom-provider", "mergeStrategy": "replace"},
                     {"keyPath": "service_tier", "value": "flex", "mergeStrategy": "replace"},
                     {"keyPath": "approval_policy", "value": "never", "mergeStrategy": "replace"},
                     {"keyPath": "model_reasoning_effort", "value": "high", "mergeStrategy": "replace"},
@@ -32058,6 +32062,7 @@ def run_config_batch_write_rpc_smoke(binary: Path) -> None:
         assert after_batch["result"]["config"]["features"]["goals"] is True
 
         contents = config_path.read_text(encoding="utf-8")
+        assert 'model_provider = "custom-provider"' in contents
         assert 'service_tier = "flex"' in contents
         assert 'approval_policy = "never"' in contents
         assert 'model_reasoning_effort = "high"' in contents
@@ -32077,6 +32082,7 @@ def run_config_batch_write_rpc_smoke(binary: Path) -> None:
         )
         assert default_fork["id"] == "config-batch-default-thread-fork-after-reload"
         assert default_fork["result"]["model"] == "gpt-batch"
+        assert default_fork["result"]["modelProvider"] == "custom-provider"
         assert default_fork["result"]["serviceTier"] == "flex"
         assert default_fork["result"]["approvalPolicy"] == "never"
         assert default_fork["result"]["reasoningEffort"] == "high"
@@ -32093,6 +32099,7 @@ def run_config_batch_write_rpc_smoke(binary: Path) -> None:
         )
         assert explicit_fork["id"] == "config-batch-explicit-thread-fork-after-reload"
         assert explicit_fork["result"]["model"] == "gpt-explicit"
+        assert explicit_fork["result"]["modelProvider"] == "explicit-provider"
         assert explicit_fork["result"]["serviceTier"] == "priority"
         assert explicit_fork["result"]["approvalPolicy"] == "on-request"
         assert explicit_fork["result"]["reasoningEffort"] == "high"
