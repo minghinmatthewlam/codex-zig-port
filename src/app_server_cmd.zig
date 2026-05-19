@@ -44592,7 +44592,7 @@ fn handleConfigMethod(
         return handleConfigRead(allocator, state, id_value, params_value);
     }
     if (std.mem.eql(u8, method, "config/value/write")) {
-        const response = try handleConfigValueWrite(allocator, id_value, params_value);
+        const response = try handleConfigValueWrite(allocator, state, id_value, params_value);
         clearSkillsListCache(allocator, state);
         return response;
     }
@@ -49724,6 +49724,11 @@ const ConfigRawEdit = struct {
     merge_strategy: ConfigMergeStrategy,
 };
 
+const ConfigWriteEditsResult = struct {
+    response: []const u8,
+    wrote: bool,
+};
+
 const ConfigMergeStrategy = enum {
     replace,
     upsert,
@@ -49731,11 +49736,16 @@ const ConfigMergeStrategy = enum {
 
 fn handleConfigValueWrite(
     allocator: std.mem.Allocator,
+    state: *AppServerState,
     id_value: std.json.Value,
     params_value: ?std.json.Value,
 ) ![]const u8 {
     const params = params_value orelse return renderJsonRpcError(allocator, id_value, -32602, "config/value/write params must be an object");
     if (params != .object) return renderJsonRpcError(allocator, id_value, -32602, "config/value/write params must be an object");
+
+    const reload_user_config = parseConfigReloadUserConfig(params.object) catch |err| switch (err) {
+        error.InvalidConfigReloadUserConfig => return renderJsonRpcError(allocator, id_value, -32602, "reloadUserConfig must be a boolean or null"),
+    };
 
     const edit = parseConfigWriteEdit(params.object) catch |err| switch (err) {
         error.InvalidConfigKeyPathParam => return renderJsonRpcError(allocator, id_value, -32602, "keyPath must be a non-empty string"),
@@ -49743,7 +49753,10 @@ fn handleConfigValueWrite(
         error.InvalidConfigMergeStrategy => return renderJsonRpcError(allocator, id_value, -32602, "mergeStrategy must be replace or upsert"),
     };
 
-    return handleConfigWriteEdits(allocator, id_value, params.object, &.{edit}, "config/value/write");
+    const write_result = try handleConfigWriteEdits(allocator, id_value, params.object, &.{edit}, "config/value/write");
+    errdefer allocator.free(write_result.response);
+    if (reload_user_config and write_result.wrote) try reloadLoadedThreadRuntimeConfig(allocator, state);
+    return write_result.response;
 }
 
 fn handleConfigBatchWrite(
@@ -49758,13 +49771,9 @@ fn handleConfigBatchWrite(
     const edits_value = params.object.get("edits") orelse return renderJsonRpcError(allocator, id_value, -32602, "edits must be an array");
     if (edits_value != .array) return renderJsonRpcError(allocator, id_value, -32602, "edits must be an array");
 
-    var reload_user_config = false;
-    if (params.object.get("reloadUserConfig")) |reload_user_config_value| {
-        if (reload_user_config_value != .null and reload_user_config_value != .bool) {
-            return renderJsonRpcError(allocator, id_value, -32602, "reloadUserConfig must be a boolean or null");
-        }
-        if (reload_user_config_value == .bool) reload_user_config = reload_user_config_value.bool;
-    }
+    const reload_user_config = parseConfigReloadUserConfig(params.object) catch |err| switch (err) {
+        error.InvalidConfigReloadUserConfig => return renderJsonRpcError(allocator, id_value, -32602, "reloadUserConfig must be a boolean or null"),
+    };
 
     const edits = try allocator.alloc(ConfigRawEdit, edits_value.array.items.len);
     defer allocator.free(edits);
@@ -49778,10 +49787,17 @@ fn handleConfigBatchWrite(
         };
     }
 
-    const response = try handleConfigWriteEdits(allocator, id_value, params.object, edits, "config/batchWrite");
-    errdefer allocator.free(response);
-    if (reload_user_config) try reloadLoadedThreadRuntimeConfig(allocator, state);
-    return response;
+    const write_result = try handleConfigWriteEdits(allocator, id_value, params.object, edits, "config/batchWrite");
+    errdefer allocator.free(write_result.response);
+    if (reload_user_config and write_result.wrote) try reloadLoadedThreadRuntimeConfig(allocator, state);
+    return write_result.response;
+}
+
+fn parseConfigReloadUserConfig(object: std.json.ObjectMap) !bool {
+    const value = object.get("reloadUserConfig") orelse return false;
+    if (value == .null) return false;
+    if (value != .bool) return error.InvalidConfigReloadUserConfig;
+    return value.bool;
 }
 
 fn reloadLoadedThreadRuntimeConfig(allocator: std.mem.Allocator, state: *AppServerState) !void {
@@ -49899,7 +49915,7 @@ fn handleConfigWriteEdits(
     params: std.json.ObjectMap,
     edits: []const ConfigRawEdit,
     method_name: []const u8,
-) ![]const u8 {
+) !ConfigWriteEditsResult {
     const expected_version = switch (optionalStringOrNull(params, "expectedVersion")) {
         .value => |string| string,
         .missing => null,

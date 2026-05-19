@@ -29533,6 +29533,14 @@ def run_config_value_write_rpc_smoke(binary: Path) -> None:
         return read_json_line(proc, 5)
 
     try:
+        default_thread = rpc("config-write-default-thread-start", "thread/start", {})
+        assert default_thread["id"] == "config-write-default-thread-start"
+        assert default_thread["result"]["model"] == "gpt-old"
+        default_thread_id = default_thread["result"]["thread"]["id"]
+        assert_thread_started_notification(
+            read_json_line(proc, 5), default_thread["result"]["thread"]
+        )
+
         write_model = rpc(
             "config-write-model",
             "config/value/write",
@@ -29540,6 +29548,7 @@ def run_config_value_write_rpc_smoke(binary: Path) -> None:
                 "keyPath": "model",
                 "value": "gpt-written",
                 "mergeStrategy": "replace",
+                "reloadUserConfig": True,
                 "expectedVersion": None,
             },
         )
@@ -29553,6 +29562,17 @@ def run_config_value_write_rpc_smoke(binary: Path) -> None:
         after_model = rpc("config-read-after-model-write", "config/read", {})
         assert after_model["id"] == "config-read-after-model-write"
         assert after_model["result"]["config"]["model"] == "gpt-written"
+
+        default_fork = rpc(
+            "config-write-default-thread-fork-after-reload",
+            "thread/fork",
+            {"threadId": default_thread_id, "ephemeral": True},
+        )
+        assert default_fork["id"] == "config-write-default-thread-fork-after-reload"
+        assert default_fork["result"]["model"] == "gpt-written"
+        assert_thread_started_notification(
+            read_json_line(proc, 5), default_fork["result"]["thread"]
+        )
 
         write_feature = rpc(
             "config-write-feature",
@@ -29693,6 +29713,19 @@ def run_config_value_write_rpc_smoke(binary: Path) -> None:
         )
         assert invalid_merge["id"] == "config-write-invalid-merge"
         assert invalid_merge["error"]["code"] == -32602
+
+        invalid_reload = rpc(
+            "config-write-invalid-reload",
+            "config/value/write",
+            {
+                "keyPath": "model",
+                "value": "gpt-test",
+                "mergeStrategy": "replace",
+                "reloadUserConfig": "yes",
+            },
+        )
+        assert invalid_reload["id"] == "config-write-invalid-reload"
+        assert invalid_reload["error"]["code"] == -32602
 
         invalid_path = rpc(
             "config-write-invalid-path",
