@@ -761,7 +761,9 @@ during upgrade. It also enforces `--ws-auth signed-bearer-token` with trimmed
 shared-secret files, HS256 JWT signature verification, exp/nbf clock-skew
 checks, and optional issuer/audience checks during upgrade. Sequential
 websocket clients now preserve process-local loaded threads while resetting
-connection-local subscriptions after disconnect. Graceful shutdown parity
+connection-local subscriptions after disconnect. Idle websocket and Unix socket
+listeners now exit cleanly with status 0 on SIGINT/SIGTERM, with smoke coverage
+sending real process signals to both transports. Active-turn drain parity
 remains planned.
 
 Additional app-server config reload coverage: `config/batchWrite` honors
