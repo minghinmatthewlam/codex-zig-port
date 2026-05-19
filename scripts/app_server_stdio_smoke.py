@@ -34884,6 +34884,36 @@ def exercise_unix_socket_initialize(socket_path: Path) -> None:
                 )
 
 
+def exercise_unix_socket_final_request_without_newline(socket_path: Path) -> None:
+    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
+        client.settimeout(5)
+        client.connect(str(socket_path))
+        payload = json.dumps(
+            {
+                "jsonrpc": "2.0",
+                "id": "unix-final-request-without-newline",
+                "method": "initialize",
+                "params": {
+                    "clientInfo": {
+                        "name": "app-server-smoke",
+                        "version": "0",
+                    },
+                    "capabilities": {},
+                },
+            },
+            separators=(",", ":"),
+        ).encode("utf-8")
+        client.sendall(payload)
+        client.shutdown(socket.SHUT_WR)
+        with client.makefile("r", encoding="utf-8", newline="\n") as reader:
+            initialize = read_json_line_from_socket(reader)
+            assert initialize["id"] == "unix-final-request-without-newline"
+            assert (
+                initialize["result"]["serverInfo"]["name"]
+                == "codex-zig-app-server"
+            )
+
+
 def exercise_unix_socket_connection_state_reset(socket_path: Path) -> None:
     with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
         client.settimeout(5)
@@ -35009,6 +35039,9 @@ def exercise_unix_socket(binary: Path, listen_url: str, socket_path: Path, env: 
         exercise_unix_socket_initialize(socket_path)
         if proc.poll() is not None:
             raise AssertionError(f"app-server exited after second Unix client: {proc.stderr.read()}")
+        exercise_unix_socket_final_request_without_newline(socket_path)
+        if proc.poll() is not None:
+            raise AssertionError(f"app-server exited after Unix final-request EOF smoke: {proc.stderr.read()}")
         exercise_unix_socket_connection_state_reset(socket_path)
         if proc.poll() is not None:
             raise AssertionError(f"app-server exited after Unix connection-state reset smoke: {proc.stderr.read()}")
@@ -35056,6 +35089,66 @@ def run_app_server_signal_shutdown_smoke(binary: Path) -> None:
             shutil.rmtree(codex_home, ignore_errors=True)
 
     for sig in (signal.SIGTERM, signal.SIGINT):
+        codex_home = Path(tempfile.mkdtemp(prefix="codex-zig-app-server-ws-connected-signal-", dir="/tmp"))
+        env = os.environ.copy()
+        env["CODEX_HOME"] = str(codex_home)
+        proc = subprocess.Popen(
+            [str(binary), "app-server", "--listen", "ws://127.0.0.1:0"],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            env=env,
+        )
+        client = None
+        try:
+            host, port = wait_for_websocket_bind(proc, 5)
+            client = socket.create_connection((host, port), timeout=5)
+            time.sleep(0.05)
+            assert_clean_signal_exit(
+                proc,
+                sig,
+                f"connected websocket app-server {sig.name}",
+            )
+        finally:
+            if client is not None:
+                client.close()
+            if proc.poll() is None:
+                proc.kill()
+                proc.wait(timeout=5)
+            shutil.rmtree(codex_home, ignore_errors=True)
+
+    for sig in (signal.SIGTERM, signal.SIGINT):
+        codex_home = Path(tempfile.mkdtemp(prefix="codex-zig-app-server-ws-handshake-signal-", dir="/tmp"))
+        env = os.environ.copy()
+        env["CODEX_HOME"] = str(codex_home)
+        proc = subprocess.Popen(
+            [str(binary), "app-server", "--listen", "ws://127.0.0.1:0"],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            env=env,
+        )
+        client = None
+        try:
+            host, port = wait_for_websocket_bind(proc, 5)
+            client = SmokeWebSocket(host, port)
+            time.sleep(0.05)
+            assert_clean_signal_exit(
+                proc,
+                sig,
+                f"handshaken websocket app-server {sig.name}",
+            )
+        finally:
+            if client is not None:
+                client.sock.close()
+            if proc.poll() is None:
+                proc.kill()
+                proc.wait(timeout=5)
+            shutil.rmtree(codex_home, ignore_errors=True)
+
+    for sig in (signal.SIGTERM, signal.SIGINT):
         codex_home = Path(tempfile.mkdtemp(prefix="codex-zig-app-server-unix-signal-home-", dir="/tmp"))
         socket_dir = Path(tempfile.mkdtemp(prefix="codex-zig-app-server-unix-signal-", dir="/tmp"))
         socket_path = socket_dir / "app-server.sock"
@@ -35073,6 +35166,37 @@ def run_app_server_signal_shutdown_smoke(binary: Path) -> None:
             wait_for_socket(socket_path, proc, 5)
             assert_clean_signal_exit(proc, sig, f"Unix app-server {sig.name}")
         finally:
+            if proc.poll() is None:
+                proc.kill()
+                proc.wait(timeout=5)
+            shutil.rmtree(socket_dir, ignore_errors=True)
+            shutil.rmtree(codex_home, ignore_errors=True)
+
+    for sig in (signal.SIGTERM, signal.SIGINT):
+        codex_home = Path(tempfile.mkdtemp(prefix="codex-zig-app-server-unix-connected-signal-home-", dir="/tmp"))
+        socket_dir = Path(tempfile.mkdtemp(prefix="codex-zig-app-server-unix-connected-signal-", dir="/tmp"))
+        socket_path = socket_dir / "app-server.sock"
+        env = os.environ.copy()
+        env["CODEX_HOME"] = str(codex_home)
+        proc = subprocess.Popen(
+            [str(binary), "app-server", "--listen", f"unix://{socket_path}"],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            env=env,
+        )
+        client = None
+        try:
+            wait_for_socket(socket_path, proc, 5)
+            client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            client.settimeout(5)
+            client.connect(str(socket_path))
+            time.sleep(0.05)
+            assert_clean_signal_exit(proc, sig, f"connected Unix app-server {sig.name}")
+        finally:
+            if client is not None:
+                client.close()
             if proc.poll() is None:
                 proc.kill()
                 proc.wait(timeout=5)
