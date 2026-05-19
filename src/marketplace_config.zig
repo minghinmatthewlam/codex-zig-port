@@ -1100,41 +1100,21 @@ fn replaceMarketplaceRoot(allocator: std.mem.Allocator, install_root: []const u8
     deleteTreeBestEffort(backup_root);
 }
 
-fn gitChildEnvironment(allocator: std.mem.Allocator) !std.process.Environ.Map {
+pub fn gitChildEnvironment(allocator: std.mem.Allocator) !std.process.Environ.Map {
     var child_env = std.process.Environ.Map.init(allocator);
     errdefer child_env.deinit();
 
-    try putCurrentEnvIfPresent(&child_env, "PATH");
-    try putCurrentEnvIfPresent(&child_env, "HOME");
-    try putCurrentEnvIfPresent(&child_env, "USERPROFILE");
-    try putCurrentEnvIfPresent(&child_env, "XDG_CONFIG_HOME");
-    try putCurrentEnvIfPresent(&child_env, "GIT_CONFIG_GLOBAL");
-    try putCurrentEnvIfPresent(&child_env, "GIT_CONFIG_SYSTEM");
-    try putCurrentEnvIfPresent(&child_env, "GIT_CONFIG_NOSYSTEM");
-    try putCurrentEnvIfPresent(&child_env, "GIT_ALLOW_PROTOCOL");
-    try putCurrentEnvIfPresent(&child_env, "GIT_SSH");
-    try putCurrentEnvIfPresent(&child_env, "GIT_SSH_COMMAND");
-    try putCurrentEnvIfPresent(&child_env, "SSH_AUTH_SOCK");
-    try putCurrentEnvIfPresent(&child_env, "SSH_AGENT_PID");
-    try putCurrentEnvIfPresent(&child_env, "HTTPS_PROXY");
-    try putCurrentEnvIfPresent(&child_env, "HTTP_PROXY");
-    try putCurrentEnvIfPresent(&child_env, "ALL_PROXY");
-    try putCurrentEnvIfPresent(&child_env, "NO_PROXY");
-    try putCurrentEnvIfPresent(&child_env, "https_proxy");
-    try putCurrentEnvIfPresent(&child_env, "http_proxy");
-    try putCurrentEnvIfPresent(&child_env, "all_proxy");
-    try putCurrentEnvIfPresent(&child_env, "no_proxy");
-    try putCurrentEnvIfPresent(&child_env, "SSL_CERT_FILE");
-    try putCurrentEnvIfPresent(&child_env, "SSL_CERT_DIR");
+    var index: usize = 0;
+    while (std.c.environ[index]) |entry_ptr| : (index += 1) {
+        const entry = std.mem.span(entry_ptr);
+        const eq = std.mem.indexOfScalar(u8, entry, '=') orelse continue;
+        const key = entry[0..eq];
+        if (!std.process.Environ.Map.validateKeyForPut(key)) continue;
+        try child_env.put(key, entry[eq + 1 ..]);
+    }
     try child_env.put("GIT_TERMINAL_PROMPT", "0");
     try child_env.put("GIT_OPTIONAL_LOCKS", "0");
     return child_env;
-}
-
-fn putCurrentEnvIfPresent(child_env: *std.process.Environ.Map, comptime name: []const u8) !void {
-    const c_name: [*:0]const u8 = name ++ "\x00";
-    const value = std.c.getenv(c_name) orelse return;
-    try child_env.put(name, std.mem.span(value));
 }
 
 const RemoveConfigResult = struct {

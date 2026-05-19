@@ -613,10 +613,10 @@ fn renderPluginSource(allocator: std.mem.Allocator, marketplace_path: []const u8
         return try renderLocalPluginSource(allocator, marketplace_path, path);
     }
     if (std.mem.eql(u8, kind, "url")) {
-        return try renderGitPluginSource(allocator, source_value.object, false);
+        return try renderGitPluginSource(allocator, marketplace_path, source_value.object, false);
     }
     if (std.mem.eql(u8, kind, "git-subdir")) {
-        return try renderGitPluginSource(allocator, source_value.object, true);
+        return try renderGitPluginSource(allocator, marketplace_path, source_value.object, true);
     }
     return null;
 }
@@ -630,17 +630,25 @@ fn renderLocalPluginSource(allocator: std.mem.Allocator, marketplace_path: []con
     return .{ .plugin_root = plugin_root, .source_json = source_json };
 }
 
-fn renderGitPluginSource(allocator: std.mem.Allocator, object: std.json.ObjectMap, require_path: bool) !?SourceRender {
-    const url = stringField(object, "url") orelse return null;
-    const path = stringField(object, "path");
-    if (require_path and path == null) return null;
+fn renderGitPluginSource(allocator: std.mem.Allocator, marketplace_path: []const u8, object: std.json.ObjectMap, require_path: bool) !?SourceRender {
+    const raw_url = stringField(object, "url") orelse return null;
+    const url = (try normalizeGitPluginSourceUrl(allocator, marketplace_path, raw_url)) orelse return null;
+    defer allocator.free(url);
+    const raw_path = stringField(object, "path");
+    if (require_path and raw_path == null) return null;
+    const path = (try normalizeGitPluginSubdir(allocator, raw_path)) orelse if (raw_path == null) null else return null;
+    defer if (path) |value| allocator.free(value);
     const url_json = try jsonString(allocator, url);
     defer allocator.free(url_json);
     const path_json = try optionalJsonString(allocator, path);
     defer allocator.free(path_json);
-    const ref_json = try optionalJsonString(allocator, stringField(object, "ref"));
+    const ref_name = try normalizeOptionalGitSelector(allocator, stringField(object, "ref"));
+    defer if (ref_name) |value| allocator.free(value);
+    const sha = try normalizeOptionalGitSelector(allocator, stringField(object, "sha"));
+    defer if (sha) |value| allocator.free(value);
+    const ref_json = try optionalJsonString(allocator, ref_name);
     defer allocator.free(ref_json);
-    const sha_json = try optionalJsonString(allocator, stringField(object, "sha"));
+    const sha_json = try optionalJsonString(allocator, sha);
     defer allocator.free(sha_json);
     const source_json = try std.fmt.allocPrint(
         allocator,
@@ -669,10 +677,10 @@ fn materializeInstallSource(
         return materializeLocalInstallSource(allocator, marketplace_path, path);
     }
     if (std.mem.eql(u8, kind, "url")) {
-        return materializeGitInstallSource(allocator, codex_home, marketplace_name, plugin_name, source_value.object, false);
+        return materializeGitInstallSource(allocator, codex_home, marketplace_name, plugin_name, marketplace_path, source_value.object, false);
     }
     if (std.mem.eql(u8, kind, "git-subdir")) {
-        return materializeGitInstallSource(allocator, codex_home, marketplace_name, plugin_name, source_value.object, true);
+        return materializeGitInstallSource(allocator, codex_home, marketplace_name, plugin_name, marketplace_path, source_value.object, true);
     }
     return null;
 }
@@ -687,16 +695,21 @@ fn materializeGitInstallSource(
     codex_home: []const u8,
     marketplace_name: []const u8,
     plugin_name: []const u8,
+    marketplace_path: []const u8,
     object: std.json.ObjectMap,
     require_path: bool,
 ) !?InstallSourceRoot {
-    const url = stringField(object, "url") orelse return null;
-    if (std.mem.trim(u8, url, " \t\r\n").len == 0) return null;
-    const source_path = stringField(object, "path");
-    if (require_path and source_path == null) return null;
-    if (source_path) |path| {
-        if (path.len == 0 or !isSafeRelativePath(path)) return null;
-    }
+    const raw_url = stringField(object, "url") orelse return null;
+    const url = (try normalizeGitPluginSourceUrl(allocator, marketplace_path, raw_url)) orelse return null;
+    defer allocator.free(url);
+    const raw_source_path = stringField(object, "path");
+    if (require_path and raw_source_path == null) return null;
+    const source_path = (try normalizeGitPluginSubdir(allocator, raw_source_path)) orelse if (raw_source_path == null) null else return null;
+    defer if (source_path) |path| allocator.free(path);
+    const ref_name = try normalizeOptionalGitSelector(allocator, stringField(object, "ref"));
+    defer if (ref_name) |value| allocator.free(value);
+    const sha = try normalizeOptionalGitSelector(allocator, stringField(object, "sha"));
+    defer if (sha) |value| allocator.free(value);
 
     const staging_root = try std.fs.path.join(allocator, &.{ codex_home, "plugins", ".marketplace-plugin-source-staging" });
     defer allocator.free(staging_root);
@@ -707,7 +720,7 @@ fn materializeGitInstallSource(
     errdefer deletePathIfPresent(clone_root) catch {};
     const clone_parent = std.fs.path.dirname(clone_root) orelse staging_root;
     try std.Io.Dir.cwd().createDirPath(std.Io.Threaded.global_single_threaded.io(), clone_parent);
-    try cloneGitPluginSource(allocator, url, stringField(object, "ref"), stringField(object, "sha"), source_path, clone_root);
+    try cloneGitPluginSource(allocator, url, ref_name, sha, source_path, clone_root);
 
     const plugin_root = if (source_path) |path|
         try std.fs.path.join(allocator, &.{ clone_root, path })
@@ -719,6 +732,95 @@ fn materializeGitInstallSource(
         .plugin_root = plugin_root,
         .cleanup_root = clone_root,
     };
+}
+
+fn normalizeGitPluginSourceUrl(allocator: std.mem.Allocator, marketplace_path: []const u8, raw_url: []const u8) !?[]const u8 {
+    const url = std.mem.trim(u8, raw_url, " \t\r\n");
+    if (url.len == 0) return null;
+    if (std.mem.startsWith(u8, url, "http://") or std.mem.startsWith(u8, url, "https://")) {
+        return try normalizeGithubGitUrl(allocator, url);
+    }
+    if (std.mem.startsWith(u8, url, "./") or
+        std.mem.startsWith(u8, url, "../") or
+        std.mem.startsWith(u8, url, ".\\") or
+        std.mem.startsWith(u8, url, "..\\"))
+    {
+        return normalizeRelativeGitPluginSourceUrl(allocator, marketplace_path, url);
+    }
+    if (std.mem.startsWith(u8, url, "file://") or std.fs.path.isAbsolute(url) or isSshGitUrl(url)) {
+        return try allocator.dupe(u8, url);
+    }
+    return normalizeGithubShorthandUrl(allocator, url);
+}
+
+fn normalizeGithubGitUrl(allocator: std.mem.Allocator, url: []const u8) ![]const u8 {
+    var end = url.len;
+    while (end > 0 and url[end - 1] == '/') end -= 1;
+    const trimmed = url[0..end];
+    if (std.mem.startsWith(u8, trimmed, "https://github.com/") and !std.mem.endsWith(u8, trimmed, ".git")) {
+        return std.fmt.allocPrint(allocator, "{s}.git", .{trimmed});
+    }
+    return allocator.dupe(u8, trimmed);
+}
+
+fn normalizeRelativeGitPluginSourceUrl(allocator: std.mem.Allocator, marketplace_path: []const u8, url: []const u8) !?[]const u8 {
+    const root = try marketplaceRootDir(allocator, marketplace_path);
+    defer allocator.free(root);
+
+    var parts = std.ArrayList([]const u8).empty;
+    defer parts.deinit(allocator);
+    try parts.append(allocator, root);
+
+    var segments = std.mem.splitAny(u8, url, "/\\");
+    while (segments.next()) |segment| {
+        if (segment.len == 0 or std.mem.eql(u8, segment, ".")) continue;
+        if (std.mem.eql(u8, segment, "..")) return null;
+        try parts.append(allocator, segment);
+    }
+    return try std.fs.path.join(allocator, parts.items);
+}
+
+fn normalizeGithubShorthandUrl(allocator: std.mem.Allocator, source: []const u8) !?[]const u8 {
+    var parts = std.mem.splitScalar(u8, source, '/');
+    const owner = parts.next() orelse return null;
+    const repo = parts.next() orelse return null;
+    if (parts.next() != null) return null;
+    if (!isGithubShorthandSegment(owner) or !isGithubShorthandSegment(repo)) return null;
+
+    const normalized_repo = if (std.mem.endsWith(u8, repo, ".git"))
+        repo[0 .. repo.len - ".git".len]
+    else
+        repo;
+    if (normalized_repo.len == 0) return null;
+    return try std.fmt.allocPrint(allocator, "https://github.com/{s}/{s}.git", .{ owner, normalized_repo });
+}
+
+fn normalizeGitPluginSubdir(allocator: std.mem.Allocator, raw_path: ?[]const u8) !?[]const u8 {
+    const path = raw_path orelse return null;
+    const trimmed = std.mem.trim(u8, path, " \t\r\n");
+    const relative = if (std.mem.startsWith(u8, trimmed, "./")) trimmed[2..] else trimmed;
+    if (relative.len == 0 or !isSafeRelativePath(relative)) return null;
+    return try allocator.dupe(u8, relative);
+}
+
+fn normalizeOptionalGitSelector(allocator: std.mem.Allocator, raw_value: ?[]const u8) !?[]const u8 {
+    const value = raw_value orelse return null;
+    const trimmed = std.mem.trim(u8, value, " \t\r\n");
+    if (trimmed.len == 0) return null;
+    return try allocator.dupe(u8, trimmed);
+}
+
+fn isSshGitUrl(source: []const u8) bool {
+    return std.mem.startsWith(u8, source, "ssh://") or
+        (std.mem.startsWith(u8, source, "git@") and std.mem.indexOfScalar(u8, source, ':') != null);
+}
+
+fn isGithubShorthandSegment(segment: []const u8) bool {
+    if (segment.len == 0) return false;
+    for (segment) |byte| {
+        if (!(std.ascii.isAlphanumeric(byte) or byte == '-' or byte == '_' or byte == '.')) return false;
+    }
+    return true;
 }
 
 fn cloneGitPluginSource(
@@ -747,15 +849,13 @@ fn runGit(allocator: std.mem.Allocator, argv: []const []const u8, cwd: ?[]const 
     var io_instance: std.Io.Threaded = .init(allocator, .{});
     defer io_instance.deinit();
 
-    var env_argv = std.ArrayList([]const u8).empty;
-    defer env_argv.deinit(allocator);
-    try env_argv.append(allocator, "env");
-    try env_argv.append(allocator, "GIT_TERMINAL_PROMPT=0");
-    try env_argv.appendSlice(allocator, argv);
+    var child_env = try marketplace_config.gitChildEnvironment(allocator);
+    defer child_env.deinit();
 
     const result = try std.process.run(allocator, io_instance.io(), .{
-        .argv = env_argv.items,
+        .argv = argv,
         .cwd = if (cwd) |path| .{ .path = path } else .inherit,
+        .environ_map = &child_env,
         .stdout_limit = .limited(128 * 1024),
         .stderr_limit = .limited(128 * 1024),
         .timeout = .{ .duration = .{
@@ -2000,6 +2100,86 @@ test "plugin list reports invalid marketplace files and honors plugins feature f
     const disabled = try renderResponse(allocator, codex_home, "[features]\nplugins = false\n", &.{repo}, true);
     defer allocator.free(disabled);
     try std.testing.expectEqualStrings("{\"marketplaces\":[],\"marketplaceLoadErrors\":[],\"featuredPluginIds\":[]}", disabled);
+}
+
+test "plugin list normalizes git plugin source urls selectors and paths" {
+    const allocator = std.testing.allocator;
+    var dir = std.testing.tmpDir(.{});
+    defer dir.cleanup();
+    const io = std.Io.Threaded.global_single_threaded.io();
+
+    try dir.dir.createDirPath(io, "codex-home");
+    try dir.dir.createDirPath(io, "repo/.agents/plugins");
+    try dir.dir.writeFile(io, .{
+        .sub_path = "repo/.agents/plugins/marketplace.json",
+        .data =
+        \\{
+        \\  "name": "debug",
+        \\  "plugins": [
+        \\    {
+        \\      "name": "github-plugin",
+        \\      "source": {
+        \\        "source": "git-subdir",
+        \\        "url": "owner/repo.git",
+        \\        "path": "./plugins/toolkit",
+        \\        "ref": " main ",
+        \\        "sha": " "
+        \\      }
+        \\    },
+        \\    {
+        \\      "name": "github-trailing-plugin",
+        \\      "source": {
+        \\        "source": "git-subdir",
+        \\        "url": "https://github.com/owner/trailing.git/",
+        \\        "path": "plugins/trailing"
+        \\      }
+        \\    },
+        \\    {
+        \\      "name": "relative-plugin",
+        \\      "source": {
+        \\        "source": "git-subdir",
+        \\        "url": "./remotes/toolkit.git",
+        \\        "path": "plugins/toolkit"
+        \\      }
+        \\    },
+        \\    {
+        \\      "name": "parent-plugin",
+        \\      "source": {
+        \\        "source": "git-subdir",
+        \\        "url": "../toolkit.git",
+        \\        "path": "plugins/toolkit"
+        \\      }
+        \\    }
+        \\  ]
+        \\}
+        ,
+    });
+
+    const root = try dir.dir.realPathFileAlloc(io, ".", allocator);
+    defer allocator.free(root);
+    const codex_home = try std.fs.path.join(allocator, &.{ root, "codex-home" });
+    defer allocator.free(codex_home);
+    const repo = try std.fs.path.join(allocator, &.{ root, "repo" });
+    defer allocator.free(repo);
+    const relative_remote = try std.fs.path.join(allocator, &.{ repo, "remotes", "toolkit.git" });
+    defer allocator.free(relative_remote);
+    const relative_remote_json = try jsonString(allocator, relative_remote);
+    defer allocator.free(relative_remote_json);
+    const expected_relative_source = try std.fmt.allocPrint(allocator, "\"url\":{s}", .{relative_remote_json});
+    defer allocator.free(expected_relative_source);
+
+    const response = try renderResponse(allocator, codex_home, "[features]\nplugins = true\n", &.{repo}, true);
+    defer allocator.free(response);
+    try std.testing.expect(std.mem.indexOf(u8, response, "\"id\":\"github-plugin@debug\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, response, "\"url\":\"https://github.com/owner/repo.git\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, response, "\"url\":\"https://github.com/owner/trailing.git\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, response, "trailing.git/.git") == null);
+    try std.testing.expect(std.mem.indexOf(u8, response, "\"path\":\"plugins/toolkit\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, response, "\"refName\":\"main\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, response, "\"sha\":null") != null);
+    try std.testing.expect(std.mem.indexOf(u8, response, "\"id\":\"relative-plugin@debug\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, response, expected_relative_source) != null);
+    try std.testing.expect(std.mem.indexOf(u8, response, "\"id\":\"parent-plugin@debug\"") == null);
 }
 
 test "plugin install copies local source and enables config" {
