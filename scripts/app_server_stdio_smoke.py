@@ -8,6 +8,7 @@ import os
 import queue
 import select
 import shutil
+import signal
 import socket
 import sqlite3
 import subprocess
@@ -35019,6 +35020,66 @@ def exercise_unix_socket(binary: Path, listen_url: str, socket_path: Path, env: 
             proc.wait(timeout=5)
 
 
+def assert_clean_signal_exit(proc: subprocess.Popen[str], sig: signal.Signals, name: str) -> None:
+    os.kill(proc.pid, sig)
+    try:
+        returncode = proc.wait(timeout=5)
+    except subprocess.TimeoutExpired as exc:
+        proc.kill()
+        proc.wait(timeout=5)
+        raise AssertionError(f"{name} did not exit after {sig.name}") from exc
+    stderr = proc.stderr.read() if proc.stderr is not None else ""
+    assert returncode == 0, f"{name} exited {returncode} after {sig.name}: {stderr}"
+
+
+def run_app_server_signal_shutdown_smoke(binary: Path) -> None:
+    for sig in (signal.SIGTERM, signal.SIGINT):
+        codex_home = Path(tempfile.mkdtemp(prefix="codex-zig-app-server-ws-signal-", dir="/tmp"))
+        env = os.environ.copy()
+        env["CODEX_HOME"] = str(codex_home)
+        proc = subprocess.Popen(
+            [str(binary), "app-server", "--listen", "ws://127.0.0.1:0"],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            env=env,
+        )
+        try:
+            host, port = wait_for_websocket_bind(proc, 5)
+            assert websocket_http_status(host, port, "/readyz") == 200
+            assert_clean_signal_exit(proc, sig, f"websocket app-server {sig.name}")
+        finally:
+            if proc.poll() is None:
+                proc.kill()
+                proc.wait(timeout=5)
+            shutil.rmtree(codex_home, ignore_errors=True)
+
+    for sig in (signal.SIGTERM, signal.SIGINT):
+        codex_home = Path(tempfile.mkdtemp(prefix="codex-zig-app-server-unix-signal-home-", dir="/tmp"))
+        socket_dir = Path(tempfile.mkdtemp(prefix="codex-zig-app-server-unix-signal-", dir="/tmp"))
+        socket_path = socket_dir / "app-server.sock"
+        env = os.environ.copy()
+        env["CODEX_HOME"] = str(codex_home)
+        proc = subprocess.Popen(
+            [str(binary), "app-server", "--listen", f"unix://{socket_path}"],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            env=env,
+        )
+        try:
+            wait_for_socket(socket_path, proc, 5)
+            assert_clean_signal_exit(proc, sig, f"Unix app-server {sig.name}")
+        finally:
+            if proc.poll() is None:
+                proc.kill()
+                proc.wait(timeout=5)
+            shutil.rmtree(socket_dir, ignore_errors=True)
+            shutil.rmtree(codex_home, ignore_errors=True)
+
+
 def run_unix_path_smoke(binary: Path) -> None:
     socket_dir = Path(tempfile.mkdtemp(prefix="codex-zig-app-server-", dir="/tmp"))
     codex_home = Path(tempfile.mkdtemp(prefix="codex-zig-home-", dir="/tmp"))
@@ -44943,6 +45004,8 @@ def main() -> None:
     print("app-server-websocket-signed-bearer-auth-e2e: ok")
     run_websocket_signed_bearer_config_smoke(binary)
     print("app-server-websocket-signed-bearer-config-e2e: ok")
+    run_app_server_signal_shutdown_smoke(binary)
+    print("app-server-signal-shutdown-e2e: ok")
     run_proxy_smoke(binary)
     print("app-server-proxy-e2e: ok")
     run_stdio_to_uds_smoke(binary)
