@@ -1921,6 +1921,55 @@ def read_json_lines_until(
             return messages
 
 
+def assert_mcp_startup_status_notification(
+    message: dict,
+    name: str,
+    status: str,
+    error_contains: str | None = None,
+) -> None:
+    assert message["jsonrpc"] == "2.0"
+    assert message["method"] == "mcpServer/startupStatus/updated"
+    params = message["params"]
+    assert params["name"] == name, params
+    assert params["status"] == status, params
+    if error_contains is None:
+        assert params["error"] is None, params
+    else:
+        assert isinstance(params["error"], str), params
+        assert error_contains in params["error"], params
+
+
+def mcp_startup_status_matches(
+    message: dict,
+    name: str,
+    status: str,
+    error_contains: str | None = None,
+) -> bool:
+    if message.get("method") != "mcpServer/startupStatus/updated":
+        return False
+    params = message.get("params")
+    if not isinstance(params, dict):
+        return False
+    if params.get("name") != name or params.get("status") != status:
+        return False
+    if error_contains is None:
+        return params.get("error") is None
+    error = params.get("error")
+    return isinstance(error, str) and error_contains in error
+
+
+def assert_mcp_startup_status_seen(
+    messages: list[dict],
+    name: str,
+    status: str,
+    error_contains: str | None = None,
+) -> None:
+    assert any(
+        mcp_startup_status_matches(message, name, status, error_contains)
+        for message in messages
+    ), messages
+
+
 def decoded_process_output(messages: list[dict], process_handle: str, stream: str = "stdout") -> bytes:
     chunks: list[bytes] = []
     for message in messages:
@@ -7843,6 +7892,11 @@ def run_review_start_rpc_smoke(binary: Path) -> None:
                 base_completed = read_json_line(proc, 5)
                 assert base_completed["method"] == "turn/completed"
                 assert_thread_status_notification(read_json_line(proc, 5), thread_id, "idle")
+                assert not review_mcp_log.exists()
+                config_path.write_text(
+                    config_path.read_text(encoding="utf-8").replace(review_mcp_config, ""),
+                    encoding="utf-8",
+                )
 
                 write_json_line(
                     proc,
@@ -7921,11 +7975,6 @@ def run_review_start_rpc_smoke(binary: Path) -> None:
                 hook_completed = read_json_line(proc, 5)
                 assert hook_completed["method"] == "turn/completed"
                 assert_thread_status_notification(read_json_line(proc, 5), hook_thread_id, "idle")
-                assert not review_mcp_log.exists()
-                config_path.write_text(
-                    config_path.read_text(encoding="utf-8").replace(review_mcp_config, ""),
-                    encoding="utf-8",
-                )
 
                 write_json_line(
                     proc,
@@ -10191,6 +10240,31 @@ def run_turn_mcp_status_notification_smoke(binary: Path) -> None:
                 thread = thread_start["result"]["thread"]
                 thread_id = thread["id"]
                 assert_thread_started_notification(read_json_line(proc, 5), thread)
+                assert_mcp_startup_status_notification(
+                    read_json_line(proc, 5), "status_docs", "starting"
+                )
+                assert_mcp_startup_status_notification(
+                    read_json_line(proc, 5), "broken_docs", "starting"
+                )
+                thread_start_mcp_statuses = read_json_lines_until(
+                    proc,
+                    5,
+                    lambda messages: mcp_startup_status_matches(
+                        messages[-1],
+                        "broken_docs",
+                        "failed",
+                        "MCP client for `broken_docs` failed to start",
+                    ),
+                )
+                assert_mcp_startup_status_seen(
+                    thread_start_mcp_statuses, "status_docs", "ready"
+                )
+                assert_mcp_startup_status_seen(
+                    thread_start_mcp_statuses,
+                    "broken_docs",
+                    "failed",
+                    "MCP client for `broken_docs` failed to start",
+                )
 
                 mcp_tool_event = {
                     "type": "response.output_item.done",
@@ -10235,39 +10309,21 @@ def run_turn_mcp_status_notification_smoke(binary: Path) -> None:
                 assert read_json_line(proc, 5)["method"] == "item/started"
                 assert read_json_line(proc, 5)["method"] == "item/completed"
 
-                assert read_json_line(proc, 5) == {
-                    "jsonrpc": "2.0",
-                    "method": "mcpServer/startupStatus/updated",
-                    "params": {
-                        "name": "status_docs",
-                        "status": "starting",
-                        "error": None,
-                    },
-                }
-                assert read_json_line(proc, 5) == {
-                    "jsonrpc": "2.0",
-                    "method": "mcpServer/startupStatus/updated",
-                    "params": {
-                        "name": "status_docs",
-                        "status": "ready",
-                        "error": None,
-                    },
-                }
-                assert read_json_line(proc, 5) == {
-                    "jsonrpc": "2.0",
-                    "method": "mcpServer/startupStatus/updated",
-                    "params": {
-                        "name": "broken_docs",
-                        "status": "starting",
-                        "error": None,
-                    },
-                }
-                failed_status = read_json_line(proc, 5)
-                assert failed_status["method"] == "mcpServer/startupStatus/updated"
-                assert failed_status["params"]["name"] == "broken_docs"
-                assert failed_status["params"]["status"] == "failed"
-                assert isinstance(failed_status["params"]["error"], str)
-                assert failed_status["params"]["error"]
+                assert_mcp_startup_status_notification(
+                    read_json_line(proc, 5), "status_docs", "starting"
+                )
+                assert_mcp_startup_status_notification(
+                    read_json_line(proc, 5), "status_docs", "ready"
+                )
+                assert_mcp_startup_status_notification(
+                    read_json_line(proc, 5), "broken_docs", "starting"
+                )
+                assert_mcp_startup_status_notification(
+                    read_json_line(proc, 5),
+                    "broken_docs",
+                    "failed",
+                    "MCP client for `broken_docs` failed to start",
+                )
 
                 raw_mcp_item_completed = read_json_line(proc, 5)
                 assert raw_mcp_item_completed["method"] == "rawResponseItem/completed"
@@ -10339,6 +10395,273 @@ def run_turn_mcp_status_notification_smoke(binary: Path) -> None:
     finally:
         server.shutdown()
         server.server_close()
+        shutil.rmtree(codex_home, ignore_errors=True)
+
+
+def run_thread_start_required_mcp_failure_smoke(binary: Path) -> None:
+    codex_home = Path(tempfile.mkdtemp(prefix="codex-zig-app-server-required-mcp-", dir="/tmp"))
+    try:
+        codex_home.joinpath("config.toml").write_text(
+            "\n".join(
+                [
+                    'model = "gpt-required-mcp"',
+                    "",
+                    "[mcp_servers.required_broken]",
+                    'command = "/bin/sh"',
+                    'args = ["-c", "exit 1"]',
+                    "required = true",
+                    "",
+                ]
+            ),
+            encoding="utf-8",
+        )
+        env = os.environ.copy()
+        env["CODEX_HOME"] = str(codex_home)
+        env["OPENAI_API_KEY"] = "test-api-key"
+        env.pop("CODEX_ACCESS_TOKEN", None)
+
+        proc = subprocess.Popen(
+            [str(binary), "app-server"],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            env=env,
+        )
+        try:
+            write_json_line(
+                proc,
+                {
+                    "jsonrpc": "2.0",
+                    "id": "initialize",
+                    "method": "initialize",
+                    "params": {
+                        "clientInfo": {"name": "app-server-smoke", "version": "0"},
+                        "capabilities": {},
+                    },
+                },
+            )
+            assert read_json_line(proc, 5)["id"] == "initialize"
+
+            write_json_line(
+                proc,
+                {
+                    "jsonrpc": "2.0",
+                    "id": "thread-start-required-mcp",
+                    "method": "thread/start",
+                    "params": {},
+                },
+            )
+            error_response = read_json_line(proc, 5)
+            assert error_response["id"] == "thread-start-required-mcp"
+            assert error_response["error"]["code"] == -32603
+            message = error_response["error"]["message"]
+            assert "required MCP servers failed to initialize" in message
+            assert "required_broken" in message
+
+            assert_mcp_startup_status_notification(
+                read_json_line(proc, 5), "required_broken", "starting"
+            )
+            assert_mcp_startup_status_notification(
+                read_json_line(proc, 5),
+                "required_broken",
+                "failed",
+                "MCP client for `required_broken` failed to start",
+            )
+
+            proc.stdin.close()
+            proc.wait(timeout=5)
+            if proc.returncode != 0:
+                raise AssertionError(f"app-server exited {proc.returncode}: {proc.stderr.read()}")
+        finally:
+            if proc.poll() is None:
+                proc.kill()
+                proc.wait(timeout=5)
+    finally:
+        shutil.rmtree(codex_home, ignore_errors=True)
+
+
+def run_thread_resume_required_mcp_failure_smoke(binary: Path) -> None:
+    codex_home = Path(tempfile.mkdtemp(prefix="codex-zig-app-server-resume-required-mcp-", dir="/tmp"))
+    try:
+        codex_home.joinpath("config.toml").write_text(
+            "\n".join(
+                [
+                    'model = "gpt-resume-required-mcp"',
+                    "",
+                    "[mcp_servers.required_broken]",
+                    'command = "/bin/sh"',
+                    'args = ["-c", "exit 1"]',
+                    "required = true",
+                    "",
+                ]
+            ),
+            encoding="utf-8",
+        )
+        thread_id = "33333333-3333-4333-8333-333333333333"
+        sessions_dir = codex_home / "sessions" / "zig"
+        sessions_dir.mkdir(parents=True)
+        (sessions_dir / f"rollout-{thread_id}.jsonl").write_text(
+            "\n".join(
+                [
+                    json.dumps(
+                        {"type": "metadata", "title": "Resume Required MCP"},
+                        separators=(",", ":"),
+                    ),
+                    json.dumps(
+                        {
+                            "type": "message",
+                            "role": "user",
+                            "content_type": "input_text",
+                            "text": "saved hello",
+                        },
+                        separators=(",", ":"),
+                    ),
+                    "",
+                ]
+            ),
+            encoding="utf-8",
+        )
+        env = os.environ.copy()
+        env["CODEX_HOME"] = str(codex_home)
+        env["OPENAI_API_KEY"] = "test-api-key"
+        env.pop("CODEX_ACCESS_TOKEN", None)
+
+        proc = subprocess.Popen(
+            [str(binary), "app-server"],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            env=env,
+        )
+        try:
+            write_json_line(
+                proc,
+                {
+                    "jsonrpc": "2.0",
+                    "id": "initialize",
+                    "method": "initialize",
+                    "params": {
+                        "clientInfo": {"name": "app-server-smoke", "version": "0"},
+                        "capabilities": {},
+                    },
+                },
+            )
+            assert read_json_line(proc, 5)["id"] == "initialize"
+
+            write_json_line(
+                proc,
+                {
+                    "jsonrpc": "2.0",
+                    "id": "thread-resume-required-mcp",
+                    "method": "thread/resume",
+                    "params": {"threadId": thread_id},
+                },
+            )
+            error_response = read_json_line(proc, 5)
+            assert error_response["id"] == "thread-resume-required-mcp"
+            assert error_response["error"]["code"] == -32603
+            message = error_response["error"]["message"]
+            assert "required MCP servers failed to initialize" in message
+            assert "required_broken" in message
+
+            assert_mcp_startup_status_notification(
+                read_json_line(proc, 5), "required_broken", "starting"
+            )
+            assert_mcp_startup_status_notification(
+                read_json_line(proc, 5),
+                "required_broken",
+                "failed",
+                "MCP client for `required_broken` failed to start",
+            )
+
+            proc.stdin.close()
+            proc.wait(timeout=5)
+            if proc.returncode != 0:
+                raise AssertionError(f"app-server exited {proc.returncode}: {proc.stderr.read()}")
+        finally:
+            if proc.poll() is None:
+                proc.kill()
+                proc.wait(timeout=5)
+    finally:
+        shutil.rmtree(codex_home, ignore_errors=True)
+
+
+def run_thread_start_optional_mcp_nonblocking_smoke(binary: Path) -> None:
+    codex_home = Path(tempfile.mkdtemp(prefix="codex-zig-app-server-optional-mcp-", dir="/tmp"))
+    try:
+        codex_home.joinpath("config.toml").write_text(
+            "\n".join(
+                [
+                    'model = "gpt-optional-mcp"',
+                    "",
+                    "[mcp_servers.slow_optional]",
+                    'command = "/bin/sh"',
+                    'args = ["-c", "sleep 2"]',
+                    "",
+                ]
+            ),
+            encoding="utf-8",
+        )
+        env = os.environ.copy()
+        env["CODEX_HOME"] = str(codex_home)
+        env["OPENAI_API_KEY"] = "test-api-key"
+        env.pop("CODEX_ACCESS_TOKEN", None)
+
+        proc = subprocess.Popen(
+            [str(binary), "app-server"],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            env=env,
+        )
+        try:
+            write_json_line(
+                proc,
+                {
+                    "jsonrpc": "2.0",
+                    "id": "initialize",
+                    "method": "initialize",
+                    "params": {
+                        "clientInfo": {"name": "app-server-smoke", "version": "0"},
+                        "capabilities": {},
+                    },
+                },
+            )
+            assert read_json_line(proc, 5)["id"] == "initialize"
+
+            start = time.monotonic()
+            write_json_line(
+                proc,
+                {
+                    "jsonrpc": "2.0",
+                    "id": "thread-start-optional-mcp",
+                    "method": "thread/start",
+                    "params": {"ephemeral": True},
+                },
+            )
+            thread_start = read_json_line(proc, 5)
+            elapsed = time.monotonic() - start
+            assert thread_start["id"] == "thread-start-optional-mcp"
+            assert elapsed < 1.0, elapsed
+            assert_thread_started_notification(
+                read_json_line(proc, 5), thread_start["result"]["thread"]
+            )
+            assert_mcp_startup_status_notification(
+                read_json_line(proc, 5), "slow_optional", "starting"
+            )
+
+            proc.stdin.close()
+            proc.wait(timeout=5)
+            if proc.returncode != 0:
+                raise AssertionError(f"app-server exited {proc.returncode}: {proc.stderr.read()}")
+        finally:
+            if proc.poll() is None:
+                proc.kill()
+                proc.wait(timeout=5)
+    finally:
         shutil.rmtree(codex_home, ignore_errors=True)
 
 
@@ -23589,6 +23912,43 @@ def run_mcp_resource_read_rpc_smoke(binary: Path) -> None:
             loaded_thread = thread_start["result"]["thread"]
             thread_id = loaded_thread["id"]
             assert_thread_started_notification(read_json_line(proc, 5), loaded_thread)
+            assert_mcp_startup_status_notification(
+                read_json_line(proc, 5), "resource_docs", "starting"
+            )
+            assert_mcp_startup_status_notification(
+                read_json_line(proc, 5), "remote_docs", "starting"
+            )
+            assert_mcp_startup_status_notification(
+                read_json_line(proc, 5), "plugin_resource_docs", "starting"
+            )
+            assert_mcp_startup_status_notification(
+                read_json_line(proc, 5), "plugin_http_resource_docs", "starting"
+            )
+            thread_start_mcp_statuses = read_json_lines_until(
+                proc,
+                5,
+                lambda messages: mcp_startup_status_matches(
+                    messages[-1], "plugin_http_resource_docs", "ready"
+                ),
+            )
+            assert_mcp_startup_status_seen(
+                thread_start_mcp_statuses,
+                "resource_docs",
+                "failed",
+                "MCP client for `resource_docs` failed to start",
+            )
+            assert_mcp_startup_status_seen(
+                thread_start_mcp_statuses, "remote_docs", "ready"
+            )
+            assert_mcp_startup_status_seen(
+                thread_start_mcp_statuses,
+                "plugin_resource_docs",
+                "failed",
+                "MCP client for `plugin_resource_docs` failed to start",
+            )
+            assert_mcp_startup_status_seen(
+                thread_start_mcp_statuses, "plugin_http_resource_docs", "ready"
+            )
 
             write_json_line(
                 proc,
@@ -23726,22 +24086,25 @@ def run_mcp_resource_read_rpc_smoke(binary: Path) -> None:
         assert [request["method"] for request in streamable_server.request_bodies] == [
             "initialize",
             "notifications/initialized",
+            "tools/list",
+            "DELETE",
+            "initialize",
+            "notifications/initialized",
             "resources/read",
             "DELETE",
         ]
         assert "mcp-session-id" not in streamable_server.request_headers[0]
-        assert (
-            streamable_server.request_headers[1]["mcp-session-id"]
-            == "streamable-session-1"
-        )
-        assert (
-            streamable_server.request_headers[2]["mcp-session-id"]
-            == "streamable-session-1"
-        )
-        assert (
-            streamable_server.request_headers[3]["mcp-session-id"]
-            == "streamable-session-1"
-        )
+        for index in (1, 2, 3):
+            assert (
+                streamable_server.request_headers[index]["mcp-session-id"]
+                == "streamable-session-1"
+            )
+        assert "mcp-session-id" not in streamable_server.request_headers[4]
+        for index in (5, 6, 7):
+            assert (
+                streamable_server.request_headers[index]["mcp-session-id"]
+                == "streamable-session-1"
+            )
         assert streamable_server.request_bodies[-2]["params"]["uri"] == "test://codex/resource"
         assert streamable_server.request_headers[-1]["authorization"] == "Bearer resource-token"
         assert streamable_server.request_headers[-1]["mcp-protocol-version"] == "2025-03-26"
@@ -23960,6 +24323,40 @@ def run_mcp_tool_call_rpc_smoke(binary: Path) -> None:
             thread_start = read_json_line(proc, 5)
             assert thread_start["id"] == "thread-start-for-mcp-tool"
             thread_id = thread_start["result"]["thread"]["id"]
+            assert_mcp_startup_status_notification(
+                read_json_line(proc, 5), "tool_docs", "starting"
+            )
+            assert_mcp_startup_status_notification(
+                read_json_line(proc, 5), "remote_tool_docs", "starting"
+            )
+            assert_mcp_startup_status_notification(
+                read_json_line(proc, 5), "plugin_tool_docs", "starting"
+            )
+            thread_start_mcp_statuses = read_json_lines_until(
+                proc,
+                5,
+                lambda messages: mcp_startup_status_matches(
+                    messages[-1],
+                    "plugin_tool_docs",
+                    "failed",
+                    "MCP client for `plugin_tool_docs` failed to start",
+                ),
+            )
+            assert_mcp_startup_status_seen(
+                thread_start_mcp_statuses,
+                "tool_docs",
+                "failed",
+                "MCP client for `tool_docs` failed to start",
+            )
+            assert_mcp_startup_status_seen(
+                thread_start_mcp_statuses, "remote_tool_docs", "ready"
+            )
+            assert_mcp_startup_status_seen(
+                thread_start_mcp_statuses,
+                "plugin_tool_docs",
+                "failed",
+                "MCP client for `plugin_tool_docs` failed to start",
+            )
 
             write_json_line(
                 proc,
@@ -24167,25 +24564,29 @@ def run_mcp_tool_call_rpc_smoke(binary: Path) -> None:
                 "isError": False,
                 "_meta": {"calledBy": "streamable-smoke", "threadId": thread_id},
             }
-            assert [request["method"] for request in streamable_server.request_bodies] == [
+            streamable_methods = [request["method"] for request in streamable_server.request_bodies]
+            assert streamable_methods == [
+                "initialize",
+                "notifications/initialized",
+                "tools/list",
+                "DELETE",
                 "initialize",
                 "notifications/initialized",
                 "tools/call",
                 "DELETE",
-            ]
+            ], streamable_methods
             assert "mcp-session-id" not in streamable_server.request_headers[0]
-            assert (
-                streamable_server.request_headers[1]["mcp-session-id"]
-                == "streamable-session-1"
-            )
-            assert (
-                streamable_server.request_headers[2]["mcp-session-id"]
-                == "streamable-session-1"
-            )
-            assert (
-                streamable_server.request_headers[3]["mcp-session-id"]
-                == "streamable-session-1"
-            )
+            for index in (1, 2, 3):
+                assert (
+                    streamable_server.request_headers[index]["mcp-session-id"]
+                    == "streamable-session-1"
+                )
+            assert "mcp-session-id" not in streamable_server.request_headers[4]
+            for index in (5, 6, 7):
+                assert (
+                    streamable_server.request_headers[index]["mcp-session-id"]
+                    == "streamable-session-1"
+                )
             assert streamable_server.request_bodies[-2]["params"]["name"] == "echo"
             assert streamable_server.request_headers[-1]["authorization"] == "Bearer oauth-tool-token"
             assert streamable_server.request_headers[-2]["accept"] == "application/json, text/event-stream"
@@ -24222,6 +24623,10 @@ def run_mcp_tool_call_rpc_smoke(binary: Path) -> None:
             assert [request["method"] for request in streamable_server.request_bodies] == [
                 "initialize",
                 "notifications/initialized",
+                "tools/list",
+                "DELETE",
+                "initialize",
+                "notifications/initialized",
                 "tools/call",
                 "DELETE",
                 "initialize",
@@ -24230,18 +24635,18 @@ def run_mcp_tool_call_rpc_smoke(binary: Path) -> None:
                 "GET",
                 "DELETE",
             ]
-            assert "mcp-session-id" not in streamable_server.request_headers[4]
-            for index in (5, 6, 7, 8):
+            assert "mcp-session-id" not in streamable_server.request_headers[8]
+            for index in (9, 10, 11, 12):
                 assert (
                     streamable_server.request_headers[index]["mcp-session-id"]
                     == "streamable-session-1"
                 )
-            assert streamable_server.request_bodies[6]["params"]["arguments"] == {
+            assert streamable_server.request_bodies[10]["params"]["arguments"] == {
                 "message": "hello from get"
             }
-            assert streamable_server.request_headers[7]["accept"] == "application/json, text/event-stream"
-            assert streamable_server.request_headers[7]["authorization"] == "Bearer oauth-tool-token"
-            assert streamable_server.request_headers[8]["authorization"] == "Bearer oauth-tool-token"
+            assert streamable_server.request_headers[11]["accept"] == "application/json, text/event-stream"
+            assert streamable_server.request_headers[11]["authorization"] == "Bearer oauth-tool-token"
+            assert streamable_server.request_headers[12]["authorization"] == "Bearer oauth-tool-token"
 
             streamable_server.deferred_methods = set()
             write_json_line(
@@ -24605,6 +25010,19 @@ def run_mcp_elicitation_smoke(binary: Path) -> None:
             thread_start = read_json_line(proc, 5)
             assert thread_start["id"] == "thread-start-for-mcp-elicit"
             thread_id = thread_start["result"]["thread"]["id"]
+            assert_mcp_startup_status_notification(
+                read_json_line(proc, 5), "elicitation_docs", "starting"
+            )
+            thread_start_mcp_statuses = read_json_lines_until(
+                proc,
+                5,
+                lambda messages: mcp_startup_status_matches(
+                    messages[-1], "elicitation_docs", "ready"
+                ),
+            )
+            assert_mcp_startup_status_seen(
+                thread_start_mcp_statuses, "elicitation_docs", "ready"
+            )
 
             write_json_line(
                 proc,
@@ -24673,6 +25091,19 @@ def run_mcp_elicitation_smoke(binary: Path) -> None:
             never_thread_start = read_json_line(proc, 5)
             assert never_thread_start["id"] == "thread-start-mcp-never"
             never_thread_id = never_thread_start["result"]["thread"]["id"]
+            assert_mcp_startup_status_notification(
+                read_json_line(proc, 5), "elicitation_docs", "starting"
+            )
+            never_thread_mcp_statuses = read_json_lines_until(
+                proc,
+                5,
+                lambda messages: mcp_startup_status_matches(
+                    messages[-1], "elicitation_docs", "ready"
+                ),
+            )
+            assert_mcp_startup_status_seen(
+                never_thread_mcp_statuses, "elicitation_docs", "ready"
+            )
             write_json_line(
                 proc,
                 {
@@ -29540,6 +29971,15 @@ def run_config_value_write_rpc_smoke(binary: Path) -> None:
         assert_thread_started_notification(
             read_json_line(proc, 5), default_thread["result"]["thread"]
         )
+        assert_mcp_startup_status_notification(
+            read_json_line(proc, 5), "linear", "starting"
+        )
+        assert_mcp_startup_status_notification(
+            read_json_line(proc, 5),
+            "linear",
+            "failed",
+            "MCP client for `linear` failed to start",
+        )
 
         write_model = rpc(
             "config-write-model",
@@ -30323,6 +30763,15 @@ def run_config_batch_write_rpc_smoke(binary: Path) -> None:
         assert_thread_started_notification(
             read_json_line(proc, 5), default_thread["result"]["thread"]
         )
+        assert_mcp_startup_status_notification(
+            read_json_line(proc, 5), "linear", "starting"
+        )
+        assert_mcp_startup_status_notification(
+            read_json_line(proc, 5),
+            "linear",
+            "failed",
+            "MCP client for `linear` failed to start",
+        )
 
         explicit_thread = rpc(
             "config-batch-explicit-thread-start",
@@ -30336,6 +30785,15 @@ def run_config_batch_write_rpc_smoke(binary: Path) -> None:
         explicit_thread_id = explicit_thread["result"]["thread"]["id"]
         assert_thread_started_notification(
             read_json_line(proc, 5), explicit_thread["result"]["thread"]
+        )
+        assert_mcp_startup_status_notification(
+            read_json_line(proc, 5), "linear", "starting"
+        )
+        assert_mcp_startup_status_notification(
+            read_json_line(proc, 5),
+            "linear",
+            "failed",
+            "MCP client for `linear` failed to start",
         )
 
         batch = rpc(
@@ -45463,6 +45921,12 @@ def main() -> None:
     print("app-server-turn-model-notification-e2e: ok")
     run_turn_mcp_status_notification_smoke(binary)
     print("app-server-turn-mcp-status-notification-e2e: ok")
+    run_thread_start_required_mcp_failure_smoke(binary)
+    print("app-server-thread-start-required-mcp-failure-e2e: ok")
+    run_thread_start_optional_mcp_nonblocking_smoke(binary)
+    print("app-server-thread-start-optional-mcp-nonblocking-e2e: ok")
+    run_thread_resume_required_mcp_failure_smoke(binary)
+    print("app-server-thread-resume-required-mcp-failure-e2e: ok")
     run_turn_tool_cwd_smoke(binary)
     print("app-server-turn-tool-cwd-e2e: ok")
     run_turn_command_approval_request_smoke(binary)
