@@ -863,6 +863,16 @@ def run_exec_server_stream_response_smoke(
                 break
         raise AssertionError("timed out waiting for stream response event")
 
+    def read_response_id(expected_id: str, timeout: float) -> dict:
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            event = read_event(max(0.0, deadline - time.monotonic()))
+            if event.get("id") == expected_id:
+                return event
+            assert event["method"] == "http/request/bodyDelta"
+            assert event["params"]["requestId"] == "http-smoke-stream-duplicate"
+        raise AssertionError(f"timed out waiting for {expected_id}")
+
     try:
         write_json(
             {
@@ -987,7 +997,7 @@ def run_exec_server_stream_response_smoke(
                 },
             }
         )
-        duplicate = read_event(5)
+        duplicate = read_response_id("stream-duplicate-request", 5)
         assert duplicate["id"] == "stream-duplicate-request"
         assert duplicate["error"]["code"] == -32602
         assert "requestId `http-smoke-stream-duplicate` is already active" in duplicate["error"]["message"]
