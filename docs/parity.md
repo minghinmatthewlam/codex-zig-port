@@ -702,6 +702,16 @@ self-signed TLS server and verifies remote `--add-dir` forwarding as
 absolute `turn/start.sandboxPolicy.workspaceWrite.writableRoots`, including
 relative roots resolved against the TUI cwd.
 
+Additional remote app-server TUI config coverage: remote TUI `--profile` and
+`--search` are accepted for start, resume, and fork flows and forwarded through
+thread lifecycle `params.config` as `profile` and `web_search`. App-server
+`thread/start`, `thread/resume`, and `thread/fork` honor those request config
+overrides when creating loaded threads, and later `turn/start`, compact, and
+review requests reload the loaded thread's active profile while preserving
+explicit request `web_search` overrides. Focused PTY/app-server smokes verify
+the remote TUI emits the config object and app-server turns use the profile
+model plus native web-search tool.
+
 Additional exec-server remote rendezvous coverage: registry-backed
 `exec-server --remote ... --executor-id ...` now connects to both plain
 `ws://` and TLS `wss://` rendezvous URLs, including a loopback self-signed TLS
