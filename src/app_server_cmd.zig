@@ -44592,7 +44592,7 @@ fn handleConfigMethod(
         return handleConfigRead(allocator, state, id_value, params_value);
     }
     if (std.mem.eql(u8, method, "config/value/write")) {
-        const response = try handleConfigValueWrite(allocator, state, id_value, params_value);
+        const response = try handleConfigValueWrite(allocator, id_value, params_value);
         clearSkillsListCache(allocator, state);
         return response;
     }
@@ -49736,16 +49736,11 @@ const ConfigMergeStrategy = enum {
 
 fn handleConfigValueWrite(
     allocator: std.mem.Allocator,
-    state: *AppServerState,
     id_value: std.json.Value,
     params_value: ?std.json.Value,
 ) ![]const u8 {
     const params = params_value orelse return renderJsonRpcError(allocator, id_value, -32602, "config/value/write params must be an object");
     if (params != .object) return renderJsonRpcError(allocator, id_value, -32602, "config/value/write params must be an object");
-
-    const reload_user_config = parseConfigReloadUserConfig(params.object) catch |err| switch (err) {
-        error.InvalidConfigReloadUserConfig => return renderJsonRpcError(allocator, id_value, -32602, "reloadUserConfig must be a boolean or null"),
-    };
 
     const edit = parseConfigWriteEdit(params.object) catch |err| switch (err) {
         error.InvalidConfigKeyPathParam => return renderJsonRpcError(allocator, id_value, -32602, "keyPath must be a non-empty string"),
@@ -49754,8 +49749,6 @@ fn handleConfigValueWrite(
     };
 
     const write_result = try handleConfigWriteEdits(allocator, id_value, params.object, &.{edit}, "config/value/write");
-    errdefer allocator.free(write_result.response);
-    if (reload_user_config and write_result.wrote) try reloadLoadedThreadRuntimeConfig(allocator, state);
     return write_result.response;
 }
 

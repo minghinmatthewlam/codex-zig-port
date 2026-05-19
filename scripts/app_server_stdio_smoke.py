@@ -29564,14 +29564,48 @@ def run_config_value_write_rpc_smoke(binary: Path) -> None:
         assert after_model["result"]["config"]["model"] == "gpt-written"
 
         default_fork = rpc(
-            "config-write-default-thread-fork-after-reload",
+            "config-write-default-thread-fork-before-batch-reload",
             "thread/fork",
             {"threadId": default_thread_id, "ephemeral": True},
         )
-        assert default_fork["id"] == "config-write-default-thread-fork-after-reload"
-        assert default_fork["result"]["model"] == "gpt-written"
+        assert default_fork["id"] == "config-write-default-thread-fork-before-batch-reload"
+        assert default_fork["result"]["model"] == "gpt-old"
         assert_thread_started_notification(
             read_json_line(proc, 5), default_fork["result"]["thread"]
+        )
+
+        reload_model = rpc(
+            "config-batch-reload-model",
+            "config/batchWrite",
+            {
+                "edits": [
+                    {
+                        "keyPath": "model",
+                        "value": "gpt-reloaded",
+                        "mergeStrategy": "replace",
+                    },
+                ],
+                "expectedVersion": write_model["result"]["version"],
+                "reloadUserConfig": True,
+            },
+        )
+        assert reload_model["id"] == "config-batch-reload-model"
+        assert reload_model["result"]["status"] == "ok"
+        assert reload_model["result"]["filePath"] == str(config_path)
+
+        after_reload_model = rpc("config-read-after-batch-reload-model", "config/read", {})
+        assert after_reload_model["id"] == "config-read-after-batch-reload-model"
+        assert after_reload_model["result"]["config"]["model"] == "gpt-reloaded"
+
+        reloaded_fork = rpc(
+            "config-write-default-thread-fork-after-batch-reload",
+            "thread/fork",
+            {"threadId": default_thread_id, "ephemeral": True},
+        )
+        assert reloaded_fork["id"] == "config-write-default-thread-fork-after-batch-reload"
+        assert reloaded_fork["result"]["model"] == "gpt-reloaded"
+        assert_thread_started_notification(
+            read_json_line(proc, 5), reloaded_fork["result"]["thread"]
         )
 
         write_feature = rpc(
@@ -29582,7 +29616,7 @@ def run_config_value_write_rpc_smoke(binary: Path) -> None:
                 "keyPath": "features.goals",
                 "value": True,
                 "mergeStrategy": "upsert",
-                "expectedVersion": write_model["result"]["version"],
+                "expectedVersion": reload_model["result"]["version"],
             },
         )
         assert write_feature["id"] == "config-write-feature"
@@ -29714,18 +29748,21 @@ def run_config_value_write_rpc_smoke(binary: Path) -> None:
         assert invalid_merge["id"] == "config-write-invalid-merge"
         assert invalid_merge["error"]["code"] == -32602
 
-        invalid_reload = rpc(
-            "config-write-invalid-reload",
+        ignored_reload = rpc(
+            "config-write-ignored-reload",
             "config/value/write",
             {
                 "keyPath": "model",
-                "value": "gpt-test",
+                "value": "gpt-ignored-reload",
                 "mergeStrategy": "replace",
                 "reloadUserConfig": "yes",
             },
         )
-        assert invalid_reload["id"] == "config-write-invalid-reload"
-        assert invalid_reload["error"]["code"] == -32602
+        assert ignored_reload["id"] == "config-write-ignored-reload"
+        assert ignored_reload["result"]["status"] == "ok"
+        after_ignored_reload = rpc("config-read-after-ignored-reload", "config/read", {})
+        assert after_ignored_reload["id"] == "config-read-after-ignored-reload"
+        assert after_ignored_reload["result"]["config"]["model"] == "gpt-ignored-reload"
 
         invalid_path = rpc(
             "config-write-invalid-path",
