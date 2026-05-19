@@ -2592,19 +2592,19 @@ def run_exec_server_stdio_smoke(binary: Path) -> None:
                 "jsonrpc": "2.0",
                 "id": "read-cat",
                 "method": "process/read",
-                "params": {"processId": "cat-proc", "afterSeq": 0, "maxBytes": 4096, "waitMs": 1000},
-            },
-            {
-                "jsonrpc": "2.0",
-                "id": "terminate-cat",
-                "method": "process/terminate",
-                "params": {"processId": "cat-proc"},
+                "params": {"processId": "cat-proc", "afterSeq": 0, "maxBytes": 4096, "waitMs": 5000},
             },
             {
                 "jsonrpc": "2.0",
                 "id": "again",
                 "method": "initialize",
                 "params": {"clientName": "cli-smoke"},
+            },
+            {
+                "jsonrpc": "2.0",
+                "id": "terminate-cat",
+                "method": "process/terminate",
+                "params": {"processId": "cat-proc"},
             },
             {
                 "jsonrpc": "2.0",
@@ -2931,14 +2931,14 @@ def run_exec_server_stdio_smoke(binary: Path) -> None:
         )
         assert cat_output == b"echo:hello\n"
 
-        terminate_cat = responses[21]
-        assert terminate_cat["id"] == "terminate-cat"
-        assert terminate_cat["result"]["running"] is True
-
-        duplicate = responses[22]
+        duplicate = responses[21]
         assert duplicate["id"] == "again"
         assert duplicate["error"]["code"] == -32600
         assert "initialize may only be sent once" in duplicate["error"]["message"]
+
+        terminate_cat = responses[22]
+        assert terminate_cat["id"] == "terminate-cat"
+        assert terminate_cat["result"]["running"] is True
 
         http_request = responses[23]
         assert http_request["id"] == "http-request"
