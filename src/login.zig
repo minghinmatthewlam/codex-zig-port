@@ -11,8 +11,10 @@ const CALLBACK_HTTP_BUFFER_SIZE: usize = 128 * 1024;
 const LOGIN_SCOPE = "openid profile email offline_access api.connectors.read api.connectors.invoke";
 pub const missing_authorization_code_message = "Missing authorization code. Sign-in could not be completed.";
 pub const missing_codex_entitlement_message = "Codex is not enabled for your workspace. Contact your workspace administrator to request access to Codex.";
+pub const missing_workspace_account_message = "Login is restricted to a specific workspace, but the token did not include an chatgpt_account_id claim.";
 const missing_codex_entitlement_code = "missing_codex_entitlement";
 const missing_authorization_code = "missing_authorization_code";
+const workspace_restriction = "workspace_restriction";
 const net = std.Io.net;
 
 const LoginArgs = struct {
@@ -57,6 +59,7 @@ pub const BrowserAuthHandle = struct {
     state: []const u8,
     auth_url: []const u8,
     actual_port: u16,
+    forced_chatgpt_workspace_id: ?[]const u8,
     codex_streamlined_login: bool,
 
     pub fn deinit(self: *BrowserAuthHandle, allocator: std.mem.Allocator) void {
@@ -68,6 +71,7 @@ pub const BrowserAuthHandle = struct {
         allocator.free(self.code_verifier);
         allocator.free(self.state);
         allocator.free(self.auth_url);
+        if (self.forced_chatgpt_workspace_id) |workspace_id| allocator.free(workspace_id);
     }
 
     pub fn waitAndSave(self: *BrowserAuthHandle, allocator: std.mem.Allocator) !void {
@@ -81,6 +85,7 @@ pub const BrowserAuthHandle = struct {
             self.code_verifier,
             self.state,
             self.actual_port,
+            self.forced_chatgpt_workspace_id,
             self.codex_streamlined_login,
         );
     }
@@ -90,18 +95,21 @@ pub const DeviceAuthOptions = struct {
     codex_home: []const u8,
     issuer: []const u8 = DEFAULT_ISSUER,
     client_id: []const u8 = auth.chatgpt_client_id,
+    forced_chatgpt_workspace_id: ?[]const u8 = null,
 };
 
 pub const DeviceAuthHandle = struct {
     codex_home: []const u8,
     issuer: []const u8,
     client_id: []const u8,
+    forced_chatgpt_workspace_id: ?[]const u8,
     device_code: DeviceCode,
 
     pub fn deinit(self: *DeviceAuthHandle, allocator: std.mem.Allocator) void {
         allocator.free(self.codex_home);
         allocator.free(self.issuer);
         allocator.free(self.client_id);
+        if (self.forced_chatgpt_workspace_id) |workspace_id| allocator.free(workspace_id);
         self.device_code.deinit(allocator);
     }
 
@@ -119,6 +127,7 @@ pub const DeviceAuthHandle = struct {
         var tokens = try exchangeCodeForTokens(allocator, self.issuer, self.client_id, code.authorization_code, redirect_uri, code.code_verifier);
         defer tokens.deinit(allocator);
 
+        try ensureWorkspaceAllowed(allocator, self.forced_chatgpt_workspace_id, tokens.id_token);
         try saveChatGptTokens(allocator, self.codex_home, tokens);
     }
 };
@@ -217,12 +226,12 @@ pub fn run(allocator: std.mem.Allocator, args: *std.process.Args.Iterator) !void
     }
 
     if (parsed.device_auth) {
-        try runDeviceAuth(allocator, cfg.codex_home, parsed.issuer, parsed.client_id);
+        try runDeviceAuth(allocator, cfg.codex_home, parsed.issuer, parsed.client_id, cfg.forced_chatgpt_workspace_id);
         std.debug.print("Successfully logged in\n", .{});
         return;
     }
 
-    try runBrowserAuth(allocator, cfg.codex_home, parsed);
+    try runBrowserAuth(allocator, cfg.codex_home, parsed, cfg.forced_chatgpt_workspace_id);
     std.debug.print("Successfully logged in\n", .{});
 }
 
@@ -349,7 +358,12 @@ fn readSecretFromStdin(allocator: std.mem.Allocator, empty_message: []const u8) 
     return owned;
 }
 
-fn runBrowserAuth(allocator: std.mem.Allocator, codex_home: []const u8, args: LoginArgs) !void {
+fn runBrowserAuth(
+    allocator: std.mem.Allocator,
+    codex_home: []const u8,
+    args: LoginArgs,
+    forced_chatgpt_workspace_id: ?[]const u8,
+) !void {
     var pkce = try generatePkce(allocator);
     defer pkce.deinit(allocator);
 
@@ -366,7 +380,15 @@ fn runBrowserAuth(allocator: std.mem.Allocator, codex_home: []const u8, args: Lo
     const redirect_uri = try std.fmt.allocPrint(allocator, "http://localhost:{d}/auth/callback", .{actual_port});
     defer allocator.free(redirect_uri);
 
-    const authorize_url = try buildAuthorizeUrl(allocator, args.issuer, args.client_id, redirect_uri, pkce, state);
+    const authorize_url = try buildAuthorizeUrlWithOptions(
+        allocator,
+        args.issuer,
+        args.client_id,
+        redirect_uri,
+        pkce,
+        state,
+        forced_chatgpt_workspace_id,
+    );
     defer allocator.free(authorize_url);
 
     if (args.open_browser) {
@@ -385,7 +407,19 @@ fn runBrowserAuth(allocator: std.mem.Allocator, codex_home: []const u8, args: Lo
         \\
     , .{ actual_port, authorize_url });
 
-    try waitForBrowserCallback(allocator, codex_home, &callback_server, args.issuer, args.client_id, redirect_uri, pkce.code_verifier, state, actual_port, false);
+    try waitForBrowserCallback(
+        allocator,
+        codex_home,
+        &callback_server,
+        args.issuer,
+        args.client_id,
+        redirect_uri,
+        pkce.code_verifier,
+        state,
+        actual_port,
+        forced_chatgpt_workspace_id,
+        false,
+    );
 }
 
 pub fn startBrowserAuthReturnUrl(allocator: std.mem.Allocator, options: BrowserAuthOptions) !BrowserAuthHandle {
@@ -425,6 +459,11 @@ pub fn startBrowserAuthReturnUrl(allocator: std.mem.Allocator, options: BrowserA
     errdefer allocator.free(issuer);
     const client_id = try allocator.dupe(u8, options.client_id);
     errdefer allocator.free(client_id);
+    const forced_chatgpt_workspace_id = if (options.forced_chatgpt_workspace_id) |workspace_id|
+        try allocator.dupe(u8, workspace_id)
+    else
+        null;
+    errdefer if (forced_chatgpt_workspace_id) |workspace_id| allocator.free(workspace_id);
 
     return .{
         .codex_home = codex_home,
@@ -436,6 +475,7 @@ pub fn startBrowserAuthReturnUrl(allocator: std.mem.Allocator, options: BrowserA
         .state = state,
         .auth_url = authorize_url,
         .actual_port = actual_port,
+        .forced_chatgpt_workspace_id = forced_chatgpt_workspace_id,
         .codex_streamlined_login = options.codex_streamlined_login,
     };
 }
@@ -467,11 +507,17 @@ pub fn startDeviceAuth(allocator: std.mem.Allocator, options: DeviceAuthOptions)
     errdefer allocator.free(issuer);
     const client_id = try allocator.dupe(u8, options.client_id);
     errdefer allocator.free(client_id);
+    const forced_chatgpt_workspace_id = if (options.forced_chatgpt_workspace_id) |workspace_id|
+        try allocator.dupe(u8, workspace_id)
+    else
+        null;
+    errdefer if (forced_chatgpt_workspace_id) |workspace_id| allocator.free(workspace_id);
 
     return .{
         .codex_home = codex_home,
         .issuer = issuer,
         .client_id = client_id,
+        .forced_chatgpt_workspace_id = forced_chatgpt_workspace_id,
         .device_code = device_code,
     };
 }
@@ -499,6 +545,7 @@ fn waitForBrowserCallback(
     code_verifier: []const u8,
     expected_state: []const u8,
     actual_port: u16,
+    forced_chatgpt_workspace_id: ?[]const u8,
     codex_streamlined_login: bool,
 ) !void {
     const io = std.Io.Threaded.global_single_threaded.io();
@@ -527,6 +574,7 @@ fn waitForBrowserCallback(
             code_verifier,
             expected_state,
             actual_port,
+            forced_chatgpt_workspace_id,
             codex_streamlined_login,
             &callback_completed,
         );
@@ -544,6 +592,7 @@ fn handleBrowserLoginRequest(
     code_verifier: []const u8,
     expected_state: []const u8,
     actual_port: u16,
+    forced_chatgpt_workspace_id: ?[]const u8,
     codex_streamlined_login: bool,
     callback_completed: *bool,
 ) !bool {
@@ -605,6 +654,37 @@ fn handleBrowserLoginRequest(
     var tokens = try exchangeCodeForTokens(allocator, issuer, client_id, code.?, redirect_uri, code_verifier);
     defer tokens.deinit(allocator);
 
+    ensureWorkspaceAllowed(allocator, forced_chatgpt_workspace_id, tokens.id_token) catch |err| switch (err) {
+        error.WorkspaceRestriction => {
+            const message = try workspaceRestrictionMessage(allocator, forced_chatgpt_workspace_id.?);
+            defer allocator.free(message);
+            const page = try renderLoginErrorPage(
+                allocator,
+                "Sign-in could not be completed",
+                message,
+                workspace_restriction,
+                message,
+                "Return to Codex to retry, switch accounts, or contact your workspace admin if access is restricted.",
+            );
+            defer allocator.free(page);
+            try respondText(request, .ok, page);
+            return err;
+        },
+        error.WorkspaceRestrictionMissingAccount => {
+            const page = try renderLoginErrorPage(
+                allocator,
+                "Sign-in could not be completed",
+                missing_workspace_account_message,
+                workspace_restriction,
+                missing_workspace_account_message,
+                "Return to Codex to retry, switch accounts, or contact your workspace admin if access is restricted.",
+            );
+            defer allocator.free(page);
+            try respondText(request, .ok, page);
+            return err;
+        },
+        else => return err,
+    };
     try saveChatGptTokens(allocator, codex_home, tokens);
     const success_url = try composeSuccessUrl(allocator, actual_port, issuer, tokens, codex_streamlined_login);
     defer allocator.free(success_url);
@@ -786,6 +866,22 @@ fn parseChatGptRawPlanTypeOrEmpty(allocator: std.mem.Allocator, jwt: []const u8)
         error.OutOfMemory => return err,
         else => null,
     };
+}
+
+fn ensureWorkspaceAllowed(
+    allocator: std.mem.Allocator,
+    expected_workspace_id: ?[]const u8,
+    id_token: []const u8,
+) !void {
+    const expected = expected_workspace_id orelse return;
+    var claims = try parseChatGptClaimsOrEmpty(allocator, id_token);
+    defer claims.deinit(allocator);
+    const actual = claims.account_id orelse return error.WorkspaceRestrictionMissingAccount;
+    if (!std.mem.eql(u8, actual, expected)) return error.WorkspaceRestriction;
+}
+
+pub fn workspaceRestrictionMessage(allocator: std.mem.Allocator, expected_workspace_id: []const u8) ![]const u8 {
+    return std.fmt.allocPrint(allocator, "Login is restricted to workspace id {s}.", .{expected_workspace_id});
 }
 
 fn platformUrlForIssuer(issuer: []const u8) []const u8 {
@@ -1052,6 +1148,7 @@ fn runDeviceAuth(
     codex_home: []const u8,
     issuer: []const u8,
     client_id: []const u8,
+    forced_chatgpt_workspace_id: ?[]const u8,
 ) !void {
     var device_code = try requestDeviceCode(allocator, issuer, client_id);
     defer device_code.deinit(allocator);
@@ -1067,6 +1164,7 @@ fn runDeviceAuth(
     var tokens = try exchangeCodeForTokens(allocator, issuer, client_id, code.authorization_code, redirect_uri, code.code_verifier);
     defer tokens.deinit(allocator);
 
+    try ensureWorkspaceAllowed(allocator, forced_chatgpt_workspace_id, tokens.id_token);
     try saveChatGptTokens(allocator, codex_home, tokens);
 }
 
@@ -1436,6 +1534,42 @@ test "jwt parser extracts account metadata" {
     try std.testing.expect(claims.fedramp);
 }
 
+fn testJwt(allocator: std.mem.Allocator, payload: []const u8) ![]const u8 {
+    const encoded = try base64UrlSafeAlloc(allocator, payload);
+    defer allocator.free(encoded);
+    return std.fmt.allocPrint(allocator, "header.{s}.sig", .{encoded});
+}
+
+test "workspace validation accepts matching account id" {
+    const allocator = std.testing.allocator;
+    const jwt = try testJwt(allocator,
+        \\{"https://api.openai.com/auth":{"chatgpt_account_id":"org-required"}}
+    );
+    defer allocator.free(jwt);
+
+    try ensureWorkspaceAllowed(allocator, "org-required", jwt);
+}
+
+test "workspace validation rejects mismatched account id" {
+    const allocator = std.testing.allocator;
+    const jwt = try testJwt(allocator,
+        \\{"https://api.openai.com/auth":{"chatgpt_account_id":"org-actual"}}
+    );
+    defer allocator.free(jwt);
+
+    try std.testing.expectError(error.WorkspaceRestriction, ensureWorkspaceAllowed(allocator, "org-required", jwt));
+}
+
+test "workspace validation rejects missing account id" {
+    const allocator = std.testing.allocator;
+    const jwt = try testJwt(allocator,
+        \\{"https://api.openai.com/auth":{"chatgpt_plan_type":"pro"}}
+    );
+    defer allocator.free(jwt);
+
+    try std.testing.expectError(error.WorkspaceRestrictionMissingAccount, ensureWorkspaceAllowed(allocator, "org-required", jwt));
+}
+
 test "browser authorize url matches codex callback shape" {
     const allocator = std.testing.allocator;
     const url = try buildAuthorizeUrl(allocator, "https://auth.example.test/", "client id", "http://localhost:1455/auth/callback", .{
@@ -1452,6 +1586,17 @@ test "browser authorize url matches codex callback shape" {
     try std.testing.expect(std.mem.indexOf(u8, url, "code_challenge_method=S256") != null);
     try std.testing.expect(std.mem.indexOf(u8, url, "codex_cli_simplified_flow=true") != null);
     try std.testing.expect(std.mem.indexOf(u8, url, "state=state%20value") != null);
+}
+
+test "browser authorize url includes forced workspace when configured" {
+    const allocator = std.testing.allocator;
+    const url = try buildAuthorizeUrlWithOptions(allocator, "https://auth.example.test/", "client id", "http://localhost:1455/auth/callback", .{
+        .code_verifier = "verifier",
+        .code_challenge = "challenge",
+    }, "state value", "ws-forced");
+    defer allocator.free(url);
+
+    try std.testing.expect(std.mem.indexOf(u8, url, "allowed_workspace_id=ws-forced") != null);
 }
 
 test "query params decode callback values" {
