@@ -129,6 +129,77 @@ pub fn renderBase(allocator: std.mem.Allocator, branch: []const u8) ![]const u8 
     return out.toOwnedSlice(allocator);
 }
 
+pub fn mergeBaseWithHead(allocator: std.mem.Allocator, cwd: []const u8, branch: []const u8) !?[]const u8 {
+    var head = try runGitInCwd(allocator, cwd, &.{ "git", "rev-parse", "--verify", "HEAD" });
+    defer head.deinit(allocator);
+    if (!head.success()) return null;
+    const head_ref = std.mem.trim(u8, head.stdout, " \t\r\n");
+    if (head_ref.len == 0) return null;
+    try validateRevision(head_ref);
+
+    var branch_ref_output = try runGitInCwd(allocator, cwd, &.{ "git", "rev-parse", "--verify", branch });
+    defer branch_ref_output.deinit(allocator);
+    if (!branch_ref_output.success()) return null;
+    const branch_ref = std.mem.trim(u8, branch_ref_output.stdout, " \t\r\n");
+    if (branch_ref.len == 0) return null;
+    try validateRevision(branch_ref);
+
+    const preferred_ref = try preferredBranchRefForMergeBase(allocator, cwd, branch, branch_ref);
+    defer allocator.free(preferred_ref);
+
+    var merge_base = try runGitInCwd(allocator, cwd, &.{ "git", "merge-base", head_ref, preferred_ref });
+    defer merge_base.deinit(allocator);
+    if (!merge_base.success()) return null;
+
+    const base = std.mem.trim(u8, merge_base.stdout, " \t\r\n");
+    if (base.len == 0) return null;
+    try validateRevision(base);
+    const copy = try allocator.dupe(u8, base);
+    return copy;
+}
+
+fn preferredBranchRefForMergeBase(allocator: std.mem.Allocator, cwd: []const u8, branch: []const u8, branch_ref: []const u8) ![]const u8 {
+    const upstream_spec = try upstreamRevisionSpec(allocator, branch);
+    defer allocator.free(upstream_spec);
+    var upstream_name = try runGitInCwd(allocator, cwd, &.{ "git", "rev-parse", "--abbrev-ref", "--symbolic-full-name", upstream_spec });
+    defer upstream_name.deinit(allocator);
+    if (!upstream_name.success()) return allocator.dupe(u8, branch_ref);
+
+    const upstream = std.mem.trim(u8, upstream_name.stdout, " \t\r\n");
+    if (upstream.len == 0) return allocator.dupe(u8, branch_ref);
+
+    const comparison_spec = try branchComparisonSpec(allocator, branch, upstream);
+    defer allocator.free(comparison_spec);
+    var counts = try runGitInCwd(allocator, cwd, &.{ "git", "rev-list", "--left-right", "--count", comparison_spec });
+    defer counts.deinit(allocator);
+    if (!counts.success() or !rightSideAhead(counts.stdout)) return allocator.dupe(u8, branch_ref);
+
+    var upstream_ref_output = try runGitInCwd(allocator, cwd, &.{ "git", "rev-parse", "--verify", upstream });
+    defer upstream_ref_output.deinit(allocator);
+    if (!upstream_ref_output.success()) return allocator.dupe(u8, branch_ref);
+    const upstream_ref = std.mem.trim(u8, upstream_ref_output.stdout, " \t\r\n");
+    if (upstream_ref.len == 0) return allocator.dupe(u8, branch_ref);
+    try validateRevision(upstream_ref);
+    return allocator.dupe(u8, upstream_ref);
+}
+
+fn upstreamRevisionSpec(allocator: std.mem.Allocator, branch: []const u8) ![]const u8 {
+    return std.fmt.allocPrint(allocator, "{s}@{{upstream}}", .{branch});
+}
+
+fn branchComparisonSpec(allocator: std.mem.Allocator, branch: []const u8, upstream: []const u8) ![]const u8 {
+    return std.fmt.allocPrint(allocator, "{s}...{s}", .{ branch, upstream });
+}
+
+fn rightSideAhead(counts: []const u8) bool {
+    var parts = std.mem.tokenizeAny(u8, counts, " \t\r\n");
+    const left = parts.next() orelse return false;
+    const right = parts.next() orelse return false;
+    _ = std.fmt.parseInt(i64, left, 10) catch return false;
+    const right_count = std.fmt.parseInt(i64, right, 10) catch return false;
+    return right_count > 0;
+}
+
 fn runGit(allocator: std.mem.Allocator, argv: []const []const u8) !CommandOutput {
     return runGitWithCwd(allocator, null, argv);
 }
@@ -309,4 +380,11 @@ test "validate revision rejects option-shaped and empty values" {
     try std.testing.expectError(error.InvalidGitRevision, validateRevision(""));
     try std.testing.expectError(error.InvalidGitRevision, validateRevision("--stat"));
     try std.testing.expectError(error.InvalidGitRevision, validateRevision("abc\n123"));
+}
+
+test "right side ahead accepts any upstream-only progress" {
+    try std.testing.expect(rightSideAhead("0\t1\n"));
+    try std.testing.expect(!rightSideAhead("1\t0\n"));
+    try std.testing.expect(rightSideAhead("2\t1\n"));
+    try std.testing.expect(!rightSideAhead("bad\t1\n"));
 }

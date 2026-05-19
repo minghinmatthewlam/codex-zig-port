@@ -1054,6 +1054,7 @@ fn isTrustedCommandName(first: []const u8, second: ?[]const u8) bool {
         "log",
         "branch",
         "rev-parse",
+        "merge-base",
         "ls-files",
     };
     for (read_only_git) |name| {
@@ -2490,6 +2491,23 @@ test "untrusted policy allows trusted read-only shell command without prompt" {
     });
     defer result.deinit(allocator);
     try std.testing.expect(std.mem.startsWith(u8, result.summary, "exit "));
+}
+
+test "read-only sandbox allows merge-base inspection command" {
+    const allocator = std.testing.allocator;
+    const call = api.FunctionCall{
+        .call_id = "call-merge-base",
+        .name = "shell_command",
+        .arguments = "{\"command\":\"git merge-base HEAD main\"}",
+    };
+
+    const result = try runFunctionCall(allocator, call, .{
+        .approval_policy = .never,
+        .sandbox_mode = .read_only,
+        .prompt_for_approval = false,
+    });
+    defer result.deinit(allocator);
+    try std.testing.expect(!std.mem.eql(u8, result.summary, "blocked by sandbox"));
 }
 
 const TestApprovalContext = struct {
