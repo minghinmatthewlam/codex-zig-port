@@ -792,10 +792,13 @@ roots, `$CODEX_HOME` marketplaces, and already-loaded thread cwd marketplaces as
 flags, paginates with
 Rust-shaped `nextCursor` values and invalid-cursor errors, and includes
 app-list request, response, app metadata, app summary, and `app/list/updated`
-notification artifacts in TypeScript and JSON schema generation. Full ChatGPT
-connector directory loading, accessible-app merging, app cache refreshes,
-workspace-gated app availability, update notifications, and full config layer
-fidelity remain planned.
+notification artifacts in TypeScript and JSON schema generation. Enabling the
+`apps` runtime feature through `experimentalFeature/enablement/set` also emits
+a Rust-shaped `app/list/updated` notification with the current local plugin app
+catalog after the response, honoring notification opt-out. Full ChatGPT
+connector directory loading, accessible-app merging, broader app cache
+refreshes, workspace-gated app availability, and full config layer fidelity
+remain planned.
 
 Additional app-server experimental-feature generation coverage: `experimentalFeature/list` and `experimentalFeature/enablement/set` are included in current TypeScript and JSON schema generation with cursor/limit params, Rust-shaped paginated feature rows, runtime enablement maps, and enablement set params/responses until broader experimental feature protocol generation parity lands.
 

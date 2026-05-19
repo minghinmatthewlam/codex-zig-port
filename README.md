@@ -265,6 +265,9 @@ The first demo slice targets macOS and focuses on the interactive CLI surface:
   `experimentalApi`
 - emit app-server `remoteControl/status/changed` after `initialize` with the
   current disabled remote-control status, honoring notification opt-out
+- emit app-server `app/list/updated` after `experimentalFeature/enablement/set`
+  enables `apps`, using the current local plugin app catalog and honoring
+  notification opt-out
 - include experimental `permissionProfile` and `activePermissionProfile`
   fields on `thread/start`, `thread/resume`, and `thread/fork` responses only
   after the client enables `experimentalApi`
