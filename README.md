@@ -533,8 +533,8 @@ does not request the browser-login API-key exchange.
 `agent_identity` auth shape; full upstream JWT/JWKS verification and
 agent-task authorization are still tracked as parity work. `CODEX_ACCESS_TOKEN`
 can also provide the access token without writing `auth.json`.
-`logout` removes the selected `CODEX_HOME/auth.json`; it does not yet revoke
-OAuth tokens server-side.
+`logout` best-effort revokes managed ChatGPT OAuth tokens before removing the
+selected `CODEX_HOME/auth.json`.
 
 ## Sessions
 
