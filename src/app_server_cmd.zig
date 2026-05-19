@@ -566,6 +566,7 @@ const LoadedThread = struct {
     model_verbosity: ?[]const u8,
     model_provider: []const u8,
     service_tier: ?[]const u8,
+    active_profile: ?[]const u8,
     cwd: []const u8,
     approval_policy: []const u8,
     approvals_reviewer: []const u8,
@@ -574,6 +575,7 @@ const LoadedThread = struct {
     sandbox_include_cwd_write_root: bool,
     sandbox_network_enabled: bool,
     sandbox_external: bool,
+    web_search_mode: ?config.WebSearchMode,
     reasoning_effort: ?[]const u8,
     reasoning_summary: ?[]const u8,
     personality: ?[]const u8,
@@ -613,6 +615,7 @@ const LoadedThread = struct {
         if (self.model_verbosity) |value| allocator.free(value);
         allocator.free(self.model_provider);
         if (self.service_tier) |value| allocator.free(value);
+        if (self.active_profile) |value| allocator.free(value);
         allocator.free(self.cwd);
         allocator.free(self.approval_policy);
         allocator.free(self.approvals_reviewer);
@@ -651,6 +654,7 @@ const LoadedThreadRuntimeOverrides = struct {
     approval_policy: bool = false,
     approvals_reviewer: bool = false,
     sandbox_mode: bool = false,
+    web_search_mode: bool = false,
     reasoning_effort: bool = false,
     reasoning_summary: bool = false,
     personality: bool = false,
@@ -28254,12 +28258,12 @@ fn handleReviewStart(
         error.InvalidReviewDelivery => return try renderJsonRpcError(allocator, id_value, -32602, "delivery must be inline, detached, or null"),
     };
 
-    var cfg = config.load(allocator) catch |err| {
+    const parent_thread = &state.loaded_threads.items[thread_index];
+    var cfg = loadConfigForLoadedThread(allocator, parent_thread) catch |err| {
         return try renderJsonRpcErrorForFailure(allocator, id_value, "review/start failed to load config", err);
     };
     defer cfg.deinit(allocator);
 
-    const parent_thread = &state.loaded_threads.items[thread_index];
     applyProjectLayersToConfigForCwd(allocator, &cfg, parent_thread.cwd) catch |err| {
         return try renderJsonRpcErrorForFailure(allocator, id_value, "review/start failed to load project config", err);
     };
@@ -29244,12 +29248,12 @@ fn handleTurnStart(
     };
     defer input.deinit(allocator);
 
-    var cfg = config.load(allocator) catch |err| {
+    const thread = &state.loaded_threads.items[thread_index];
+    var cfg = loadConfigForLoadedThread(allocator, thread) catch |err| {
         return try renderJsonRpcErrorForFailure(allocator, id_value, "turn/start failed to load config", err);
     };
     defer cfg.deinit(allocator);
 
-    const thread = &state.loaded_threads.items[thread_index];
     const project_cwd = turnContextProjectConfigCwd(allocator, thread, object) catch |err| {
         return try renderJsonRpcErrorForFailure(allocator, id_value, "turn/start failed to resolve cwd", err);
     };
@@ -31357,6 +31361,7 @@ fn applyLoadedThreadRuntimeToConfig(
     } else {
         cfg.model_verbosity = null;
     }
+    cfg.web_search_mode = thread.web_search_mode;
     cfg.approval_policy = config.ApprovalPolicy.parse(thread.approval_policy) catch return error.InvalidLoadedThreadRuntime;
     cfg.sandbox_mode = config.SandboxMode.parse(thread.sandbox_mode) catch return error.InvalidLoadedThreadRuntime;
     if (cfg.service_tier) |existing| allocator.free(existing);
@@ -31435,6 +31440,7 @@ fn applyTurnStartRuntimeOverrides(
     } else {
         cfg.model_verbosity = null;
     }
+    cfg.web_search_mode = thread.web_search_mode;
 
     if (optionalStringParam(params, "cwd")) |cwd_raw| {
         const cwd = try std.Io.Dir.cwd().realPathFileAlloc(std.Io.Threaded.global_single_threaded.io(), cwd_raw, allocator);
@@ -32127,12 +32133,12 @@ fn handleLoadedThreadCompactStart(
     id_value: std.json.Value,
     thread_index: usize,
 ) ![]const u8 {
-    var cfg = config.load(allocator) catch |err| {
+    const thread = &state.loaded_threads.items[thread_index];
+    var cfg = loadConfigForLoadedThread(allocator, thread) catch |err| {
         return renderJsonRpcErrorForFailure(allocator, id_value, "thread/compact/start failed to load config", err);
     };
     defer cfg.deinit(allocator);
 
-    const thread = &state.loaded_threads.items[thread_index];
     const project_cwd = try allocator.dupe(u8, thread.cwd);
     defer allocator.free(project_cwd);
 
@@ -34640,6 +34646,73 @@ fn handleThreadMethod(
     return renderParsedButNotImplemented(allocator, id_value, method);
 }
 
+const ThreadRequestConfigOverrides = struct {
+    profile_present: bool = false,
+    profile: ?[]const u8 = null,
+    web_search_mode_present: bool = false,
+    web_search_mode: ?config.WebSearchMode = null,
+};
+
+fn validateThreadRequestConfigParam(object: std.json.ObjectMap) ?[]const u8 {
+    const value = object.get("config") orelse return null;
+    if (value == .null) return null;
+    if (value != .object) return "config must be an object or null";
+    if (value.object.get("profile")) |profile| {
+        if (profile != .null and profile != .string) return "config.profile must be a string or null";
+    }
+    if (value.object.get("web_search")) |web_search| {
+        if (!optionalEnumStringIsValid(web_search, &.{ "disabled", "cached", "live" })) {
+            return "config.web_search must be disabled, cached, live, or null";
+        }
+    }
+    return null;
+}
+
+fn threadRequestConfigFromParams(params: ?std.json.ObjectMap) !ThreadRequestConfigOverrides {
+    const object = params orelse return .{};
+    const value = object.get("config") orelse return .{};
+    if (value == .null) return .{};
+    if (value != .object) return error.InvalidThreadRequestConfig;
+
+    var result = ThreadRequestConfigOverrides{};
+    if (value.object.get("profile")) |profile| {
+        result.profile_present = true;
+        result.profile = switch (profile) {
+            .null => null,
+            .string => |profile_value| profile_value,
+            else => return error.InvalidThreadRequestConfig,
+        };
+    }
+    if (value.object.get("web_search")) |web_search| {
+        result.web_search_mode_present = true;
+        result.web_search_mode = switch (web_search) {
+            .null => null,
+            .string => |mode| config.WebSearchMode.parse(mode) catch return error.InvalidThreadRequestConfig,
+            else => return error.InvalidThreadRequestConfig,
+        };
+    }
+    return result;
+}
+
+fn threadRequestConfigParamPresent(params: ?std.json.ObjectMap, name: []const u8) bool {
+    const object = params orelse return false;
+    const value = object.get("config") orelse return false;
+    if (value != .object) return false;
+    return value.object.get(name) != null;
+}
+
+fn loadConfigForThreadRequest(allocator: std.mem.Allocator, request_config: ThreadRequestConfigOverrides) !config.Config {
+    return config.loadWithOptions(allocator, .{ .profile = request_config.profile });
+}
+
+fn loadConfigForLoadedThread(allocator: std.mem.Allocator, thread: *const LoadedThread) !config.Config {
+    return config.loadWithOptions(allocator, .{ .profile = thread.active_profile });
+}
+
+fn applyThreadRequestConfigOverrides(cfg: *config.Config, request_config: ThreadRequestConfigOverrides) void {
+    if (request_config.web_search_mode_present) cfg.web_search_mode = request_config.web_search_mode;
+}
+
 fn handleThreadStart(
     allocator: std.mem.Allocator,
     state: *AppServerState,
@@ -34650,8 +34723,11 @@ fn handleThreadStart(
         return renderJsonRpcError(allocator, id_value, -32602, message);
     }
     const params = threadStartObjectParams(params_value);
+    const request_config = threadRequestConfigFromParams(params) catch |err| switch (err) {
+        error.InvalidThreadRequestConfig => return renderJsonRpcError(allocator, id_value, -32602, "invalid thread config override"),
+    };
 
-    var cfg = config.load(allocator) catch |err| {
+    var cfg = loadConfigForThreadRequest(allocator, request_config) catch |err| {
         return renderJsonRpcErrorForFailure(allocator, id_value, "thread/start failed to load config", err);
     };
     defer cfg.deinit(allocator);
@@ -34659,6 +34735,7 @@ fn handleThreadStart(
     applyThreadStartProjectTrustAndConfig(allocator, &cfg, params) catch |err| {
         return renderJsonRpcErrorForFailure(allocator, id_value, "thread/start failed to load project config", err);
     };
+    applyThreadRequestConfigOverrides(&cfg, request_config);
 
     var thread = createLoadedThreadFromStartParams(allocator, cfg, params) catch |err| {
         return renderJsonRpcErrorForFailure(allocator, id_value, "thread/start failed to create thread", err);
@@ -34701,10 +34778,14 @@ fn handleThreadResume(
     const object = parseThreadObjectParams(params_value) catch |err| switch (err) {
         error.InvalidThreadParams => return renderThreadObjectParamsError(allocator, id_value, "thread/resume"),
     };
-    var cfg = config.load(allocator) catch |err| {
+    const request_config = threadRequestConfigFromParams(object) catch |err| switch (err) {
+        error.InvalidThreadRequestConfig => return renderJsonRpcError(allocator, id_value, -32602, "invalid thread config override"),
+    };
+    var cfg = loadConfigForThreadRequest(allocator, request_config) catch |err| {
         return renderJsonRpcErrorForFailure(allocator, id_value, "thread/resume failed to load config", err);
     };
     defer cfg.deinit(allocator);
+    applyThreadRequestConfigOverrides(&cfg, request_config);
 
     if (object.get("history")) |history| {
         if (history != .null) {
@@ -34793,11 +34874,15 @@ fn handleThreadFork(
     const object = parseThreadObjectParams(params_value) catch |err| switch (err) {
         error.InvalidThreadParams => return renderThreadObjectParamsError(allocator, id_value, "thread/fork"),
     };
+    const request_config = threadRequestConfigFromParams(object) catch |err| switch (err) {
+        error.InvalidThreadRequestConfig => return renderJsonRpcError(allocator, id_value, -32602, "invalid thread config override"),
+    };
 
-    var cfg = config.load(allocator) catch |err| {
+    var cfg = loadConfigForThreadRequest(allocator, request_config) catch |err| {
         return renderJsonRpcErrorForFailure(allocator, id_value, "thread/fork failed to load config", err);
     };
     defer cfg.deinit(allocator);
+    applyThreadRequestConfigOverrides(&cfg, request_config);
 
     if (optionalStringParam(object, "path")) |path| {
         var source = createLoadedThreadFromForkPath(allocator, cfg, object, path) catch |err| switch (err) {
@@ -35381,6 +35466,9 @@ fn createLoadedThreadFromStartParams(
     const service_tier = try threadStartServiceTier(allocator, cfg, params);
     errdefer if (service_tier) |value| allocator.free(value);
 
+    const active_profile = try threadActiveProfile(allocator, cfg);
+    errdefer if (active_profile) |value| allocator.free(value);
+
     const cwd = try threadStartCwd(allocator, params);
     errdefer allocator.free(cwd);
 
@@ -35447,6 +35535,7 @@ fn createLoadedThreadFromStartParams(
         .model_verbosity = model_verbosity,
         .model_provider = model_provider,
         .service_tier = service_tier,
+        .active_profile = active_profile,
         .cwd = cwd,
         .approval_policy = approval_policy,
         .approvals_reviewer = approvals_reviewer,
@@ -35455,6 +35544,7 @@ fn createLoadedThreadFromStartParams(
         .sandbox_include_cwd_write_root = true,
         .sandbox_network_enabled = defaultNetworkEnabledForSandboxModeLabel(sandbox_mode),
         .sandbox_external = false,
+        .web_search_mode = cfg.web_search_mode,
         .reasoning_effort = reasoning_effort,
         .reasoning_summary = reasoning_summary,
         .personality = personality,
@@ -35470,6 +35560,7 @@ fn createLoadedThreadFromStartParams(
             .approval_policy = paramPresent(params, "approvalPolicy"),
             .approvals_reviewer = paramPresent(params, "approvalsReviewer"),
             .sandbox_mode = paramPresent(params, "sandbox"),
+            .web_search_mode = threadRequestConfigParamPresent(params, "web_search"),
             .reasoning_summary = false,
             .personality = optionalStringParam(params, "personality") != null,
         },
@@ -35533,6 +35624,9 @@ fn createLoadedThreadFromHistoryParams(
     const service_tier = try threadStartServiceTier(allocator, cfg, params);
     errdefer if (service_tier) |value| allocator.free(value);
 
+    const active_profile = try threadActiveProfile(allocator, cfg);
+    errdefer if (active_profile) |value| allocator.free(value);
+
     const cwd = try threadStartCwd(allocator, params);
     errdefer allocator.free(cwd);
 
@@ -35586,6 +35680,7 @@ fn createLoadedThreadFromHistoryParams(
         .model_verbosity = model_verbosity,
         .model_provider = model_provider,
         .service_tier = service_tier,
+        .active_profile = active_profile,
         .cwd = cwd,
         .approval_policy = approval_policy,
         .approvals_reviewer = approvals_reviewer,
@@ -35594,6 +35689,7 @@ fn createLoadedThreadFromHistoryParams(
         .sandbox_include_cwd_write_root = true,
         .sandbox_network_enabled = defaultNetworkEnabledForSandboxModeLabel(sandbox_mode),
         .sandbox_external = false,
+        .web_search_mode = cfg.web_search_mode,
         .reasoning_effort = reasoning_effort,
         .reasoning_summary = reasoning_summary,
         .personality = personality,
@@ -35609,6 +35705,7 @@ fn createLoadedThreadFromHistoryParams(
             .approval_policy = paramPresent(params, "approvalPolicy"),
             .approvals_reviewer = paramPresent(params, "approvalsReviewer"),
             .sandbox_mode = paramPresent(params, "sandbox"),
+            .web_search_mode = threadRequestConfigParamPresent(params, "web_search"),
             .reasoning_summary = false,
             .personality = optionalStringParam(params, "personality") != null,
         },
@@ -35694,6 +35791,9 @@ fn createLoadedThreadFromResumeParams(
     const service_tier = try threadStartServiceTier(allocator, cfg, params);
     errdefer if (service_tier) |value| allocator.free(value);
 
+    const active_profile = try threadActiveProfile(allocator, cfg);
+    errdefer if (active_profile) |value| allocator.free(value);
+
     const cwd = try threadResumeCwd(allocator, transcript, params);
     errdefer allocator.free(cwd);
 
@@ -35738,6 +35838,7 @@ fn createLoadedThreadFromResumeParams(
         .model_verbosity = model_verbosity,
         .model_provider = model_provider,
         .service_tier = service_tier,
+        .active_profile = active_profile,
         .cwd = cwd,
         .approval_policy = approval_policy,
         .approvals_reviewer = approvals_reviewer,
@@ -35746,6 +35847,7 @@ fn createLoadedThreadFromResumeParams(
         .sandbox_include_cwd_write_root = true,
         .sandbox_network_enabled = defaultNetworkEnabledForSandboxModeLabel(sandbox_mode),
         .sandbox_external = false,
+        .web_search_mode = cfg.web_search_mode,
         .reasoning_effort = reasoning_effort,
         .reasoning_summary = reasoning_summary,
         .personality = personality,
@@ -35761,6 +35863,7 @@ fn createLoadedThreadFromResumeParams(
             .approval_policy = paramPresent(params, "approvalPolicy"),
             .approvals_reviewer = paramPresent(params, "approvalsReviewer"),
             .sandbox_mode = paramPresent(params, "sandbox"),
+            .web_search_mode = threadRequestConfigParamPresent(params, "web_search"),
             .reasoning_summary = false,
             .personality = optionalStringParam(params, "personality") != null,
         },
@@ -35834,20 +35937,44 @@ fn createLoadedThreadFromForkParams(
     var transcript = try source.transcript.clone(allocator);
     errdefer transcript.deinit(allocator);
 
-    const model = try allocator.dupe(u8, optionalStringParam(params, "model") orelse source.model);
+    const request_config = try threadRequestConfigFromParams(params);
+    const use_request_profile = request_config.profile_present;
+    const use_request_config_for_web_search = request_config.profile_present or request_config.web_search_mode_present;
+
+    const default_model = if (use_request_profile) cfg.model else source.model;
+    const model = try allocator.dupe(u8, optionalStringParam(params, "model") orelse default_model);
     errdefer allocator.free(model);
 
-    const model_verbosity = if (source.model_verbosity) |value|
+    const model_context_window = if (use_request_profile) cfg.model_context_window else source.model_context_window;
+    const model_auto_compact_token_limit = if (use_request_profile) cfg.model_auto_compact_token_limit else source.model_auto_compact_token_limit;
+
+    const model_verbosity = if (use_request_profile)
+        try threadModelVerbosity(allocator, cfg)
+    else if (source.model_verbosity) |value|
         try allocator.dupe(u8, value)
     else
         null;
     errdefer if (model_verbosity) |value| allocator.free(value);
 
-    const model_provider = try allocator.dupe(u8, optionalStringParam(params, "modelProvider") orelse source.model_provider);
+    const configured_model_provider = if (use_request_profile)
+        try config.loadModelProviderId(allocator, cfg.active_profile)
+    else
+        null;
+    defer if (configured_model_provider) |value| allocator.free(value);
+    const default_model_provider = if (use_request_profile) configured_model_provider orelse "openai" else source.model_provider;
+    const model_provider = try allocator.dupe(u8, optionalStringParam(params, "modelProvider") orelse default_model_provider);
     errdefer allocator.free(model_provider);
 
-    const service_tier = try lifecycleServiceTier(allocator, source.service_tier, params);
+    const service_tier = try lifecycleServiceTier(allocator, if (use_request_profile) cfg.service_tier else source.service_tier, params);
     errdefer if (service_tier) |value| allocator.free(value);
+
+    const active_profile = if (use_request_profile)
+        try threadActiveProfile(allocator, cfg)
+    else if (source.active_profile) |value|
+        try allocator.dupe(u8, value)
+    else
+        null;
+    errdefer if (active_profile) |value| allocator.free(value);
 
     const cwd = if (optionalStringParam(params, "cwd")) |value|
         try realPathFileAllocPlain(allocator, value)
@@ -35855,31 +35982,42 @@ fn createLoadedThreadFromForkParams(
         try allocator.dupe(u8, source.cwd);
     errdefer allocator.free(cwd);
 
-    const approval_policy = try allocator.dupe(u8, optionalStringParam(params, "approvalPolicy") orelse source.approval_policy);
+    const default_approval_policy = if (use_request_profile) cfg.approval_policy.label() else source.approval_policy;
+    const approval_policy = try allocator.dupe(u8, optionalStringParam(params, "approvalPolicy") orelse default_approval_policy);
     errdefer allocator.free(approval_policy);
 
     const approvals_reviewer = try allocator.dupe(u8, optionalStringParam(params, "approvalsReviewer") orelse source.approvals_reviewer);
     errdefer allocator.free(approvals_reviewer);
 
-    const sandbox_mode = try allocator.dupe(u8, optionalStringParam(params, "sandbox") orelse source.sandbox_mode);
+    const default_sandbox_mode = if (use_request_profile) cfg.sandbox_mode.label() else source.sandbox_mode;
+    const sandbox_mode = try allocator.dupe(u8, optionalStringParam(params, "sandbox") orelse default_sandbox_mode);
     errdefer allocator.free(sandbox_mode);
     const sandbox_override = optionalStringParam(params, "sandbox") != null;
-    var sandbox_writable_roots = if (sandbox_override)
+    const reset_sandbox_profile = sandbox_override or use_request_profile;
+    var sandbox_writable_roots = if (reset_sandbox_profile)
         try emptyStringList(allocator)
     else
         try source.sandbox_writable_roots.clone(allocator);
     errdefer sandbox_writable_roots.deinit(allocator);
-    const sandbox_include_cwd_write_root = if (sandbox_override) true else source.sandbox_include_cwd_write_root;
-    const sandbox_network_enabled = if (sandbox_override) defaultNetworkEnabledForSandboxModeLabel(sandbox_mode) else source.sandbox_network_enabled;
-    const sandbox_external = if (sandbox_override) false else source.sandbox_external;
+    const sandbox_include_cwd_write_root = if (reset_sandbox_profile) true else source.sandbox_include_cwd_write_root;
+    const sandbox_network_enabled = if (reset_sandbox_profile) defaultNetworkEnabledForSandboxModeLabel(sandbox_mode) else source.sandbox_network_enabled;
+    const sandbox_external = if (reset_sandbox_profile) false else source.sandbox_external;
 
-    const reasoning_effort = if (source.reasoning_effort) |value|
+    const web_search_mode = if (use_request_config_for_web_search) cfg.web_search_mode else source.web_search_mode;
+
+    const reasoning_effort = if (use_request_profile and cfg.model_reasoning_effort != null)
+        try allocator.dupe(u8, cfg.model_reasoning_effort.?.label())
+    else if (use_request_profile)
+        null
+    else if (source.reasoning_effort) |value|
         try allocator.dupe(u8, value)
     else
         null;
     errdefer if (reasoning_effort) |value| allocator.free(value);
 
-    const reasoning_summary = if (source.reasoning_summary) |value|
+    const reasoning_summary = if (use_request_profile)
+        try threadReasoningSummary(allocator, cfg)
+    else if (source.reasoning_summary) |value|
         try allocator.dupe(u8, value)
     else
         null;
@@ -35888,6 +36026,8 @@ fn createLoadedThreadFromForkParams(
     const personality = if (paramPresent(params, "personality")) blk: {
         const requested = try optionalPersonalityParam(params, "personality");
         break :blk if (requested) |value| try allocator.dupe(u8, value.label()) else null;
+    } else if (use_request_profile) blk: {
+        break :blk if (cfg.personality) |value| try allocator.dupe(u8, value.label()) else null;
     } else if (source.personality) |value|
         try allocator.dupe(u8, value)
     else
@@ -35932,11 +36072,12 @@ fn createLoadedThreadFromForkParams(
         .forked_from_id = forked_from_id,
         .preview = preview,
         .model = model,
-        .model_context_window = source.model_context_window,
-        .model_auto_compact_token_limit = source.model_auto_compact_token_limit,
+        .model_context_window = model_context_window,
+        .model_auto_compact_token_limit = model_auto_compact_token_limit,
         .model_verbosity = model_verbosity,
         .model_provider = model_provider,
         .service_tier = service_tier,
+        .active_profile = active_profile,
         .cwd = cwd,
         .approval_policy = approval_policy,
         .approvals_reviewer = approvals_reviewer,
@@ -35945,24 +36086,26 @@ fn createLoadedThreadFromForkParams(
         .sandbox_include_cwd_write_root = sandbox_include_cwd_write_root,
         .sandbox_network_enabled = sandbox_network_enabled,
         .sandbox_external = sandbox_external,
+        .web_search_mode = web_search_mode,
         .reasoning_effort = reasoning_effort,
         .reasoning_summary = reasoning_summary,
         .personality = personality,
         .collaboration_mode = collaboration_mode,
         .collaboration_developer_instructions = collaboration_developer_instructions,
         .runtime_overrides = .{
-            .model = paramPresent(params, "model") or source.runtime_overrides.model,
-            .model_context_window = source.runtime_overrides.model_context_window,
-            .model_auto_compact_token_limit = source.runtime_overrides.model_auto_compact_token_limit,
-            .model_verbosity = source.runtime_overrides.model_verbosity,
-            .model_provider = paramPresent(params, "modelProvider") or source.runtime_overrides.model_provider,
-            .service_tier = paramPresent(params, "serviceTier") or source.runtime_overrides.service_tier,
-            .approval_policy = paramPresent(params, "approvalPolicy") or source.runtime_overrides.approval_policy,
+            .model = paramPresent(params, "model") or (!use_request_profile and source.runtime_overrides.model),
+            .model_context_window = !use_request_profile and source.runtime_overrides.model_context_window,
+            .model_auto_compact_token_limit = !use_request_profile and source.runtime_overrides.model_auto_compact_token_limit,
+            .model_verbosity = !use_request_profile and source.runtime_overrides.model_verbosity,
+            .model_provider = paramPresent(params, "modelProvider") or (!use_request_profile and source.runtime_overrides.model_provider),
+            .service_tier = paramPresent(params, "serviceTier") or (!use_request_profile and source.runtime_overrides.service_tier),
+            .approval_policy = paramPresent(params, "approvalPolicy") or (!use_request_profile and source.runtime_overrides.approval_policy),
             .approvals_reviewer = paramPresent(params, "approvalsReviewer") or source.runtime_overrides.approvals_reviewer,
-            .sandbox_mode = sandbox_override or source.runtime_overrides.sandbox_mode,
-            .reasoning_effort = source.runtime_overrides.reasoning_effort,
-            .reasoning_summary = source.runtime_overrides.reasoning_summary,
-            .personality = paramPresent(params, "personality") or source.runtime_overrides.personality,
+            .sandbox_mode = sandbox_override or (!use_request_profile and source.runtime_overrides.sandbox_mode),
+            .web_search_mode = request_config.web_search_mode_present or (!use_request_profile and source.runtime_overrides.web_search_mode),
+            .reasoning_effort = !use_request_profile and source.runtime_overrides.reasoning_effort,
+            .reasoning_summary = !use_request_profile and source.runtime_overrides.reasoning_summary,
+            .personality = paramPresent(params, "personality") or (!use_request_profile and source.runtime_overrides.personality),
             .collaboration_mode = source.runtime_overrides.collaboration_mode,
         },
         .ephemeral = ephemeral,
@@ -36022,6 +36165,11 @@ fn threadModelVerbosity(
     cfg: config.Config,
 ) !?[]const u8 {
     if (cfg.model_verbosity) |verbosity| return try allocator.dupe(u8, verbosity.label());
+    return null;
+}
+
+fn threadActiveProfile(allocator: std.mem.Allocator, cfg: config.Config) !?[]const u8 {
+    if (cfg.active_profile) |profile| return try allocator.dupe(u8, profile);
     return null;
 }
 
@@ -38964,6 +39112,7 @@ fn validateThreadStartParams(params_value: ?std.json.Value) ?[]const u8 {
             if (value != .null and value != .string) return name ++ " must be a string or null";
         }
     }
+    if (validateThreadRequestConfigParam(object)) |message| return message;
     if (object.get("personality")) |value| {
         if (!optionalEnumStringIsValid(value, &.{ "none", "friendly", "pragmatic" })) {
             return "personality must be none, friendly, pragmatic, or null";
@@ -39012,6 +39161,7 @@ fn validateThreadResumeParams(params_value: ?std.json.Value) ?[]const u8 {
             if (value != .null and value != .string) return name ++ " must be a string or null";
         }
     }
+    if (validateThreadRequestConfigParam(object)) |message| return message;
     if (object.get("personality")) |value| {
         if (!optionalEnumStringIsValid(value, &.{ "none", "friendly", "pragmatic" })) {
             return "personality must be none, friendly, pragmatic, or null";
@@ -39055,6 +39205,7 @@ fn validateThreadForkParams(params_value: ?std.json.Value) ?[]const u8 {
             if (value != .null and value != .string) return name ++ " must be a string or null";
         }
     }
+    if (validateThreadRequestConfigParam(object)) |message| return message;
     if (object.get("approvalPolicy")) |value| {
         if (!optionalEnumStringIsValid(value, &.{ "untrusted", "on-failure", "on-request", "never" })) {
             return "approvalPolicy must be a supported approval policy or null";
@@ -49620,20 +49771,20 @@ fn handleConfigBatchWrite(
 fn reloadLoadedThreadRuntimeConfig(allocator: std.mem.Allocator, state: *AppServerState) !void {
     if (state.loaded_threads.items.len == 0) return;
 
-    var cfg = config.load(allocator) catch |err| switch (err) {
-        error.OutOfMemory => return err,
-        else => return,
-    };
-    defer cfg.deinit(allocator);
-
-    const configured_model_provider = config.loadModelProviderId(allocator, cfg.active_profile) catch |err| switch (err) {
-        error.OutOfMemory => return err,
-        else => null,
-    };
-    defer if (configured_model_provider) |value| allocator.free(value);
-    const model_provider = configured_model_provider orelse "openai";
-
     for (state.loaded_threads.items) |*thread| {
+        var cfg = loadConfigForLoadedThread(allocator, thread) catch |err| switch (err) {
+            error.OutOfMemory => return err,
+            else => continue,
+        };
+        defer cfg.deinit(allocator);
+
+        const configured_model_provider = config.loadModelProviderId(allocator, cfg.active_profile) catch |err| switch (err) {
+            error.OutOfMemory => return err,
+            else => null,
+        };
+        defer if (configured_model_provider) |value| allocator.free(value);
+        const model_provider = configured_model_provider orelse "openai";
+
         if (!thread.runtime_overrides.model) {
             try replaceOwnedString(allocator, &thread.model, cfg.model);
         }
@@ -49675,6 +49826,9 @@ fn reloadLoadedThreadRuntimeConfig(allocator: std.mem.Allocator, state: *AppServ
             thread.sandbox_include_cwd_write_root = true;
             thread.sandbox_network_enabled = defaultNetworkEnabledForSandboxMode(cfg.sandbox_mode);
             thread.sandbox_external = false;
+        }
+        if (!thread.runtime_overrides.web_search_mode) {
+            thread.web_search_mode = cfg.web_search_mode;
         }
         if (!thread.runtime_overrides.reasoning_effort) {
             if (cfg.model_reasoning_effort) |effort| {

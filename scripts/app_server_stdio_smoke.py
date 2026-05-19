@@ -9250,6 +9250,154 @@ def run_turn_web_search_item_notification_smoke(binary: Path) -> None:
         shutil.rmtree(codex_home, ignore_errors=True)
 
 
+def run_thread_request_config_smoke(binary: Path) -> None:
+    server, base_url = start_turn_responses_server()
+    codex_home = Path(tempfile.mkdtemp(prefix="codex-zig-app-server-request-config-", dir="/tmp"))
+    try:
+        codex_home.joinpath("config.toml").write_text(
+            (
+                f'openai_base_url = "{base_url}"\n'
+                'model = "gpt-default-request-config"\n'
+                'approval_policy = "never"\n'
+                'sandbox_mode = "danger-full-access"\n'
+                "\n"
+                "[profiles.remote]\n"
+                'model = "gpt-profile-request-config"\n'
+                'web_search = "live"\n'
+            ),
+            encoding="utf-8",
+        )
+        env = os.environ.copy()
+        env["CODEX_HOME"] = str(codex_home)
+        env["OPENAI_API_KEY"] = "test-api-key"
+        env.pop("CODEX_ACCESS_TOKEN", None)
+
+        proc = subprocess.Popen(
+            [str(binary), "app-server"],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            env=env,
+        )
+        try:
+            write_json_line(
+                proc,
+                {
+                    "jsonrpc": "2.0",
+                    "id": "initialize",
+                    "method": "initialize",
+                    "params": {
+                        "clientInfo": {"name": "app-server-smoke", "version": "0"},
+                        "capabilities": {},
+                    },
+                },
+            )
+            assert read_json_line(proc, 5)["id"] == "initialize"
+
+            with tempfile.TemporaryDirectory(prefix="codex-zig-request-config-cwd-", dir="/tmp") as cwd:
+                write_json_line(
+                    proc,
+                    {
+                        "jsonrpc": "2.0",
+                        "id": "thread-start-profile-config",
+                        "method": "thread/start",
+                        "params": {
+                            "cwd": cwd,
+                            "config": {"profile": "remote"},
+                        },
+                    },
+                )
+                profile_start = read_json_line(proc, 5)
+                assert profile_start["id"] == "thread-start-profile-config"
+                profile_thread = profile_start["result"]["thread"]
+                profile_thread_id = profile_thread["id"]
+                assert_thread_started_notification(read_json_line(proc, 5), profile_thread)
+
+                write_json_line(
+                    proc,
+                    {
+                        "jsonrpc": "2.0",
+                        "id": "turn-start-profile-config",
+                        "method": "turn/start",
+                        "params": {
+                            "threadId": profile_thread_id,
+                            "input": [{"type": "text", "text": "use profile config"}],
+                        },
+                    },
+                )
+                assert_turn_start_rpc_completed(
+                    proc,
+                    profile_thread_id,
+                    "turn-start-profile-config",
+                )
+
+                profile_request = server.request_bodies[0]
+                assert profile_request["model"] == "gpt-profile-request-config"
+                profile_web_search_tool = next(
+                    tool for tool in profile_request["tools"] if tool.get("type") == "web_search"
+                )
+                assert profile_web_search_tool["external_web_access"] is True
+
+                write_json_line(
+                    proc,
+                    {
+                        "jsonrpc": "2.0",
+                        "id": "thread-start-web-search-config",
+                        "method": "thread/start",
+                        "params": {
+                            "cwd": cwd,
+                            "config": {"web_search": "live"},
+                        },
+                    },
+                )
+                web_search_start = read_json_line(proc, 5)
+                assert web_search_start["id"] == "thread-start-web-search-config"
+                web_search_thread = web_search_start["result"]["thread"]
+                web_search_thread_id = web_search_thread["id"]
+                assert_thread_started_notification(read_json_line(proc, 5), web_search_thread)
+
+                write_json_line(
+                    proc,
+                    {
+                        "jsonrpc": "2.0",
+                        "id": "turn-start-web-search-config",
+                        "method": "turn/start",
+                        "params": {
+                            "threadId": web_search_thread_id,
+                            "input": [{"type": "text", "text": "use web search config"}],
+                        },
+                    },
+                )
+                assert_turn_start_rpc_completed(
+                    proc,
+                    web_search_thread_id,
+                    "turn-start-web-search-config",
+                )
+
+                web_search_request = server.request_bodies[1]
+                assert web_search_request["model"] == "gpt-default-request-config"
+                web_search_tool = next(
+                    tool
+                    for tool in web_search_request["tools"]
+                    if tool.get("type") == "web_search"
+                )
+                assert web_search_tool["external_web_access"] is True
+
+            proc.stdin.close()
+            proc.wait(timeout=5)
+            if proc.returncode != 0:
+                raise AssertionError(f"app-server exited {proc.returncode}: {proc.stderr.read()}")
+        finally:
+            if proc.poll() is None:
+                proc.kill()
+                proc.wait(timeout=5)
+    finally:
+        server.shutdown()
+        server.server_close()
+        shutil.rmtree(codex_home, ignore_errors=True)
+
+
 def run_turn_plan_item_notification_smoke(binary: Path) -> None:
     server, base_url = start_turn_responses_server()
     codex_home = Path(tempfile.mkdtemp(prefix="codex-zig-app-server-plan-item-", dir="/tmp"))
@@ -45029,6 +45177,8 @@ def main() -> None:
     print("app-server-turn-plan-updated-notification-e2e: ok")
     run_turn_web_search_item_notification_smoke(binary)
     print("app-server-turn-web-search-item-notification-e2e: ok")
+    run_thread_request_config_smoke(binary)
+    print("app-server-thread-request-config-e2e: ok")
     run_turn_plan_item_notification_smoke(binary)
     print("app-server-turn-plan-item-notification-e2e: ok")
     run_turn_plan_item_opt_out_smoke(binary)
