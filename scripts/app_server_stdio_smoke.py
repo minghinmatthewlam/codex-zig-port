@@ -16,6 +16,7 @@ import tarfile
 import tempfile
 import threading
 import time
+import urllib.error
 import urllib.parse
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -30337,6 +30338,90 @@ def run_account_login_cancel_rpc_smoke(binary: Path) -> None:
         shutil.rmtree(codex_home, ignore_errors=True)
 
 
+def run_account_login_browser_callback_rpc_smoke(binary: Path) -> None:
+    server, issuer = start_device_auth_backend("success")
+    codex_home = Path(tempfile.mkdtemp(prefix="codex-zig-app-server-browser-login-success-", dir="/tmp"))
+    try:
+        env = os.environ.copy()
+        env.pop("OPENAI_API_KEY", None)
+        env.pop("CODEX_ACCESS_TOKEN", None)
+        env["CODEX_HOME"] = str(codex_home)
+        env["CODEX_APP_SERVER_LOGIN_ISSUER"] = issuer
+        proc = subprocess.Popen(
+            [str(binary), "app-server"],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            env=env,
+        )
+        try:
+            write_json_line(
+                proc,
+                {
+                    "jsonrpc": "2.0",
+                    "id": "browser-callback-start",
+                    "method": "account/login/start",
+                    "params": {"type": "chatgpt"},
+                },
+            )
+            started = read_json_line(proc, 5)
+            assert started["id"] == "browser-callback-start"
+            assert started["result"]["type"] == "chatgpt"
+            login_id = started["result"]["loginId"]
+
+            auth_url = started["result"]["authUrl"]
+            parsed_auth_url = urllib.parse.urlparse(auth_url)
+            assert f"{parsed_auth_url.scheme}://{parsed_auth_url.netloc}" == issuer
+            query = urllib.parse.parse_qs(parsed_auth_url.query)
+            redirect_uri = query["redirect_uri"][0]
+            state = query["state"][0]
+            callback_url = f"{redirect_uri}?code=browser-code-123&state={urllib.parse.quote(state)}"
+
+            deadline = time.monotonic() + 5
+            while True:
+                try:
+                    with urllib.request.urlopen(callback_url, timeout=5) as response:
+                        callback_body = response.read().decode("utf-8")
+                    break
+                except urllib.error.URLError:
+                    if time.monotonic() >= deadline:
+                        raise
+                    time.sleep(0.05)
+            assert "Codex login complete" in callback_body
+
+            completion_messages = read_json_lines_until(
+                proc,
+                5,
+                lambda received: any(message.get("method") == "account/login/completed" for message in received)
+                and any(message.get("method") == "account/updated" for message in received),
+            )
+            completed = next(message for message in completion_messages if message.get("method") == "account/login/completed")
+            assert completed["params"] == {"loginId": login_id, "success": True, "error": None}
+            updated = next(message for message in completion_messages if message.get("method") == "account/updated")
+            assert updated["params"] == {"authMode": "chatgpt", "planType": "pro"}
+
+            auth_json = json.loads((codex_home / "auth.json").read_text(encoding="utf-8"))
+            assert auth_json["auth_mode"] == "chatgpt"
+            assert auth_json["tokens"]["refresh_token"] == "device-refresh-token"
+            assert auth_json["tokens"]["account_id"] == "org-device"
+            assert [request["path"] for request in DeviceAuthBackendHandler.requests] == ["/oauth/token"]
+
+            assert proc.stdin is not None
+            proc.stdin.close()
+            proc.wait(timeout=5)
+            if proc.returncode != 0:
+                raise AssertionError(f"browser callback app-server exited {proc.returncode}: {proc.stderr.read()}")
+        finally:
+            if proc.poll() is None:
+                proc.kill()
+                proc.wait(timeout=5)
+    finally:
+        server.shutdown()
+        server.server_close()
+        shutil.rmtree(codex_home, ignore_errors=True)
+
+
 def run_account_login_device_code_rpc_smoke(binary: Path) -> None:
     def start_device_login(
         proc: subprocess.Popen[str],
@@ -42101,6 +42186,8 @@ def main() -> None:
     print("app-server-account-login-rpc-e2e: ok")
     run_account_login_cancel_rpc_smoke(binary)
     print("app-server-account-login-cancel-rpc-e2e: ok")
+    run_account_login_browser_callback_rpc_smoke(binary)
+    print("app-server-account-login-browser-callback-rpc-e2e: ok")
     run_account_login_device_code_rpc_smoke(binary)
     print("app-server-account-login-device-code-rpc-e2e: ok")
     run_account_rate_limits_rpc_smoke(binary)
