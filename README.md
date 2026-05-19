@@ -174,7 +174,7 @@ The first demo slice targets macOS and focuses on the interactive CLI surface:
   the refresh request
 - expose model-facing `get_goal`, `create_goal`, and `update_goal` tools during
   app-server loaded-thread turns when `[features].goals` is enabled, backed by
-  the same loaded-thread goal state as `thread/goal/*`
+  the same transcript-persisted loaded-thread goal state as `thread/goal/*`
 - handle app-server login cancellation requests with `account/login/cancel`
 - read app-server account rate limits with `account/rateLimits/read`
 - notify workspace owners about credit or usage-limit issues with
