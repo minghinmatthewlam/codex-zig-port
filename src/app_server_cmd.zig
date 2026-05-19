@@ -115,7 +115,7 @@ const AppServerState = struct {
     server_request_transport: ?ServerRequestTransport = null,
     connection_output: ?*AppServerConnectionOutputState = null,
     active_command_execs: std.ArrayList(*ActiveCommandExecSession) = .empty,
-    active_account_login: ?ActiveAccountLogin = null,
+    active_account_login: ?*ActiveAccountLoginRegistry = null,
 
     fn deinit(self: *AppServerState, allocator: std.mem.Allocator) void {
         clearAppServerConnectionState(allocator, self);
@@ -138,7 +138,7 @@ const AppServerState = struct {
         for (self.session_file_approvals.items) |*approval| approval.deinit(allocator);
         self.session_file_approvals.deinit(allocator);
         self.active_command_execs.deinit(allocator);
-        clearActiveAccountLogin(allocator, self, true);
+        releaseActiveAccountLoginRegistry(allocator, self, true);
     }
 };
 
@@ -193,9 +193,31 @@ const ActiveAccountLogin = struct {
     }
 };
 
+const ActiveAccountLoginRegistry = struct {
+    mutex: std.Io.Mutex = .init,
+    active: ?ActiveAccountLogin = null,
+    ref_count: std.atomic.Value(usize) = .init(1),
+
+    fn create(allocator: std.mem.Allocator) !*ActiveAccountLoginRegistry {
+        const registry = try allocator.create(ActiveAccountLoginRegistry);
+        registry.* = .{};
+        return registry;
+    }
+
+    fn retain(self: *ActiveAccountLoginRegistry) void {
+        _ = self.ref_count.fetchAdd(1, .acq_rel);
+    }
+
+    fn release(self: *ActiveAccountLoginRegistry, allocator: std.mem.Allocator, cancel: bool) void {
+        if (self.ref_count.fetchSub(1, .acq_rel) == 1) {
+            clearActiveAccountLoginRegistry(allocator, self, cancel);
+            allocator.destroy(self);
+        }
+    }
+};
+
 const AccountLoginCancelToken = struct {
     canceled: std.atomic.Value(bool) = .init(false),
-    completed: std.atomic.Value(bool) = .init(false),
     ref_count: std.atomic.Value(usize) = .init(1),
 
     fn retain(self: *AccountLoginCancelToken) void {
@@ -51902,18 +51924,18 @@ fn handleAccountLoginStartChatGpt(
 
     const login_id = try generateUuidString(allocator);
     errdefer allocator.free(login_id);
-    clearActiveAccountLogin(allocator, state, true);
-    state.active_account_login = .{
+    const login_registry = try ensureActiveAccountLoginRegistry(allocator, state);
+    replaceActiveAccountLogin(allocator, login_registry, .{
         .login_id = try allocator.dupe(u8, login_id),
         .kind = .{ .browser = login_handle.actual_port },
-    };
-    errdefer clearActiveAccountLogin(allocator, state, true);
+    }, true);
+    errdefer clearMatchingActiveAccountLogin(allocator, login_registry, login_id, true);
 
     const response = try renderAccountLoginChatGptResponse(allocator, id_value, login_id, login_handle.auth_url);
     errdefer allocator.free(response);
     var completion_target = try makeAppServerBackgroundNotificationTarget(allocator, state.connection_output);
     errdefer completion_target.deinit(allocator);
-    try spawnAccountLoginWorker(allocator, login_id, login_handle, completion_target);
+    try spawnAccountLoginWorker(allocator, login_id, login_handle, login_registry, completion_target);
     return response;
 }
 
@@ -51952,19 +51974,19 @@ fn handleAccountLoginStartChatGptDeviceCode(
     var cancel_token_owned = true;
     errdefer if (cancel_token_owned) cancel_token.release(allocator);
 
-    clearActiveAccountLogin(allocator, state, true);
-    state.active_account_login = .{
+    const login_registry = try ensureActiveAccountLoginRegistry(allocator, state);
+    replaceActiveAccountLogin(allocator, login_registry, .{
         .login_id = try allocator.dupe(u8, login_id),
         .kind = .{ .device_code = cancel_token },
-    };
+    }, true);
     cancel_token_owned = false;
-    errdefer clearActiveAccountLogin(allocator, state, true);
+    errdefer clearMatchingActiveAccountLogin(allocator, login_registry, login_id, true);
 
     const response = try renderAccountLoginDeviceCodeResponse(allocator, id_value, login_id, device_handle.device_code.verification_url, device_handle.device_code.user_code);
     errdefer allocator.free(response);
     var completion_target = try makeAppServerBackgroundNotificationTarget(allocator, state.connection_output);
     errdefer completion_target.deinit(allocator);
-    try spawnAccountDeviceCodeWorker(allocator, login_id, device_handle, cancel_token, completion_target);
+    try spawnAccountDeviceCodeWorker(allocator, login_id, device_handle, cancel_token, login_registry, completion_target);
     return response;
 }
 
@@ -52039,12 +52061,9 @@ fn handleAccountLoginCancel(
 
     const canonical = try canonicalUuidString(allocator, login_id_value.string);
     defer allocator.free(canonical);
-    if (state.active_account_login) |active| {
-        if (std.mem.eql(u8, active.login_id, canonical)) {
-            const canceled = cancelActiveAccountLogin(allocator, state);
-            if (!canceled) {
-                return renderJsonRpcResult(allocator, id_value, "{\"status\":\"notFound\"}");
-            }
+    if (state.active_account_login) |registry| {
+        const canceled = cancelMatchingActiveAccountLogin(allocator, registry, canonical);
+        if (canceled) {
             return renderJsonRpcResult(allocator, id_value, "{\"status\":\"canceled\"}");
         }
     }
@@ -52059,33 +52078,105 @@ fn accountLoginOptionalBool(object: std.json.ObjectMap, name: []const u8) !bool 
 }
 
 fn clearActiveAccountLogin(allocator: std.mem.Allocator, state: *AppServerState, cancel: bool) void {
-    var active = state.active_account_login orelse return;
-    state.active_account_login = null;
-    if (cancel) {
-        switch (active.kind) {
-            .browser => |port| login_mod.cancelBrowserAuth(port) catch {},
-            .device_code => |token| token.canceled.store(true, .release),
-        }
-    }
-    active.deinit(allocator);
+    const registry = state.active_account_login orelse return;
+    clearActiveAccountLoginRegistry(allocator, registry, cancel);
 }
 
-fn cancelActiveAccountLogin(allocator: std.mem.Allocator, state: *AppServerState) bool {
-    var active = state.active_account_login orelse return false;
-    state.active_account_login = null;
-    defer active.deinit(allocator);
+fn ensureActiveAccountLoginRegistry(allocator: std.mem.Allocator, state: *AppServerState) !*ActiveAccountLoginRegistry {
+    if (state.active_account_login) |registry| return registry;
+    const registry = try ActiveAccountLoginRegistry.create(allocator);
+    state.active_account_login = registry;
+    return registry;
+}
 
-    switch (active.kind) {
-        .browser => |port| {
-            login_mod.cancelBrowserAuth(port) catch return false;
-            return true;
-        },
-        .device_code => |token| {
-            if (token.completed.load(.acquire)) return false;
-            token.canceled.store(true, .release);
-            return true;
-        },
+fn releaseActiveAccountLoginRegistry(allocator: std.mem.Allocator, state: *AppServerState, cancel: bool) void {
+    const registry = state.active_account_login orelse return;
+    state.active_account_login = null;
+    clearActiveAccountLoginRegistry(allocator, registry, cancel);
+    registry.release(allocator, false);
+}
+
+fn replaceActiveAccountLogin(
+    allocator: std.mem.Allocator,
+    registry: *ActiveAccountLoginRegistry,
+    active: ActiveAccountLogin,
+    cancel_existing: bool,
+) void {
+    var active_owned = active;
+    var moved = false;
+    defer if (!moved) active_owned.deinit(allocator);
+
+    var replaced = takeActiveAccountLogin(registry, null);
+    defer if (replaced) |*existing| {
+        if (cancel_existing) cancelAccountLogin(existing);
+        existing.deinit(allocator);
+    };
+
+    lockActiveAccountLoginRegistry(registry);
+    defer unlockActiveAccountLoginRegistry(registry);
+    registry.active = active_owned;
+    moved = true;
+}
+
+fn clearActiveAccountLoginRegistry(
+    allocator: std.mem.Allocator,
+    registry: *ActiveAccountLoginRegistry,
+    cancel: bool,
+) void {
+    var active = takeActiveAccountLogin(registry, null) orelse return;
+    defer active.deinit(allocator);
+    if (cancel) cancelAccountLogin(&active);
+}
+
+fn clearMatchingActiveAccountLogin(
+    allocator: std.mem.Allocator,
+    registry: *ActiveAccountLoginRegistry,
+    login_id: []const u8,
+    cancel: bool,
+) void {
+    var active = takeActiveAccountLogin(registry, login_id) orelse return;
+    defer active.deinit(allocator);
+    if (cancel) cancelAccountLogin(&active);
+}
+
+fn cancelMatchingActiveAccountLogin(
+    allocator: std.mem.Allocator,
+    registry: *ActiveAccountLoginRegistry,
+    login_id: []const u8,
+) bool {
+    var active = takeActiveAccountLogin(registry, login_id) orelse return false;
+    defer active.deinit(allocator);
+    cancelAccountLogin(&active);
+    return true;
+}
+
+fn takeActiveAccountLogin(registry: *ActiveAccountLoginRegistry, login_id: ?[]const u8) ?ActiveAccountLogin {
+    lockActiveAccountLoginRegistry(registry);
+    defer unlockActiveAccountLoginRegistry(registry);
+
+    const active = registry.active orelse return null;
+    if (login_id) |expected| {
+        if (!std.mem.eql(u8, active.login_id, expected)) return null;
     }
+    registry.active = null;
+    return active;
+}
+
+fn cancelAccountLogin(active: *ActiveAccountLogin) void {
+    switch (active.kind) {
+        .browser => |port| login_mod.cancelBrowserAuth(port) catch {},
+        .device_code => |token| token.canceled.store(true, .release),
+    }
+}
+
+fn lockActiveAccountLoginRegistry(registry: *ActiveAccountLoginRegistry) void {
+    const io = std.Io.Threaded.global_single_threaded.io();
+    registry.mutex.lockUncancelable(io);
+}
+
+fn unlockActiveAccountLoginRegistry(registry: *ActiveAccountLoginRegistry) void {
+    const io = std.Io.Threaded.global_single_threaded.io();
+    registry.mutex.unlock(io);
 }
 
 fn renderAccountLoginChatGptResponse(
@@ -52126,11 +52217,13 @@ fn renderAccountLoginDeviceCodeResponse(
 const AccountLoginWorker = struct {
     login_id: []const u8,
     handle: login_mod.BrowserAuthHandle,
+    login_registry: *ActiveAccountLoginRegistry,
     completion_target: AppServerBackgroundNotificationTarget,
 
     fn deinit(self: *AccountLoginWorker, allocator: std.mem.Allocator) void {
         allocator.free(self.login_id);
         self.handle.deinit(allocator);
+        self.login_registry.release(allocator, false);
         self.completion_target.deinit(allocator);
     }
 };
@@ -52139,15 +52232,19 @@ fn spawnAccountLoginWorker(
     allocator: std.mem.Allocator,
     login_id: []const u8,
     handle: login_mod.BrowserAuthHandle,
+    login_registry: *ActiveAccountLoginRegistry,
     completion_target: AppServerBackgroundNotificationTarget,
 ) !void {
     const worker = try allocator.create(AccountLoginWorker);
     errdefer allocator.destroy(worker);
     const login_id_owned = try allocator.dupe(u8, login_id);
     errdefer allocator.free(login_id_owned);
+    login_registry.retain();
+    errdefer login_registry.release(allocator, false);
     worker.* = .{
         .login_id = login_id_owned,
         .handle = handle,
+        .login_registry = login_registry,
         .completion_target = completion_target,
     };
     const thread = try std.Thread.spawn(.{ .allocator = allocator }, accountLoginWorker, .{ allocator, worker });
@@ -52158,12 +52255,14 @@ const AccountDeviceCodeWorker = struct {
     login_id: []const u8,
     handle: login_mod.DeviceAuthHandle,
     cancel_token: *AccountLoginCancelToken,
+    login_registry: *ActiveAccountLoginRegistry,
     completion_target: AppServerBackgroundNotificationTarget,
 
     fn deinit(self: *AccountDeviceCodeWorker, allocator: std.mem.Allocator) void {
         allocator.free(self.login_id);
         self.handle.deinit(allocator);
         self.cancel_token.release(allocator);
+        self.login_registry.release(allocator, false);
         self.completion_target.deinit(allocator);
     }
 };
@@ -52173,6 +52272,7 @@ fn spawnAccountDeviceCodeWorker(
     login_id: []const u8,
     handle: login_mod.DeviceAuthHandle,
     cancel_token: *AccountLoginCancelToken,
+    login_registry: *ActiveAccountLoginRegistry,
     completion_target: AppServerBackgroundNotificationTarget,
 ) !void {
     const worker = try allocator.create(AccountDeviceCodeWorker);
@@ -52181,10 +52281,13 @@ fn spawnAccountDeviceCodeWorker(
     errdefer allocator.free(login_id_owned);
     cancel_token.retain();
     errdefer cancel_token.release(allocator);
+    login_registry.retain();
+    errdefer login_registry.release(allocator, false);
     worker.* = .{
         .login_id = login_id_owned,
         .handle = handle,
         .cancel_token = cancel_token,
+        .login_registry = login_registry,
         .completion_target = completion_target,
     };
     const thread = try std.Thread.spawn(.{ .allocator = allocator }, accountDeviceCodeWorker, .{ allocator, worker });
@@ -52193,6 +52296,8 @@ fn spawnAccountDeviceCodeWorker(
 
 fn accountLoginWorker(allocator: std.mem.Allocator, worker: *AccountLoginWorker) void {
     const maybe_error = if (worker.handle.waitAndSave(allocator)) |_| null else |err| accountLoginErrorMessage(err);
+    clearMatchingActiveAccountLogin(allocator, worker.login_registry, worker.login_id, false);
+
     var notification_storage: [4096]u8 = undefined;
     var notification_writer = std.Io.Writer.fixed(&notification_storage);
     if (maybe_error) |message| {
@@ -52225,6 +52330,7 @@ fn accountLoginWorker(allocator: std.mem.Allocator, worker: *AccountLoginWorker)
     worker.completion_target = .stdout;
     allocator.free(worker.login_id);
     worker.handle.deinit(allocator);
+    worker.login_registry.release(allocator, false);
     allocator.destroy(worker);
 
     completion_target.send(notification_writer.buffer[0..notification_writer.end]) catch {};
@@ -52233,7 +52339,7 @@ fn accountLoginWorker(allocator: std.mem.Allocator, worker: *AccountLoginWorker)
 
 fn accountDeviceCodeWorker(allocator: std.mem.Allocator, worker: *AccountDeviceCodeWorker) void {
     const maybe_error = if (worker.handle.completeAndSave(allocator, &worker.cancel_token.canceled)) |_| null else |err| accountLoginErrorMessage(err);
-    worker.cancel_token.completed.store(true, .release);
+    clearMatchingActiveAccountLogin(allocator, worker.login_registry, worker.login_id, false);
 
     var notification_storage: [4096]u8 = undefined;
     var notification_writer = std.Io.Writer.fixed(&notification_storage);
@@ -52268,6 +52374,7 @@ fn accountDeviceCodeWorker(allocator: std.mem.Allocator, worker: *AccountDeviceC
     allocator.free(worker.login_id);
     worker.handle.deinit(allocator);
     worker.cancel_token.release(allocator);
+    worker.login_registry.release(allocator, false);
     allocator.destroy(worker);
 
     completion_target.send(notification_writer.buffer[0..notification_writer.end]) catch {};

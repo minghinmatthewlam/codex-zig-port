@@ -30407,6 +30407,19 @@ def run_account_login_browser_callback_rpc_smoke(binary: Path) -> None:
             assert auth_json["tokens"]["account_id"] == "org-device"
             assert [request["path"] for request in DeviceAuthBackendHandler.requests] == ["/oauth/token"]
 
+            write_json_line(
+                proc,
+                {
+                    "jsonrpc": "2.0",
+                    "id": "browser-callback-cancel-completed",
+                    "method": "account/login/cancel",
+                    "params": {"loginId": login_id},
+                },
+            )
+            cancel_completed = read_json_line(proc, 5)
+            assert cancel_completed["id"] == "browser-callback-cancel-completed"
+            assert cancel_completed["result"] == {"status": "notFound"}
+
             assert proc.stdin is not None
             proc.stdin.close()
             proc.wait(timeout=5)
@@ -30500,6 +30513,19 @@ def run_account_login_device_code_rpc_smoke(binary: Path) -> None:
                 "/api/accounts/deviceauth/token",
                 "/oauth/token",
             ]
+
+            write_json_line(
+                proc,
+                {
+                    "jsonrpc": "2.0",
+                    "id": "device-success-cancel-completed",
+                    "method": "account/login/cancel",
+                    "params": {"loginId": login_id},
+                },
+            )
+            cancel_completed = read_json_line(proc, 5)
+            assert cancel_completed["id"] == "device-success-cancel-completed"
+            assert cancel_completed["result"] == {"status": "notFound"}
 
             assert proc.stdin is not None
             proc.stdin.close()
@@ -30604,6 +30630,19 @@ def run_account_login_device_code_rpc_smoke(binary: Path) -> None:
             assert completed["params"]["error"] == "DeviceAuthFailed"
             assert not (failure_home / "auth.json").exists()
             assert "/oauth/token" not in [request["path"] for request in DeviceAuthBackendHandler.requests]
+
+            write_json_line(
+                proc,
+                {
+                    "jsonrpc": "2.0",
+                    "id": "device-failure-cancel-completed",
+                    "method": "account/login/cancel",
+                    "params": {"loginId": started["result"]["loginId"]},
+                },
+            )
+            cancel_completed = read_json_line(proc, 5)
+            assert cancel_completed["id"] == "device-failure-cancel-completed"
+            assert cancel_completed["result"] == {"status": "notFound"}
 
             assert proc.stdin is not None
             proc.stdin.close()
