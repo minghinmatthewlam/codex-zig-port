@@ -374,6 +374,9 @@ class TurnResponsesHandler(BaseHTTPRequestHandler):
         length = int(self.headers.get("Content-Length", "0"))
         body = self.rfile.read(length)
         self.server.request_paths.append(self.path)
+        self.server.request_headers.append(
+            {key.lower(): value for key, value in self.headers.items()}
+        )
         self.server.request_bodies.append(json.loads(body))
         payload = self.server.response_payloads.pop(0) if self.server.response_payloads else (
             b'data: {"type":"response.output_text.delta","delta":"app turn reply"}\n\n'
@@ -382,7 +385,8 @@ class TurnResponsesHandler(BaseHTTPRequestHandler):
         response_headers = (
             self.server.response_headers.pop(0) if self.server.response_headers else {}
         )
-        self.send_response(200)
+        status_code = self.server.response_statuses.pop(0) if self.server.response_statuses else 200
+        self.send_response(status_code)
         self.send_header("Content-Type", "text/event-stream")
         self.send_header("Content-Length", str(len(payload)))
         for key, value in response_headers.items():
@@ -396,9 +400,11 @@ class TurnResponsesHandler(BaseHTTPRequestHandler):
 
 class TurnResponsesServer(ThreadingHTTPServer):
     request_paths: list[str]
+    request_headers: list[dict[str, str]]
     request_bodies: list[dict]
     response_payloads: list[bytes]
     response_headers: list[dict[str, str]]
+    response_statuses: list[int]
 
 
 class McpOAuthDiscoveryHandler(BaseHTTPRequestHandler):
@@ -933,9 +939,11 @@ class FeedbackEnvelopeServer(ThreadingHTTPServer):
 def start_turn_responses_server() -> tuple[TurnResponsesServer, str]:
     server = TurnResponsesServer(("127.0.0.1", 0), TurnResponsesHandler)
     server.request_paths = []
+    server.request_headers = []
     server.request_bodies = []
     server.response_payloads = []
     server.response_headers = []
+    server.response_statuses = []
     threading.Thread(target=server.serve_forever, daemon=True).start()
     return server, f"http://127.0.0.1:{server.server_port}"
 
@@ -6883,6 +6891,357 @@ def run_turn_start_rpc_smoke(binary: Path) -> None:
         server.shutdown()
         server.server_close()
         shutil.rmtree(codex_home, ignore_errors=True)
+
+
+def run_external_auth_refresh_rpc_smoke(binary: Path) -> None:
+    def chatgpt_token(email: str, account_id: str) -> str:
+        return encode_unsigned_jwt(
+            {
+                "email": email,
+                "exp": 4_102_444_800,
+                "https://api.openai.com/auth": {
+                    "chatgpt_plan_type": "pro",
+                    "chatgpt_account_id": account_id,
+                },
+            }
+        )
+
+    def run_case(
+        name: str,
+        refresh_account_id: str,
+        *,
+        expected_error: str | None = None,
+        forced_workspace_id: str | None = None,
+        interrupt_refresh: bool = False,
+        refresh_error_response: bool = False,
+        refresh_access_token: str | None = None,
+        skip_refresh_response: bool = False,
+    ) -> None:
+        server, base_url = start_turn_responses_server()
+        server.response_statuses.append(401)
+        server.response_payloads.append(b'{"error":{"message":"unauthorized"}}')
+        expected_success = expected_error is None and not interrupt_refresh and not skip_refresh_response
+        if expected_success:
+            server.response_statuses.append(200)
+            server.response_payloads.append(
+                b'data: {"type":"response.output_text.delta","delta":"refreshed reply"}\n\n'
+                b"data: [DONE]\n\n"
+            )
+
+        codex_home = Path(tempfile.mkdtemp(prefix=f"codex-zig-app-server-auth-refresh-{name}-", dir="/tmp"))
+        try:
+            config_lines = [
+                f'chatgpt_base_url = "{base_url}"',
+                'model = "gpt-turn-smoke"',
+            ]
+            if forced_workspace_id is not None:
+                config_lines.append(f'forced_chatgpt_workspace_id = "{forced_workspace_id}"')
+            codex_home.joinpath("config.toml").write_text(
+                "\n".join(config_lines) + "\n",
+                encoding="utf-8",
+            )
+
+            env = os.environ.copy()
+            env["CODEX_HOME"] = str(codex_home)
+            env.pop("OPENAI_API_KEY", None)
+            env.pop("CODEX_ACCESS_TOKEN", None)
+
+            initial_account_id = forced_workspace_id or "acct_initial"
+            initial_access_token = chatgpt_token(f"initial-{name}@example.com", initial_account_id)
+            refreshed_access_token = refresh_access_token or chatgpt_token(
+                f"refreshed-{name}@example.com",
+                refresh_account_id,
+            )
+
+            proc = subprocess.Popen(
+                [str(binary), "app-server"],
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                env=env,
+            )
+            try:
+                write_json_line(
+                    proc,
+                    {
+                        "jsonrpc": "2.0",
+                        "id": f"{name}-initialize",
+                        "method": "initialize",
+                        "params": {
+                            "clientInfo": {"name": "app-server-smoke", "version": "0"},
+                            "capabilities": EXPERIMENTAL_API_CAPABILITIES,
+                        },
+                    },
+                )
+                assert read_json_line(proc, 5)["id"] == f"{name}-initialize"
+
+                write_json_line(
+                    proc,
+                    {
+                        "jsonrpc": "2.0",
+                        "id": f"{name}-login",
+                        "method": "account/login/start",
+                        "params": {
+                            "type": "chatgptAuthTokens",
+                            "accessToken": initial_access_token,
+                            "chatgptAccountId": initial_account_id,
+                            "chatgptPlanType": "pro",
+                        },
+                    },
+                )
+                login = read_json_line(proc, 5)
+                assert login["id"] == f"{name}-login"
+                assert login["result"] == {"type": "chatgptAuthTokens"}
+                assert read_json_line(proc, 5) == {
+                    "method": "account/login/completed",
+                    "params": {"loginId": None, "success": True, "error": None},
+                }
+                assert read_json_line(proc, 5) == {
+                    "method": "account/updated",
+                    "params": {"authMode": "chatgptAuthTokens", "planType": "pro"},
+                }
+
+                with tempfile.TemporaryDirectory(prefix=f"codex-zig-auth-refresh-{name}-cwd-", dir="/tmp") as cwd:
+                    write_json_line(
+                        proc,
+                        {
+                            "jsonrpc": "2.0",
+                            "id": f"{name}-thread-start",
+                            "method": "thread/start",
+                            "params": {
+                                "cwd": cwd,
+                                "approvalPolicy": "never",
+                                "sandbox": "danger-full-access",
+                            },
+                        },
+                    )
+                    thread_start = read_json_line(proc, 5)
+                    assert thread_start["id"] == f"{name}-thread-start"
+                    thread = thread_start["result"]["thread"]
+                    thread_id = thread["id"]
+                    assert_thread_started_notification(read_json_line(proc, 5), thread)
+
+                    write_json_line(
+                        proc,
+                        {
+                            "jsonrpc": "2.0",
+                            "id": f"{name}-turn-start",
+                            "method": "turn/start",
+                            "params": {
+                                "threadId": thread_id,
+                                "input": [
+                                    {
+                                        "type": "text",
+                                        "text": f"refresh external auth for {name}",
+                                    }
+                                ],
+                            },
+                        },
+                    )
+                    turn_start = read_json_line(proc, 5)
+                    assert turn_start["id"] == f"{name}-turn-start"
+                    assert turn_start["result"]["turn"]["id"] == "turn-0"
+                    assert turn_start["result"]["turn"]["status"] == "inProgress"
+
+                    refresh_request = read_json_line(proc, 5)
+                    assert refresh_request["jsonrpc"] == "2.0"
+                    assert refresh_request["method"] == "account/chatgptAuthTokens/refresh"
+                    assert refresh_request["params"] == {
+                        "reason": "unauthorized",
+                        "previousAccountId": initial_account_id,
+                    }
+                    assert refresh_request["id"] == "auth-refresh-turn-0"
+
+                    if interrupt_refresh:
+                        write_json_line(
+                            proc,
+                            {
+                                "jsonrpc": "2.0",
+                                "id": f"{name}-interrupt",
+                                "method": "turn/interrupt",
+                                "params": {
+                                    "threadId": thread_id,
+                                    "turnId": "turn-0",
+                                },
+                            },
+                        )
+                    elif refresh_error_response:
+                        write_json_line(
+                            proc,
+                            {
+                                "jsonrpc": "2.0",
+                                "id": refresh_request["id"],
+                                "error": {
+                                    "code": -32001,
+                                    "message": "refresh rejected",
+                                },
+                            },
+                        )
+                    elif not skip_refresh_response:
+                        write_json_line(
+                            proc,
+                            {
+                                "jsonrpc": "2.0",
+                                "id": refresh_request["id"],
+                                "result": {
+                                    "accessToken": refreshed_access_token,
+                                    "chatgptAccountId": refresh_account_id,
+                                    "chatgptPlanType": "pro",
+                                },
+                            },
+                        )
+
+                    if interrupt_refresh:
+                        messages = read_json_lines_until(
+                            proc,
+                            5,
+                            lambda received: any(
+                                message.get("id") == f"{name}-interrupt"
+                                and message.get("result") == {}
+                                for message in received
+                            )
+                            and any(
+                                message.get("method") == "serverRequest/resolved"
+                                and message["params"]["requestId"] == refresh_request["id"]
+                                for message in received
+                            )
+                            and any(
+                                message.get("method") == "turn/completed"
+                                and message["params"]["turn"]["status"] == "interrupted"
+                                for message in received
+                            )
+                            and any(
+                                message.get("method") == "thread/status/changed"
+                                and message["params"]["status"] == {"type": "idle"}
+                                for message in received
+                            ),
+                        )
+                        resolved = next(
+                            message for message in messages if message.get("method") == "serverRequest/resolved"
+                        )
+                        assert resolved["params"]["threadId"] == thread_id
+                        assert server.request_paths == ["/responses"]
+                        assert server.request_headers[0]["authorization"] == f"Bearer {initial_access_token}"
+                        auth_json = json.loads((codex_home / "auth.json").read_text(encoding="utf-8"))
+                        assert auth_json["tokens"]["access_token"] == initial_access_token
+                        assert auth_json["tokens"]["account_id"] == initial_account_id
+                    elif expected_success:
+                        resolved = read_json_line(proc, 5)
+                        assert resolved["method"] == "serverRequest/resolved"
+                        assert resolved["params"]["threadId"] == thread_id
+                        assert resolved["params"]["requestId"] == refresh_request["id"]
+                        messages = read_json_lines_until(
+                            proc,
+                            5,
+                            lambda received: any(
+                                message.get("method") == "turn/completed"
+                                and message["params"]["turn"]["status"] == "completed"
+                                for message in received
+                            )
+                            and any(
+                                message.get("method") == "thread/status/changed"
+                                and message["params"]["status"] == {"type": "idle"}
+                                for message in received
+                            ),
+                        )
+                        assert any(
+                            message.get("method") == "item/agentMessage/delta"
+                            and message["params"]["delta"] == "refreshed reply"
+                            for message in messages
+                        )
+                        assert server.request_paths == ["/responses", "/responses"]
+                        assert server.request_headers[0]["authorization"] == f"Bearer {initial_access_token}"
+                        assert server.request_headers[1]["authorization"] == f"Bearer {refreshed_access_token}"
+                        assert server.request_bodies[0]["model"] == "gpt-turn-smoke"
+                        assert server.request_bodies[1]["model"] == "gpt-turn-smoke"
+                        auth_json = json.loads((codex_home / "auth.json").read_text(encoding="utf-8"))
+                        assert auth_json["auth_mode"] == "chatgptAuthTokens"
+                        assert auth_json["tokens"] == {
+                            "id_token": refreshed_access_token,
+                            "access_token": refreshed_access_token,
+                            "refresh_token": "",
+                            "account_id": refresh_account_id,
+                        }
+                    else:
+                        messages = read_json_lines_until(
+                            proc,
+                            15 if skip_refresh_response else 5,
+                            lambda received: any(
+                                message.get("method") == "turn/completed"
+                                and message["params"]["turn"]["status"] == "failed"
+                                for message in received
+                            )
+                            and any(
+                                message.get("method") == "thread/status/changed"
+                                and message["params"]["status"] == {"type": "systemError"}
+                                for message in received
+                            )
+                            and any(
+                                message.get("method") == "serverRequest/resolved"
+                                and message["params"]["requestId"] == refresh_request["id"]
+                                for message in received
+                            ),
+                        )
+                        resolved = next(
+                            message for message in messages if message.get("method") == "serverRequest/resolved"
+                        )
+                        assert resolved["params"]["threadId"] == thread_id
+                        error_notification = next(
+                            message for message in messages if message.get("method") == "error"
+                        )
+                        assert expected_error is not None
+                        assert expected_error in error_notification["params"]["error"]["message"]
+                        assert server.request_paths == ["/responses"]
+                        assert server.request_headers[0]["authorization"] == f"Bearer {initial_access_token}"
+                        auth_json = json.loads((codex_home / "auth.json").read_text(encoding="utf-8"))
+                        assert auth_json["tokens"]["access_token"] == initial_access_token
+                        assert auth_json["tokens"]["account_id"] == initial_account_id
+
+                assert proc.stdin is not None
+                proc.stdin.close()
+                proc.wait(timeout=5)
+                if proc.returncode != 0:
+                    raise AssertionError(f"{name} app-server exited {proc.returncode}: {proc.stderr.read()}")
+            finally:
+                if proc.poll() is None:
+                    proc.kill()
+                    proc.wait(timeout=5)
+        finally:
+            server.shutdown()
+            server.server_close()
+            shutil.rmtree(codex_home, ignore_errors=True)
+
+    run_case("success", "acct_refreshed")
+    run_case(
+        "interrupt",
+        "acct_interrupt",
+        interrupt_refresh=True,
+    )
+    run_case(
+        "rejected",
+        "acct_rejected",
+        expected_error="AppServerExternalAuthRefreshRejected",
+        refresh_error_response=True,
+    )
+    run_case(
+        "no-response",
+        "acct_timeout",
+        expected_error="AppServerExternalAuthRefreshTimedOut",
+        skip_refresh_response=True,
+    )
+    run_case(
+        "malformed-token",
+        "acct_initial",
+        expected_error="InvalidJwt",
+        refresh_access_token="not-a-jwt",
+    )
+    run_case(
+        "workspace-mismatch",
+        "acct_wrong",
+        expected_error="WorkspaceRestriction",
+        forced_workspace_id="acct_expected",
+    )
 
 
 def run_turn_project_model_controls_rpc_smoke(binary: Path) -> None:
@@ -42816,6 +43175,8 @@ def main() -> None:
     print("app-server-account-logout-rpc-e2e: ok")
     run_account_login_rpc_smoke(binary)
     print("app-server-account-login-rpc-e2e: ok")
+    run_external_auth_refresh_rpc_smoke(binary)
+    print("app-server-external-auth-refresh-rpc-e2e: ok")
     run_account_login_cancel_rpc_smoke(binary)
     print("app-server-account-login-cancel-rpc-e2e: ok")
     run_account_login_browser_callback_rpc_smoke(binary)
