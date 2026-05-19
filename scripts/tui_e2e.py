@@ -3479,6 +3479,9 @@ def run_remote_unix_tui_smoke(
         wait_for(master_fd, output, b"resumed remote thread:", 5)
         send_line(master_fd, "side question from remote slash resume")
         wait_for(master_fd, output, b"side answer", 8)
+        send_line(master_fd, "/definitely-not-a-command")
+        wait_for(master_fd, output, b"unknown remote slash command: /definitely-not-a-command", 5)
+        wait_for(master_fd, output, b"Type /help for commands.", 5)
         if b"parsed but not implemented yet" in output:
             rendered = output.decode(errors="replace")
             raise AssertionError(f"remote TUI still hit placeholder:\n\n{rendered}")

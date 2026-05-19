@@ -891,7 +891,7 @@ fn handleRemoteSlashCommand(
         return .handled;
     }
 
-    std.debug.print("remote TUI slash command is parsed but not implemented yet: {s}\n", .{prompt});
+    std.debug.print("unknown remote slash command: /{s}\nType /help for commands.\n", .{parts.name});
     return .handled;
 }
 
