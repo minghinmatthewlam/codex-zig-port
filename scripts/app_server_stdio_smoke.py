@@ -1301,6 +1301,15 @@ class DeviceAuthBackendHandler(BaseHTTPRequestHandler):
             return
 
         if self.path == "/oauth/token":
+            if isinstance(body, dict) and body.get("grant_type") == [
+                "urn:ietf:params:oauth:grant-type:token-exchange"
+            ]:
+                if DeviceAuthBackendHandler.mode == "api-key-exchange-failure":
+                    self._send_json(500, {"error": "api-key-exchange-failed"})
+                    return
+                self._send_json(200, {"access_token": "sk-token-exchange"})
+                return
+
             auth_claims = {
                 "chatgpt_plan_type": "pro",
                 "chatgpt_account_id": "org-device",
@@ -1340,6 +1349,50 @@ class DeviceAuthBackendHandler(BaseHTTPRequestHandler):
             return
 
         self._send_json(404, {"error": "not-found"})
+
+    def _send_json(self, status_code: int, payload: dict[str, object]) -> None:
+        body = json.dumps(payload, separators=(",", ":")).encode("utf-8")
+        self.send_response(status_code)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def log_message(self, format: str, *args: object) -> None:
+        return
+
+
+class RefreshTokenBackendHandler(BaseHTTPRequestHandler):
+    requests: list[dict[str, object]] = []
+
+    def do_POST(self) -> None:
+        content_length = int(self.headers.get("Content-Length", "0"))
+        body_bytes = self.rfile.read(content_length)
+        body_text = body_bytes.decode("utf-8")
+        content_type = self.headers.get("Content-Type")
+        body: object = json.loads(body_text) if content_type == "application/json" and body_text else body_text
+        RefreshTokenBackendHandler.requests.append(
+            {
+                "path": self.path,
+                "content_type": content_type,
+                "body": body,
+            }
+        )
+
+        self._send_json(
+            200,
+            {
+                "id_token": encode_unsigned_jwt(
+                    {
+                        "https://api.openai.com/auth": {
+                            "chatgpt_account_id": "acct_123",
+                        },
+                    }
+                ),
+                "access_token": encode_unsigned_jwt({"exp": 4_102_444_800}),
+                "refresh_token": "refreshed-refresh-token",
+            },
+        )
 
     def _send_json(self, status_code: int, payload: dict[str, object]) -> None:
         body = json.dumps(payload, separators=(",", ":")).encode("utf-8")
@@ -29512,6 +29565,13 @@ def start_device_auth_backend(mode: str) -> tuple[ThreadingHTTPServer, str]:
     return server, f"http://127.0.0.1:{server.server_port}"
 
 
+def start_refresh_token_backend() -> tuple[ThreadingHTTPServer, str]:
+    RefreshTokenBackendHandler.requests = []
+    server = ThreadingHTTPServer(("127.0.0.1", 0), RefreshTokenBackendHandler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    return server, f"http://127.0.0.1:{server.server_port}/oauth/token"
+
+
 def start_command_exec_network_backend() -> tuple[ThreadingHTTPServer, str]:
     CommandExecNetworkHandler.requests = []
     server = ThreadingHTTPServer(("127.0.0.1", 0), CommandExecNetworkHandler)
@@ -29642,9 +29702,11 @@ def run_get_auth_status_rpc_smoke(binary: Path) -> None:
     no_auth_home = Path(tempfile.mkdtemp(prefix="codex-zig-app-server-auth-status-none-", dir="/tmp"))
     api_key_home = Path(tempfile.mkdtemp(prefix="codex-zig-app-server-auth-status-api-", dir="/tmp"))
     chatgpt_home = Path(tempfile.mkdtemp(prefix="codex-zig-app-server-auth-status-chatgpt-", dir="/tmp"))
+    refresh_home = Path(tempfile.mkdtemp(prefix="codex-zig-app-server-auth-status-refresh-", dir="/tmp"))
     agent_identity_home = Path(tempfile.mkdtemp(prefix="codex-zig-app-server-auth-status-agent-", dir="/tmp"))
     custom_home = Path(tempfile.mkdtemp(prefix="codex-zig-app-server-auth-status-custom-", dir="/tmp"))
     oss_home = Path(tempfile.mkdtemp(prefix="codex-zig-app-server-auth-status-oss-", dir="/tmp"))
+    refresh_server: ThreadingHTTPServer | None = None
     try:
         no_auth = request(no_auth_home, "auth-status-none", {"includeToken": True, "refreshToken": None})
         assert no_auth["id"] == "auth-status-none"
@@ -29705,6 +29767,49 @@ def run_get_auth_status_rpc_smoke(binary: Path) -> None:
             "requiresOpenaiAuth": True,
         }
 
+        refresh_server, refresh_url = start_refresh_token_backend()
+        expired_access_token = encode_unsigned_jwt({"exp": 1})
+        refreshed_access_token = encode_unsigned_jwt({"exp": 4_102_444_800})
+        (refresh_home / "auth.json").write_text(
+            json.dumps(
+                {
+                    "auth_mode": "chatgpt",
+                    "OPENAI_API_KEY": "sk-preserved",
+                    "tokens": {
+                        "id_token": id_token,
+                        "access_token": expired_access_token,
+                        "refresh_token": "refresh-token",
+                        "account_id": "acct_123",
+                    },
+                }
+            ),
+            encoding="utf-8",
+        )
+        refreshed = request(
+            refresh_home,
+            "auth-status-chatgpt-refresh-preserves-api-key",
+            {"includeToken": True, "refreshToken": True},
+            {"CODEX_REFRESH_TOKEN_URL_OVERRIDE": refresh_url},
+        )
+        assert refreshed["id"] == "auth-status-chatgpt-refresh-preserves-api-key"
+        assert refreshed["result"] == {
+            "authMethod": "chatgpt",
+            "authToken": refreshed_access_token,
+            "requiresOpenaiAuth": True,
+        }
+        refreshed_auth_json = json.loads((refresh_home / "auth.json").read_text(encoding="utf-8"))
+        assert refreshed_auth_json["OPENAI_API_KEY"] == "sk-preserved"
+        assert refreshed_auth_json["tokens"]["access_token"] == refreshed_access_token
+        assert refreshed_auth_json["tokens"]["refresh_token"] == "refreshed-refresh-token"
+        assert len(RefreshTokenBackendHandler.requests) == 1
+        refresh_request = RefreshTokenBackendHandler.requests[0]
+        assert refresh_request["path"] == "/oauth/token"
+        assert refresh_request["body"] == {
+            "client_id": "app_EMoamEEZ73f0CkXaXp7hrann",
+            "grant_type": "refresh_token",
+            "refresh_token": "refresh-token",
+        }
+
         agent_token = encode_unsigned_jwt({"account_id": "acct_agent"})
         (agent_identity_home / "auth.json").write_text(
             json.dumps({"auth_mode": "agentIdentity", "agent_identity": agent_token}),
@@ -29757,9 +29862,13 @@ def run_get_auth_status_rpc_smoke(binary: Path) -> None:
         assert invalid_field["id"] == "auth-status-invalid-field"
         assert invalid_field["error"]["code"] == -32602
     finally:
+        if refresh_server is not None:
+            refresh_server.shutdown()
+            refresh_server.server_close()
         shutil.rmtree(no_auth_home, ignore_errors=True)
         shutil.rmtree(api_key_home, ignore_errors=True)
         shutil.rmtree(chatgpt_home, ignore_errors=True)
+        shutil.rmtree(refresh_home, ignore_errors=True)
         shutil.rmtree(agent_identity_home, ignore_errors=True)
         shutil.rmtree(custom_home, ignore_errors=True)
         shutil.rmtree(oss_home, ignore_errors=True)
@@ -30461,7 +30570,27 @@ def run_account_login_browser_callback_rpc_smoke(binary: Path, backend_mode: str
             assert auth_json["auth_mode"] == "chatgpt"
             assert auth_json["tokens"]["refresh_token"] == "device-refresh-token"
             assert auth_json["tokens"]["account_id"] == "org-device"
-            assert [request["path"] for request in DeviceAuthBackendHandler.requests] == ["/oauth/token"]
+            if backend_mode == "api-key-exchange-failure":
+                assert "OPENAI_API_KEY" not in auth_json
+            else:
+                assert auth_json["OPENAI_API_KEY"] == "sk-token-exchange"
+            assert [request["path"] for request in DeviceAuthBackendHandler.requests] == [
+                "/oauth/token",
+                "/oauth/token",
+            ]
+            auth_code_body = DeviceAuthBackendHandler.requests[0]["body"]
+            assert isinstance(auth_code_body, dict)
+            assert auth_code_body["grant_type"] == ["authorization_code"]
+            token_exchange_body = DeviceAuthBackendHandler.requests[1]["body"]
+            assert isinstance(token_exchange_body, dict)
+            assert token_exchange_body["grant_type"] == [
+                "urn:ietf:params:oauth:grant-type:token-exchange"
+            ]
+            assert token_exchange_body["requested_token"] == ["openai-api-key"]
+            assert token_exchange_body["subject_token"] == [auth_json["tokens"]["id_token"]]
+            assert token_exchange_body["subject_token_type"] == [
+                "urn:ietf:params:oauth:token-type:id_token"
+            ]
 
             write_json_line(
                 proc,
@@ -30717,6 +30846,7 @@ def run_account_login_device_code_rpc_smoke(binary: Path) -> None:
             assert auth_json["auth_mode"] == "chatgpt"
             assert auth_json["tokens"]["refresh_token"] == "device-refresh-token"
             assert auth_json["tokens"]["account_id"] == "org-device"
+            assert "OPENAI_API_KEY" not in auth_json
             assert [request["path"] for request in DeviceAuthBackendHandler.requests] == [
                 "/api/accounts/deviceauth/usercode",
                 "/api/accounts/deviceauth/token",
@@ -42517,6 +42647,8 @@ def main() -> None:
     print("app-server-account-login-browser-callback-rpc-e2e: ok")
     run_account_login_browser_callback_rpc_smoke(binary, "large-token")
     print("app-server-account-login-browser-callback-large-token-rpc-e2e: ok")
+    run_account_login_browser_callback_rpc_smoke(binary, "api-key-exchange-failure")
+    print("app-server-account-login-browser-callback-api-key-exchange-failure-rpc-e2e: ok")
     run_account_login_browser_callback_error_rpc_smoke(binary)
     print("app-server-account-login-browser-callback-error-rpc-e2e: ok")
     run_account_login_device_code_rpc_smoke(binary)
