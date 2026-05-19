@@ -179,10 +179,31 @@ fn clearAppServerConnectionState(allocator: std.mem.Allocator, state: *AppServer
 
 const ActiveAccountLogin = struct {
     login_id: []const u8,
-    port: u16,
+    kind: union(enum) {
+        browser: u16,
+        device_code: *AccountLoginCancelToken,
+    },
 
     fn deinit(self: *ActiveAccountLogin, allocator: std.mem.Allocator) void {
+        switch (self.kind) {
+            .browser => {},
+            .device_code => |token| token.release(allocator),
+        }
         allocator.free(self.login_id);
+    }
+};
+
+const AccountLoginCancelToken = struct {
+    canceled: std.atomic.Value(bool) = .init(false),
+    completed: std.atomic.Value(bool) = .init(false),
+    ref_count: std.atomic.Value(usize) = .init(1),
+
+    fn retain(self: *AccountLoginCancelToken) void {
+        _ = self.ref_count.fetchAdd(1, .acq_rel);
+    }
+
+    fn release(self: *AccountLoginCancelToken, allocator: std.mem.Allocator) void {
+        if (self.ref_count.fetchSub(1, .acq_rel) == 1) allocator.destroy(self);
     }
 };
 
@@ -51801,16 +51822,7 @@ fn handleAccountLoginStart(
         return handleAccountLoginStartChatGpt(allocator, state, id_value, object);
     }
     if (std.mem.eql(u8, login_type, "chatgptDeviceCode")) {
-        var cfg = config.loadWithOptions(allocator, .{}) catch |err| {
-            return renderJsonRpcErrorForFailure(allocator, id_value, "account/login/start failed to load config", err);
-        };
-        defer cfg.deinit(allocator);
-        if (try externalChatGptAuthActive(allocator, cfg.codex_home)) {
-            return renderJsonRpcError(allocator, id_value, -32600, EXTERNAL_AUTH_ACTIVE_LOGIN_MESSAGE);
-        }
-        if (cfg.forced_login_method == .api) {
-            return renderJsonRpcError(allocator, id_value, -32600, "ChatGPT login is disabled. Use API key login instead.");
-        }
+        return handleAccountLoginStartChatGptDeviceCode(allocator, state, id_value);
     }
 
     const message = try std.fmt.allocPrint(
@@ -51889,7 +51901,7 @@ fn handleAccountLoginStartChatGpt(
     clearActiveAccountLogin(allocator, state, true);
     state.active_account_login = .{
         .login_id = try allocator.dupe(u8, login_id),
-        .port = login_handle.actual_port,
+        .kind = .{ .browser = login_handle.actual_port },
     };
     errdefer clearActiveAccountLogin(allocator, state, true);
 
@@ -51898,6 +51910,57 @@ fn handleAccountLoginStartChatGpt(
     var completion_target = try makeAppServerBackgroundNotificationTarget(allocator, state.connection_output);
     errdefer completion_target.deinit(allocator);
     try spawnAccountLoginWorker(allocator, login_id, login_handle, completion_target);
+    return response;
+}
+
+fn handleAccountLoginStartChatGptDeviceCode(
+    allocator: std.mem.Allocator,
+    state: *AppServerState,
+    id_value: std.json.Value,
+) ![]const u8 {
+    var cfg = config.loadWithOptions(allocator, .{}) catch |err| {
+        return renderJsonRpcErrorForFailure(allocator, id_value, "account/login/start failed to load config", err);
+    };
+    defer cfg.deinit(allocator);
+    if (try externalChatGptAuthActive(allocator, cfg.codex_home)) {
+        return renderJsonRpcError(allocator, id_value, -32600, EXTERNAL_AUTH_ACTIVE_LOGIN_MESSAGE);
+    }
+    if (cfg.forced_login_method == .api) {
+        return renderJsonRpcError(allocator, id_value, -32600, "ChatGPT login is disabled. Use API key login instead.");
+    }
+
+    const issuer_override = try accountLoginIssuerOverride(allocator);
+    defer if (issuer_override) |value| allocator.free(value);
+    const issuer = issuer_override orelse login_mod.default_issuer;
+    var device_handle = login_mod.startDeviceAuth(allocator, .{
+        .codex_home = cfg.codex_home,
+        .issuer = issuer,
+    }) catch |err| switch (err) {
+        error.DeviceAuthUnsupported => return renderJsonRpcError(allocator, id_value, -32600, "device auth is not supported by this issuer"),
+        else => return renderJsonRpcErrorForFailure(allocator, id_value, "account/login/start failed to start ChatGPT device-code login", err),
+    };
+    errdefer device_handle.deinit(allocator);
+
+    const login_id = try generateUuidString(allocator);
+    errdefer allocator.free(login_id);
+    const cancel_token = try allocator.create(AccountLoginCancelToken);
+    cancel_token.* = .{};
+    var cancel_token_owned = true;
+    errdefer if (cancel_token_owned) cancel_token.release(allocator);
+
+    clearActiveAccountLogin(allocator, state, true);
+    state.active_account_login = .{
+        .login_id = try allocator.dupe(u8, login_id),
+        .kind = .{ .device_code = cancel_token },
+    };
+    cancel_token_owned = false;
+    errdefer clearActiveAccountLogin(allocator, state, true);
+
+    const response = try renderAccountLoginDeviceCodeResponse(allocator, id_value, login_id, device_handle.device_code.verification_url, device_handle.device_code.user_code);
+    errdefer allocator.free(response);
+    var completion_target = try makeAppServerBackgroundNotificationTarget(allocator, state.connection_output);
+    errdefer completion_target.deinit(allocator);
+    try spawnAccountDeviceCodeWorker(allocator, login_id, device_handle, cancel_token, completion_target);
     return response;
 }
 
@@ -51974,11 +52037,10 @@ fn handleAccountLoginCancel(
     defer allocator.free(canonical);
     if (state.active_account_login) |active| {
         if (std.mem.eql(u8, active.login_id, canonical)) {
-            const port = active.port;
-            clearActiveAccountLogin(allocator, state, false);
-            login_mod.cancelBrowserAuth(port) catch {
+            const canceled = cancelActiveAccountLogin(allocator, state);
+            if (!canceled) {
                 return renderJsonRpcResult(allocator, id_value, "{\"status\":\"notFound\"}");
-            };
+            }
             return renderJsonRpcResult(allocator, id_value, "{\"status\":\"canceled\"}");
         }
     }
@@ -51995,8 +52057,31 @@ fn accountLoginOptionalBool(object: std.json.ObjectMap, name: []const u8) !bool 
 fn clearActiveAccountLogin(allocator: std.mem.Allocator, state: *AppServerState, cancel: bool) void {
     var active = state.active_account_login orelse return;
     state.active_account_login = null;
-    if (cancel) login_mod.cancelBrowserAuth(active.port) catch {};
+    if (cancel) {
+        switch (active.kind) {
+            .browser => |port| login_mod.cancelBrowserAuth(port) catch {},
+            .device_code => |token| token.canceled.store(true, .release),
+        }
+    }
     active.deinit(allocator);
+}
+
+fn cancelActiveAccountLogin(allocator: std.mem.Allocator, state: *AppServerState) bool {
+    var active = state.active_account_login orelse return false;
+    state.active_account_login = null;
+    defer active.deinit(allocator);
+
+    switch (active.kind) {
+        .browser => |port| {
+            login_mod.cancelBrowserAuth(port) catch return false;
+            return true;
+        },
+        .device_code => |token| {
+            if (token.completed.load(.acquire)) return false;
+            token.canceled.store(true, .release);
+            return true;
+        },
+    }
 }
 
 fn renderAccountLoginChatGptResponse(
@@ -52011,6 +52096,25 @@ fn renderAccountLoginChatGptResponse(
     try appendJsonString(allocator, &result, login_id);
     try result.appendSlice(allocator, ",\"authUrl\":");
     try appendJsonString(allocator, &result, auth_url);
+    try result.append(allocator, '}');
+    return renderJsonRpcResult(allocator, id_value, result.items);
+}
+
+fn renderAccountLoginDeviceCodeResponse(
+    allocator: std.mem.Allocator,
+    id_value: std.json.Value,
+    login_id: []const u8,
+    verification_url: []const u8,
+    user_code: []const u8,
+) ![]const u8 {
+    var result = std.ArrayList(u8).empty;
+    defer result.deinit(allocator);
+    try result.appendSlice(allocator, "{\"type\":\"chatgptDeviceCode\",\"loginId\":");
+    try appendJsonString(allocator, &result, login_id);
+    try result.appendSlice(allocator, ",\"verificationUrl\":");
+    try appendJsonString(allocator, &result, verification_url);
+    try result.appendSlice(allocator, ",\"userCode\":");
+    try appendJsonString(allocator, &result, user_code);
     try result.append(allocator, '}');
     return renderJsonRpcResult(allocator, id_value, result.items);
 }
@@ -52034,20 +52138,52 @@ fn spawnAccountLoginWorker(
     completion_target: AppServerBackgroundNotificationTarget,
 ) !void {
     const worker = try allocator.create(AccountLoginWorker);
-    var worker_initialized = false;
-    errdefer {
-        if (worker_initialized) worker.deinit(allocator);
-        allocator.destroy(worker);
-    }
+    errdefer allocator.destroy(worker);
     const login_id_owned = try allocator.dupe(u8, login_id);
-    errdefer if (!worker_initialized) allocator.free(login_id_owned);
+    errdefer allocator.free(login_id_owned);
     worker.* = .{
         .login_id = login_id_owned,
         .handle = handle,
         .completion_target = completion_target,
     };
-    worker_initialized = true;
     const thread = try std.Thread.spawn(.{ .allocator = allocator }, accountLoginWorker, .{ allocator, worker });
+    thread.detach();
+}
+
+const AccountDeviceCodeWorker = struct {
+    login_id: []const u8,
+    handle: login_mod.DeviceAuthHandle,
+    cancel_token: *AccountLoginCancelToken,
+    completion_target: AppServerBackgroundNotificationTarget,
+
+    fn deinit(self: *AccountDeviceCodeWorker, allocator: std.mem.Allocator) void {
+        allocator.free(self.login_id);
+        self.handle.deinit(allocator);
+        self.cancel_token.release(allocator);
+        self.completion_target.deinit(allocator);
+    }
+};
+
+fn spawnAccountDeviceCodeWorker(
+    allocator: std.mem.Allocator,
+    login_id: []const u8,
+    handle: login_mod.DeviceAuthHandle,
+    cancel_token: *AccountLoginCancelToken,
+    completion_target: AppServerBackgroundNotificationTarget,
+) !void {
+    const worker = try allocator.create(AccountDeviceCodeWorker);
+    errdefer allocator.destroy(worker);
+    const login_id_owned = try allocator.dupe(u8, login_id);
+    errdefer allocator.free(login_id_owned);
+    cancel_token.retain();
+    errdefer cancel_token.release(allocator);
+    worker.* = .{
+        .login_id = login_id_owned,
+        .handle = handle,
+        .cancel_token = cancel_token,
+        .completion_target = completion_target,
+    };
+    const thread = try std.Thread.spawn(.{ .allocator = allocator }, accountDeviceCodeWorker, .{ allocator, worker });
     thread.detach();
 }
 
@@ -52091,11 +52227,69 @@ fn accountLoginWorker(allocator: std.mem.Allocator, worker: *AccountLoginWorker)
     completion_target.deinit(allocator);
 }
 
+fn accountDeviceCodeWorker(allocator: std.mem.Allocator, worker: *AccountDeviceCodeWorker) void {
+    const maybe_error = if (worker.handle.completeAndSave(allocator, &worker.cancel_token.canceled)) |_| null else |err| accountLoginErrorMessage(err);
+    worker.cancel_token.completed.store(true, .release);
+
+    var notification_storage: [4096]u8 = undefined;
+    var notification_writer = std.Io.Writer.fixed(&notification_storage);
+    if (maybe_error) |message| {
+        writeAccountLoginCompletedNotification(&notification_writer, worker.login_id, false, message) catch {
+            worker.deinit(allocator);
+            allocator.destroy(worker);
+            return;
+        };
+    } else {
+        writeAccountLoginCompletedNotification(&notification_writer, worker.login_id, true, null) catch {
+            worker.deinit(allocator);
+            allocator.destroy(worker);
+            return;
+        };
+        const plan_type = accountLoginCompletedPlanType(allocator, worker.handle.codex_home) catch null;
+        defer if (plan_type) |value| allocator.free(value);
+        notification_writer.writeAll("\n") catch {
+            worker.deinit(allocator);
+            allocator.destroy(worker);
+            return;
+        };
+        writeAccountUpdatedNotification(&notification_writer, "chatgpt", plan_type) catch {
+            worker.deinit(allocator);
+            allocator.destroy(worker);
+            return;
+        };
+    }
+
+    var completion_target = worker.completion_target;
+    worker.completion_target = .stdout;
+    allocator.free(worker.login_id);
+    worker.handle.deinit(allocator);
+    worker.cancel_token.release(allocator);
+    allocator.destroy(worker);
+
+    completion_target.send(notification_writer.buffer[0..notification_writer.end]) catch {};
+    completion_target.deinit(allocator);
+}
+
 fn accountLoginErrorMessage(err: anyerror) []const u8 {
     return switch (err) {
         error.LoginCancelled => "Login cancelled",
+        error.DeviceAuthCancelled => "Login was not completed",
         else => @errorName(err),
     };
+}
+
+fn accountLoginIssuerOverride(allocator: std.mem.Allocator) !?[]const u8 {
+    const value = try env.getOwned(allocator, "CODEX_APP_SERVER_LOGIN_ISSUER") orelse return null;
+    errdefer allocator.free(value);
+    const trimmed = std.mem.trim(u8, value, " \t\r\n");
+    if (trimmed.len == 0) {
+        allocator.free(value);
+        return null;
+    }
+    if (trimmed.ptr == value.ptr and trimmed.len == value.len) return value;
+    const owned = try allocator.dupe(u8, trimmed);
+    allocator.free(value);
+    return owned;
 }
 
 fn accountLoginCompletedPlanType(allocator: std.mem.Allocator, codex_home: []const u8) !?[]const u8 {
