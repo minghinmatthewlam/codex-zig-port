@@ -660,6 +660,7 @@ pub fn buildRequestBodyWithOptions(
     const request_permissions_tool_enabled = options.feature_overrides.get("request_permissions_tool") orelse false;
     const request_user_input_tool_enabled = options.feature_overrides.get("request_user_input_tool") orelse false;
     const default_mode_request_user_input_enabled = options.feature_overrides.get("default_mode_request_user_input") orelse false;
+    const goal_tools_enabled = options.feature_overrides.get("goal_tools") orelse false;
     if (options.include_tools) {
         const shell_tool = Tool{
             .type = "function",
@@ -731,6 +732,30 @@ pub fn buildRequestBodyWithOptions(
                 \\{"type":"object","properties":{"questions":{"type":"array","description":"Questions to show the user. Prefer 1 and do not exceed 3","items":{"type":"object","properties":{"id":{"type":"string","description":"Stable identifier for mapping answers (snake_case)."},"header":{"type":"string","description":"Short header label shown in the UI (12 or fewer chars)."},"question":{"type":"string","description":"Single-sentence prompt shown to the user."},"options":{"type":"array","description":"Provide 2-3 mutually exclusive choices. Put the recommended option first and suffix its label with \"(Recommended)\". Do not include an \"Other\" option in this list; the client will add a free-form \"Other\" option automatically.","items":{"type":"object","properties":{"label":{"type":"string","description":"User-facing label (1-5 words)."},"description":{"type":"string","description":"One short sentence explaining impact/tradeoff if selected."}},"required":["label","description"],"additionalProperties":false}}},"required":["id","header","question","options"],"additionalProperties":false}}},"required":["questions"],"additionalProperties":false}
             ),
         };
+        const get_goal_tool = Tool{
+            .type = "function",
+            .name = "get_goal",
+            .description = "Get the current goal for this thread, including status, budgets, token and elapsed-time usage, and remaining token budget.",
+            .parameters = try appendParsedJsonValue(allocator, &parsed_parameter_values,
+                \\{"type":"object","properties":{},"additionalProperties":false}
+            ),
+        };
+        const create_goal_tool = Tool{
+            .type = "function",
+            .name = "create_goal",
+            .description = "Create a goal only when explicitly requested by the user or system/developer instructions; do not infer goals from ordinary tasks.\nSet token_budget only when an explicit token budget is requested. Fails if a goal exists; use update_goal only for status.",
+            .parameters = try appendParsedJsonValue(allocator, &parsed_parameter_values,
+                \\{"type":"object","properties":{"objective":{"type":"string","description":"Required. The concrete objective to start pursuing. This starts a new active goal only when no goal is currently defined; if a goal already exists, this tool fails."},"token_budget":{"type":"integer","description":"Optional positive token budget for the new active goal."}},"required":["objective"],"additionalProperties":false}
+            ),
+        };
+        const update_goal_tool = Tool{
+            .type = "function",
+            .name = "update_goal",
+            .description = "Update the existing goal.\nUse this tool only to mark the goal achieved.\nSet status to `complete` only when the objective has actually been achieved and no required work remains.\nDo not mark a goal complete merely because its budget is nearly exhausted or because you are stopping work.\nYou cannot use this tool to pause, resume, or budget-limit a goal; those status changes are controlled by the user or system.\nWhen marking a budgeted goal achieved with status `complete`, report the final token usage from the tool result to the user.",
+            .parameters = try appendParsedJsonValue(allocator, &parsed_parameter_values,
+                \\{"type":"object","properties":{"status":{"type":"string","enum":["complete"],"description":"Required. Set to complete only when the objective is achieved and no required work remains."}},"required":["status"],"additionalProperties":false}
+            ),
+        };
         const list_mcp_resources_tool = Tool{
             .type = "function",
             .name = "list_mcp_resources",
@@ -763,6 +788,11 @@ pub fn buildRequestBodyWithOptions(
         }
         try tools_list.append(allocator, apply_patch_tool);
         try tools_list.append(allocator, update_plan_tool);
+        if (goal_tools_enabled) {
+            try tools_list.append(allocator, get_goal_tool);
+            try tools_list.append(allocator, create_goal_tool);
+            try tools_list.append(allocator, update_goal_tool);
+        }
         if (request_permissions_tool_enabled) {
             try tools_list.append(allocator, request_permissions_tool);
         }
@@ -1562,6 +1592,67 @@ test "runtime feature overrides can disable shell tools" {
     try std.testing.expect(std.mem.indexOf(u8, body, "\"name\":\"shell\"") == null);
     try std.testing.expect(std.mem.indexOf(u8, body, "\"name\":\"shell_command\"") == null);
     try std.testing.expect(std.mem.indexOf(u8, body, "\"name\":\"apply_patch\"") != null);
+}
+
+test "goal tools are exposed when enabled for loaded turns" {
+    const allocator = std.testing.allocator;
+    const cfg = config.Config{
+        .codex_home = ".",
+        .active_profile = null,
+        .model = "demo-model",
+        .openai_base_url = "https://example.invalid/v1",
+        .chatgpt_base_url = "https://example.invalid/backend-api/codex",
+        .oss_provider = null,
+        .installation_id = "install-test",
+        .approval_policy = .on_request,
+        .sandbox_mode = .workspace_write,
+        .web_search_mode = null,
+        .model_reasoning_effort = null,
+        .service_tier = null,
+        .syntax_theme = null,
+        .personality = null,
+        .tui_status_line = null,
+        .tui_terminal_title = null,
+        .tui_alternate_screen = .auto,
+    };
+    const history = [_]HistoryItem{.{
+        .kind = .message,
+        .role = "user",
+        .content_type = "input_text",
+        .text = "use a goal",
+    }};
+    var feature_overrides = features_cmd.FeatureOverrides{};
+    defer feature_overrides.deinit(allocator);
+    try feature_overrides.put(allocator, "goal_tools", true);
+
+    const body = try buildRequestBodyWithOptions(allocator, cfg, history[0..], .{ .feature_overrides = feature_overrides });
+    defer allocator.free(body);
+
+    var parsed = try std.json.parseFromSlice(std.json.Value, allocator, body, .{});
+    defer parsed.deinit();
+    const tools = parsed.value.object.get("tools").?.array;
+    var saw_get = false;
+    var saw_create = false;
+    var saw_update = false;
+    for (tools.items) |tool| {
+        const name = tool.object.get("name") orelse continue;
+        if (name != .string) continue;
+        if (std.mem.eql(u8, name.string, "get_goal")) saw_get = true;
+        if (std.mem.eql(u8, name.string, "create_goal")) {
+            saw_create = true;
+            const required = tool.object.get("parameters").?.object.get("required").?.array;
+            try std.testing.expectEqualStrings("objective", required.items[0].string);
+            try std.testing.expect(tool.object.get("parameters").?.object.get("properties").?.object.get("token_budget") != null);
+        }
+        if (std.mem.eql(u8, name.string, "update_goal")) {
+            saw_update = true;
+            const status = tool.object.get("parameters").?.object.get("properties").?.object.get("status").?.object;
+            try std.testing.expectEqualStrings("complete", status.get("enum").?.array.items[0].string);
+        }
+    }
+    try std.testing.expect(saw_get);
+    try std.testing.expect(saw_create);
+    try std.testing.expect(saw_update);
 }
 
 test "runtime feature overrides can disable write_stdin without disabling shell inspection" {

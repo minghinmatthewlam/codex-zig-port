@@ -676,6 +676,11 @@ const LoadedThreadGoal = struct {
     }
 };
 
+const GoalToolBudgetReportMode = enum {
+    omit,
+    include,
+};
+
 const FsWatchEntry = struct {
     watch_id: []const u8,
     path: []const u8,
@@ -26304,6 +26309,14 @@ const AppServerRequestUserInputContext = struct {
     turn_start_response_sent: *bool,
 };
 
+const AppServerGoalToolContext = struct {
+    allocator: std.mem.Allocator,
+    state: *AppServerState,
+    thread: *LoadedThread,
+    turn_id: []const u8,
+    notifications: *std.ArrayList([]const u8),
+};
+
 const AppServerExternalAuthRefreshContext = struct {
     allocator: std.mem.Allocator,
     state: *AppServerState,
@@ -26821,6 +26834,118 @@ fn renderPendingApprovalJsonRpcResponse(
     const method = object.get("method") orelse return null;
     if (method != .string) return try renderJsonRpcError(allocator, id_value, -32600, "Invalid Request");
     return try renderJsonRpcError(allocator, id_value, -32600, "cannot process request while approval is pending");
+}
+
+fn handleAppServerGoalTool(ctx: *anyopaque, call: api.FunctionCall) !tool_runner.ToolResult {
+    const context: *AppServerGoalToolContext = @ptrCast(@alignCast(ctx));
+    if (context.thread.ephemeral) {
+        const message = try std.fmt.allocPrint(context.allocator, "ephemeral thread does not support goals: {s}", .{context.thread.id});
+        defer context.allocator.free(message);
+        return goalToolResult(context.allocator, call.call_id, "goal rejected", message);
+    }
+
+    if (std.mem.eql(u8, call.name, "get_goal")) {
+        const output = try renderGoalToolResponse(context.allocator, context.thread, .omit);
+        defer context.allocator.free(output);
+        return goalToolResult(context.allocator, call.call_id, "goal read", output);
+    }
+
+    var parsed = std.json.parseFromSlice(std.json.Value, context.allocator, call.arguments, .{}) catch |err| switch (err) {
+        error.OutOfMemory => return err,
+        else => return goalToolResult(context.allocator, call.call_id, "goal invalid", "goal tool arguments must be an object"),
+    };
+    defer parsed.deinit();
+    if (parsed.value != .object) {
+        return goalToolResult(context.allocator, call.call_id, "goal invalid", "goal tool arguments must be an object");
+    }
+    const object = parsed.value.object;
+
+    if (std.mem.eql(u8, call.name, "create_goal")) {
+        if (context.thread.goal != null) {
+            return goalToolResult(context.allocator, call.call_id, "goal rejected", "cannot create a new goal because this thread already has a goal; use update_goal only when the existing goal is complete");
+        }
+        if (validateCreateGoalToolParams(object)) |message| {
+            return goalToolResult(context.allocator, call.call_id, "goal invalid", message);
+        }
+        try setLoadedThreadGoal(context.allocator, context.thread, object);
+        try queueThreadGoalUpdatedTurnNotification(context);
+        const output = try renderGoalToolResponse(context.allocator, context.thread, .omit);
+        defer context.allocator.free(output);
+        return goalToolResult(context.allocator, call.call_id, "goal created", output);
+    }
+
+    if (std.mem.eql(u8, call.name, "update_goal")) {
+        if (validateUpdateGoalToolParams(object)) |message| {
+            return goalToolResult(context.allocator, call.call_id, "goal invalid", message);
+        }
+        setLoadedThreadGoal(context.allocator, context.thread, object) catch |err| switch (err) {
+            error.MissingThreadGoal => return goalToolResult(context.allocator, call.call_id, "goal rejected", "cannot update goal because this thread has no goal"),
+            else => return err,
+        };
+        try queueThreadGoalUpdatedTurnNotification(context);
+        const output = try renderGoalToolResponse(context.allocator, context.thread, .include);
+        defer context.allocator.free(output);
+        return goalToolResult(context.allocator, call.call_id, "goal updated", output);
+    }
+
+    return goalToolResult(context.allocator, call.call_id, "unsupported goal tool", "unsupported goal tool");
+}
+
+fn goalToolResult(
+    allocator: std.mem.Allocator,
+    call_id: []const u8,
+    summary: []const u8,
+    output: []const u8,
+) !tool_runner.ToolResult {
+    return .{
+        .call_id = try allocator.dupe(u8, call_id),
+        .summary = try allocator.dupe(u8, summary),
+        .output = try allocator.dupe(u8, output),
+    };
+}
+
+fn validateCreateGoalToolParams(object: std.json.ObjectMap) ?[]const u8 {
+    var iterator = object.iterator();
+    while (iterator.next()) |entry| {
+        if (std.mem.eql(u8, entry.key_ptr.*, "objective")) continue;
+        if (std.mem.eql(u8, entry.key_ptr.*, "token_budget")) continue;
+        return "create_goal only accepts objective and token_budget";
+    }
+
+    const objective = object.get("objective") orelse return "goal objective is required";
+    if (objective != .string) return "goal objective must be a string";
+    const trimmed = std.mem.trim(u8, objective.string, " \t\r\n");
+    if (trimmed.len == 0) return "goal objective must not be empty";
+    const char_count = std.unicode.utf8CountCodepoints(trimmed) catch 4001;
+    if (char_count > 4000) return "goal objective must be at most 4000 characters";
+    return validateGoalToolBudget(object);
+}
+
+fn validateUpdateGoalToolParams(object: std.json.ObjectMap) ?[]const u8 {
+    var iterator = object.iterator();
+    while (iterator.next()) |entry| {
+        if (std.mem.eql(u8, entry.key_ptr.*, "status")) continue;
+        return "update_goal only accepts status";
+    }
+    const status = object.get("status") orelse return "goal status is required";
+    if (status != .string or !std.mem.eql(u8, status.string, "complete")) {
+        return "update_goal can only mark the existing goal complete; pause, resume, and budget-limited status changes are controlled by the user or system";
+    }
+    return null;
+}
+
+fn validateGoalToolBudget(object: std.json.ObjectMap) ?[]const u8 {
+    const budget = object.get("token_budget") orelse return null;
+    if (budget != .integer) return "goal token_budget must be a positive integer";
+    if (budget.integer <= 0) return "goal budgets must be positive when provided";
+    return null;
+}
+
+fn queueThreadGoalUpdatedTurnNotification(context: *AppServerGoalToolContext) !void {
+    if (serverNotificationShouldBeDropped(context.state, "thread/goal/updated")) return;
+    const notification = try renderThreadGoalUpdatedNotification(context.allocator, context.thread, context.turn_id);
+    errdefer context.allocator.free(notification);
+    try context.notifications.append(context.allocator, notification);
 }
 
 fn handleAppServerRequestPermissions(ctx: *anyopaque, request: session_mod.RequestPermissionsRequest) !session_mod.RequestPermissionsResult {
@@ -28508,6 +28633,18 @@ fn handleReviewStart(
         };
     } else null;
 
+    var goal_tool_context = AppServerGoalToolContext{
+        .allocator = allocator,
+        .state = state,
+        .thread = thread,
+        .turn_id = turn_id,
+        .notifications = &turn_update_notifications,
+    };
+    const goal_tool_callback = session_mod.GoalToolCallback{
+        .ctx = &goal_tool_context,
+        .on_goal_tool_requested = handleAppServerGoalTool,
+    };
+
     var external_auth_refresh_context: AppServerExternalAuthRefreshContext = undefined;
     const external_auth_refresh_callback: ?api.ExternalAuthRefreshCallback = if (state.server_request_transport) |transport| blk: {
         external_auth_refresh_context = .{
@@ -28546,7 +28683,7 @@ fn handleReviewStart(
         };
     } else null;
 
-    var turn_feature_overrides = try effectiveAppServerTurnFeatureOverrides(allocator, state, thread.collaboration_mode);
+    var turn_feature_overrides = try effectiveAppServerTurnFeatureOverrides(allocator, state, thread);
     defer turn_feature_overrides.deinit(allocator);
     try applyReviewStartFeatureOverrides(allocator, &turn_feature_overrides);
 
@@ -28595,6 +28732,7 @@ fn handleReviewStart(
         .approval_callback = approval_callback,
         .request_permissions_callback = request_permissions_callback,
         .request_user_input_callback = request_user_input_callback,
+        .goal_tool_callback = goal_tool_callback,
         .mcp_elicitation_callback = mcp_elicitation_callback,
         .external_auth_refresh_callback = external_auth_refresh_callback,
         .additional_writable_roots = &.{},
@@ -29516,6 +29654,18 @@ fn handleTurnStart(
         };
     } else null;
 
+    var goal_tool_context = AppServerGoalToolContext{
+        .allocator = allocator,
+        .state = state,
+        .thread = thread,
+        .turn_id = turn_id,
+        .notifications = &turn_update_notifications,
+    };
+    const goal_tool_callback = session_mod.GoalToolCallback{
+        .ctx = &goal_tool_context,
+        .on_goal_tool_requested = handleAppServerGoalTool,
+    };
+
     var external_auth_refresh_context: AppServerExternalAuthRefreshContext = undefined;
     const external_auth_refresh_callback: ?api.ExternalAuthRefreshCallback = if (state.server_request_transport) |transport| blk: {
         external_auth_refresh_context = .{
@@ -29554,7 +29704,7 @@ fn handleTurnStart(
         };
     } else null;
 
-    var turn_feature_overrides = try effectiveAppServerTurnFeatureOverrides(allocator, state, thread.collaboration_mode);
+    var turn_feature_overrides = try effectiveAppServerTurnFeatureOverrides(allocator, state, thread);
     defer turn_feature_overrides.deinit(allocator);
 
     const answer = session_mod.runTurnWithOptions(allocator, cfg, &credentials, &thread.transcript, prompt_for_turn, .{
@@ -29562,6 +29712,7 @@ fn handleTurnStart(
         .approval_callback = approval_callback,
         .request_permissions_callback = request_permissions_callback,
         .request_user_input_callback = request_user_input_callback,
+        .goal_tool_callback = goal_tool_callback,
         .mcp_elicitation_callback = mcp_elicitation_callback,
         .external_auth_refresh_callback = external_auth_refresh_callback,
         .additional_writable_roots = thread.sandbox_writable_roots.items,
@@ -31420,6 +31571,7 @@ fn applyReviewStartFeatureOverrides(
     try overrides.put(allocator, "request_permissions_tool", false);
     try overrides.put(allocator, "request_user_input_tool", false);
     try overrides.put(allocator, "default_mode_request_user_input", false);
+    try overrides.put(allocator, "goal_tools", false);
 }
 
 fn applyTurnStartRuntimeOverrides(
@@ -32024,7 +32176,7 @@ const LoadedThreadGoalTokenBudget = struct {
 };
 
 fn loadedThreadGoalTokenBudget(object: std.json.ObjectMap) LoadedThreadGoalTokenBudget {
-    const value = object.get("tokenBudget") orelse return .{ .present = false, .value = null };
+    const value = object.get("tokenBudget") orelse object.get("token_budget") orelse return .{ .present = false, .value = null };
     if (value == .null) return .{ .present = true, .value = null };
     return .{ .present = true, .value = value.integer };
 }
@@ -34284,7 +34436,7 @@ fn handleThreadMethod(
         return renderJsonRpcResult(allocator, id_value, "{}");
     }
     if (std.mem.eql(u8, method, "thread/goal/set")) {
-        if (!try appServerFeatureEnabled(allocator, state, "goals")) {
+        if (!try appServerGoalsFeatureEnabledForRequest(allocator, state, params_value)) {
             return renderJsonRpcError(allocator, id_value, -32600, "goals feature is disabled");
         }
         const object = parseThreadObjectParams(params_value) catch |err| switch (err) {
@@ -34322,7 +34474,7 @@ fn handleThreadMethod(
         return renderJsonRpcResult(allocator, id_value, result);
     }
     if (std.mem.eql(u8, method, "thread/goal/get")) {
-        if (!try appServerFeatureEnabled(allocator, state, "goals")) {
+        if (!try appServerGoalsFeatureEnabledForRequest(allocator, state, params_value)) {
             return renderJsonRpcError(allocator, id_value, -32600, "goals feature is disabled");
         }
         const object = parseThreadObjectParams(params_value) catch |err| switch (err) {
@@ -34348,7 +34500,7 @@ fn handleThreadMethod(
         return renderJsonRpcResult(allocator, id_value, result);
     }
     if (std.mem.eql(u8, method, "thread/goal/clear")) {
-        if (!try appServerFeatureEnabled(allocator, state, "goals")) {
+        if (!try appServerGoalsFeatureEnabledForRequest(allocator, state, params_value)) {
             return renderJsonRpcError(allocator, id_value, -32600, "goals feature is disabled");
         }
         const object = parseThreadObjectParams(params_value) catch |err| switch (err) {
@@ -38408,16 +38560,27 @@ fn queueThreadIdNotification(allocator: std.mem.Allocator, state: *AppServerStat
 }
 
 fn queueThreadGoalUpdatedNotification(allocator: std.mem.Allocator, state: *AppServerState, thread: *const LoadedThread) !void {
-    const goal = thread.goal orelse return;
+    if (thread.goal == null) return;
+    const owned = try renderThreadGoalUpdatedNotification(allocator, thread, null);
+    try queuePendingServerNotification(allocator, state, "thread/goal/updated", owned);
+}
+
+fn renderThreadGoalUpdatedNotification(
+    allocator: std.mem.Allocator,
+    thread: *const LoadedThread,
+    turn_id: ?[]const u8,
+) ![]const u8 {
+    const goal = thread.goal orelse return error.MissingThreadGoal;
     var notification = std.ArrayList(u8).empty;
     errdefer notification.deinit(allocator);
     try notification.appendSlice(allocator, "{\"jsonrpc\":\"2.0\",\"method\":\"thread/goal/updated\",\"params\":{\"threadId\":");
     try appendJsonString(allocator, &notification, thread.id);
-    try notification.appendSlice(allocator, ",\"turnId\":null,\"goal\":");
+    try notification.appendSlice(allocator, ",\"turnId\":");
+    try appendOptionalJsonString(allocator, &notification, turn_id);
+    try notification.appendSlice(allocator, ",\"goal\":");
     try appendLoadedThreadGoalJson(allocator, &notification, thread.id, goal);
     try notification.appendSlice(allocator, "}}");
-    const owned = try notification.toOwnedSlice(allocator);
-    try queuePendingServerNotification(allocator, state, "thread/goal/updated", owned);
+    return notification.toOwnedSlice(allocator);
 }
 
 fn queueThreadGoalClearedNotification(allocator: std.mem.Allocator, state: *AppServerState, thread_id: []const u8) !void {
@@ -38451,6 +38614,71 @@ fn renderThreadGoalGetResponse(allocator: std.mem.Allocator, thread: *const Load
     }
     try result.appendSlice(allocator, "}");
     return result.toOwnedSlice(allocator);
+}
+
+fn renderGoalToolResponse(
+    allocator: std.mem.Allocator,
+    thread: *const LoadedThread,
+    report_mode: GoalToolBudgetReportMode,
+) ![]const u8 {
+    const report = if (thread.goal) |goal|
+        try goalCompletionBudgetReport(allocator, goal, report_mode)
+    else
+        null;
+    defer if (report) |value| allocator.free(value);
+
+    var result = std.ArrayList(u8).empty;
+    errdefer result.deinit(allocator);
+    try result.appendSlice(allocator, "{\"goal\":");
+    if (thread.goal) |goal| {
+        try appendLoadedThreadGoalJson(allocator, &result, thread.id, goal);
+    } else {
+        try result.appendSlice(allocator, "null");
+    }
+    try result.appendSlice(allocator, ",\"remainingTokens\":");
+    try appendOptionalInt(allocator, &result, goalRemainingTokens(thread.goal));
+    try result.appendSlice(allocator, ",\"completionBudgetReport\":");
+    try appendOptionalJsonString(allocator, &result, report);
+    try result.appendSlice(allocator, "}");
+    return result.toOwnedSlice(allocator);
+}
+
+fn goalRemainingTokens(goal: ?LoadedThreadGoal) ?i64 {
+    const payload = goal orelse return null;
+    const budget = payload.token_budget orelse return null;
+    const remaining = budget - payload.tokens_used;
+    return if (remaining > 0) remaining else 0;
+}
+
+fn goalCompletionBudgetReport(
+    allocator: std.mem.Allocator,
+    goal: LoadedThreadGoal,
+    report_mode: GoalToolBudgetReportMode,
+) !?[]const u8 {
+    if (report_mode != .include) return null;
+    if (!std.mem.eql(u8, goal.status, "complete")) return null;
+    if (goal.token_budget) |budget| {
+        if (goal.time_used_seconds > 0) {
+            return @as(?[]const u8, try std.fmt.allocPrint(
+                allocator,
+                "Goal achieved. Report final budget usage to the user: tokens used: {d} of {d}; time used: {d} seconds.",
+                .{ goal.tokens_used, budget, goal.time_used_seconds },
+            ));
+        }
+        return @as(?[]const u8, try std.fmt.allocPrint(
+            allocator,
+            "Goal achieved. Report final budget usage to the user: tokens used: {d} of {d}.",
+            .{ goal.tokens_used, budget },
+        ));
+    }
+    if (goal.time_used_seconds > 0) {
+        return @as(?[]const u8, try std.fmt.allocPrint(
+            allocator,
+            "Goal achieved. Report final budget usage to the user: time used: {d} seconds.",
+            .{goal.time_used_seconds},
+        ));
+    }
+    return null;
 }
 
 fn renderThreadGoalClearResponse(allocator: std.mem.Allocator, cleared: bool) ![]const u8 {
@@ -39060,9 +39288,19 @@ fn requiredThreadNumTurnsParam(object: std.json.ObjectMap) !u32 {
 }
 
 fn appServerFeatureEnabled(allocator: std.mem.Allocator, state: *const AppServerState, key: []const u8) !bool {
+    return appServerFeatureEnabledForProfile(allocator, state, null, key);
+}
+
+fn appServerFeatureEnabledForProfile(
+    allocator: std.mem.Allocator,
+    state: *const AppServerState,
+    profile: ?[]const u8,
+    key: []const u8,
+) !bool {
     var cfg = try config.load(allocator);
     defer cfg.deinit(allocator);
-    var config_overrides = try features_cmd.loadFeatureOverridesForProfile(allocator, cfg.codex_home, cfg.active_profile);
+    const feature_profile: ?[]const u8 = if (profile) |value| value else cfg.active_profile;
+    var config_overrides = try features_cmd.loadFeatureOverridesForProfile(allocator, cfg.codex_home, feature_profile);
     defer config_overrides.deinit(allocator);
 
     if (state.cli_feature_overrides.get(key)) |enabled| return enabled;
@@ -39074,21 +39312,40 @@ fn appServerFeatureEnabled(allocator: std.mem.Allocator, state: *const AppServer
     return false;
 }
 
+fn appServerGoalsFeatureEnabledForRequest(
+    allocator: std.mem.Allocator,
+    state: *const AppServerState,
+    params_value: ?std.json.Value,
+) !bool {
+    if (try appServerFeatureEnabled(allocator, state, "goals")) return true;
+    const params = params_value orelse return false;
+    if (params != .object) return false;
+    const thread_id = params.object.get("threadId") orelse return false;
+    if (thread_id != .string) return false;
+    if (!isUuidString(thread_id.string)) return false;
+    const thread_index = findLoadedThreadIndex(state, thread_id.string) orelse return false;
+    const thread = &state.loaded_threads.items[thread_index];
+    return appServerFeatureEnabledForProfile(allocator, state, thread.active_profile, "goals");
+}
+
 fn effectiveAppServerTurnFeatureOverrides(
     allocator: std.mem.Allocator,
     state: *const AppServerState,
-    collaboration_mode: []const u8,
+    thread: *const LoadedThread,
 ) !features_cmd.FeatureOverrides {
     var overrides = features_cmd.FeatureOverrides{};
     errdefer overrides.deinit(allocator);
-    if (try appServerFeatureEnabled(allocator, state, "request_permissions_tool")) {
+    if (!thread.ephemeral and try appServerFeatureEnabledForProfile(allocator, state, thread.active_profile, "goals")) {
+        try overrides.put(allocator, "goal_tools", true);
+    }
+    if (try appServerFeatureEnabledForProfile(allocator, state, thread.active_profile, "request_permissions_tool")) {
         try overrides.put(allocator, "request_permissions_tool", true);
     }
-    const default_mode_request_user_input_enabled = try appServerFeatureEnabled(allocator, state, "default_mode_request_user_input");
+    const default_mode_request_user_input_enabled = try appServerFeatureEnabledForProfile(allocator, state, thread.active_profile, "default_mode_request_user_input");
     if (default_mode_request_user_input_enabled) {
         try overrides.put(allocator, "default_mode_request_user_input", true);
     }
-    if (std.mem.eql(u8, collaboration_mode, "plan") or default_mode_request_user_input_enabled) {
+    if (std.mem.eql(u8, thread.collaboration_mode, "plan") or default_mode_request_user_input_enabled) {
         try overrides.put(allocator, "request_user_input_tool", true);
     }
     return overrides;
@@ -39274,7 +39531,7 @@ fn validateThreadRealtimeAudioChunk(object: std.json.ObjectMap) ?[]const u8 {
 
 fn validateThreadGoalSetParams(object: std.json.ObjectMap) ?[]const u8 {
     const has_objective = object.get("objective") != null;
-    const has_token_budget = object.get("tokenBudget") != null;
+    const has_token_budget = object.get("tokenBudget") != null or object.get("token_budget") != null;
     if (object.get("objective")) |value| {
         if (!jsonOptionalStringValueIsValid(value)) return "goal objective must be a string or null";
         if (value == .string) {
@@ -39288,10 +39545,23 @@ fn validateThreadGoalSetParams(object: std.json.ObjectMap) ?[]const u8 {
         if (!optionalEnumStringIsValid(value, &.{ "active", "paused", "budgetLimited", "complete" })) return "goal status must be active, paused, budgetLimited, complete, or null";
     }
     if (object.get("tokenBudget")) |value| {
-        if (value != .null and value != .integer) return "goal tokenBudget must be a positive integer or null";
-        if ((has_objective or has_token_budget) and value == .integer and value.integer <= 0) {
-            return "goal budgets must be positive when provided";
-        }
+        if (validateThreadGoalBudgetValue(value, "tokenBudget", has_objective, has_token_budget)) |message| return message;
+    }
+    if (object.get("token_budget")) |value| {
+        if (validateThreadGoalBudgetValue(value, "token_budget", has_objective, has_token_budget)) |message| return message;
+    }
+    return null;
+}
+
+fn validateThreadGoalBudgetValue(
+    value: std.json.Value,
+    comptime field: []const u8,
+    has_objective: bool,
+    has_token_budget: bool,
+) ?[]const u8 {
+    if (value != .null and value != .integer) return "goal " ++ field ++ " must be a positive integer or null";
+    if ((has_objective or has_token_budget) and value == .integer and value.integer <= 0) {
+        return "goal budgets must be positive when provided";
     }
     return null;
 }

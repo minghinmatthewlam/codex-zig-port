@@ -276,6 +276,7 @@ pub const TurnOptions = struct {
     approval_callback: ?tools.ApprovalCallback = null,
     request_permissions_callback: ?RequestPermissionsCallback = null,
     request_user_input_callback: ?RequestUserInputCallback = null,
+    goal_tool_callback: ?GoalToolCallback = null,
     mcp_elicitation_callback: ?mcp_runtime.ElicitationCallback = null,
     json_events: bool = false,
     stream_text: bool = false,
@@ -406,6 +407,11 @@ pub const RequestUserInputResult = struct {
 pub const RequestUserInputCallback = struct {
     ctx: *anyopaque,
     on_request_user_input_requested: *const fn (ctx: *anyopaque, request: RequestUserInputRequest) anyerror!RequestUserInputResult,
+};
+
+pub const GoalToolCallback = struct {
+    ctx: *anyopaque,
+    on_goal_tool_requested: *const fn (ctx: *anyopaque, call: api.FunctionCall) anyerror!tools.ToolResult,
 };
 
 fn replaceOptionalString(allocator: std.mem.Allocator, slot: *?[]const u8, value: []const u8) !void {
@@ -685,6 +691,15 @@ pub fn runTurnWithOptions(
                     )
                 else
                     try disabledToolResult(allocator, call)
+            else if (isGoalToolName(call.name))
+                if (goalToolsEnabled(options))
+                    try runGoalToolCall(
+                        allocator,
+                        call,
+                        options,
+                    )
+                else
+                    try disabledToolResult(allocator, call)
             else
                 try runToolCall(
                     allocator,
@@ -857,6 +872,16 @@ fn requestUserInputToolEnabled(options: TurnOptions) bool {
     return options.feature_overrides.get("request_user_input_tool") orelse false;
 }
 
+fn goalToolsEnabled(options: TurnOptions) bool {
+    return options.feature_overrides.get("goal_tools") orelse false;
+}
+
+fn isGoalToolName(name: []const u8) bool {
+    return std.mem.eql(u8, name, "get_goal") or
+        std.mem.eql(u8, name, "create_goal") or
+        std.mem.eql(u8, name, "update_goal");
+}
+
 const McpRuntimeProgressContext = struct {
     allocator: std.mem.Allocator,
     callback: ?McpToolCallProgressCallback,
@@ -959,6 +984,27 @@ fn runRequestUserInputToolCall(
         .call_id = try allocator.dupe(u8, call.call_id),
         .summary = try allocator.dupe(u8, "request user input completed"),
         .output = try allocator.dupe(u8, response.output_json),
+    };
+}
+
+fn runGoalToolCall(
+    allocator: std.mem.Allocator,
+    call: api.FunctionCall,
+    options: TurnOptions,
+) !tools.ToolResult {
+    const callback = options.goal_tool_callback orelse return .{
+        .call_id = try allocator.dupe(u8, call.call_id),
+        .summary = try allocator.dupe(u8, "goal tool unavailable"),
+        .output = try allocator.dupe(u8, "goal tools are not available in this session"),
+    };
+
+    return callback.on_goal_tool_requested(callback.ctx, call) catch |err| switch (err) {
+        error.OutOfMemory => return err,
+        else => return .{
+            .call_id = try allocator.dupe(u8, call.call_id),
+            .summary = try allocator.dupe(u8, "goal tool failed"),
+            .output = try std.fmt.allocPrint(allocator, "{s} failed: {s}", .{ call.name, @errorName(err) }),
+        },
     };
 }
 
