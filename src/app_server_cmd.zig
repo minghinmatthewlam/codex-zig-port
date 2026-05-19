@@ -669,6 +669,9 @@ const LoadedThreadGoal = struct {
     time_used_seconds: i64,
     created_at: i64,
     updated_at: i64,
+    token_usage_start_total: i64,
+    time_usage_start_seconds: i64,
+    time_usage_start_at: i64,
 
     fn deinit(self: *LoadedThreadGoal, allocator: std.mem.Allocator) void {
         allocator.free(self.objective);
@@ -26845,6 +26848,7 @@ fn handleAppServerGoalTool(ctx: *anyopaque, call: api.FunctionCall) !tool_runner
     }
 
     if (std.mem.eql(u8, call.name, "get_goal")) {
+        _ = try refreshLoadedThreadGoalAccountingAndPersistAt(context.allocator, context.thread, currentUnixSeconds());
         const output = try renderGoalToolResponse(context.allocator, context.thread, .omit);
         defer context.allocator.free(output);
         return goalToolResult(context.allocator, call.call_id, "goal read", output);
@@ -29781,7 +29785,7 @@ fn handleTurnStart(
             var completed_notification_moved = false;
             errdefer if (!completed_notification_moved) allocator.free(completed_notification);
 
-            try refreshLoadedThreadAfterTurn(allocator, thread, prompt_for_turn);
+            const goal_accounting_changed = try refreshLoadedThreadAfterTurnAndAccountGoal(allocator, thread, prompt_for_turn, completed_at);
             if (thread.path) |path| {
                 try session_store.saveTranscript(allocator, path, &thread.transcript);
             }
@@ -29800,6 +29804,8 @@ fn handleTurnStart(
                 }
             }
             try movePendingTurnUpdateNotifications(allocator, state, &turn_update_notifications);
+            if (goal_accounting_changed) try queueThreadGoalUpdatedNotificationForTurn(allocator, state, thread, turn_id);
+            try queueThreadTokenUsageNotificationForTurn(allocator, state, thread, turn_id);
             try queueTurnNotification(allocator, state, "turn/completed", completed_notification);
             completed_notification_moved = true;
             thread.status = .idle;
@@ -29832,9 +29838,14 @@ fn handleTurnStart(
             try movePendingTurnUpdateNotifications(allocator, state, &turn_update_notifications);
         }
         thread.status = .system_error;
-        try refreshLoadedThreadAfterTurn(allocator, thread, prompt_for_turn);
+        const failed_at = currentUnixSeconds();
+        const goal_accounting_changed = try refreshLoadedThreadAfterTurnAndAccountGoal(allocator, thread, prompt_for_turn, failed_at);
         if (thread.path) |path| {
             try session_store.saveTranscript(allocator, path, &thread.transcript);
+        }
+        if (should_emit_started) {
+            if (goal_accounting_changed) try queueThreadGoalUpdatedNotificationForTurn(allocator, state, thread, turn_id);
+            try queueThreadTokenUsageNotificationForTurn(allocator, state, thread, turn_id);
         }
         try queueErrorNotification(allocator, state, thread.id, turn_id, error_message, false);
         if (turn_start_response_sent) {
@@ -29858,7 +29869,7 @@ fn handleTurnStart(
     var completed_notification_moved = false;
     errdefer if (!completed_notification_moved) allocator.free(completed_notification);
 
-    try refreshLoadedThreadAfterTurn(allocator, thread, prompt_for_turn);
+    const goal_accounting_changed = try refreshLoadedThreadAfterTurnAndAccountGoal(allocator, thread, prompt_for_turn, completed_at);
     if (thread.path) |path| {
         try session_store.saveTranscript(allocator, path, &thread.transcript);
     }
@@ -29877,6 +29888,8 @@ fn handleTurnStart(
         }
     }
     try movePendingTurnUpdateNotifications(allocator, state, &turn_update_notifications);
+    if (goal_accounting_changed) try queueThreadGoalUpdatedNotificationForTurn(allocator, state, thread, turn_id);
+    try queueThreadTokenUsageNotificationForTurn(allocator, state, thread, turn_id);
     if (latestAssistantMessageIndex(&thread.transcript, user_item_index)) |assistant_item_index| {
         if (answer.len > 0) {
             try queueAgentMessageItemNotification(allocator, state, "item/started", thread.id, turn_id, assistant_item_index, answer, "startedAtMs", started_at_ms);
@@ -31985,8 +31998,21 @@ fn refreshLoadedThreadAfterTurn(allocator: std.mem.Allocator, thread: *LoadedThr
     errdefer allocator.free(turns_json);
     allocator.free(thread.turns_json);
     thread.turns_json = turns_json;
+    try syncLoadedThreadTokenUsage(allocator, thread);
     syncLoadedThreadNextTurnIndex(thread);
     thread.updated_at = currentUnixSeconds();
+}
+
+fn refreshLoadedThreadAfterTurnAndAccountGoal(
+    allocator: std.mem.Allocator,
+    thread: *LoadedThread,
+    prompt: []const u8,
+    accounting_at: i64,
+) !bool {
+    try refreshLoadedThreadAfterTurn(allocator, thread, prompt);
+    const goal_accounting_changed = refreshLoadedThreadGoalAccountingAt(thread, accounting_at);
+    if (goal_accounting_changed) try syncLoadedThreadGoalToTranscript(allocator, thread);
+    return goal_accounting_changed;
 }
 
 fn refreshLoadedThreadAfterReviewTurn(
@@ -32027,13 +32053,26 @@ fn refreshLoadedThreadAfterUnpersistedTurn(
     }
 }
 
-fn rollbackLoadedThread(allocator: std.mem.Allocator, thread: *LoadedThread, num_turns: u32) !void {
+fn rollbackLoadedThread(allocator: std.mem.Allocator, thread: *LoadedThread, num_turns: u32) !bool {
     const path = thread.path orelse return error.RollbackRequiresPersistedHistory;
+    var goal_cleared = false;
     if (rollbackCutIndex(&thread.transcript, num_turns)) |cut_index| {
+        goal_cleared = thread.goal != null or thread.transcript.goal != null;
         trimTranscriptHistoryFrom(allocator, &thread.transcript, cut_index);
+        thread.transcript.token_usage = null;
+        thread.transcript.token_usage_turn_index = null;
+        clearLoadedThreadGoalForRollback(allocator, thread);
     }
     try refreshLoadedThreadAfterRollback(allocator, thread);
+    // The appended rollback event is the durable clear. Replay trims history and clears saved goal/token metadata.
     try session_store.appendThreadRollback(allocator, path, num_turns);
+    return goal_cleared;
+}
+
+fn clearLoadedThreadGoalForRollback(allocator: std.mem.Allocator, thread: *LoadedThread) void {
+    if (thread.goal) |*goal| goal.deinit(allocator);
+    thread.goal = null;
+    thread.transcript.clearGoal(allocator);
 }
 
 fn rollbackCutIndex(transcript: *const session_mod.Transcript, num_turns: u32) ?usize {
@@ -32067,12 +32106,16 @@ fn refreshLoadedThreadAfterRollback(allocator: std.mem.Allocator, thread: *Loade
     allocator.free(thread.turns_json);
     thread.turns_json = turns_json;
 
+    try syncLoadedThreadTokenUsage(allocator, thread);
+    syncLoadedThreadNextTurnIndex(thread);
+    thread.updated_at = currentUnixSeconds();
+}
+
+fn syncLoadedThreadTokenUsage(allocator: std.mem.Allocator, thread: *LoadedThread) !void {
     thread.token_usage = thread.transcript.token_usage;
     if (thread.token_usage_turn_id) |turn_id| allocator.free(turn_id);
     thread.token_usage_turn_id = null;
     thread.token_usage_turn_id = try transcriptTokenUsageTurnId(allocator, &thread.transcript);
-    syncLoadedThreadNextTurnIndex(thread);
-    thread.updated_at = currentUnixSeconds();
 }
 
 fn setLoadedThreadName(allocator: std.mem.Allocator, thread: *LoadedThread, name: []const u8) !void {
@@ -32113,16 +32156,22 @@ fn setLoadedThreadGoal(
     const token_budget = loadedThreadGoalTokenBudget(object);
 
     if (objective) |value| {
+        if (thread.goal != null) _ = refreshLoadedThreadGoalAccountingAt(thread, now);
         if (thread.goal) |*existing| {
             if (std.mem.eql(u8, existing.objective, value) and !std.mem.eql(u8, existing.status, "complete")) {
                 if (status) |next_status| {
+                    const was_active = std.mem.eql(u8, existing.status, "active");
                     const status_copy = try allocator.dupe(u8, next_status);
                     allocator.free(existing.status);
                     existing.status = status_copy;
+                    if (!was_active and std.mem.eql(u8, next_status, "active")) {
+                        resetLoadedThreadGoalAccountingBaselines(existing, thread, now);
+                    }
                 }
                 if (token_budget.present) existing.token_budget = token_budget.value;
                 existing.updated_at = now;
                 thread.updated_at = now;
+                try persistLoadedThreadGoal(allocator, thread);
                 return;
             }
             existing.deinit(allocator);
@@ -32130,9 +32179,11 @@ fn setLoadedThreadGoal(
         }
 
         const objective_copy = try allocator.dupe(u8, value);
-        errdefer allocator.free(objective_copy);
+        var objective_copy_moved = false;
+        errdefer if (!objective_copy_moved) allocator.free(objective_copy);
         const status_copy = try allocator.dupe(u8, status orelse "active");
-        errdefer allocator.free(status_copy);
+        var status_copy_moved = false;
+        errdefer if (!status_copy_moved) allocator.free(status_copy);
 
         thread.goal = .{
             .objective = objective_copy,
@@ -32142,20 +32193,32 @@ fn setLoadedThreadGoal(
             .time_used_seconds = 0,
             .created_at = now,
             .updated_at = now,
+            .token_usage_start_total = loadedThreadGoalUsageTokens(thread),
+            .time_usage_start_seconds = 0,
+            .time_usage_start_at = now,
         };
+        objective_copy_moved = true;
+        status_copy_moved = true;
         thread.updated_at = now;
+        try persistLoadedThreadGoal(allocator, thread);
         return;
     }
 
+    _ = refreshLoadedThreadGoalAccountingAt(thread, now);
     const existing = if (thread.goal) |*goal| goal else return error.MissingThreadGoal;
     if (status) |next_status| {
+        const was_active = std.mem.eql(u8, existing.status, "active");
         const status_copy = try allocator.dupe(u8, next_status);
         allocator.free(existing.status);
         existing.status = status_copy;
+        if (!was_active and std.mem.eql(u8, next_status, "active")) {
+            resetLoadedThreadGoalAccountingBaselines(existing, thread, now);
+        }
     }
     if (token_budget.present) existing.token_budget = token_budget.value;
     existing.updated_at = now;
     thread.updated_at = now;
+    try persistLoadedThreadGoal(allocator, thread);
 }
 
 fn loadedThreadGoalObjective(object: std.json.ObjectMap) ?[]const u8 {
@@ -32181,15 +32244,125 @@ fn loadedThreadGoalTokenBudget(object: std.json.ObjectMap) LoadedThreadGoalToken
     return .{ .present = true, .value = value.integer };
 }
 
-fn clearLoadedThreadGoal(allocator: std.mem.Allocator, thread: *LoadedThread) bool {
+fn clearLoadedThreadGoal(allocator: std.mem.Allocator, thread: *LoadedThread) !bool {
+    const had_goal = thread.goal != null or thread.transcript.goal != null;
+    if (!had_goal) return false;
     if (thread.goal) |*goal| {
         goal.deinit(allocator);
-    } else {
-        return false;
     }
     thread.goal = null;
+    thread.transcript.clearGoal(allocator);
     thread.updated_at = currentUnixSeconds();
+    if (thread.path) |path| try session_store.saveTranscript(allocator, path, &thread.transcript);
     return true;
+}
+
+fn refreshLoadedThreadGoalAccountingAt(thread: *LoadedThread, now: i64) bool {
+    const goal = if (thread.goal) |*payload| payload else return false;
+    if (accountLoadedThreadGoalAt(goal, loadedThreadGoalUsageTokens(thread), now)) {
+        thread.updated_at = now;
+        return true;
+    }
+    return false;
+}
+
+fn refreshLoadedThreadGoalAccountingAndPersistAt(allocator: std.mem.Allocator, thread: *LoadedThread, now: i64) !bool {
+    if (!refreshLoadedThreadGoalAccountingAt(thread, now)) return false;
+    try persistLoadedThreadGoal(allocator, thread);
+    return true;
+}
+
+fn accountLoadedThreadGoalAt(goal: *LoadedThreadGoal, current_total_tokens: i64, now: i64) bool {
+    if (!std.mem.eql(u8, goal.status, "active")) return false;
+    var changed = false;
+    const token_delta = current_total_tokens - goal.token_usage_start_total;
+    const tokens_used = if (token_delta > 0) token_delta else 0;
+    if (goal.tokens_used != tokens_used) {
+        goal.tokens_used = tokens_used;
+        changed = true;
+    }
+    const active_seconds = if (now > goal.time_usage_start_at) now - goal.time_usage_start_at else 0;
+    const time_used_seconds = goal.time_usage_start_seconds + active_seconds;
+    if (goal.time_used_seconds != time_used_seconds) {
+        goal.time_used_seconds = time_used_seconds;
+        changed = true;
+    }
+    if (changed) goal.updated_at = now;
+    return changed;
+}
+
+fn resetLoadedThreadGoalAccountingBaselines(goal: *LoadedThreadGoal, thread: *const LoadedThread, now: i64) void {
+    resetLoadedThreadGoalAccountingBaselinesAt(goal, loadedThreadGoalUsageTokens(thread), now);
+}
+
+fn resetLoadedThreadGoalAccountingBaselinesAt(goal: *LoadedThreadGoal, current_goal_usage_tokens: i64, now: i64) void {
+    goal.token_usage_start_total = current_goal_usage_tokens - goal.tokens_used;
+    goal.time_usage_start_seconds = goal.time_used_seconds;
+    goal.time_usage_start_at = now;
+}
+
+fn loadedThreadGoalUsageTokens(thread: *const LoadedThread) i64 {
+    if (thread.transcript.token_usage) |usage_info| return goalUsageTokensFromUsage(usage_info.total);
+    if (thread.token_usage) |usage_info| return goalUsageTokensFromUsage(usage_info.total);
+    return 0;
+}
+
+fn goalUsageTokensFromUsage(usage: session_mod.TokenUsage) i64 {
+    const cached_input = if (usage.cached_input_tokens > 0) usage.cached_input_tokens else 0;
+    const non_cached_input = if (usage.input_tokens > cached_input) usage.input_tokens - cached_input else 0;
+    const output = if (usage.output_tokens > 0) usage.output_tokens else 0;
+    return non_cached_input + output;
+}
+
+fn loadedThreadGoalStartTotalForSavedUsage(current_total_tokens: i64, tokens_used: i64) i64 {
+    const normalized_tokens_used = if (tokens_used > 0) tokens_used else 0;
+    return current_total_tokens - normalized_tokens_used;
+}
+
+fn persistLoadedThreadGoal(allocator: std.mem.Allocator, thread: *LoadedThread) !void {
+    try syncLoadedThreadGoalToTranscript(allocator, thread);
+    if (thread.path) |path| try session_store.saveTranscript(allocator, path, &thread.transcript);
+}
+
+fn syncLoadedThreadGoalToTranscript(allocator: std.mem.Allocator, thread: *LoadedThread) !void {
+    const goal = thread.goal orelse {
+        thread.transcript.clearGoal(allocator);
+        return;
+    };
+    try thread.transcript.setGoal(allocator, .{
+        .objective = goal.objective,
+        .status = goal.status,
+        .token_budget = goal.token_budget,
+        .tokens_used = goal.tokens_used,
+        .time_used_seconds = goal.time_used_seconds,
+        .created_at = goal.created_at,
+        .updated_at = goal.updated_at,
+    });
+}
+
+fn loadedThreadGoalFromSessionGoal(allocator: std.mem.Allocator, maybe_goal: ?session_mod.ThreadGoal) !?LoadedThreadGoal {
+    const goal = maybe_goal orelse return null;
+    const objective = try allocator.dupe(u8, goal.objective);
+    errdefer allocator.free(objective);
+    const status = try allocator.dupe(u8, goal.status);
+    errdefer allocator.free(status);
+    const now = currentUnixSeconds();
+    return LoadedThreadGoal{
+        .objective = objective,
+        .status = status,
+        .token_budget = goal.token_budget,
+        .tokens_used = goal.tokens_used,
+        .time_used_seconds = goal.time_used_seconds,
+        .created_at = goal.created_at,
+        .updated_at = goal.updated_at,
+        .token_usage_start_total = 0,
+        .time_usage_start_seconds = goal.time_used_seconds,
+        .time_usage_start_at = loadedThreadGoalTimeUsageStartAtForSavedGoal(goal.status, goal.updated_at, now),
+    };
+}
+
+fn loadedThreadGoalTimeUsageStartAtForSavedGoal(status: []const u8, updated_at: i64, now: i64) i64 {
+    return if (std.mem.eql(u8, status, "active")) updated_at else now;
 }
 
 fn updateLoadedThreadGitInfo(
@@ -32377,12 +32550,14 @@ fn handleLoadedThreadCompactStart(
 
     try thread.transcript.replaceWithCompactedSummary(allocator, compacted);
     try refreshLoadedThreadAfterRollback(allocator, thread);
+    const completed_at_ms = currentUnixMilliseconds();
+    const completed_at = @divTrunc(completed_at_ms, std.time.ms_per_s);
+    const goal_accounting_changed = refreshLoadedThreadGoalAccountingAt(thread, completed_at);
+    if (goal_accounting_changed) try syncLoadedThreadGoalToTranscript(allocator, thread);
     if (thread.path) |path| {
         try session_store.saveTranscript(allocator, path, &thread.transcript);
     }
 
-    const completed_at_ms = currentUnixMilliseconds();
-    const completed_at = @divTrunc(completed_at_ms, std.time.ms_per_s);
     const completed_notification = try renderTurnNotification(allocator, "turn/completed", thread.id, turn_id, "completed", started_at, completed_at);
     var completed_notification_moved = false;
     errdefer if (!completed_notification_moved) allocator.free(completed_notification);
@@ -32393,6 +32568,7 @@ fn handleLoadedThreadCompactStart(
     started_notification_moved = true;
     try queueContextCompactionItemNotification(allocator, state, "item/started", thread.id, turn_id, item_id, "startedAtMs", started_at_ms);
     try queueContextCompactionItemNotification(allocator, state, "item/completed", thread.id, turn_id, item_id, "completedAtMs", completed_at_ms);
+    if (goal_accounting_changed) try queueThreadGoalUpdatedNotificationForTurn(allocator, state, thread, turn_id);
     try queueContextCompactedNotification(allocator, state, thread.id, turn_id);
     try queueTurnNotification(allocator, state, "turn/completed", completed_notification);
     completed_notification_moved = true;
@@ -34336,7 +34512,7 @@ fn handleThreadMethod(
             return renderThreadNotFound(allocator, id_value, thread_id);
         };
         const thread = &state.loaded_threads.items[thread_index];
-        rollbackLoadedThread(allocator, thread, num_turns) catch |err| {
+        const goal_cleared = rollbackLoadedThread(allocator, thread, num_turns) catch |err| {
             return switch (err) {
                 error.RollbackRequiresPersistedHistory => renderJsonRpcError(allocator, id_value, -32600, "thread rollback requires persisted thread history"),
                 else => renderJsonRpcErrorForFailure(allocator, id_value, "thread/rollback failed", err),
@@ -34344,6 +34520,7 @@ fn handleThreadMethod(
         };
         const result = try renderThreadReadResponse(allocator, thread, true);
         defer allocator.free(result);
+        if (goal_cleared) try queueThreadGoalClearedNotification(allocator, state, thread.id);
         return renderJsonRpcResult(allocator, id_value, result);
     }
     if (std.mem.eql(u8, method, "thread/list")) {
@@ -34495,6 +34672,9 @@ fn handleThreadMethod(
             defer allocator.free(message);
             return renderJsonRpcError(allocator, id_value, -32600, message);
         }
+        _ = refreshLoadedThreadGoalAccountingAndPersistAt(allocator, thread, currentUnixSeconds()) catch |err| {
+            return renderJsonRpcErrorForFailure(allocator, id_value, "thread/goal/get failed", err);
+        };
         const result = try renderThreadGoalGetResponse(allocator, thread);
         defer allocator.free(result);
         return renderJsonRpcResult(allocator, id_value, result);
@@ -34521,7 +34701,9 @@ fn handleThreadMethod(
             defer allocator.free(message);
             return renderJsonRpcError(allocator, id_value, -32600, message);
         }
-        const cleared = clearLoadedThreadGoal(allocator, thread);
+        const cleared = clearLoadedThreadGoal(allocator, thread) catch |err| {
+            return renderJsonRpcErrorForFailure(allocator, id_value, "thread/goal/clear failed", err);
+        };
         const result = try renderThreadGoalClearResponse(allocator, cleared);
         defer allocator.free(result);
         if (cleared) try queueThreadGoalClearedNotification(allocator, state, thread.id);
@@ -36242,6 +36424,12 @@ fn createLoadedThreadFromResumeParams(
     errdefer allocator.free(turns_json);
     var transcript_copy = try transcript.clone(allocator);
     errdefer transcript_copy.deinit(allocator);
+    var goal = try loadedThreadGoalFromSessionGoal(allocator, transcript.goal);
+    errdefer if (goal) |*value| value.deinit(allocator);
+    if (goal) |*value| {
+        const goal_usage_tokens = if (transcript.token_usage) |usage_info| goalUsageTokensFromUsage(usage_info.total) else 0;
+        value.token_usage_start_total = loadedThreadGoalStartTotalForSavedUsage(goal_usage_tokens, value.tokens_used);
+    }
 
     const request_config = try threadRequestConfigFromParams(params);
     const use_request_profile = request_config.profile_present;
@@ -36355,7 +36543,7 @@ fn createLoadedThreadFromResumeParams(
         .git_sha = git_sha,
         .git_branch = git_branch,
         .git_origin_url = git_origin_url,
-        .goal = null,
+        .goal = goal,
         .transcript = transcript_copy,
         .turns_json = turns_json,
         .next_turn_index = turnCountForTranscript(&transcript_copy),
@@ -36541,6 +36729,7 @@ fn createLoadedThreadFromForkParams(
     try transcript.setCwd(allocator, cwd);
     try transcript.setCliVersion(allocator, cli_version);
     if (thread_source) |value| try transcript.setThreadSource(allocator, value);
+    transcript.clearGoal(allocator);
 
     return .{
         .id = thread_id,
@@ -38532,6 +38721,17 @@ fn queueThreadTokenUsageNotification(allocator: std.mem.Allocator, state: *AppSe
     try state.pending_notifications.append(allocator, owned);
 }
 
+fn queueThreadTokenUsageNotificationForTurn(
+    allocator: std.mem.Allocator,
+    state: *AppServerState,
+    thread: *const LoadedThread,
+    turn_id: []const u8,
+) !void {
+    const usage_turn_id = thread.token_usage_turn_id orelse return;
+    if (!std.mem.eql(u8, usage_turn_id, turn_id)) return;
+    try queueThreadTokenUsageNotification(allocator, state, thread);
+}
+
 fn queueThreadNameUpdatedNotification(allocator: std.mem.Allocator, state: *AppServerState, thread_id: []const u8, thread_name: []const u8) !void {
     var notification = std.ArrayList(u8).empty;
     errdefer notification.deinit(allocator);
@@ -38560,8 +38760,12 @@ fn queueThreadIdNotification(allocator: std.mem.Allocator, state: *AppServerStat
 }
 
 fn queueThreadGoalUpdatedNotification(allocator: std.mem.Allocator, state: *AppServerState, thread: *const LoadedThread) !void {
+    try queueThreadGoalUpdatedNotificationForTurn(allocator, state, thread, null);
+}
+
+fn queueThreadGoalUpdatedNotificationForTurn(allocator: std.mem.Allocator, state: *AppServerState, thread: *const LoadedThread, turn_id: ?[]const u8) !void {
     if (thread.goal == null) return;
-    const owned = try renderThreadGoalUpdatedNotification(allocator, thread, null);
+    const owned = try renderThreadGoalUpdatedNotification(allocator, thread, turn_id);
     try queuePendingServerNotification(allocator, state, "thread/goal/updated", owned);
 }
 
@@ -57806,6 +58010,166 @@ test "app-server token usage turn id maps imported prompt starts to new grouped 
     const turn_id = (try transcriptTokenUsageTurnId(allocator, &transcript)).?;
     defer allocator.free(turn_id);
     try std.testing.expectEqualStrings("turn-2", turn_id);
+}
+
+test "app-server goal accounting derives token and elapsed usage from baselines" {
+    var goal = LoadedThreadGoal{
+        .objective = "ship accounting",
+        .status = "active",
+        .token_budget = 100,
+        .tokens_used = 0,
+        .time_used_seconds = 0,
+        .created_at = 10,
+        .updated_at = 10,
+        .token_usage_start_total = 40,
+        .time_usage_start_seconds = 0,
+        .time_usage_start_at = 10,
+    };
+
+    try std.testing.expect(accountLoadedThreadGoalAt(&goal, 65, 75));
+    try std.testing.expectEqual(@as(i64, 25), goal.tokens_used);
+    try std.testing.expectEqual(@as(i64, 65), goal.time_used_seconds);
+    try std.testing.expectEqual(@as(i64, 75), goal.updated_at);
+    try std.testing.expect(!accountLoadedThreadGoalAt(&goal, 65, 75));
+    try std.testing.expectEqual(@as(i64, 75), loadedThreadGoalTimeUsageStartAtForSavedGoal("active", 75, 100));
+    try std.testing.expectEqual(@as(i64, 100), loadedThreadGoalTimeUsageStartAtForSavedGoal("complete", 75, 100));
+
+    goal.time_used_seconds = 65;
+    goal.time_usage_start_seconds = 65;
+    goal.time_usage_start_at = loadedThreadGoalTimeUsageStartAtForSavedGoal("active", 75, 100);
+    try std.testing.expect(accountLoadedThreadGoalAt(&goal, 65, 100));
+    try std.testing.expectEqual(@as(i64, 90), goal.time_used_seconds);
+
+    goal.status = "complete";
+    try std.testing.expect(!accountLoadedThreadGoalAt(&goal, 90, 100));
+    try std.testing.expectEqual(@as(i64, 25), goal.tokens_used);
+    try std.testing.expectEqual(@as(i64, 90), goal.time_used_seconds);
+
+    goal.status = "active";
+    goal.tokens_used = 30;
+    goal.time_used_seconds = 20;
+    goal.token_usage_start_total = -30;
+    goal.time_usage_start_seconds = 20;
+    goal.time_usage_start_at = 30;
+    try std.testing.expect(accountLoadedThreadGoalAt(&goal, 15, 50));
+    try std.testing.expectEqual(@as(i64, 45), goal.tokens_used);
+    try std.testing.expectEqual(@as(i64, 40), goal.time_used_seconds);
+
+    goal.tokens_used = 30;
+    goal.time_used_seconds = 20;
+    resetLoadedThreadGoalAccountingBaselinesAt(&goal, 100, 200);
+    try std.testing.expect(accountLoadedThreadGoalAt(&goal, 109, 215));
+    try std.testing.expectEqual(@as(i64, 39), goal.tokens_used);
+    try std.testing.expectEqual(@as(i64, 35), goal.time_used_seconds);
+
+    try std.testing.expectEqual(@as(i64, 13), goalUsageTokensFromUsage(.{
+        .input_tokens = 10,
+        .cached_input_tokens = 3,
+        .output_tokens = 6,
+        .reasoning_output_tokens = 2,
+        .total_tokens = 16,
+    }));
+    try std.testing.expectEqual(@as(i64, 70), loadedThreadGoalStartTotalForSavedUsage(100, 30));
+    try std.testing.expectEqual(@as(i64, -30), loadedThreadGoalStartTotalForSavedUsage(0, 30));
+}
+
+test "app-server goal reads persist refreshed accounting" {
+    const allocator = std.testing.allocator;
+    var dir = std.testing.tmpDir(.{});
+    defer dir.cleanup();
+
+    const root = try dir.dir.realPathFileAlloc(std.Io.Threaded.global_single_threaded.io(), ".", allocator);
+    defer allocator.free(root);
+    const path = try session_store.createSessionPathForId(allocator, root, "goal-read-persist");
+    defer allocator.free(path);
+
+    var thread = LoadedThread{
+        .id = "11111111-1111-4111-8111-111111111111",
+        .session_id = "11111111-1111-4111-8111-111111111111",
+        .forked_from_id = null,
+        .preview = "",
+        .model = "gpt-test",
+        .model_context_window = null,
+        .model_auto_compact_token_limit = null,
+        .model_verbosity = null,
+        .model_provider = "openai",
+        .service_tier = null,
+        .active_profile = null,
+        .cwd = "/tmp",
+        .approval_policy = "never",
+        .approvals_reviewer = "codex",
+        .sandbox_mode = "danger-full-access",
+        .sandbox_writable_roots = .{ .items = &.{} },
+        .sandbox_include_cwd_write_root = true,
+        .sandbox_network_enabled = true,
+        .sandbox_external = false,
+        .web_search_mode = null,
+        .reasoning_effort = null,
+        .reasoning_summary = null,
+        .personality = null,
+        .collaboration_mode = "default",
+        .collaboration_developer_instructions = null,
+        .runtime_overrides = .{},
+        .ephemeral = false,
+        .path = path,
+        .source = "cli",
+        .thread_source = null,
+        .agent_nickname = null,
+        .agent_role = null,
+        .cli_version = "0.0.1",
+        .token_usage = .{
+            .total = .{
+                .input_tokens = 100,
+                .cached_input_tokens = 10,
+                .output_tokens = 20,
+                .reasoning_output_tokens = 4,
+                .total_tokens = 120,
+            },
+            .last = .{
+                .input_tokens = 20,
+                .cached_input_tokens = 2,
+                .output_tokens = 5,
+                .reasoning_output_tokens = 1,
+                .total_tokens = 25,
+            },
+            .model_context_window = 200000,
+        },
+        .token_usage_turn_id = null,
+        .name = null,
+        .elicitation_count = 0,
+        .git_sha = null,
+        .git_branch = null,
+        .git_origin_url = null,
+        .goal = .{
+            .objective = "persist read accounting",
+            .status = "active",
+            .token_budget = 200,
+            .tokens_used = 0,
+            .time_used_seconds = 0,
+            .created_at = 100,
+            .updated_at = 100,
+            .token_usage_start_total = 70,
+            .time_usage_start_seconds = 0,
+            .time_usage_start_at = 100,
+        },
+        .transcript = .{},
+        .turns_json = "[]",
+        .next_turn_index = 0,
+        .pending_session_start_source = null,
+        .created_at = 100,
+        .updated_at = 100,
+    };
+    defer thread.transcript.deinit(allocator);
+
+    try std.testing.expect(try refreshLoadedThreadGoalAccountingAndPersistAt(allocator, &thread, 130));
+    try std.testing.expectEqual(@as(i64, 40), thread.goal.?.tokens_used);
+    try std.testing.expectEqual(@as(i64, 30), thread.goal.?.time_used_seconds);
+
+    var loaded = try session_store.loadTranscript(allocator, path);
+    defer loaded.deinit(allocator);
+    try std.testing.expectEqualStrings("persist read accounting", loaded.goal.?.objective);
+    try std.testing.expectEqual(@as(i64, 40), loaded.goal.?.tokens_used);
+    try std.testing.expectEqual(@as(i64, 30), loaded.goal.?.time_used_seconds);
 }
 
 test "app-server fuzzy file search sessions emit update and complete notifications" {

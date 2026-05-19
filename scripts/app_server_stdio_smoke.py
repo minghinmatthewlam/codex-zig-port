@@ -4985,7 +4985,15 @@ def run_turn_start_rpc_smoke(binary: Path) -> None:
                 )
                 goal_get_loaded = read_json_line(proc, 5)
                 assert goal_get_loaded["id"] == "thread-goal-get-loaded"
-                assert goal_get_loaded["result"]["goal"] == loaded_goal
+                read_goal = goal_get_loaded["result"]["goal"]
+                assert read_goal["threadId"] == thread_id
+                assert read_goal["objective"] == loaded_goal["objective"]
+                assert read_goal["status"] == loaded_goal["status"]
+                assert read_goal["tokenBudget"] == loaded_goal["tokenBudget"]
+                assert read_goal["tokensUsed"] == loaded_goal["tokensUsed"]
+                assert read_goal["timeUsedSeconds"] >= loaded_goal["timeUsedSeconds"]
+                assert read_goal["createdAt"] == loaded_goal["createdAt"]
+                assert read_goal["updatedAt"] >= loaded_goal["updatedAt"]
 
                 write_json_line(
                     proc,
@@ -5011,6 +5019,41 @@ def run_turn_start_rpc_smoke(binary: Path) -> None:
                 goal_updated_again = read_json_line(proc, 5)
                 assert goal_updated_again["method"] == "thread/goal/updated"
                 assert goal_updated_again["params"]["goal"] == updated_goal
+                goal_rollout = rollout_path.read_text(encoding="utf-8")
+                assert '"goal":{' in goal_rollout
+                assert '"objective":"ship loaded goals"' in goal_rollout
+                assert '"status":"paused"' in goal_rollout
+                assert '"token_budget"' not in goal_rollout
+
+                write_json_line(
+                    proc,
+                    {
+                        "jsonrpc": "2.0",
+                        "id": "thread-resume-after-goal-update",
+                        "method": "thread/resume",
+                        "params": {
+                            "threadId": thread_id,
+                            "path": str(rollout_path),
+                            "excludeTurns": True,
+                        },
+                    },
+                )
+                resume_after_goal_update = read_json_line(proc, 5)
+                assert resume_after_goal_update["id"] == "thread-resume-after-goal-update"
+                assert resume_after_goal_update["result"]["thread"]["id"] == thread_id
+
+                write_json_line(
+                    proc,
+                    {
+                        "jsonrpc": "2.0",
+                        "id": "thread-goal-get-after-resume",
+                        "method": "thread/goal/get",
+                        "params": {"threadId": thread_id},
+                    },
+                )
+                goal_get_after_resume = read_json_line(proc, 5)
+                assert goal_get_after_resume["id"] == "thread-goal-get-after-resume"
+                assert goal_get_after_resume["result"]["goal"] == updated_goal
 
                 write_json_line(
                     proc,
@@ -5040,6 +5083,37 @@ def run_turn_start_rpc_smoke(binary: Path) -> None:
                 goal_get_cleared = read_json_line(proc, 5)
                 assert goal_get_cleared["id"] == "thread-goal-get-cleared"
                 assert goal_get_cleared["result"] == {"goal": None}
+                assert '"goal":{' not in rollout_path.read_text(encoding="utf-8")
+
+                write_json_line(
+                    proc,
+                    {
+                        "jsonrpc": "2.0",
+                        "id": "thread-resume-after-goal-clear",
+                        "method": "thread/resume",
+                        "params": {
+                            "threadId": thread_id,
+                            "path": str(rollout_path),
+                            "excludeTurns": True,
+                        },
+                    },
+                )
+                resume_after_goal_clear = read_json_line(proc, 5)
+                assert resume_after_goal_clear["id"] == "thread-resume-after-goal-clear"
+                assert resume_after_goal_clear["result"]["thread"]["id"] == thread_id
+
+                write_json_line(
+                    proc,
+                    {
+                        "jsonrpc": "2.0",
+                        "id": "thread-goal-get-after-clear-resume",
+                        "method": "thread/goal/get",
+                        "params": {"threadId": thread_id},
+                    },
+                )
+                goal_get_after_clear_resume = read_json_line(proc, 5)
+                assert goal_get_after_clear_resume["id"] == "thread-goal-get-after-clear-resume"
+                assert goal_get_after_clear_resume["result"] == {"goal": None}
 
                 write_json_line(
                     proc,
@@ -5400,6 +5474,29 @@ def run_turn_start_rpc_smoke(binary: Path) -> None:
                     proc,
                     {
                         "jsonrpc": "2.0",
+                        "id": "thread-goal-set-before-rollback",
+                        "method": "thread/goal/set",
+                        "params": {
+                            "threadId": thread_id,
+                            "objective": "clear goal on rollback",
+                        },
+                    },
+                )
+                goal_set_before_rollback = read_json_line(proc, 5)
+                assert goal_set_before_rollback["id"] == "thread-goal-set-before-rollback"
+                assert (
+                    goal_set_before_rollback["result"]["goal"]["objective"]
+                    == "clear goal on rollback"
+                )
+                goal_updated_before_rollback = read_json_line(proc, 5)
+                assert goal_updated_before_rollback["method"] == "thread/goal/updated"
+                assert goal_updated_before_rollback["params"]["threadId"] == thread_id
+                assert goal_updated_before_rollback["params"]["turnId"] is None
+
+                write_json_line(
+                    proc,
+                    {
+                        "jsonrpc": "2.0",
                         "id": "thread-rollback-loaded",
                         "method": "thread/rollback",
                         "params": {"threadId": thread_id, "numTurns": 1},
@@ -5428,6 +5525,9 @@ def run_turn_start_rpc_smoke(binary: Path) -> None:
                 assert "Use this body without a text item." in stored_after_rollback
                 assert '"type":"thread_rolled_back"' in stored_after_rollback
                 assert '"num_turns":1' in stored_after_rollback
+                goal_cleared_by_rollback = read_json_line(proc, 5)
+                assert goal_cleared_by_rollback["method"] == "thread/goal/cleared"
+                assert goal_cleared_by_rollback["params"] == {"threadId": thread_id}
 
                 write_json_line(
                     proc,
@@ -8714,6 +8814,28 @@ def run_external_auth_refresh_rpc_smoke(binary: Path) -> None:
 
 
 def run_turn_goal_tool_smoke(binary: Path) -> None:
+    def usage_payload(
+        input_tokens: int = 8,
+        output_tokens: int = 2,
+        cached_tokens: int = 1,
+        reasoning_tokens: int = 1,
+        model_context_window: int = 200000,
+    ) -> bytes:
+        event = {
+            "type": "response.completed",
+            "response": {
+                "usage": {
+                    "input_tokens": input_tokens,
+                    "input_tokens_details": {"cached_tokens": cached_tokens},
+                    "output_tokens": output_tokens,
+                    "output_tokens_details": {"reasoning_tokens": reasoning_tokens},
+                    "total_tokens": input_tokens + output_tokens,
+                },
+                "model_context_window": model_context_window,
+            },
+        }
+        return f"data: {json.dumps(event, separators=(',', ':'))}\n\n".encode()
+
     def tool_payload(call_id: str, name: str, arguments: dict) -> bytes:
         event = {
             "type": "response.output_item.done",
@@ -8726,8 +8848,13 @@ def run_turn_goal_tool_smoke(binary: Path) -> None:
         }
         return (
             f"data: {json.dumps(event, separators=(',', ':'))}\n\n"
-            "data: [DONE]\n\n"
-        ).encode()
+        ).encode() + usage_payload() + b"data: [DONE]\n\n"
+
+    def text_payload(delta: str) -> bytes:
+        event = {"type": "response.output_text.delta", "delta": delta}
+        return (
+            f"data: {json.dumps(event, separators=(',', ':'))}\n\n"
+        ).encode() + usage_payload() + b"data: [DONE]\n\n"
 
     server, base_url = start_turn_responses_server()
     codex_home = Path(tempfile.mkdtemp(prefix="codex-zig-app-server-goal-tools-", dir="/tmp"))
@@ -8824,10 +8951,7 @@ def run_turn_goal_tool_smoke(binary: Path) -> None:
                         ),
                         tool_payload("goal-get-call", "get_goal", {}),
                         tool_payload("goal-update-call", "update_goal", {"status": "complete"}),
-                        (
-                            b'data: {"type":"response.output_text.delta","delta":"goal tools done"}\n\n'
-                            b"data: [DONE]\n\n"
-                        ),
+                        text_payload("goal tools done"),
                     ]
                 )
 
@@ -8887,14 +9011,32 @@ def run_turn_goal_tool_smoke(binary: Path) -> None:
                 assert created_goal["objective"] == "ship model-facing goal tools"
                 assert created_goal["status"] == "active"
                 assert created_goal["tokenBudget"] == 77
+                assert created_goal["tokensUsed"] == 0
                 assert goal_updates[1]["params"]["turnId"] == turn_id
                 assert completed_goal["objective"] == "ship model-facing goal tools"
                 assert completed_goal["status"] == "complete"
+                assert completed_goal["tokensUsed"] == 27
                 assert any(
                     message.get("method") == "item/agentMessage/delta"
                     and message["params"]["delta"] == "goal tools done"
                     for message in messages
                 )
+                token_usage_updates = [
+                    message
+                    for message in messages
+                    if message.get("method") == "thread/tokenUsage/updated"
+                ]
+                assert len(token_usage_updates) == 1
+                token_usage = token_usage_updates[0]["params"]
+                assert token_usage["threadId"] == thread_id
+                assert token_usage["turnId"] == turn_id
+                assert token_usage["tokenUsage"]["total"]["totalTokens"] == 60
+                assert token_usage["tokenUsage"]["last"]["totalTokens"] == 10
+                assert token_usage["tokenUsage"]["total"]["cachedInputTokens"] == 6
+                assert token_usage["tokenUsage"]["total"]["reasoningOutputTokens"] == 6
+                assert token_usage["tokenUsage"]["last"]["cachedInputTokens"] == 1
+                assert token_usage["tokenUsage"]["last"]["reasoningOutputTokens"] == 1
+                assert token_usage["tokenUsage"]["modelContextWindow"] == 200000
 
                 assert server.request_paths == ["/responses"] * 6
                 assert server.request_bodies[0]["model"] == "gpt-goal-tools-profile"
@@ -8938,7 +9080,7 @@ def run_turn_goal_tool_smoke(binary: Path) -> None:
                 assert '"objective":"ship model-facing goal tools"' in get_output["output"]
                 assert '"replace the goal"' not in get_output["output"]
                 assert '"status":"active"' in get_output["output"]
-                assert '"remainingTokens":77' in get_output["output"]
+                assert '"remainingTokens":59' in get_output["output"]
                 sixth_input = server.request_bodies[5]["input"]
                 update_output = next(
                     item
@@ -8947,9 +9089,10 @@ def run_turn_goal_tool_smoke(binary: Path) -> None:
                     and item.get("call_id") == "goal-update-call"
                 )
                 assert '"status":"complete"' in update_output["output"]
-                assert '"remainingTokens":77' in update_output["output"]
+                assert '"tokensUsed":27' in update_output["output"]
+                assert '"remainingTokens":50' in update_output["output"]
                 assert (
-                    "Goal achieved. Report final budget usage to the user: tokens used: 0 of 77."
+                    "Goal achieved. Report final budget usage to the user: tokens used: 27 of 77"
                     in update_output["output"]
                 )
 
@@ -8965,6 +9108,7 @@ def run_turn_goal_tool_smoke(binary: Path) -> None:
                 goal_get = read_json_line(proc, 5)
                 assert goal_get["id"] == "thread-goal-get-after-tool-turn"
                 assert goal_get["result"]["goal"]["status"] == "complete"
+                assert goal_get["result"]["goal"]["tokensUsed"] == 27
 
                 write_json_line(
                     proc,
@@ -8983,6 +9127,231 @@ def run_turn_goal_tool_smoke(binary: Path) -> None:
                 assert invalid_budget["id"] == "thread-goal-set-invalid-snake-budget"
                 assert invalid_budget["error"]["code"] == -32600
                 assert "goal budgets must be positive" in invalid_budget["error"]["message"]
+
+            assert proc.stdin is not None
+            proc.stdin.close()
+            proc.wait(timeout=5)
+            if proc.returncode != 0:
+                raise AssertionError(f"app-server exited {proc.returncode}: {proc.stderr.read()}")
+        finally:
+            if proc.poll() is None:
+                proc.kill()
+                proc.wait(timeout=5)
+    finally:
+        server.shutdown()
+        server.server_close()
+        shutil.rmtree(codex_home, ignore_errors=True)
+
+
+def run_turn_goal_interrupt_accounting_smoke(binary: Path) -> None:
+    usage_event = {
+        "type": "response.completed",
+        "response": {
+            "usage": {
+                "input_tokens": 10,
+                "input_tokens_details": {"cached_tokens": 2},
+                "output_tokens": 4,
+                "output_tokens_details": {"reasoning_tokens": 1},
+                "total_tokens": 14,
+            },
+            "model_context_window": 200000,
+        },
+    }
+    interrupt_call = {
+        "type": "response.output_item.done",
+        "item": {
+            "type": "function_call",
+            "call_id": "call-goal-approval-interrupt",
+            "name": "exec_command",
+            "arguments": json.dumps(
+                {"cmd": "printf should-not-run", "shell": "/bin/sh"},
+                separators=(",", ":"),
+            ),
+        },
+    }
+
+    server, base_url = start_turn_responses_server()
+    codex_home = Path(tempfile.mkdtemp(prefix="codex-zig-app-server-goal-interrupt-", dir="/tmp"))
+    try:
+        codex_home.joinpath("config.toml").write_text(
+            "\n".join(
+                [
+                    f'openai_base_url = "{base_url}"',
+                    'model = "gpt-goal-interrupt"',
+                    "",
+                    "[features]",
+                    "goals = true",
+                    "",
+                ]
+            ),
+            encoding="utf-8",
+        )
+        env = os.environ.copy()
+        env["CODEX_HOME"] = str(codex_home)
+        env["OPENAI_API_KEY"] = "test-api-key"
+        env.pop("CODEX_ACCESS_TOKEN", None)
+
+        proc = subprocess.Popen(
+            [str(binary), "app-server"],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            env=env,
+        )
+        try:
+            write_json_line(
+                proc,
+                {
+                    "jsonrpc": "2.0",
+                    "id": "initialize-goal-interrupt",
+                    "method": "initialize",
+                    "params": {
+                        "clientInfo": {"name": "app-server-smoke", "version": "0"},
+                        "capabilities": EXPERIMENTAL_API_CAPABILITIES,
+                    },
+                },
+            )
+            assert read_json_line(proc, 5)["id"] == "initialize-goal-interrupt"
+
+            with tempfile.TemporaryDirectory(prefix="codex-zig-goal-interrupt-cwd-", dir="/tmp") as cwd:
+                write_json_line(
+                    proc,
+                    {
+                        "jsonrpc": "2.0",
+                        "id": "thread-start-goal-interrupt",
+                        "method": "thread/start",
+                        "params": {
+                            "cwd": cwd,
+                            "approvalPolicy": "on-request",
+                            "sandbox": "danger-full-access",
+                        },
+                    },
+                )
+                thread_start = read_json_line(proc, 5)
+                thread = thread_start["result"]["thread"]
+                thread_id = thread["id"]
+                assert_thread_started_notification(read_json_line(proc, 5), thread)
+
+                write_json_line(
+                    proc,
+                    {
+                        "jsonrpc": "2.0",
+                        "id": "thread-goal-set-before-interrupt",
+                        "method": "thread/goal/set",
+                        "params": {
+                            "threadId": thread_id,
+                            "objective": "account interrupted approval usage",
+                            "tokenBudget": 100,
+                        },
+                    },
+                )
+                goal_set = read_json_line(proc, 5)
+                assert goal_set["id"] == "thread-goal-set-before-interrupt"
+                assert goal_set["result"]["goal"]["tokensUsed"] == 0
+                goal_set_notification = read_json_line(proc, 5)
+                assert goal_set_notification["method"] == "thread/goal/updated"
+                assert goal_set_notification["params"]["turnId"] is None
+
+                server.response_payloads.append(
+                    (
+                        f"data: {json.dumps(interrupt_call, separators=(',', ':'))}\n\n"
+                        f"data: {json.dumps(usage_event, separators=(',', ':'))}\n\n"
+                        "data: [DONE]\n\n"
+                    ).encode()
+                )
+
+                write_json_line(
+                    proc,
+                    {
+                        "jsonrpc": "2.0",
+                        "id": "turn-start-goal-interrupt",
+                        "method": "turn/start",
+                        "params": {
+                            "threadId": thread_id,
+                            "input": [{"type": "text", "text": "interrupt after usage"}],
+                        },
+                    },
+                )
+                turn_start = read_json_line(proc, 5)
+                assert turn_start["id"] == "turn-start-goal-interrupt"
+                turn_id = turn_start["result"]["turn"]["id"]
+                approval_request = read_json_line(proc, 5)
+                assert approval_request["method"] == "item/commandExecution/requestApproval"
+                assert approval_request["params"]["threadId"] == thread_id
+                assert approval_request["params"]["turnId"] == turn_id
+                assert approval_request["params"]["itemId"] == "call-goal-approval-interrupt"
+
+                write_json_line(
+                    proc,
+                    {
+                        "jsonrpc": "2.0",
+                        "id": "interrupt-goal-approval",
+                        "method": "turn/interrupt",
+                        "params": {"threadId": thread_id, "turnId": turn_id},
+                    },
+                )
+                interrupt_response = read_json_line(proc, 5)
+                assert interrupt_response["id"] == "interrupt-goal-approval"
+                assert interrupt_response["result"] == {}
+                resolved = read_json_line(proc, 5)
+                assert resolved["method"] == "serverRequest/resolved"
+                assert resolved["params"]["requestId"] == approval_request["id"]
+
+                messages = read_json_lines_until(
+                    proc,
+                    5,
+                    lambda received: any(
+                        message.get("method") == "turn/completed"
+                        and message["params"]["turn"]["id"] == turn_id
+                        for message in received
+                    )
+                    and any(
+                        message.get("method") == "thread/status/changed"
+                        and message["params"]["status"] == {"type": "idle"}
+                        for message in received
+                    ),
+                )
+                completed = [
+                    message
+                    for message in messages
+                    if message.get("method") == "turn/completed"
+                    and message["params"]["turn"]["id"] == turn_id
+                ][-1]
+                assert completed["params"]["turn"]["status"] == "interrupted"
+
+                goal_updates = [
+                    message for message in messages if message.get("method") == "thread/goal/updated"
+                ]
+                assert len(goal_updates) == 1
+                interrupted_goal = goal_updates[0]["params"]["goal"]
+                assert goal_updates[0]["params"]["turnId"] == turn_id
+                assert interrupted_goal["tokensUsed"] == 12
+                token_updates = [
+                    message
+                    for message in messages
+                    if message.get("method") == "thread/tokenUsage/updated"
+                ]
+                assert len(token_updates) == 1
+                token_usage = token_updates[0]["params"]
+                assert token_usage["turnId"] == turn_id
+                assert token_usage["tokenUsage"]["total"]["totalTokens"] == 14
+                assert token_usage["tokenUsage"]["total"]["cachedInputTokens"] == 2
+                assert token_usage["tokenUsage"]["total"]["outputTokens"] == 4
+
+                write_json_line(
+                    proc,
+                    {
+                        "jsonrpc": "2.0",
+                        "id": "thread-goal-get-after-interrupt",
+                        "method": "thread/goal/get",
+                        "params": {"threadId": thread_id},
+                    },
+                )
+                goal_get = read_json_line(proc, 5)
+                assert goal_get["id"] == "thread-goal-get-after-interrupt"
+                assert goal_get["result"]["goal"]["tokensUsed"] == 12
+                assert '"tokens_used":12' in Path(thread["path"]).read_text(encoding="utf-8")
 
             assert proc.stdin is not None
             proc.stdin.close()
@@ -46894,6 +47263,8 @@ def main() -> None:
     print("app-server-turn-start-rpc-e2e: ok")
     run_turn_goal_tool_smoke(binary)
     print("app-server-turn-goal-tool-e2e: ok")
+    run_turn_goal_interrupt_accounting_smoke(binary)
+    print("app-server-turn-goal-interrupt-accounting-e2e: ok")
     run_turn_goal_tool_stable_notification_filter_smoke(binary)
     print("app-server-turn-goal-tool-stable-notification-filter-e2e: ok")
     run_review_start_rpc_smoke(binary)
