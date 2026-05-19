@@ -52385,6 +52385,8 @@ fn accountLoginErrorMessage(err: anyerror) []const u8 {
     return switch (err) {
         error.LoginCancelled => "Login cancelled",
         error.DeviceAuthCancelled => "Login was not completed",
+        error.MissingAuthorizationCode => login_mod.missing_authorization_code_message,
+        error.MissingCodexEntitlement => login_mod.missing_codex_entitlement_message,
         else => @errorName(err),
     };
 }

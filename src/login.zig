@@ -7,7 +7,12 @@ const DEFAULT_ISSUER = "https://auth.openai.com";
 pub const default_issuer = DEFAULT_ISSUER;
 const DEFAULT_CALLBACK_PORT: u16 = 1455;
 const FALLBACK_CALLBACK_PORT: u16 = 1457;
+const CALLBACK_HTTP_BUFFER_SIZE: usize = 128 * 1024;
 const LOGIN_SCOPE = "openid profile email offline_access api.connectors.read api.connectors.invoke";
+pub const missing_authorization_code_message = "Missing authorization code. Sign-in could not be completed.";
+pub const missing_codex_entitlement_message = "Codex is not enabled for your workspace. Contact your workspace administrator to request access to Codex.";
+const missing_codex_entitlement_code = "missing_codex_entitlement";
+const missing_authorization_code = "missing_authorization_code";
 const net = std.Io.net;
 
 const LoginArgs = struct {
@@ -52,6 +57,7 @@ pub const BrowserAuthHandle = struct {
     state: []const u8,
     auth_url: []const u8,
     actual_port: u16,
+    codex_streamlined_login: bool,
 
     pub fn deinit(self: *BrowserAuthHandle, allocator: std.mem.Allocator) void {
         self.callback_server.deinit(std.Io.Threaded.global_single_threaded.io());
@@ -74,6 +80,8 @@ pub const BrowserAuthHandle = struct {
             self.redirect_uri,
             self.code_verifier,
             self.state,
+            self.actual_port,
+            self.codex_streamlined_login,
         );
     }
 };
@@ -377,7 +385,7 @@ fn runBrowserAuth(allocator: std.mem.Allocator, codex_home: []const u8, args: Lo
         \\
     , .{ actual_port, authorize_url });
 
-    try waitForBrowserCallback(allocator, codex_home, &callback_server, args.issuer, args.client_id, redirect_uri, pkce.code_verifier, state);
+    try waitForBrowserCallback(allocator, codex_home, &callback_server, args.issuer, args.client_id, redirect_uri, pkce.code_verifier, state, actual_port, false);
 }
 
 pub fn startBrowserAuthReturnUrl(allocator: std.mem.Allocator, options: BrowserAuthOptions) !BrowserAuthHandle {
@@ -428,6 +436,7 @@ pub fn startBrowserAuthReturnUrl(allocator: std.mem.Allocator, options: BrowserA
         .state = state,
         .auth_url = authorize_url,
         .actual_port = actual_port,
+        .codex_streamlined_login = options.codex_streamlined_login,
     };
 }
 
@@ -489,14 +498,17 @@ fn waitForBrowserCallback(
     redirect_uri: []const u8,
     code_verifier: []const u8,
     expected_state: []const u8,
+    actual_port: u16,
+    codex_streamlined_login: bool,
 ) !void {
     const io = std.Io.Threaded.global_single_threaded.io();
+    var callback_completed = false;
     while (true) {
         var stream = try server.accept(io);
         defer stream.close(io);
 
-        var send_buffer: [4096]u8 = undefined;
-        var recv_buffer: [4096]u8 = undefined;
+        var send_buffer: [CALLBACK_HTTP_BUFFER_SIZE]u8 = undefined;
+        var recv_buffer: [CALLBACK_HTTP_BUFFER_SIZE]u8 = undefined;
         var connection_reader = stream.reader(io, &recv_buffer);
         var connection_writer = stream.writer(io, &send_buffer);
         var http_server: std.http.Server = .init(&connection_reader.interface, &connection_writer.interface);
@@ -514,6 +526,9 @@ fn waitForBrowserCallback(
             redirect_uri,
             code_verifier,
             expected_state,
+            actual_port,
+            codex_streamlined_login,
+            &callback_completed,
         );
         if (completed) return;
     }
@@ -528,6 +543,9 @@ fn handleBrowserLoginRequest(
     redirect_uri: []const u8,
     code_verifier: []const u8,
     expected_state: []const u8,
+    actual_port: u16,
+    codex_streamlined_login: bool,
+    callback_completed: *bool,
 ) !bool {
     const target = request.head.target;
     const path, const query = splitTarget(target);
@@ -535,6 +553,15 @@ fn handleBrowserLoginRequest(
     if (std.mem.eql(u8, path, "/cancel")) {
         try respondText(request, .ok, "Login cancelled\n");
         return error.LoginCancelled;
+    }
+    if (std.mem.eql(u8, path, "/success")) {
+        if (!callback_completed.*) {
+            try respondText(request, .bad_request, "Login has not completed\n");
+            return false;
+        }
+        const success_streamlined = try successPageUsesStreamlinedLogin(allocator, query, codex_streamlined_login);
+        try respondText(request, .ok, if (success_streamlined) STREAMLINED_SUCCESS_PAGE else LEGACY_SUCCESS_PAGE);
+        return true;
     }
     if (!std.mem.eql(u8, path, "/auth/callback")) {
         try respondText(request, .not_found, "Not Found\n");
@@ -545,7 +572,7 @@ fn handleBrowserLoginRequest(
     defer if (callback_state) |value| allocator.free(value);
     if (callback_state == null or !std.mem.eql(u8, callback_state.?, expected_state)) {
         try respondText(request, .bad_request, "State mismatch\n");
-        return error.OAuthStateMismatch;
+        return false;
     }
 
     const error_code = try queryParam(allocator, query, "error");
@@ -553,19 +580,25 @@ fn handleBrowserLoginRequest(
     if (error_code) |value| {
         const description = try queryParam(allocator, query, "error_description");
         defer if (description) |text| allocator.free(text);
-        const message = if (description) |text|
-            try std.fmt.allocPrint(allocator, "Sign-in failed: {s}\n", .{text})
-        else
-            try std.fmt.allocPrint(allocator, "Sign-in failed: {s}\n", .{value});
-        defer allocator.free(message);
-        try respondText(request, .bad_request, message);
-        return error.OAuthCallbackError;
+        const rendered = try renderOAuthCallbackErrorPage(allocator, value, description);
+        defer rendered.deinit(allocator);
+        try respondText(request, .ok, rendered.html);
+        return rendered.failure;
     }
 
     const code = try queryParam(allocator, query, "code");
     defer if (code) |value| allocator.free(value);
     if (code == null or code.?.len == 0) {
-        try respondText(request, .bad_request, "Missing authorization code\n");
+        const page = try renderLoginErrorPage(
+            allocator,
+            "Sign-in could not be completed",
+            missing_authorization_code_message,
+            missing_authorization_code,
+            missing_authorization_code_message,
+            "Return to Codex to retry, switch accounts, or contact your workspace admin if access is restricted.",
+        );
+        defer allocator.free(page);
+        try respondText(request, .ok, page);
         return error.MissingAuthorizationCode;
     }
 
@@ -573,12 +606,326 @@ fn handleBrowserLoginRequest(
     defer tokens.deinit(allocator);
 
     try saveChatGptTokens(allocator, codex_home, tokens);
-    try respondText(
-        request,
-        .ok,
-        "<!doctype html><meta charset=\"utf-8\"><title>Codex login complete</title><h1>Codex login complete</h1><p>You can return to the terminal.</p>",
+    const success_url = try composeSuccessUrl(allocator, actual_port, issuer, tokens, codex_streamlined_login);
+    defer allocator.free(success_url);
+    callback_completed.* = true;
+    try respondRedirect(request, success_url);
+    return false;
+}
+
+const RenderedLoginError = struct {
+    html: []const u8,
+    failure: anyerror,
+
+    fn deinit(self: RenderedLoginError, allocator: std.mem.Allocator) void {
+        allocator.free(self.html);
+    }
+};
+
+fn renderOAuthCallbackErrorPage(
+    allocator: std.mem.Allocator,
+    error_code: []const u8,
+    description: ?[]const u8,
+) !RenderedLoginError {
+    const missing_entitlement = std.mem.eql(u8, error_code, "access_denied") and
+        description != null and
+        asciiContainsIgnoreCase(description.?, missing_codex_entitlement_code);
+
+    if (missing_entitlement) {
+        const html = try renderLoginErrorPage(
+            allocator,
+            "You do not have access to Codex",
+            "This account is not currently authorized to use Codex in this workspace.",
+            error_code,
+            "Contact your workspace administrator to request access to Codex.",
+            "Contact your workspace administrator to get access to Codex, then return to Codex and try again.",
+        );
+        return .{ .html = html, .failure = error.MissingCodexEntitlement };
+    }
+
+    const message = if (description) |text|
+        if (text.len > 0)
+            try std.fmt.allocPrint(allocator, "Sign-in failed: {s}", .{text})
+        else
+            try std.fmt.allocPrint(allocator, "Sign-in failed: {s}", .{error_code})
+    else
+        try std.fmt.allocPrint(allocator, "Sign-in failed: {s}", .{error_code});
+    defer allocator.free(message);
+
+    const html = try renderLoginErrorPage(
+        allocator,
+        "Sign-in could not be completed",
+        message,
+        error_code,
+        description orelse message,
+        "Return to Codex to retry, switch accounts, or contact your workspace admin if access is restricted.",
     );
-    return true;
+    return .{ .html = html, .failure = error.OAuthCallbackError };
+}
+
+fn renderLoginErrorPage(
+    allocator: std.mem.Allocator,
+    title: []const u8,
+    message: []const u8,
+    code: []const u8,
+    description: []const u8,
+    help: []const u8,
+) ![]const u8 {
+    const escaped_title = try htmlEscapeAlloc(allocator, title);
+    defer allocator.free(escaped_title);
+    const escaped_message = try htmlEscapeAlloc(allocator, message);
+    defer allocator.free(escaped_message);
+    const escaped_code = try htmlEscapeAlloc(allocator, code);
+    defer allocator.free(escaped_code);
+    const escaped_description = try htmlEscapeAlloc(allocator, description);
+    defer allocator.free(escaped_description);
+    const escaped_help = try htmlEscapeAlloc(allocator, help);
+    defer allocator.free(escaped_help);
+
+    return std.fmt.allocPrint(allocator,
+        \\<!doctype html>
+        \\<html lang="en">
+        \\<head>
+        \\<meta charset="utf-8">
+        \\<title>Codex Sign-in Error</title>
+        \\<style>
+        \\body{{margin:0;min-height:100vh;font-family:system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;background:#fff;color:#0d0d0d;display:flex;align-items:center;justify-content:center;padding:24px;box-sizing:border-box;}}
+        \\.card{{width:min(680px,100%);border:1px solid rgba(13,13,13,.12);border-radius:16px;box-shadow:0 12px 32px rgba(0,0,0,.06);padding:24px;}}
+        \\.brand{{color:#5d5d5d;font-size:14px;}}
+        \\h1{{margin:18px 0 10px;font-size:28px;line-height:1.2;}}
+        \\.message{{font-size:16px;line-height:1.45;}}
+        \\.details{{margin-top:18px;border:1px solid rgba(13,13,13,.1);border-radius:12px;background:#fafafa;padding:14px;display:grid;gap:8px;}}
+        \\.row{{display:grid;grid-template-columns:136px 1fr;gap:10px;font-size:13px;align-items:baseline;}}
+        \\.row strong{{color:#5d5d5d;}}
+        \\code{{font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,"Liberation Mono","Courier New",monospace;word-break:break-all;}}
+        \\.help{{margin-top:16px;font-size:14px;color:#5d5d5d;}}
+        \\</style>
+        \\</head>
+        \\<body>
+        \\<main class="card">
+        \\<div class="brand">Codex login</div>
+        \\<h1>{s}</h1>
+        \\<p class="message">{s}</p>
+        \\<div class="details">
+        \\<div class="row"><strong>Error code</strong><code>{s}</code></div>
+        \\<div class="row"><strong>Details</strong><code>{s}</code></div>
+        \\</div>
+        \\<p class="help">{s}</p>
+        \\</main>
+        \\</body>
+        \\</html>
+    , .{ escaped_title, escaped_message, escaped_code, escaped_description, escaped_help });
+}
+
+fn successPageUsesStreamlinedLogin(
+    allocator: std.mem.Allocator,
+    query: []const u8,
+    default_value: bool,
+) !bool {
+    const raw = try queryParam(allocator, query, "codex_streamlined_login");
+    defer if (raw) |value| allocator.free(value);
+    if (raw) |value| {
+        return std.mem.eql(u8, value, "true") or std.mem.eql(u8, value, "1");
+    }
+    return default_value;
+}
+
+fn composeSuccessUrl(
+    allocator: std.mem.Allocator,
+    actual_port: u16,
+    issuer: []const u8,
+    tokens: Tokens,
+    codex_streamlined_login: bool,
+) ![]const u8 {
+    var id_claims = try parseChatGptClaimsOrEmpty(allocator, tokens.id_token);
+    defer id_claims.deinit(allocator);
+    const access_plan_type = try parseChatGptRawPlanTypeOrEmpty(allocator, tokens.access_token);
+    defer if (access_plan_type) |value| allocator.free(value);
+    const id_plan_type = if (access_plan_type == null)
+        try parseChatGptRawPlanTypeOrEmpty(allocator, tokens.id_token)
+    else
+        null;
+    defer if (id_plan_type) |value| allocator.free(value);
+
+    const completed_onboarding = id_claims.completed_platform_onboarding orelse false;
+    const is_org_owner = id_claims.is_org_owner orelse false;
+    const needs_setup = !completed_onboarding and is_org_owner;
+    const needs_setup_text = if (needs_setup) "true" else "false";
+    const organization_id = id_claims.organization_id orelse "";
+    const project_id = id_claims.project_id orelse "";
+    const plan_type = access_plan_type orelse id_plan_type orelse "";
+    const platform_url = platformUrlForIssuer(issuer);
+
+    var out = std.ArrayList(u8).empty;
+    errdefer out.deinit(allocator);
+    const prefix = try std.fmt.allocPrint(allocator, "http://localhost:{d}/success?", .{actual_port});
+    defer allocator.free(prefix);
+    try out.appendSlice(allocator, prefix);
+    var first = true;
+    try appendFormField(allocator, &out, &first, "id_token", tokens.id_token);
+    try appendFormField(allocator, &out, &first, "needs_setup", needs_setup_text);
+    try appendFormField(allocator, &out, &first, "org_id", organization_id);
+    try appendFormField(allocator, &out, &first, "project_id", project_id);
+    try appendFormField(allocator, &out, &first, "plan_type", plan_type);
+    try appendFormField(allocator, &out, &first, "platform_url", platform_url);
+    if (codex_streamlined_login) {
+        try appendFormField(allocator, &out, &first, "codex_streamlined_login", "true");
+    }
+    return out.toOwnedSlice(allocator);
+}
+
+fn parseChatGptClaimsOrEmpty(allocator: std.mem.Allocator, jwt: []const u8) !auth.ChatGptClaims {
+    return auth.parseChatGptClaims(allocator, jwt) catch |err| switch (err) {
+        error.OutOfMemory => return err,
+        else => auth.ChatGptClaims{},
+    };
+}
+
+fn parseChatGptRawPlanTypeOrEmpty(allocator: std.mem.Allocator, jwt: []const u8) !?[]const u8 {
+    return auth.parseChatGptRawPlanType(allocator, jwt) catch |err| switch (err) {
+        error.OutOfMemory => return err,
+        else => null,
+    };
+}
+
+fn platformUrlForIssuer(issuer: []const u8) []const u8 {
+    if (std.mem.eql(u8, std.mem.trimEnd(u8, issuer, "/"), DEFAULT_ISSUER)) {
+        return "https://platform.openai.com";
+    }
+    return "https://platform.api.openai.org";
+}
+
+const LEGACY_SUCCESS_PAGE =
+    \\<!doctype html>
+    \\<html lang="en">
+    \\<head><meta charset="utf-8"><title>Sign into Codex</title></head>
+    \\<body style="margin:0;min-height:100vh;display:flex;align-items:center;justify-content:center;font-family:system-ui,-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;">
+    \\<main style="text-align:center;">
+    \\<h1>Signed in to Codex</h1>
+    \\<p id="close-message" style="display:none;">You may now close this page</p>
+    \\<div id="setup-message" style="display:none;">
+    \\<p>Finish setting up your API organization</p>
+    \\<p>Add a payment method to use your organization. Redirecting in <span id="countdown">3</span>s...</p>
+    \\</div>
+    \\</main>
+    \\<script>
+    \\(function(){
+    \\const params=new URLSearchParams(window.location.search);
+    \\const needsSetup=params.get('needs_setup')==='true';
+    \\if(!needsSetup){document.getElementById('close-message').style.display='block';return;}
+    \\document.getElementById('setup-message').style.display='block';
+    \\const platformUrl=params.get('platform_url')||'https://platform.openai.com';
+    \\const redirectUrl=new URL('/org-setup',platformUrl);
+    \\redirectUrl.searchParams.set('p',params.get('plan_type')||'');
+    \\redirectUrl.searchParams.set('t',params.get('id_token')||'');
+    \\redirectUrl.searchParams.set('with_org',params.get('org_id')||'');
+    \\redirectUrl.searchParams.set('project_id',params.get('project_id')||'');
+    \\let countdown=3;
+    \\function tick(){
+    \\document.getElementById('countdown').textContent=String(countdown);
+    \\if(countdown===0){window.location.replace(redirectUrl.toString());return;}
+    \\countdown-=1;
+    \\setTimeout(tick,1000);
+    \\}
+    \\tick();
+    \\})();
+    \\</script>
+    \\</body>
+    \\</html>
+;
+
+const STREAMLINED_SUCCESS_PAGE =
+    \\<!doctype html>
+    \\<html lang="en">
+    \\<head><meta charset="utf-8"><title>Signed in to Codex</title></head>
+    \\<body style="margin:0;min-height:100vh;display:flex;align-items:center;justify-content:center;font-family:system-ui,-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;">
+    \\<main style="text-align:center;">
+    \\<p id="status-message">You're signed in and may close this tab</p>
+    \\<button id="open-codex" type="button" onclick="window.location.href='codex://threads/new'">Open Codex</button>
+    \\<div id="setup-message" style="display:none;">
+    \\<p>Finish setting up your API organization</p>
+    \\<p>Add a payment method to use your organization. Redirecting in <span id="countdown">3</span>s...</p>
+    \\</div>
+    \\</main>
+    \\<script>
+    \\(function(){
+    \\const params=new URLSearchParams(window.location.search);
+    \\const needsSetup=params.get('needs_setup')==='true';
+    \\window.history.replaceState(null,'',window.location.pathname);
+    \\if(!needsSetup){setTimeout(function(){window.location.href='codex://threads/new';},250);return;}
+    \\document.getElementById('status-message').style.display='none';
+    \\document.getElementById('open-codex').style.display='none';
+    \\document.getElementById('setup-message').style.display='block';
+    \\const platformUrl=params.get('platform_url')||'https://platform.openai.com';
+    \\const redirectUrl=new URL('/org-setup',platformUrl);
+    \\redirectUrl.searchParams.set('p',params.get('plan_type')||'');
+    \\redirectUrl.searchParams.set('t',params.get('id_token')||'');
+    \\redirectUrl.searchParams.set('with_org',params.get('org_id')||'');
+    \\redirectUrl.searchParams.set('project_id',params.get('project_id')||'');
+    \\let countdown=3;
+    \\function tick(){
+    \\document.getElementById('countdown').textContent=String(countdown);
+    \\if(countdown===0){window.location.replace(redirectUrl.toString());return;}
+    \\countdown-=1;
+    \\setTimeout(tick,1000);
+    \\}
+    \\tick();
+    \\})();
+    \\</script>
+    \\</body>
+    \\</html>
+;
+
+fn respondRedirect(request: *std.http.Server.Request, location: []const u8) !void {
+    try request.respond("", .{
+        .status = .found,
+        .extra_headers = &.{
+            .{ .name = "Location", .value = location },
+            .{ .name = "Connection", .value = "close" },
+        },
+    });
+}
+
+fn htmlEscapeAlloc(allocator: std.mem.Allocator, raw: []const u8) ![]const u8 {
+    var out = std.ArrayList(u8).empty;
+    errdefer out.deinit(allocator);
+    for (raw) |byte| {
+        switch (byte) {
+            '&' => try out.appendSlice(allocator, "&amp;"),
+            '<' => try out.appendSlice(allocator, "&lt;"),
+            '>' => try out.appendSlice(allocator, "&gt;"),
+            '"' => try out.appendSlice(allocator, "&quot;"),
+            '\'' => try out.appendSlice(allocator, "&#39;"),
+            else => try out.append(allocator, byte),
+        }
+    }
+    return out.toOwnedSlice(allocator);
+}
+
+fn asciiContainsIgnoreCase(haystack: []const u8, needle: []const u8) bool {
+    if (needle.len == 0) return true;
+    if (needle.len > haystack.len) return false;
+    var index: usize = 0;
+    while (index + needle.len <= haystack.len) : (index += 1) {
+        if (std.ascii.eqlIgnoreCase(haystack[index .. index + needle.len], needle)) return true;
+    }
+    return false;
+}
+
+fn queryParam(allocator: std.mem.Allocator, query: []const u8, name: []const u8) !?[]const u8 {
+    var parts = std.mem.splitScalar(u8, query, '&');
+    while (parts.next()) |part| {
+        if (part.len == 0) continue;
+        const key_raw, const value_raw = if (std.mem.indexOfScalar(u8, part, '=')) |index|
+            .{ part[0..index], part[index + 1 ..] }
+        else
+            .{ part, "" };
+        const key = try percentDecodeQueryComponent(allocator, key_raw);
+        defer allocator.free(key);
+        if (!std.mem.eql(u8, key, name)) continue;
+        return try percentDecodeQueryComponent(allocator, value_raw);
+    }
+    return null;
 }
 
 fn splitTarget(target: []const u8) struct { []const u8, []const u8 } {
@@ -596,22 +943,6 @@ fn respondText(request: *std.http.Server.Request, status: std.http.Status, body:
             .{ .name = "Connection", .value = "close" },
         },
     });
-}
-
-fn queryParam(allocator: std.mem.Allocator, query: []const u8, name: []const u8) !?[]const u8 {
-    var parts = std.mem.splitScalar(u8, query, '&');
-    while (parts.next()) |part| {
-        if (part.len == 0) continue;
-        const key_raw, const value_raw = if (std.mem.indexOfScalar(u8, part, '=')) |index|
-            .{ part[0..index], part[index + 1 ..] }
-        else
-            .{ part, "" };
-        const key = try percentDecodeQueryComponent(allocator, key_raw);
-        defer allocator.free(key);
-        if (!std.mem.eql(u8, key, name)) continue;
-        return try percentDecodeQueryComponent(allocator, value_raw);
-    }
-    return null;
 }
 
 fn percentDecodeQueryComponent(allocator: std.mem.Allocator, value: []const u8) ![]const u8 {
@@ -1133,6 +1464,82 @@ test "query params decode callback values" {
     try std.testing.expectEqualStrings("abc 123", code);
     try std.testing.expectEqualStrings("state value", state);
     try std.testing.expect((try queryParam(allocator, "code=abc", "missing")) == null);
+}
+
+test "browser success url includes setup redirect fields" {
+    const allocator = std.testing.allocator;
+    const id_payload =
+        \\{"https://api.openai.com/auth":{"organization_id":"org_123","project_id":"proj_123","completed_platform_onboarding":false,"is_org_owner":true}}
+    ;
+    const access_payload =
+        \\{"https://api.openai.com/auth":{"chatgpt_plan_type":"future_plan"}}
+    ;
+    var id_buffer: [512]u8 = undefined;
+    const id_encoded = std.base64.url_safe_no_pad.Encoder.encode(&id_buffer, id_payload);
+    var access_buffer: [512]u8 = undefined;
+    const access_encoded = std.base64.url_safe_no_pad.Encoder.encode(&access_buffer, access_payload);
+    const id_token = try std.fmt.allocPrint(allocator, "header.{s}.sig", .{id_encoded});
+    defer allocator.free(id_token);
+    const access_token = try std.fmt.allocPrint(allocator, "header.{s}.sig", .{access_encoded});
+    defer allocator.free(access_token);
+
+    const url = try composeSuccessUrl(allocator, 1455, DEFAULT_ISSUER, .{
+        .id_token = id_token,
+        .access_token = access_token,
+        .refresh_token = "refresh",
+    }, true);
+    defer allocator.free(url);
+
+    try std.testing.expect(std.mem.startsWith(u8, url, "http://localhost:1455/success?"));
+    try std.testing.expect(std.mem.indexOf(u8, url, "needs_setup=true") != null);
+    try std.testing.expect(std.mem.indexOf(u8, url, "org_id=org_123") != null);
+    try std.testing.expect(std.mem.indexOf(u8, url, "project_id=proj_123") != null);
+    try std.testing.expect(std.mem.indexOf(u8, url, "plan_type=future_plan") != null);
+    try std.testing.expect(std.mem.indexOf(u8, url, "platform_url=https%3A%2F%2Fplatform.openai.com") != null);
+    try std.testing.expect(std.mem.indexOf(u8, url, "codex_streamlined_login=true") != null);
+}
+
+test "browser success pages include setup and app redirects" {
+    try std.testing.expect(std.mem.indexOf(u8, LEGACY_SUCCESS_PAGE, "needs_setup") != null);
+    try std.testing.expect(std.mem.indexOf(u8, LEGACY_SUCCESS_PAGE, "/org-setup") != null);
+    try std.testing.expect(std.mem.indexOf(u8, STREAMLINED_SUCCESS_PAGE, "needs_setup") != null);
+    try std.testing.expect(std.mem.indexOf(u8, STREAMLINED_SUCCESS_PAGE, "/org-setup") != null);
+    try std.testing.expect(std.mem.indexOf(u8, STREAMLINED_SUCCESS_PAGE, "codex://threads/new") != null);
+    try std.testing.expect(std.mem.indexOf(u8, STREAMLINED_SUCCESS_PAGE, "history.replaceState") != null);
+}
+
+test "login error page escapes callback details" {
+    const allocator = std.testing.allocator;
+    const page = try renderLoginErrorPage(
+        allocator,
+        "Sign-in <failed>",
+        "Bad & blocked",
+        "code\"x",
+        "detail <script>",
+        "Try 'again'",
+    );
+    defer allocator.free(page);
+
+    try std.testing.expect(std.mem.indexOf(u8, page, "Sign-in &lt;failed&gt;") != null);
+    try std.testing.expect(std.mem.indexOf(u8, page, "Bad &amp; blocked") != null);
+    try std.testing.expect(std.mem.indexOf(u8, page, "code&quot;x") != null);
+    try std.testing.expect(std.mem.indexOf(u8, page, "detail &lt;script&gt;") != null);
+    try std.testing.expect(std.mem.indexOf(u8, page, "Try &#39;again&#39;") != null);
+}
+
+test "oauth entitlement page hides raw entitlement marker" {
+    const allocator = std.testing.allocator;
+    const rendered = try renderOAuthCallbackErrorPage(
+        allocator,
+        "access_denied",
+        "workspace has missing_codex_entitlement",
+    );
+    defer rendered.deinit(allocator);
+
+    try std.testing.expect(rendered.failure == error.MissingCodexEntitlement);
+    try std.testing.expect(std.mem.indexOf(u8, rendered.html, "You do not have access to Codex") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rendered.html, "Contact your workspace administrator to request access to Codex.") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rendered.html, "missing_codex_entitlement") == null);
 }
 
 test "api key login writes auth json load can reuse" {
