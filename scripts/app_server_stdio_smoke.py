@@ -29785,6 +29785,75 @@ def run_account_login_rpc_smoke(binary: Path) -> None:
             finally:
                 shutil.rmtree(forced_home, ignore_errors=True)
 
+        def assert_chatgpt_login_url_config(
+            config_text: str,
+            request_id: str,
+            expected_auth_url_fragment: str,
+        ) -> None:
+            login_home = Path(tempfile.mkdtemp(prefix="codex-zig-app-server-chatgpt-login-", dir="/tmp"))
+            try:
+                (login_home / "config.toml").write_text(config_text, encoding="utf-8")
+                login_env = os.environ.copy()
+                login_env.pop("OPENAI_API_KEY", None)
+                login_env.pop("CODEX_ACCESS_TOKEN", None)
+                login_env["CODEX_HOME"] = str(login_home)
+                login_proc = subprocess.Popen(
+                    [str(binary), "app-server"],
+                    stdin=subprocess.PIPE,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    text=True,
+                    env=login_env,
+                )
+                try:
+                    write_json_line(
+                        login_proc,
+                        {
+                            "jsonrpc": "2.0",
+                            "id": request_id,
+                            "method": "account/login/start",
+                            "params": {"type": "chatgpt"},
+                        },
+                    )
+                    started = read_json_line(login_proc, 5)
+                    assert started["id"] == request_id
+                    assert started["result"]["type"] == "chatgpt"
+                    assert expected_auth_url_fragment in started["result"]["authUrl"]
+
+                    login_id = started["result"]["loginId"]
+                    write_json_line(
+                        login_proc,
+                        {
+                            "jsonrpc": "2.0",
+                            "id": f"{request_id}-cancel",
+                            "method": "account/login/cancel",
+                            "params": {"loginId": login_id},
+                        },
+                    )
+                    read_json_lines_until(
+                        login_proc,
+                        5,
+                        lambda messages: any(
+                            message.get("id") == f"{request_id}-cancel" for message in messages
+                        )
+                        and any(message.get("method") == "account/login/completed" for message in messages),
+                    )
+
+                    assert login_proc.stdin is not None
+                    login_proc.stdin.close()
+                    login_proc.wait(timeout=5)
+                    if login_proc.returncode != 0:
+                        raise AssertionError(
+                            f"chatgpt login app-server exited {login_proc.returncode}: "
+                            f"{login_proc.stderr.read()}"
+                        )
+                finally:
+                    if login_proc.poll() is None:
+                        login_proc.kill()
+                        login_proc.wait(timeout=5)
+            finally:
+                shutil.rmtree(login_home, ignore_errors=True)
+
         proc = subprocess.Popen(
             [str(binary), "app-server"],
             stdin=subprocess.PIPE,
@@ -30017,6 +30086,11 @@ def run_account_login_rpc_smoke(binary: Path) -> None:
             },
             'External auth must use workspace acct_expected, but received "acct_external".',
         )
+        assert_chatgpt_login_url_config(
+            'forced_chatgpt_workspace_id = "acct_expected"\n',
+            "forced-workspace-chatgpt",
+            "allowed_workspace_id=acct_expected",
+        )
     finally:
         shutil.rmtree(codex_home, ignore_errors=True)
 
@@ -30037,6 +30111,76 @@ def run_account_login_cancel_rpc_smoke(binary: Path) -> None:
             env=env,
         )
         try:
+            write_json_line(
+                proc,
+                {
+                    "jsonrpc": "2.0",
+                    "id": "start-chatgpt",
+                    "method": "account/login/start",
+                    "params": {"type": "chatgpt"},
+                },
+            )
+            start = read_json_line(proc, 5)
+            assert start["id"] == "start-chatgpt"
+            assert start["result"]["type"] == "chatgpt"
+            active_login_id = start["result"]["loginId"]
+            assert isinstance(active_login_id, str)
+            assert "redirect_uri=http%3A%2F%2Flocalhost" in start["result"]["authUrl"]
+            assert "code_challenge=" in start["result"]["authUrl"]
+            assert not (codex_home / "auth.json").exists()
+
+            write_json_line(
+                proc,
+                {
+                    "jsonrpc": "2.0",
+                    "id": "cancel-active",
+                    "method": "account/login/cancel",
+                    "params": {"loginId": active_login_id},
+                },
+            )
+            cancel_messages = read_json_lines_until(
+                proc,
+                5,
+                lambda messages: any(message.get("id") == "cancel-active" for message in messages)
+                and any(message.get("method") == "account/login/completed" for message in messages),
+            )
+            cancel_active = next(message for message in cancel_messages if message.get("id") == "cancel-active")
+            assert cancel_active["result"] == {"status": "canceled"}
+            completed = next(
+                message for message in cancel_messages if message.get("method") == "account/login/completed"
+            )
+            assert completed["params"]["loginId"] == active_login_id
+            assert completed["params"]["success"] is False
+            assert isinstance(completed["params"]["error"], str)
+            assert not (codex_home / "auth.json").exists()
+
+            write_json_line(
+                proc,
+                {
+                    "jsonrpc": "2.0",
+                    "id": "cancel-active-again",
+                    "method": "account/login/cancel",
+                    "params": {"loginId": active_login_id},
+                },
+            )
+            cancel_again = read_json_line(proc, 5)
+            assert cancel_again["id"] == "cancel-active-again"
+            assert cancel_again["result"] == {"status": "notFound"}
+
+            write_json_line(
+                proc,
+                {
+                    "jsonrpc": "2.0",
+                    "id": "invalid-streamlined-login",
+                    "method": "account/login/start",
+                    "params": {"type": "chatgpt", "codexStreamlinedLogin": "yes"},
+                },
+            )
+            invalid_streamlined = read_json_line(proc, 5)
+            assert invalid_streamlined["id"] == "invalid-streamlined-login"
+            assert invalid_streamlined["error"]["code"] == -32602
+            assert "codexStreamlinedLogin" in invalid_streamlined["error"]["message"]
+
             valid_login_ids = [
                 "00000000-0000-0000-0000-000000000000",
                 "00000000000000000000000000000000",

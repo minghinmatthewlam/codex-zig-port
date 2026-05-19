@@ -31,6 +31,52 @@ const LoginArgs = struct {
     }
 };
 
+pub const BrowserAuthOptions = struct {
+    codex_home: []const u8,
+    issuer: []const u8 = DEFAULT_ISSUER,
+    client_id: []const u8 = auth.chatgpt_client_id,
+    callback_port: u16 = DEFAULT_CALLBACK_PORT,
+    force_state: ?[]const u8 = null,
+    forced_chatgpt_workspace_id: ?[]const u8 = null,
+    codex_streamlined_login: bool = false,
+};
+
+pub const BrowserAuthHandle = struct {
+    codex_home: []const u8,
+    issuer: []const u8,
+    client_id: []const u8,
+    callback_server: net.Server,
+    redirect_uri: []const u8,
+    code_verifier: []const u8,
+    state: []const u8,
+    auth_url: []const u8,
+    actual_port: u16,
+
+    pub fn deinit(self: *BrowserAuthHandle, allocator: std.mem.Allocator) void {
+        self.callback_server.deinit(std.Io.Threaded.global_single_threaded.io());
+        allocator.free(self.codex_home);
+        allocator.free(self.issuer);
+        allocator.free(self.client_id);
+        allocator.free(self.redirect_uri);
+        allocator.free(self.code_verifier);
+        allocator.free(self.state);
+        allocator.free(self.auth_url);
+    }
+
+    pub fn waitAndSave(self: *BrowserAuthHandle, allocator: std.mem.Allocator) !void {
+        return waitForBrowserCallback(
+            allocator,
+            self.codex_home,
+            &self.callback_server,
+            self.issuer,
+            self.client_id,
+            self.redirect_uri,
+            self.code_verifier,
+            self.state,
+        );
+    }
+};
+
 const DeviceCode = struct {
     verification_url: []const u8,
     user_code: []const u8,
@@ -296,6 +342,74 @@ fn runBrowserAuth(allocator: std.mem.Allocator, codex_home: []const u8, args: Lo
     try waitForBrowserCallback(allocator, codex_home, &callback_server, args.issuer, args.client_id, redirect_uri, pkce.code_verifier, state);
 }
 
+pub fn startBrowserAuthReturnUrl(allocator: std.mem.Allocator, options: BrowserAuthOptions) !BrowserAuthHandle {
+    var pkce = try generatePkce(allocator);
+    defer pkce.deinit(allocator);
+
+    const code_verifier = try allocator.dupe(u8, pkce.code_verifier);
+    errdefer allocator.free(code_verifier);
+
+    const state = if (options.force_state) |forced|
+        try allocator.dupe(u8, forced)
+    else
+        try randomUrlSafe(allocator, 32);
+    errdefer allocator.free(state);
+
+    var callback_server = try bindCallbackServer(options.callback_port);
+    errdefer callback_server.deinit(std.Io.Threaded.global_single_threaded.io());
+
+    const actual_port = callback_server.socket.address.getPort();
+    const redirect_uri = try std.fmt.allocPrint(allocator, "http://localhost:{d}/auth/callback", .{actual_port});
+    errdefer allocator.free(redirect_uri);
+
+    const authorize_url = try buildAuthorizeUrlWithOptions(
+        allocator,
+        options.issuer,
+        options.client_id,
+        redirect_uri,
+        pkce,
+        state,
+        options.forced_chatgpt_workspace_id,
+    );
+    errdefer allocator.free(authorize_url);
+
+    const codex_home = try allocator.dupe(u8, options.codex_home);
+    errdefer allocator.free(codex_home);
+    const issuer = try allocator.dupe(u8, options.issuer);
+    errdefer allocator.free(issuer);
+    const client_id = try allocator.dupe(u8, options.client_id);
+    errdefer allocator.free(client_id);
+
+    return .{
+        .codex_home = codex_home,
+        .issuer = issuer,
+        .client_id = client_id,
+        .callback_server = callback_server,
+        .redirect_uri = redirect_uri,
+        .code_verifier = code_verifier,
+        .state = state,
+        .auth_url = authorize_url,
+        .actual_port = actual_port,
+    };
+}
+
+pub fn cancelBrowserAuth(port: u16) !void {
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var address: net.IpAddress = .{ .ip4 = net.Ip4Address.loopback(port) };
+    var stream = try address.connect(io, .{ .mode = .stream });
+    defer stream.close(io);
+
+    var output_buffer: [512]u8 = undefined;
+    var writer = stream.writer(io, &output_buffer);
+    try writer.interface.writeAll(
+        "GET /cancel HTTP/1.1\r\n" ++
+            "Host: localhost\r\n" ++
+            "Connection: close\r\n" ++
+            "\r\n",
+    );
+    try writer.interface.flush();
+}
+
 fn bindCallbackServer(port: u16) !net.Server {
     const io = std.Io.Threaded.global_single_threaded.io();
     var address: net.IpAddress = .{ .ip4 = net.Ip4Address.loopback(port) };
@@ -465,21 +579,39 @@ fn buildAuthorizeUrl(
     pkce: PkceCodes,
     state: []const u8,
 ) ![]const u8 {
+    return buildAuthorizeUrlWithOptions(allocator, issuer, client_id, redirect_uri, pkce, state, null);
+}
+
+fn buildAuthorizeUrlWithOptions(
+    allocator: std.mem.Allocator,
+    issuer: []const u8,
+    client_id: []const u8,
+    redirect_uri: []const u8,
+    pkce: PkceCodes,
+    state: []const u8,
+    forced_chatgpt_workspace_id: ?[]const u8,
+) ![]const u8 {
     const base = std.mem.trimEnd(u8, issuer, "/");
-    const query = try formEncode(allocator, &.{
-        .{ .name = "response_type", .value = "code" },
-        .{ .name = "client_id", .value = client_id },
-        .{ .name = "redirect_uri", .value = redirect_uri },
-        .{ .name = "scope", .value = LOGIN_SCOPE },
-        .{ .name = "code_challenge", .value = pkce.code_challenge },
-        .{ .name = "code_challenge_method", .value = "S256" },
-        .{ .name = "id_token_add_organizations", .value = "true" },
-        .{ .name = "codex_cli_simplified_flow", .value = "true" },
-        .{ .name = "state", .value = state },
-        .{ .name = "originator", .value = "codex_cli" },
-    });
-    defer allocator.free(query);
-    return std.fmt.allocPrint(allocator, "{s}/oauth/authorize?{s}", .{ base, query });
+    var out = std.ArrayList(u8).empty;
+    errdefer out.deinit(allocator);
+
+    try out.appendSlice(allocator, base);
+    try out.appendSlice(allocator, "/oauth/authorize?");
+    var first = true;
+    try appendFormField(allocator, &out, &first, "response_type", "code");
+    try appendFormField(allocator, &out, &first, "client_id", client_id);
+    try appendFormField(allocator, &out, &first, "redirect_uri", redirect_uri);
+    try appendFormField(allocator, &out, &first, "scope", LOGIN_SCOPE);
+    try appendFormField(allocator, &out, &first, "code_challenge", pkce.code_challenge);
+    try appendFormField(allocator, &out, &first, "code_challenge_method", "S256");
+    try appendFormField(allocator, &out, &first, "id_token_add_organizations", "true");
+    try appendFormField(allocator, &out, &first, "codex_cli_simplified_flow", "true");
+    try appendFormField(allocator, &out, &first, "state", state);
+    try appendFormField(allocator, &out, &first, "originator", "codex_cli");
+    if (forced_chatgpt_workspace_id) |workspace_id| {
+        try appendFormField(allocator, &out, &first, "allowed_workspace_id", workspace_id);
+    }
+    return out.toOwnedSlice(allocator);
 }
 
 fn generatePkce(allocator: std.mem.Allocator) !PkceCodes {
@@ -779,6 +911,23 @@ fn formEncode(allocator: std.mem.Allocator, pairs: []const struct { name: []cons
     }
 
     return out.toOwnedSlice(allocator);
+}
+
+fn appendFormField(
+    allocator: std.mem.Allocator,
+    out: *std.ArrayList(u8),
+    first: *bool,
+    name: []const u8,
+    value: []const u8,
+) !void {
+    if (first.*) {
+        first.* = false;
+    } else {
+        try out.append(allocator, '&');
+    }
+    try percentEncode(allocator, out, name);
+    try out.append(allocator, '=');
+    try percentEncode(allocator, out, value);
 }
 
 fn percentEncode(allocator: std.mem.Allocator, out: *std.ArrayList(u8), value: []const u8) !void {
