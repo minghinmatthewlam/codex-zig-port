@@ -49919,12 +49919,12 @@ fn handleConfigWriteEdits(
     const expected_version = switch (optionalStringOrNull(params, "expectedVersion")) {
         .value => |string| string,
         .missing => null,
-        .invalid => return renderJsonRpcError(allocator, id_value, -32602, "expectedVersion must be a string or null"),
+        .invalid => return .{ .response = try renderJsonRpcError(allocator, id_value, -32602, "expectedVersion must be a string or null"), .wrote = false },
     };
 
     const config_path = resolveConfigWritePath(allocator, params.get("filePath")) catch |err| switch (err) {
-        error.InvalidConfigWritePath => return renderJsonRpcError(allocator, id_value, -32602, "filePath must be a non-empty string or null"),
-        error.ConfigWritePathReadonly => return renderJsonRpcError(allocator, id_value, -32602, "Only writes to the user config are allowed"),
+        error.InvalidConfigWritePath => return .{ .response = try renderJsonRpcError(allocator, id_value, -32602, "filePath must be a non-empty string or null"), .wrote = false },
+        error.ConfigWritePathReadonly => return .{ .response = try renderJsonRpcError(allocator, id_value, -32602, "Only writes to the user config are allowed"), .wrote = false },
         else => return err,
     };
     defer allocator.free(config_path);
@@ -49932,7 +49932,7 @@ fn handleConfigWriteEdits(
     const current_bytes = config.readConfigTomlFile(allocator, config_path) catch |err| {
         const message = try std.fmt.allocPrint(allocator, "{s} failed to read config", .{method_name});
         defer allocator.free(message);
-        return renderJsonRpcErrorForFailure(allocator, id_value, message, err);
+        return .{ .response = try renderJsonRpcErrorForFailure(allocator, id_value, message, err), .wrote = false };
     };
     defer if (current_bytes) |bytes| allocator.free(bytes);
 
@@ -49940,7 +49940,7 @@ fn handleConfigWriteEdits(
         const current_version = try configVersionAlloc(allocator, current_bytes orelse "");
         defer allocator.free(current_version);
         if (!std.mem.eql(u8, current_version, expected)) {
-            return renderJsonRpcError(allocator, id_value, -32602, "config version conflict");
+            return .{ .response = try renderJsonRpcError(allocator, id_value, -32602, "config version conflict"), .wrote = false };
         }
     }
 
@@ -49949,8 +49949,8 @@ fn handleConfigWriteEdits(
 
     for (edits) |edit| {
         const next = applyConfigWriteEdit(allocator, updated, edit) catch |err| switch (err) {
-            error.UnsupportedConfigWriteValue => return renderJsonRpcError(allocator, id_value, -32602, "value must be a TOML-compatible value"),
-            error.InvalidConfigKeyPath => return renderJsonRpcError(allocator, id_value, -32602, "keyPath must be a supported TOML key path"),
+            error.UnsupportedConfigWriteValue => return .{ .response = try renderJsonRpcError(allocator, id_value, -32602, "value must be a TOML-compatible value"), .wrote = false },
+            error.InvalidConfigKeyPath => return .{ .response = try renderJsonRpcError(allocator, id_value, -32602, "keyPath must be a supported TOML key path"), .wrote = false },
             else => return err,
         };
         allocator.free(updated);
@@ -49960,7 +49960,7 @@ fn handleConfigWriteEdits(
     var managed_layer = loadConfigReadManagedLayer(allocator) catch |err| {
         const message = try std.fmt.allocPrint(allocator, "{s} failed to read managed config", .{method_name});
         defer allocator.free(message);
-        return renderJsonRpcErrorForFailure(allocator, id_value, message, err);
+        return .{ .response = try renderJsonRpcErrorForFailure(allocator, id_value, message, err), .wrote = false };
     };
     defer if (managed_layer) |*layer| layer.deinit(allocator);
 
@@ -49978,7 +49978,7 @@ fn handleConfigWriteEdits(
             => {
                 const message = try std.fmt.allocPrint(allocator, "Invalid configuration: {s}", .{@errorName(err)});
                 defer allocator.free(message);
-                return renderJsonRpcError(allocator, id_value, -32602, message);
+                return .{ .response = try renderJsonRpcError(allocator, id_value, -32602, message), .wrote = false };
             },
             else => return err,
         }
@@ -49989,14 +49989,14 @@ fn handleConfigWriteEdits(
     config.writeConfigTomlFile(config_path, updated) catch |err| {
         const message = try std.fmt.allocPrint(allocator, "{s} failed to write config", .{method_name});
         defer allocator.free(message);
-        return renderJsonRpcErrorForFailure(allocator, id_value, message, err);
+        return .{ .response = try renderJsonRpcErrorForFailure(allocator, id_value, message, err), .wrote = false };
     };
 
     const version = try configVersionAlloc(allocator, updated);
     defer allocator.free(version);
     const result = try renderConfigWriteResponse(allocator, config_path, version, overridden_metadata);
     defer allocator.free(result);
-    return renderJsonRpcResult(allocator, id_value, result);
+    return .{ .response = try renderJsonRpcResult(allocator, id_value, result), .wrote = true };
 }
 
 fn applyConfigWriteEdit(allocator: std.mem.Allocator, bytes: []const u8, edit: ConfigRawEdit) ![]const u8 {
