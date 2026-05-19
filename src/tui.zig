@@ -838,6 +838,17 @@ fn handleRemoteSlashCommand(
         return .handled;
     }
 
+    if (std.ascii.eqlIgnoreCase(parts.name, "rename")) {
+        const title = std.mem.trim(u8, parts.args, " \t\r\n");
+        if (title.len == 0) {
+            std.debug.print("usage: /rename <title>\n", .{});
+            return .handled;
+        }
+        try renameRemoteThread(allocator, transport, thread_id.*, title);
+        std.debug.print("renamed thread: {s}\n", .{title});
+        return .handled;
+    }
+
     if (std.ascii.eqlIgnoreCase(parts.name, "model")) {
         try handleRemoteModel(allocator, state, parts.args);
         return .handled;
@@ -919,6 +930,7 @@ fn printRemoteSlashHelp() void {
         \\  /help
         \\  /status
         \\  /compact
+        \\  /rename <title>
         \\  /model [MODEL]
         \\  /fast [on|off|status]
         \\  /personality [status|list|none|friendly|pragmatic]
@@ -1232,6 +1244,19 @@ fn compactRemoteThread(
     response.deinit();
 }
 
+fn renameRemoteThread(
+    allocator: std.mem.Allocator,
+    transport: *RemoteTransport,
+    thread_id: []const u8,
+    title: []const u8,
+) !void {
+    const request = try renderRemoteThreadNameSetRequest(allocator, thread_id, title);
+    defer allocator.free(request);
+    try transport.writeJson(request);
+    var response = try readRemoteResponse(transport, "thread-name-set");
+    response.deinit();
+}
+
 fn promptRemoteSessionPicker(
     allocator: std.mem.Allocator,
     transport: *RemoteTransport,
@@ -1366,6 +1391,22 @@ fn renderRemoteThreadCompactStartRequest(
     try out.appendSlice(allocator, "{\"jsonrpc\":\"2.0\",\"id\":\"thread-compact\",\"method\":\"thread/compact/start\",\"params\":{");
     var first = true;
     try appendJsonStringField(allocator, &out, &first, "threadId", thread_id);
+    try out.appendSlice(allocator, "}}");
+    return out.toOwnedSlice(allocator);
+}
+
+fn renderRemoteThreadNameSetRequest(
+    allocator: std.mem.Allocator,
+    thread_id: []const u8,
+    title: []const u8,
+) ![]const u8 {
+    var out = std.ArrayList(u8).empty;
+    errdefer out.deinit(allocator);
+
+    try out.appendSlice(allocator, "{\"jsonrpc\":\"2.0\",\"id\":\"thread-name-set\",\"method\":\"thread/name/set\",\"params\":{");
+    var first = true;
+    try appendJsonStringField(allocator, &out, &first, "threadId", thread_id);
+    try appendJsonStringField(allocator, &out, &first, "name", title);
     try out.appendSlice(allocator, "}}");
     return out.toOwnedSlice(allocator);
 }
@@ -4161,6 +4202,16 @@ test "remote TUI serializes supported runtime overrides" {
     try std.testing.expect(compact_params.get("model") == null);
     try std.testing.expect(compact_params.get("serviceTier") == null);
     try std.testing.expect(compact_params.get("personality") == null);
+
+    const thread_name_set = try renderRemoteThreadNameSetRequest(allocator, "11111111-1111-4111-8111-111111111111", "Remote demo");
+    defer allocator.free(thread_name_set);
+
+    var parsed_name_set = try std.json.parseFromSlice(std.json.Value, allocator, thread_name_set, .{});
+    defer parsed_name_set.deinit();
+    try std.testing.expectEqualStrings("thread/name/set", parsed_name_set.value.object.get("method").?.string);
+    const name_set_params = parsed_name_set.value.object.get("params").?.object;
+    try std.testing.expectEqualStrings("11111111-1111-4111-8111-111111111111", name_set_params.get("threadId").?.string);
+    try std.testing.expectEqualStrings("Remote demo", name_set_params.get("name").?.string);
 
     const thread_resume = try renderRemoteThreadLifecycleRequest(allocator, "thread-resume", "thread/resume", "/tmp/rollout.jsonl", "/tmp/work", .{
         .model = "gpt-resume",
