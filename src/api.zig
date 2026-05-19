@@ -74,8 +74,18 @@ pub const StreamCallback = struct {
     on_text_delta: *const fn (ctx: *anyopaque, delta: []const u8) anyerror!void,
 };
 
+pub const ExternalAuthRefreshCallback = struct {
+    ctx: *anyopaque,
+    on_refresh: *const fn (
+        ctx: *anyopaque,
+        allocator: std.mem.Allocator,
+        previous_account_id: ?[]const u8,
+    ) anyerror!auth.Credentials,
+};
+
 pub const CreateTurnOptions = struct {
     stream_callback: ?StreamCallback = null,
+    external_auth_refresh_callback: ?ExternalAuthRefreshCallback = null,
     output_schema: ?std.json.Value = null,
     input_images: []const []const u8 = &.{},
     mcp_tools: []const mcp_runtime.ToolSpec = &.{},
@@ -231,6 +241,24 @@ pub fn createTurnWithOptions(
                 return error.ApiRequestFailed;
             }
             return parseSseResponseWithHttpModel(allocator, retry_response.body, retry_response.server_model);
+        }
+        if (credentials.mode == .chatgpt_auth_tokens) {
+            if (options.external_auth_refresh_callback) |callback| {
+                var refreshed = try callback.on_refresh(callback.ctx, allocator, credentials.account_id);
+                var refreshed_owned = true;
+                errdefer if (refreshed_owned) refreshed.deinit(allocator);
+                credentials.deinit(allocator);
+                credentials.* = refreshed;
+                refreshed_owned = false;
+                refreshed = undefined;
+                var retry_response = try fetchTurn(allocator, &client, url, body, cfg, credentials.*, options.stream_callback);
+                defer retry_response.deinit(allocator);
+                if (@intFromEnum(retry_response.status) < 200 or @intFromEnum(retry_response.status) >= 300) {
+                    std.debug.print("Responses API error status {d}: {s}\n", .{ @intFromEnum(retry_response.status), retry_response.body });
+                    return error.ApiRequestFailed;
+                }
+                return parseSseResponseWithHttpModel(allocator, retry_response.body, retry_response.server_model);
+            }
         }
     }
 

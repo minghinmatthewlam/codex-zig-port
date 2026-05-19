@@ -298,6 +298,7 @@ pub const TurnOptions = struct {
     model_verification_callback: ?ModelVerificationCallback = null,
     mcp_tool_call_progress_callback: ?McpToolCallProgressCallback = null,
     mcp_startup_status_callback: ?mcp_runtime.StartupStatusCallback = null,
+    external_auth_refresh_callback: ?api.ExternalAuthRefreshCallback = null,
     developer_messages_after_user: []const []const u8 = &.{},
     feature_overrides: features_cmd.FeatureOverrides = .{},
     workdir: ?[]const u8 = null,
@@ -577,6 +578,7 @@ pub fn runTurnWithOptions(
         create_options.include_tools = options.include_tools;
         create_options.mcp_tools = if (options.include_tools) mcp_catalog.tools else &.{};
         create_options.feature_overrides = options.feature_overrides;
+        create_options.external_auth_refresh_callback = options.external_auth_refresh_callback;
         if (options.stream_text and !options.json_events and !options.plan_mode) {
             create_options.stream_callback = api.StreamCallback{
                 .ctx = &stream_context,
