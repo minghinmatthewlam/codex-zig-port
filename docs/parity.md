@@ -833,17 +833,20 @@ remains planned.
 
 Additional app-server review/start coverage: `review/start` now validates
 loaded `threadId`, Rust-shaped review targets, empty `branch` / `sha` /
-`instructions` cases, extra turn-start-only params, and inline delivery. Inline
-reviews return a Rust-shaped `ReviewStartResponse` whose `turn.items` display
-the synthesized review hint, run the model request with the Rust review rubric
-and target prompt, disable web search and collaboration/request tools, force
-approval policy to `never` inside a read-only/no-writable-roots review turn,
-honor `review_model`, run configured `SessionStart` and `UserPromptSubmit`
-hooks with hook context injected into the isolated review request, render
-structured review JSON into final review text, persist the review user-action
-context, and emit `enteredReviewMode` / `exitedReviewMode` review items around
-the final assistant review text. Detached review-thread delivery remains
-planned.
+`instructions` cases, extra turn-start-only params, inline delivery, and
+detached delivery. Inline reviews return a Rust-shaped `ReviewStartResponse`
+whose `turn.items` display the synthesized review hint, run the model request
+with the Rust review rubric and target prompt, disable web search and
+collaboration/request tools, force approval policy to `never` inside a
+read-only/no-writable-roots review turn, honor `review_model`, run configured
+`SessionStart` and `UserPromptSubmit` hooks with hook context injected into the
+isolated review request, render structured review JSON into final review text,
+persist the review user-action context, and emit `enteredReviewMode` /
+`exitedReviewMode` review items around the final assistant review text. Detached
+reviews fork the loaded parent into a new loaded review thread, return that
+thread as `reviewThreadId`, emit `thread/started` before review turn lifecycle
+notifications, isolate the model request from parent transcript context, and
+persist the review output on the detached thread.
 
 Additional app-server external-agent config coverage: `externalAgentConfig/detect`
 now validates `includeHome` and nullable/array `cwds` params, detects
