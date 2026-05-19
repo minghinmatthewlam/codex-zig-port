@@ -8713,6 +8713,448 @@ def run_external_auth_refresh_rpc_smoke(binary: Path) -> None:
     )
 
 
+def run_turn_goal_tool_smoke(binary: Path) -> None:
+    def tool_payload(call_id: str, name: str, arguments: dict) -> bytes:
+        event = {
+            "type": "response.output_item.done",
+            "item": {
+                "type": "function_call",
+                "call_id": call_id,
+                "name": name,
+                "arguments": json.dumps(arguments, separators=(",", ":")),
+            },
+        }
+        return (
+            f"data: {json.dumps(event, separators=(',', ':'))}\n\n"
+            "data: [DONE]\n\n"
+        ).encode()
+
+    server, base_url = start_turn_responses_server()
+    codex_home = Path(tempfile.mkdtemp(prefix="codex-zig-app-server-goal-tools-", dir="/tmp"))
+    try:
+        codex_home.joinpath("config.toml").write_text(
+            "\n".join(
+                [
+                    f'openai_base_url = "{base_url}"',
+                    'model = "gpt-goal-tools-default"',
+                    "",
+                    "[profiles.goal_tools]",
+                    'model = "gpt-goal-tools-profile"',
+                    "",
+                    "[profiles.goal_tools.features]",
+                    "goals = true",
+                    "",
+                ]
+            ),
+            encoding="utf-8",
+        )
+        env = os.environ.copy()
+        env["CODEX_HOME"] = str(codex_home)
+        env["OPENAI_API_KEY"] = "test-api-key"
+        env.pop("CODEX_ACCESS_TOKEN", None)
+
+        proc = subprocess.Popen(
+            [str(binary), "app-server"],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            env=env,
+        )
+        try:
+            write_json_line(
+                proc,
+                {
+                    "jsonrpc": "2.0",
+                    "id": "initialize-goal-tools",
+                    "method": "initialize",
+                    "params": {
+                        "clientInfo": {"name": "app-server-smoke", "version": "0"},
+                        "capabilities": EXPERIMENTAL_API_CAPABILITIES,
+                    },
+                },
+            )
+            assert read_json_line(proc, 5)["id"] == "initialize-goal-tools"
+
+            with tempfile.TemporaryDirectory(prefix="codex-zig-goal-tools-cwd-", dir="/tmp") as cwd:
+                write_json_line(
+                    proc,
+                    {
+                        "jsonrpc": "2.0",
+                        "id": "thread-start-goal-tools",
+                        "method": "thread/start",
+                        "params": {
+                            "cwd": cwd,
+                            "config": {"profile": "goal_tools"},
+                            "approvalPolicy": "never",
+                            "sandbox": "danger-full-access",
+                        },
+                    },
+                )
+                thread_start = read_json_line(proc, 5)
+                thread = thread_start["result"]["thread"]
+                thread_id = thread["id"]
+                assert_thread_started_notification(read_json_line(proc, 5), thread)
+
+                server.response_payloads.extend(
+                    [
+                        tool_payload(
+                            "goal-invalid-create-call",
+                            "create_goal",
+                            {
+                                "objective": "smuggle a completed goal",
+                                "status": "complete",
+                            },
+                        ),
+                        tool_payload(
+                            "goal-create-call",
+                            "create_goal",
+                            {
+                                "objective": "  ship model-facing goal tools  ",
+                                "token_budget": 77,
+                            },
+                        ),
+                        tool_payload(
+                            "goal-invalid-update-call",
+                            "update_goal",
+                            {
+                                "status": "complete",
+                                "objective": "replace the goal",
+                            },
+                        ),
+                        tool_payload("goal-get-call", "get_goal", {}),
+                        tool_payload("goal-update-call", "update_goal", {"status": "complete"}),
+                        (
+                            b'data: {"type":"response.output_text.delta","delta":"goal tools done"}\n\n'
+                            b"data: [DONE]\n\n"
+                        ),
+                    ]
+                )
+
+                write_json_line(
+                    proc,
+                    {
+                        "jsonrpc": "2.0",
+                        "id": "turn-start-goal-tools",
+                        "method": "turn/start",
+                        "params": {
+                            "threadId": thread_id,
+                            "input": [{"type": "text", "text": "use goal tools"}],
+                        },
+                    },
+                )
+                turn_start = read_json_line(proc, 5)
+                assert turn_start["id"] == "turn-start-goal-tools"
+                turn_id = turn_start["result"]["turn"]["id"]
+                assert turn_id == "turn-0"
+
+                messages = read_json_lines_until(
+                    proc,
+                    5,
+                    lambda received: any(
+                        message.get("method") == "turn/completed"
+                        and message["params"]["turn"]["status"] == "completed"
+                        for message in received
+                    )
+                    and any(
+                        message.get("method") == "thread/status/changed"
+                        and message["params"]["status"] == {"type": "idle"}
+                        for message in received
+                    ),
+                )
+
+                raw_goal_calls = [
+                    message["params"]["item"]["name"]
+                    for message in messages
+                    if message.get("method") == "rawResponseItem/completed"
+                    and message["params"]["item"]["type"] == "function_call"
+                ]
+                assert raw_goal_calls == [
+                    "create_goal",
+                    "create_goal",
+                    "update_goal",
+                    "get_goal",
+                    "update_goal",
+                ]
+                goal_updates = [
+                    message for message in messages if message.get("method") == "thread/goal/updated"
+                ]
+                assert len(goal_updates) == 2
+                created_goal = goal_updates[0]["params"]["goal"]
+                completed_goal = goal_updates[1]["params"]["goal"]
+                assert goal_updates[0]["params"]["threadId"] == thread_id
+                assert goal_updates[0]["params"]["turnId"] == turn_id
+                assert created_goal["objective"] == "ship model-facing goal tools"
+                assert created_goal["status"] == "active"
+                assert created_goal["tokenBudget"] == 77
+                assert goal_updates[1]["params"]["turnId"] == turn_id
+                assert completed_goal["objective"] == "ship model-facing goal tools"
+                assert completed_goal["status"] == "complete"
+                assert any(
+                    message.get("method") == "item/agentMessage/delta"
+                    and message["params"]["delta"] == "goal tools done"
+                    for message in messages
+                )
+
+                assert server.request_paths == ["/responses"] * 6
+                assert server.request_bodies[0]["model"] == "gpt-goal-tools-profile"
+                first_tools = server.request_bodies[0]["tools"]
+                tool_names = {tool.get("name") for tool in first_tools if tool.get("type") == "function"}
+                assert {"get_goal", "create_goal", "update_goal"}.issubset(tool_names)
+
+                second_input = server.request_bodies[1]["input"]
+                invalid_create_output = next(
+                    item
+                    for item in second_input
+                    if item.get("type") == "function_call_output"
+                    and item.get("call_id") == "goal-invalid-create-call"
+                )
+                assert "create_goal only accepts objective and token_budget" in invalid_create_output["output"]
+                third_input = server.request_bodies[2]["input"]
+                create_output = next(
+                    item
+                    for item in third_input
+                    if item.get("type") == "function_call_output"
+                    and item.get("call_id") == "goal-create-call"
+                )
+                assert '"status":"active"' in create_output["output"]
+                assert '"remainingTokens":77' in create_output["output"]
+                assert '"completionBudgetReport":null' in create_output["output"]
+                fourth_input = server.request_bodies[3]["input"]
+                invalid_update_output = next(
+                    item
+                    for item in fourth_input
+                    if item.get("type") == "function_call_output"
+                    and item.get("call_id") == "goal-invalid-update-call"
+                )
+                assert "update_goal only accepts status" in invalid_update_output["output"]
+                fifth_input = server.request_bodies[4]["input"]
+                get_output = next(
+                    item
+                    for item in fifth_input
+                    if item.get("type") == "function_call_output"
+                    and item.get("call_id") == "goal-get-call"
+                )
+                assert '"objective":"ship model-facing goal tools"' in get_output["output"]
+                assert '"replace the goal"' not in get_output["output"]
+                assert '"status":"active"' in get_output["output"]
+                assert '"remainingTokens":77' in get_output["output"]
+                sixth_input = server.request_bodies[5]["input"]
+                update_output = next(
+                    item
+                    for item in sixth_input
+                    if item.get("type") == "function_call_output"
+                    and item.get("call_id") == "goal-update-call"
+                )
+                assert '"status":"complete"' in update_output["output"]
+                assert '"remainingTokens":77' in update_output["output"]
+                assert (
+                    "Goal achieved. Report final budget usage to the user: tokens used: 0 of 77."
+                    in update_output["output"]
+                )
+
+                write_json_line(
+                    proc,
+                    {
+                        "jsonrpc": "2.0",
+                        "id": "thread-goal-get-after-tool-turn",
+                        "method": "thread/goal/get",
+                        "params": {"threadId": thread_id},
+                    },
+                )
+                goal_get = read_json_line(proc, 5)
+                assert goal_get["id"] == "thread-goal-get-after-tool-turn"
+                assert goal_get["result"]["goal"]["status"] == "complete"
+
+                write_json_line(
+                    proc,
+                    {
+                        "jsonrpc": "2.0",
+                        "id": "thread-goal-set-invalid-snake-budget",
+                        "method": "thread/goal/set",
+                        "params": {
+                            "threadId": thread_id,
+                            "objective": "invalid budget",
+                            "token_budget": -1,
+                        },
+                    },
+                )
+                invalid_budget = read_json_line(proc, 5)
+                assert invalid_budget["id"] == "thread-goal-set-invalid-snake-budget"
+                assert invalid_budget["error"]["code"] == -32600
+                assert "goal budgets must be positive" in invalid_budget["error"]["message"]
+
+            assert proc.stdin is not None
+            proc.stdin.close()
+            proc.wait(timeout=5)
+            if proc.returncode != 0:
+                raise AssertionError(f"app-server exited {proc.returncode}: {proc.stderr.read()}")
+        finally:
+            if proc.poll() is None:
+                proc.kill()
+                proc.wait(timeout=5)
+    finally:
+        server.shutdown()
+        server.server_close()
+        shutil.rmtree(codex_home, ignore_errors=True)
+
+
+def run_turn_goal_tool_stable_notification_filter_smoke(binary: Path) -> None:
+    def tool_payload(call_id: str, name: str, arguments: dict) -> bytes:
+        event = {
+            "type": "response.output_item.done",
+            "item": {
+                "type": "function_call",
+                "call_id": call_id,
+                "name": name,
+                "arguments": json.dumps(arguments, separators=(",", ":")),
+            },
+        }
+        return (
+            f"data: {json.dumps(event, separators=(',', ':'))}\n\n"
+            "data: [DONE]\n\n"
+        ).encode()
+
+    server, base_url = start_turn_responses_server()
+    codex_home = Path(tempfile.mkdtemp(prefix="codex-zig-app-server-goal-tools-stable-", dir="/tmp"))
+    try:
+        codex_home.joinpath("config.toml").write_text(
+            "\n".join(
+                [
+                    f'openai_base_url = "{base_url}"',
+                    'model = "gpt-goal-tools-stable"',
+                    "[features]",
+                    "goals = true",
+                    "",
+                ]
+            ),
+            encoding="utf-8",
+        )
+        env = os.environ.copy()
+        env["CODEX_HOME"] = str(codex_home)
+        env["OPENAI_API_KEY"] = "test-api-key"
+        env.pop("CODEX_ACCESS_TOKEN", None)
+
+        proc = subprocess.Popen(
+            [str(binary), "app-server"],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            env=env,
+        )
+        try:
+            write_json_line(
+                proc,
+                {
+                    "jsonrpc": "2.0",
+                    "id": "initialize-goal-tools-stable",
+                    "method": "initialize",
+                    "params": {
+                        "clientInfo": {"name": "app-server-smoke", "version": "0"},
+                        "capabilities": {},
+                    },
+                },
+            )
+            assert read_json_line(proc, 5)["id"] == "initialize-goal-tools-stable"
+
+            with tempfile.TemporaryDirectory(prefix="codex-zig-goal-tools-stable-cwd-", dir="/tmp") as cwd:
+                write_json_line(
+                    proc,
+                    {
+                        "jsonrpc": "2.0",
+                        "id": "thread-start-goal-tools-stable",
+                        "method": "thread/start",
+                        "params": {
+                            "cwd": cwd,
+                            "approvalPolicy": "never",
+                            "sandbox": "danger-full-access",
+                        },
+                    },
+                )
+                thread_start = read_json_line(proc, 5)
+                thread = thread_start["result"]["thread"]
+                thread_id = thread["id"]
+                assert_thread_started_notification(read_json_line(proc, 5), thread)
+
+                server.response_payloads.extend(
+                    [
+                        tool_payload(
+                            "goal-create-stable-call",
+                            "create_goal",
+                            {
+                                "objective": "stable clients do not get experimental goal notifications",
+                                "token_budget": 9,
+                            },
+                        ),
+                        (
+                            b'data: {"type":"response.output_text.delta","delta":"stable goal done"}\n\n'
+                            b"data: [DONE]\n\n"
+                        ),
+                    ]
+                )
+
+                write_json_line(
+                    proc,
+                    {
+                        "jsonrpc": "2.0",
+                        "id": "turn-start-goal-tools-stable",
+                        "method": "turn/start",
+                        "params": {
+                            "threadId": thread_id,
+                            "input": [{"type": "text", "text": "use goal tools"}],
+                        },
+                    },
+                )
+                turn_start = read_json_line(proc, 5)
+                assert turn_start["id"] == "turn-start-goal-tools-stable"
+
+                messages = read_json_lines_until(
+                    proc,
+                    5,
+                    lambda received: any(
+                        message.get("method") == "turn/completed"
+                        and message["params"]["turn"]["status"] == "completed"
+                        for message in received
+                    )
+                    and any(
+                        message.get("method") == "thread/status/changed"
+                        and message["params"]["status"] == {"type": "idle"}
+                        for message in received
+                    ),
+                )
+
+                assert not any(
+                    message.get("method") == "thread/goal/updated" for message in messages
+                )
+                assert server.request_paths == ["/responses"] * 2
+                first_tools = server.request_bodies[0]["tools"]
+                tool_names = {tool.get("name") for tool in first_tools if tool.get("type") == "function"}
+                assert {"get_goal", "create_goal", "update_goal"}.issubset(tool_names)
+                second_input = server.request_bodies[1]["input"]
+                create_output = next(
+                    item
+                    for item in second_input
+                    if item.get("type") == "function_call_output"
+                    and item.get("call_id") == "goal-create-stable-call"
+                )
+                assert '"status":"active"' in create_output["output"]
+
+            assert proc.stdin is not None
+            proc.stdin.close()
+            proc.wait(timeout=5)
+            if proc.returncode != 0:
+                raise AssertionError(f"app-server exited {proc.returncode}: {proc.stderr.read()}")
+        finally:
+            if proc.poll() is None:
+                proc.kill()
+                proc.wait(timeout=5)
+    finally:
+        server.shutdown()
+        server.server_close()
+        shutil.rmtree(codex_home, ignore_errors=True)
+
+
 def run_turn_project_model_controls_rpc_smoke(binary: Path) -> None:
     server, base_url = start_turn_responses_server()
     codex_home = Path(tempfile.mkdtemp(prefix="codex-zig-app-server-turn-project-controls-", dir="/tmp"))
@@ -46450,6 +46892,10 @@ def main() -> None:
     print("app-server-unmaterialized-thread-history-e2e: ok")
     run_turn_start_rpc_smoke(binary)
     print("app-server-turn-start-rpc-e2e: ok")
+    run_turn_goal_tool_smoke(binary)
+    print("app-server-turn-goal-tool-e2e: ok")
+    run_turn_goal_tool_stable_notification_filter_smoke(binary)
+    print("app-server-turn-goal-tool-stable-notification-filter-e2e: ok")
     run_review_start_rpc_smoke(binary)
     print("app-server-review-start-rpc-e2e: ok")
     run_turn_project_model_controls_rpc_smoke(binary)
