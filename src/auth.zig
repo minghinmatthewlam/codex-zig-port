@@ -12,6 +12,7 @@ const revoke_token_url = "https://auth.openai.com/oauth/revoke";
 const revoke_token_url_override_env = "CODEX_REVOKE_TOKEN_URL_OVERRIDE";
 const revoke_token_timeout_ms_override_env = "CODEX_REVOKE_TOKEN_TIMEOUT_MS_OVERRIDE";
 const revoke_http_timeout_ms = 10_000;
+const security_command_timeout_ms = 5_000;
 const token_refresh_interval_days = 8;
 const seconds_per_day = 24 * 60 * 60;
 
@@ -151,6 +152,15 @@ const PostJsonTimeoutContext = struct {
     err: ?anyerror = null,
 };
 
+const PromptedSecurityCommandContext = struct {
+    io: std.Io,
+    argv: []const []const u8,
+    password: []const u8,
+    done: std.Io.Event = .unset,
+    term: ?std.process.Child.Term = null,
+    err: ?anyerror = null,
+};
+
 pub fn load(allocator: std.mem.Allocator, codex_home: []const u8) !Credentials {
     return loadWithProviderAuth(allocator, codex_home, null, null, null, .file, true);
 }
@@ -189,18 +199,6 @@ fn loadCliAuthForConfigWithRefresh(allocator: std.mem.Allocator, cfg: *const con
 
 pub fn loadNoRefresh(allocator: std.mem.Allocator, codex_home: []const u8) !Credentials {
     return loadWithProviderAuth(allocator, codex_home, null, null, null, .file, false);
-}
-
-pub fn loadNoRefreshForConfig(allocator: std.mem.Allocator, cfg: *const config.Config) !Credentials {
-    return loadWithProviderAuth(
-        allocator,
-        cfg.codex_home,
-        cfg.model_provider_env_key,
-        cfg.model_provider_bearer_token,
-        cfg.model_provider_auth_command,
-        cfg.cli_auth_credentials_store_mode,
-        false,
-    );
 }
 
 fn loadWithProviderAuth(
@@ -1007,28 +1005,82 @@ fn runSecurityCommandWithPromptedPassword(
     argv: []const []const u8,
     password: []const u8,
 ) !std.process.Child.Term {
-    var io_instance: std.Io.Threaded = .init(allocator, .{});
-    defer io_instance.deinit();
+    return runSecurityCommandWithPromptedPasswordTimeout(allocator, argv, password, security_command_timeout_ms);
+}
 
-    var child = try std.process.spawn(io_instance.io(), .{
+fn runSecurityCommandWithPromptedPasswordTimeout(
+    allocator: std.mem.Allocator,
+    argv: []const []const u8,
+    password: []const u8,
+    timeout_ms: u64,
+) !std.process.Child.Term {
+    var io_instance: std.Io.Threaded = .init(allocator, .{ .async_limit = .limited(1) });
+    defer io_instance.deinit();
+    const io = io_instance.io();
+
+    var context = PromptedSecurityCommandContext{
+        .io = io,
+        .argv = argv,
+        .password = password,
+    };
+    var future = try io.concurrent(promptedSecurityCommandWorker, .{&context});
+    const deadline = requestDeadline(io, timeout_ms);
+    while (true) {
+        context.done.waitTimeout(io, .{ .deadline = deadline }) catch |err| switch (err) {
+            error.Timeout => {
+                if (context.done.isSet()) break;
+                const now = std.Io.Clock.Timestamp.now(io, .awake);
+                if (std.Io.Clock.Timestamp.compare(now, .lt, deadline)) continue;
+                _ = future.cancel(io);
+                _ = future.await(io);
+                return error.Timeout;
+            },
+            else => |e| {
+                _ = future.cancel(io);
+                _ = future.await(io);
+                return e;
+            },
+        };
+        break;
+    }
+
+    _ = future.await(io);
+    if (context.term) |term| return term;
+    return context.err orelse error.Canceled;
+}
+
+fn promptedSecurityCommandWorker(context: *PromptedSecurityCommandContext) void {
+    defer context.done.set(context.io);
+    context.term = runSecurityCommandWithPromptedPasswordNoTimeout(context.io, context.argv, context.password) catch |err| {
+        context.err = err;
+        return;
+    };
+}
+
+fn runSecurityCommandWithPromptedPasswordNoTimeout(
+    io: std.Io,
+    argv: []const []const u8,
+    password: []const u8,
+) !std.process.Child.Term {
+    var child = try std.process.spawn(io, .{
         .argv = argv,
         .stdin = .pipe,
         .stdout = .ignore,
         .stderr = .ignore,
     });
     var child_alive = true;
-    errdefer if (child_alive) child.kill(io_instance.io());
+    defer if (child_alive) child.kill(io);
 
     if (child.stdin) |stdin_file| {
-        try stdin_file.writeStreamingAll(io_instance.io(), password);
-        try stdin_file.writeStreamingAll(io_instance.io(), "\n");
-        try stdin_file.writeStreamingAll(io_instance.io(), password);
-        try stdin_file.writeStreamingAll(io_instance.io(), "\n");
-        stdin_file.close(io_instance.io());
+        try stdin_file.writeStreamingAll(io, password);
+        try stdin_file.writeStreamingAll(io, "\n");
+        try stdin_file.writeStreamingAll(io, password);
+        try stdin_file.writeStreamingAll(io, "\n");
+        stdin_file.close(io);
         child.stdin = null;
     }
 
-    const term = try child.wait(io_instance.io());
+    const term = try child.wait(io);
     child_alive = false;
     return term;
 }
@@ -1578,6 +1630,11 @@ test "cli auth keyring write argv prompts for password" {
     for (argv) |arg| {
         try std.testing.expect(!std.mem.eql(u8, arg, "secret-auth-json"));
     }
+}
+
+test "cli auth prompted keyring write has timeout" {
+    const argv = [_][]const u8{ "/bin/sleep", "1" };
+    try std.testing.expectError(error.Timeout, runSecurityCommandWithPromptedPasswordTimeout(std.testing.allocator, argv[0..], "secret-auth-json", 10));
 }
 
 test "saves externally managed chatgpt auth tokens" {
