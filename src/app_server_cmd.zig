@@ -34880,7 +34880,6 @@ fn handleThreadMethod(
                 else => |other| return other,
             };
             defer allocator.free(result);
-            try queueThreadTokenUsageNotification(allocator, state, thread);
             return renderJsonRpcResult(allocator, id_value, result);
         }
         var cfg = config.load(allocator) catch |err| {
@@ -34903,7 +34902,6 @@ fn handleThreadMethod(
             else => |other| return other,
         };
         defer allocator.free(result);
-        try queueThreadTokenUsageNotification(allocator, state, &stored_thread);
         return renderJsonRpcResult(allocator, id_value, result);
     }
     if (std.mem.eql(u8, method, "thread/realtime/listVoices")) {

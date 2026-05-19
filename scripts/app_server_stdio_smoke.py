@@ -17427,40 +17427,6 @@ def run_thread_resume_rpc_smoke(binary: Path) -> None:
                 proc,
                 {
                     "jsonrpc": "2.0",
-                    "id": "thread-turns-rust-rollout-token-usage",
-                    "method": "thread/turns/list",
-                    "params": {"threadId": rust_thread_id, "limit": 1},
-                },
-            )
-            rust_turns_with_usage = read_json_line(proc, 5)
-            assert rust_turns_with_usage["id"] == "thread-turns-rust-rollout-token-usage"
-            rust_turn = rust_turns_with_usage["result"]["data"][0]
-            assert (
-                rust_turn["items"][0]["content"][0]["text"]
-                == "rust rollout hello"
-            )
-            rust_turns_usage = read_json_line(proc, 5)
-            assert rust_turns_usage["method"] == "thread/tokenUsage/updated"
-            rust_turns_usage_params = rust_turns_usage["params"]
-            assert rust_turns_usage_params["threadId"] == rust_thread_id
-            assert rust_turns_usage_params["turnId"] == rust_turn["id"]
-            assert (
-                rust_turns_usage_params["tokenUsage"]["total"]["totalTokens"]
-                == 150
-            )
-            assert (
-                rust_turns_usage_params["tokenUsage"]["last"]["totalTokens"]
-                == 90
-            )
-            assert (
-                rust_turns_usage_params["tokenUsage"]["modelContextWindow"]
-                == 200000
-            )
-
-            write_json_line(
-                proc,
-                {
-                    "jsonrpc": "2.0",
                     "id": "thread-resume-rust-rollout-by-id",
                     "method": "thread/resume",
                     "params": {"threadId": rust_thread_id},
@@ -32613,19 +32579,6 @@ def run_external_agent_config_rpc_smoke(binary: Path) -> None:
             "agentMessage",
         ]
         assert imported_thread_turns["result"]["nextCursor"] is None
-        imported_turn_usage = read_json_line(proc, 5)
-        assert imported_turn_usage["method"] == "thread/tokenUsage/updated"
-        imported_turn_usage_params = imported_turn_usage["params"]
-        assert imported_turn_usage_params["threadId"] == imported_thread_id
-        assert imported_turn_usage_params["turnId"] == imported_turn_page[0]["id"]
-        assert (
-            imported_turn_usage_params["tokenUsage"]["total"]["totalTokens"]
-            > 0
-        )
-        assert (
-            imported_turn_usage_params["tokenUsage"]["modelContextWindow"]
-            == 200000
-        )
 
         detect_after_session_import = rpc(
             "external-agent-detect-after-session-import",
