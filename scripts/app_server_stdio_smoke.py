@@ -31974,12 +31974,20 @@ def run_config_batch_write_rpc_smoke(binary: Path) -> None:
         explicit_thread = rpc(
             "config-batch-explicit-thread-start",
             "thread/start",
-            {"model": "gpt-explicit", "serviceTier": "priority", "approvalsReviewer": "user"},
+            {
+                "model": "gpt-explicit",
+                "serviceTier": "priority",
+                "approvalPolicy": "on-request",
+                "approvalsReviewer": "user",
+                "sandbox": "danger-full-access",
+            },
         )
         assert explicit_thread["id"] == "config-batch-explicit-thread-start"
         assert explicit_thread["result"]["model"] == "gpt-explicit"
         assert explicit_thread["result"]["serviceTier"] == "priority"
+        assert explicit_thread["result"]["approvalPolicy"] == "on-request"
         assert explicit_thread["result"]["approvalsReviewer"] == "user"
+        assert explicit_thread["result"]["sandbox"] == {"type": "dangerFullAccess"}
         explicit_thread_id = explicit_thread["result"]["thread"]["id"]
         assert_thread_started_notification(
             read_json_line(proc, 5), explicit_thread["result"]["thread"]
@@ -32001,8 +32009,10 @@ def run_config_batch_write_rpc_smoke(binary: Path) -> None:
                 "edits": [
                     {"keyPath": "model", "value": "gpt-batch", "mergeStrategy": "replace"},
                     {"keyPath": "service_tier", "value": "flex", "mergeStrategy": "replace"},
+                    {"keyPath": "approval_policy", "value": "never", "mergeStrategy": "replace"},
                     {"keyPath": "model_reasoning_effort", "value": "high", "mergeStrategy": "replace"},
                     {"keyPath": "approvals_reviewer", "value": "auto_review", "mergeStrategy": "replace"},
+                    {"keyPath": "sandbox_mode", "value": "read-only", "mergeStrategy": "replace"},
                     {"keyPath": "features.goals", "value": True, "mergeStrategy": "upsert"},
                     {"keyPath": "tui.status_line", "value": ["model", "cwd"], "mergeStrategy": "replace"},
                     {
@@ -32026,7 +32036,6 @@ def run_config_batch_write_rpc_smoke(binary: Path) -> None:
                         },
                         "mergeStrategy": "upsert",
                     },
-                    {"keyPath": "approval_policy", "value": None, "mergeStrategy": "replace"},
                 ],
                 "reloadUserConfig": True,
                 "expectedVersion": None,
@@ -32042,21 +32051,24 @@ def run_config_batch_write_rpc_smoke(binary: Path) -> None:
         assert after_batch["id"] == "config-read-after-batch-write"
         assert after_batch["result"]["config"]["model"] == "gpt-batch"
         assert after_batch["result"]["config"]["service_tier"] == "flex"
+        assert after_batch["result"]["config"]["approval_policy"] == "never"
         assert after_batch["result"]["config"]["model_reasoning_effort"] == "high"
         assert after_batch["result"]["config"]["approvals_reviewer"] == "guardian_subagent"
+        assert after_batch["result"]["config"]["sandbox_mode"] == "read-only"
         assert after_batch["result"]["config"]["features"]["goals"] is True
 
         contents = config_path.read_text(encoding="utf-8")
         assert 'service_tier = "flex"' in contents
+        assert 'approval_policy = "never"' in contents
         assert 'model_reasoning_effort = "high"' in contents
         assert 'approvals_reviewer = "auto_review"' in contents
+        assert 'sandbox_mode = "read-only"' in contents
         assert 'status_line = ["model", "cwd"]' in contents
         assert 'state = {"hook-one" = {"enabled" = false}, "hook-two" = {"trusted_hash" = "hash-123"}}' in contents
         assert 'bearer_token_env_var = "NEW_TOKEN"' in contents
         assert '[mcp_servers.linear.env_http_headers]\nexisting = "keep"' in contents
         assert 'alpha = "updated"' in contents
         assert 'beta = "b"' in contents
-        assert "approval_policy" not in contents
 
         default_fork = rpc(
             "config-batch-default-thread-fork-after-reload",
@@ -32066,8 +32078,10 @@ def run_config_batch_write_rpc_smoke(binary: Path) -> None:
         assert default_fork["id"] == "config-batch-default-thread-fork-after-reload"
         assert default_fork["result"]["model"] == "gpt-batch"
         assert default_fork["result"]["serviceTier"] == "flex"
+        assert default_fork["result"]["approvalPolicy"] == "never"
         assert default_fork["result"]["reasoningEffort"] == "high"
         assert default_fork["result"]["approvalsReviewer"] == "guardian_subagent"
+        assert default_fork["result"]["sandbox"] == {"type": "readOnly", "networkAccess": False}
         assert_thread_started_notification(
             read_json_line(proc, 5), default_fork["result"]["thread"]
         )
@@ -32080,8 +32094,10 @@ def run_config_batch_write_rpc_smoke(binary: Path) -> None:
         assert explicit_fork["id"] == "config-batch-explicit-thread-fork-after-reload"
         assert explicit_fork["result"]["model"] == "gpt-explicit"
         assert explicit_fork["result"]["serviceTier"] == "priority"
+        assert explicit_fork["result"]["approvalPolicy"] == "on-request"
         assert explicit_fork["result"]["reasoningEffort"] == "high"
         assert explicit_fork["result"]["approvalsReviewer"] == "user"
+        assert explicit_fork["result"]["sandbox"] == {"type": "dangerFullAccess"}
         assert_thread_started_notification(
             read_json_line(proc, 5), explicit_fork["result"]["thread"]
         )
@@ -32103,6 +32119,7 @@ def run_config_batch_write_rpc_smoke(binary: Path) -> None:
                         },
                         "mergeStrategy": "replace",
                     },
+                    {"keyPath": "approval_policy", "value": None, "mergeStrategy": "replace"},
                     {
                         "keyPath": "mcp_servers.linear",
                         "value": {
@@ -32124,6 +32141,7 @@ def run_config_batch_write_rpc_smoke(binary: Path) -> None:
 
         after_versioned_batch = rpc("config-read-after-versioned-batch", "config/read", {})
         assert after_versioned_batch["id"] == "config-read-after-versioned-batch"
+        assert after_versioned_batch["result"]["config"]["approval_policy"] == "on-request"
         assert after_versioned_batch["result"]["config"]["sandbox_mode"] == "workspace-write"
         assert after_versioned_batch["result"]["config"]["sandbox_workspace_write"] == {
             "writable_roots": ["/tmp/codex-zig-batch-root"],
@@ -32137,6 +32155,7 @@ def run_config_batch_write_rpc_smoke(binary: Path) -> None:
         assert "[mcp_servers.linear.env_http_headers]" not in replaced_contents
         assert 'existing = "keep"' not in replaced_contents
         assert 'beta = "b"' not in replaced_contents
+        assert "approval_policy" not in replaced_contents
 
         conflict = rpc(
             "config-batch-conflict",

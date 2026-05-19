@@ -797,8 +797,11 @@ Additional app-server config reload coverage: `config/batchWrite` honors
 `reloadUserConfig` for already-loaded threads by refreshing default-derived
 model, model provider, service tier, approval policy, approvals reviewer,
 sandbox mode, and reasoning effort from the latest config while preserving
-explicit per-thread overrides. The hook runtime smoke also covers reloaded
-`hooks.state` trust and disable changes on already-loaded threads.
+explicit per-thread overrides. The batch-write smoke now asserts approval
+policy and sandbox mode reloads on the loaded-thread fork path, alongside
+service tier, approvals reviewer, and reasoning effort. The hook runtime smoke
+also covers reloaded `hooks.state` trust and disable changes on already-loaded
+threads.
 `config/value/write` keeps Rust-compatible
 single-value write behavior and treats `reloadUserConfig` as an unknown
 extension field rather than a reload flag. Full hot-reload notifications and
