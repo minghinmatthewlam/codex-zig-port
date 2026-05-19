@@ -7054,9 +7054,53 @@ def run_review_start_rpc_smoke(binary: Path) -> None:
                 },
                 separators=(",", ":"),
             )
+            detached_review_text = json.dumps(
+                {
+                    "findings": [],
+                    "overall_correctness": "patch is correct",
+                    "overall_explanation": "Detached review complete",
+                    "overall_confidence_score": 0.8,
+                },
+                separators=(",", ":"),
+            )
+            ephemeral_detached_review_text = json.dumps(
+                {
+                    "findings": [],
+                    "overall_correctness": "patch is correct",
+                    "overall_explanation": "Ephemeral detached review complete",
+                    "overall_confidence_score": 0.8,
+                },
+                separators=(",", ":"),
+            )
             server.response_payloads.append(
                 b'data: {"type":"response.output_text.delta","delta":"parent-only answer"}\n\n'
                 b"data: [DONE]\n\n"
+            )
+            server.response_payloads.append(
+                (
+                    "data: "
+                    + json.dumps(
+                        {
+                            "type": "response.output_text.delta",
+                            "delta": detached_review_text,
+                        },
+                        separators=(",", ":"),
+                    )
+                    + "\n\ndata: [DONE]\n\n"
+                ).encode()
+            )
+            server.response_payloads.append(
+                (
+                    "data: "
+                    + json.dumps(
+                        {
+                            "type": "response.output_text.delta",
+                            "delta": ephemeral_detached_review_text,
+                        },
+                        separators=(",", ":"),
+                    )
+                    + "\n\ndata: [DONE]\n\n"
+                ).encode()
             )
             blocked_review_file_name = "review-should-not-write.txt"
             blocked_review_patch = (
@@ -7231,6 +7275,248 @@ def run_review_start_rpc_smoke(binary: Path) -> None:
                     proc, thread_id, "turn-start-parent-context"
                 )
 
+                write_json_line(
+                    proc,
+                    {
+                        "jsonrpc": "2.0",
+                        "id": "review-start-detached",
+                        "method": "review/start",
+                        "params": {
+                            "threadId": thread_id,
+                            "delivery": "detached",
+                            "target": {
+                                "type": "custom",
+                                "instructions": "detached review",
+                            },
+                        },
+                    },
+                )
+                detached = read_json_line(proc, 5)
+                assert detached["id"] == "review-start-detached"
+                detached_result = detached["result"]
+                detached_thread_id = detached_result["reviewThreadId"]
+                assert detached_thread_id != thread_id
+                detached_turn = detached_result["turn"]
+                detached_turn_id = detached_turn["id"]
+                assert detached_turn["status"] == "inProgress"
+                assert detached_turn["itemsView"] == "notLoaded"
+                assert detached_turn["items"] == [
+                    {
+                        "type": "userMessage",
+                        "id": detached_turn_id,
+                        "content": [
+                            {
+                                "type": "text",
+                                "text": "detached review",
+                                "text_elements": [],
+                            }
+                        ],
+                    }
+                ]
+                detached_started = read_json_line(proc, 5)
+                assert detached_started["jsonrpc"] == "2.0"
+                assert detached_started["method"] == "thread/started"
+                detached_started_thread = detached_started["params"]["thread"]
+                assert detached_started_thread["id"] == detached_thread_id
+                assert detached_started_thread["sessionId"] == detached_thread_id
+                assert detached_started_thread["forkedFromId"] == thread_id
+                assert detached_started_thread["turns"] == []
+                assert_thread_status_notification(
+                    read_json_line(proc, 5), detached_thread_id, "active"
+                )
+                detached_turn_started = read_json_line(proc, 5)
+                assert detached_turn_started["method"] == "turn/started"
+                assert detached_turn_started["params"]["threadId"] == detached_thread_id
+                assert detached_turn_started["params"]["turn"]["id"] == detached_turn_id
+                detached_entered_started = read_json_line(proc, 5)
+                assert detached_entered_started["method"] == "item/started"
+                assert detached_entered_started["params"]["threadId"] == detached_thread_id
+                assert detached_entered_started["params"]["turnId"] == detached_turn_id
+                assert detached_entered_started["params"]["item"] == {
+                    "type": "enteredReviewMode",
+                    "id": detached_turn_id,
+                    "review": "detached review",
+                }
+                detached_entered_completed = read_json_line(proc, 5)
+                assert detached_entered_completed["method"] == "item/completed"
+                assert (
+                    detached_entered_completed["params"]["item"]
+                    == detached_entered_started["params"]["item"]
+                )
+                detached_exited_started = read_json_line(proc, 5)
+                assert detached_exited_started["method"] == "item/started"
+                assert detached_exited_started["params"]["threadId"] == detached_thread_id
+                assert detached_exited_started["params"]["turnId"] == detached_turn_id
+                assert detached_exited_started["params"]["item"] == {
+                    "type": "exitedReviewMode",
+                    "id": detached_turn_id,
+                    "review": "Detached review complete",
+                }
+                detached_exited_completed = read_json_line(proc, 5)
+                assert detached_exited_completed["method"] == "item/completed"
+                assert (
+                    detached_exited_completed["params"]["item"]
+                    == detached_exited_started["params"]["item"]
+                )
+                detached_agent_started = read_json_line(proc, 5)
+                assert detached_agent_started["method"] == "item/started"
+                assert detached_agent_started["params"]["threadId"] == detached_thread_id
+                assert detached_agent_started["params"]["item"]["type"] == "agentMessage"
+                assert (
+                    detached_agent_started["params"]["item"]["text"]
+                    == "Detached review complete"
+                )
+                detached_agent_completed = read_json_line(proc, 5)
+                assert detached_agent_completed["method"] == "item/completed"
+                assert (
+                    detached_agent_completed["params"]["item"]
+                    == detached_agent_started["params"]["item"]
+                )
+                detached_completed = read_json_line(proc, 5)
+                assert detached_completed["method"] == "turn/completed"
+                assert detached_completed["params"]["threadId"] == detached_thread_id
+                assert detached_completed["params"]["turn"]["status"] == "completed"
+                assert_thread_status_notification(
+                    read_json_line(proc, 5), detached_thread_id, "idle"
+                )
+
+                write_json_line(
+                    proc,
+                    {
+                        "jsonrpc": "2.0",
+                        "id": "thread-read-after-detached-review-start",
+                        "method": "thread/read",
+                        "params": {"threadId": detached_thread_id, "includeTurns": True},
+                    },
+                )
+                read_detached_review = read_json_line(proc, 5)
+                assert read_detached_review["id"] == "thread-read-after-detached-review-start"
+                detached_turn_texts = []
+                for stored_turn in read_detached_review["result"]["thread"]["turns"]:
+                    for item in stored_turn["items"]:
+                        if item["type"] == "agentMessage":
+                            detached_turn_texts.append(item["text"])
+                        elif item["type"] == "userMessage":
+                            detached_turn_texts.extend(
+                                content["text"]
+                                for content in item["content"]
+                                if content["type"] == "text"
+                            )
+                assert "Detached review complete" in detached_turn_texts
+                assert any(
+                    "<user_action>" in text
+                    and "<action>review</action>" in text
+                    and "Detached review complete" in text
+                    for text in detached_turn_texts
+                )
+
+                write_json_line(
+                    proc,
+                    {
+                        "jsonrpc": "2.0",
+                        "id": "thread-start-ephemeral-for-detached-review",
+                        "method": "thread/start",
+                        "params": {
+                            "cwd": cwd,
+                            "ephemeral": True,
+                            "approvalPolicy": "never",
+                            "sandbox": "danger-full-access",
+                        },
+                    },
+                )
+                ephemeral_parent_start = read_json_line(proc, 5)
+                assert (
+                    ephemeral_parent_start["id"]
+                    == "thread-start-ephemeral-for-detached-review"
+                )
+                ephemeral_parent = ephemeral_parent_start["result"]["thread"]
+                ephemeral_parent_id = ephemeral_parent["id"]
+                assert ephemeral_parent["ephemeral"] is True
+                assert_thread_started_notification(
+                    read_json_line(proc, 5), ephemeral_parent
+                )
+
+                write_json_line(
+                    proc,
+                    {
+                        "jsonrpc": "2.0",
+                        "id": "review-start-detached-from-ephemeral",
+                        "method": "review/start",
+                        "params": {
+                            "threadId": ephemeral_parent_id,
+                            "delivery": "detached",
+                            "target": {
+                                "type": "custom",
+                                "instructions": "ephemeral detached review",
+                            },
+                        },
+                    },
+                )
+                ephemeral_detached = read_json_line(proc, 5)
+                assert ephemeral_detached["id"] == "review-start-detached-from-ephemeral"
+                ephemeral_detached_thread_id = ephemeral_detached["result"][
+                    "reviewThreadId"
+                ]
+                assert ephemeral_detached_thread_id != ephemeral_parent_id
+                ephemeral_detached_turn_id = ephemeral_detached["result"]["turn"]["id"]
+                ephemeral_detached_started = read_json_line(proc, 5)
+                assert ephemeral_detached_started["method"] == "thread/started"
+                ephemeral_detached_thread = ephemeral_detached_started["params"][
+                    "thread"
+                ]
+                assert ephemeral_detached_thread["id"] == ephemeral_detached_thread_id
+                assert ephemeral_detached_thread["forkedFromId"] == ephemeral_parent_id
+                assert ephemeral_detached_thread["ephemeral"] is False
+                assert_thread_status_notification(
+                    read_json_line(proc, 5), ephemeral_detached_thread_id, "active"
+                )
+                assert read_json_line(proc, 5)["method"] == "turn/started"
+                assert read_json_line(proc, 5)["method"] == "item/started"
+                assert read_json_line(proc, 5)["method"] == "item/completed"
+                ephemeral_exited_started = read_json_line(proc, 5)
+                assert ephemeral_exited_started["method"] == "item/started"
+                assert ephemeral_exited_started["params"]["threadId"] == (
+                    ephemeral_detached_thread_id
+                )
+                assert ephemeral_exited_started["params"]["turnId"] == (
+                    ephemeral_detached_turn_id
+                )
+                assert ephemeral_exited_started["params"]["item"] == {
+                    "type": "exitedReviewMode",
+                    "id": ephemeral_detached_turn_id,
+                    "review": "Ephemeral detached review complete",
+                }
+                assert read_json_line(proc, 5)["method"] == "item/completed"
+                assert read_json_line(proc, 5)["method"] == "item/started"
+                assert read_json_line(proc, 5)["method"] == "item/completed"
+                assert read_json_line(proc, 5)["method"] == "turn/completed"
+                assert_thread_status_notification(
+                    read_json_line(proc, 5), ephemeral_detached_thread_id, "idle"
+                )
+
+                write_json_line(
+                    proc,
+                    {
+                        "jsonrpc": "2.0",
+                        "id": "thread-read-ephemeral-parent-after-detached-review",
+                        "method": "thread/read",
+                        "params": {
+                            "threadId": ephemeral_parent_id,
+                            "includeTurns": True,
+                        },
+                    },
+                )
+                ephemeral_parent_read = read_json_line(proc, 5)
+                assert (
+                    ephemeral_parent_read["id"]
+                    == "thread-read-ephemeral-parent-after-detached-review"
+                )
+                assert ephemeral_parent_read["error"]["code"] == -32600
+                assert (
+                    "ephemeral threads do not support includeTurns"
+                    in ephemeral_parent_read["error"]["message"]
+                )
+
                 hook_log = Path(cwd_root) / "review_hook_log.jsonl"
                 hook_script = Path(cwd) / ".codex" / "review_hook.py"
                 hook_script.parent.mkdir(parents=True)
@@ -7333,24 +7619,6 @@ def run_review_start_rpc_smoke(binary: Path) -> None:
                 assert empty_custom["id"] == "review-start-empty-custom"
                 assert empty_custom["error"]["code"] == -32600
                 assert empty_custom["error"]["message"] == "instructions must not be empty"
-
-                write_json_line(
-                    proc,
-                    {
-                        "jsonrpc": "2.0",
-                        "id": "review-start-detached",
-                        "method": "review/start",
-                        "params": {
-                            "threadId": thread_id,
-                            "delivery": "detached",
-                            "target": {"type": "commit", "sha": "1234567deadbeef"},
-                        },
-                    },
-                )
-                detached = read_json_line(proc, 5)
-                assert detached["id"] == "review-start-detached"
-                assert detached["error"]["code"] == -32603
-                assert "detached delivery" in detached["error"]["message"]
 
                 write_json_line(
                     proc,
@@ -7861,13 +8129,42 @@ def run_review_start_rpc_smoke(binary: Path) -> None:
                     read_json_line(proc, 5), setup_error_thread_id, "systemError"
                 )
 
-                assert server.request_paths == ["/responses"] * 6
+                assert server.request_paths == ["/responses"] * 8
                 prior_request = server.request_bodies[0]
                 assert (
                     prior_request["input"][0]["content"][0]["text"]
                     == "Seed parent context that review must not see"
                 )
-                custom_request = server.request_bodies[1]
+                detached_request = server.request_bodies[1]
+                assert detached_request["model"] == "gpt-review-smoke"
+                assert_review_tool_surface(detached_request)
+                assert detached_request["instructions"].startswith("# Review guidelines:")
+                assert "review must not inherit this" not in detached_request["instructions"]
+                assert not any(
+                    tool.get("type") == "web_search"
+                    for tool in detached_request.get("tools", [])
+                )
+                assert len(detached_request["input"]) == 1
+                assert "Seed parent context" not in json.dumps(detached_request["input"])
+                assert "review prompt hook context" not in json.dumps(
+                    detached_request["input"]
+                )
+                assert (
+                    detached_request["input"][0]["content"][0]["text"]
+                    == "detached review"
+                )
+                ephemeral_detached_request = server.request_bodies[2]
+                assert ephemeral_detached_request["model"] == "gpt-review-smoke"
+                assert_review_tool_surface(ephemeral_detached_request)
+                assert ephemeral_detached_request["instructions"].startswith(
+                    "# Review guidelines:"
+                )
+                assert len(ephemeral_detached_request["input"]) == 1
+                assert (
+                    ephemeral_detached_request["input"][0]["content"][0]["text"]
+                    == "ephemeral detached review"
+                )
+                custom_request = server.request_bodies[3]
                 assert custom_request["model"] == "gpt-review-smoke"
                 assert_review_tool_surface(custom_request)
                 assert custom_request["instructions"].startswith("# Review guidelines:")
@@ -7885,7 +8182,7 @@ def run_review_start_rpc_smoke(binary: Path) -> None:
                     custom_request["input"][1]["content"][0]["text"]
                     == "review prompt hook context"
                 )
-                custom_after_tool_request = server.request_bodies[2]
+                custom_after_tool_request = server.request_bodies[4]
                 assert custom_after_tool_request["model"] == "gpt-review-smoke"
                 assert_review_tool_surface(custom_after_tool_request)
                 assert "Seed parent context" not in json.dumps(
@@ -7920,7 +8217,7 @@ def run_review_start_rpc_smoke(binary: Path) -> None:
                     in item.get("output", "")
                     for item in custom_after_tool_request["input"]
                 )
-                base_request = server.request_bodies[3]
+                base_request = server.request_bodies[5]
                 assert base_request["model"] == "gpt-review-smoke"
                 assert_review_tool_surface(base_request)
                 assert base_request["instructions"].startswith("# Review guidelines:")
@@ -7935,7 +8232,7 @@ def run_review_start_rpc_smoke(binary: Path) -> None:
                 base_request_text = base_request["input"][0]["content"][0]["text"]
                 assert f"merge base commit for this comparison is {upstream_base}" in base_request_text
                 assert "Run `git diff " + upstream_base + "`" in base_request_text
-                hook_review_request = server.request_bodies[4]
+                hook_review_request = server.request_bodies[6]
                 assert hook_review_request["model"] == "gpt-review-smoke"
                 assert_review_tool_surface(hook_review_request)
                 assert "review session hook context" in json.dumps(
@@ -7946,7 +8243,7 @@ def run_review_start_rpc_smoke(binary: Path) -> None:
                 )
                 hook_review_text = hook_review_request["input"][1]["content"][0]["text"]
                 assert hook_review_text == "Review startup hook path"
-                normal_after_review_request = server.request_bodies[5]
+                normal_after_review_request = server.request_bodies[7]
                 assert normal_after_review_request["model"] == "gpt-thread-smoke"
                 assert "review session hook context" in json.dumps(
                     normal_after_review_request["input"]

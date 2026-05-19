@@ -27960,21 +27960,18 @@ fn handleReviewStart(
     const delivery = parseReviewStartDelivery(object) catch |err| switch (err) {
         error.InvalidReviewDelivery => return try renderJsonRpcError(allocator, id_value, -32602, "delivery must be inline, detached, or null"),
     };
-    if (delivery == .detached) {
-        return try renderJsonRpcError(allocator, id_value, -32603, "review/start detached delivery is parsed but not implemented yet");
-    }
 
     var cfg = config.load(allocator) catch |err| {
         return try renderJsonRpcErrorForFailure(allocator, id_value, "review/start failed to load config", err);
     };
     defer cfg.deinit(allocator);
 
-    const thread = &state.loaded_threads.items[thread_index];
-    applyProjectLayersToConfigForCwd(allocator, &cfg, thread.cwd) catch |err| {
+    const parent_thread = &state.loaded_threads.items[thread_index];
+    applyProjectLayersToConfigForCwd(allocator, &cfg, parent_thread.cwd) catch |err| {
         return try renderJsonRpcErrorForFailure(allocator, id_value, "review/start failed to load project config", err);
     };
 
-    applyLoadedThreadRuntimeToConfig(allocator, &cfg, thread) catch |err| switch (err) {
+    applyLoadedThreadRuntimeToConfig(allocator, &cfg, parent_thread) catch |err| switch (err) {
         error.InvalidLoadedThreadRuntime => return try renderJsonRpcError(allocator, id_value, -32602, "invalid loaded review context"),
         else => return err,
     };
@@ -27988,8 +27985,36 @@ fn handleReviewStart(
 
     const display_text = try buildReviewStartDisplayText(allocator, target);
     defer allocator.free(display_text);
-    const prompt = try buildReviewStartPrompt(allocator, thread.cwd, target);
+    const prompt = try buildReviewStartPrompt(allocator, parent_thread.cwd, target);
     defer allocator.free(prompt);
+
+    var review_thread_index = thread_index;
+    if (delivery == .detached) {
+        var detached_thread = createLoadedThreadForDetachedReview(allocator, cfg, parent_thread) catch |err| {
+            return try renderJsonRpcErrorForFailure(allocator, id_value, "review/start failed to create detached review thread", err);
+        };
+        var detached_thread_moved = false;
+        errdefer if (!detached_thread_moved) detached_thread.deinit(allocator);
+
+        const thread_started_notification = try renderThreadStartedNotification(allocator, &detached_thread);
+        var thread_started_notification_moved = false;
+        errdefer if (!thread_started_notification_moved) allocator.free(thread_started_notification);
+
+        const subscription_added = try ensureThreadSubscribed(allocator, state, detached_thread.id);
+        var subscription_committed = false;
+        errdefer {
+            if (subscription_added and !subscription_committed) _ = removeThreadSubscription(allocator, state, detached_thread.id);
+        }
+
+        try state.loaded_threads.append(allocator, detached_thread);
+        detached_thread_moved = true;
+        subscription_committed = true;
+        review_thread_index = state.loaded_threads.items.len - 1;
+        try queueThreadStartedNotification(allocator, state, thread_started_notification);
+        thread_started_notification_moved = true;
+    }
+
+    const thread = &state.loaded_threads.items[review_thread_index];
 
     const turn_id = try allocateNextTurnIdForThread(allocator, thread);
     defer allocator.free(turn_id);
@@ -28110,7 +28135,8 @@ fn handleReviewStart(
         started_at_ms,
     );
 
-    var hook_setup = prepareReviewStartHooks(allocator, state, thread, &cfg, turn_id, prompt, review_progress_sent) catch |err| {
+    const run_review_hooks = delivery == .inline_delivery;
+    var hook_setup = prepareReviewStartHooks(allocator, state, thread, &cfg, turn_id, prompt, review_progress_sent, run_review_hooks) catch |err| {
         if (review_progress_sent) {
             const error_message = try std.fmt.allocPrint(allocator, "review/start failed to prepare review: {s}", .{@errorName(err)});
             defer allocator.free(error_message);
@@ -28775,9 +28801,12 @@ fn prepareReviewStartHooks(
     turn_id: []const u8,
     prompt: []const u8,
     review_progress_sent: bool,
+    run_hooks: bool,
 ) !ReviewStartHookSetup {
     var setup = ReviewStartHookSetup{};
     errdefer setup.deinit(allocator);
+
+    if (!run_hooks) return setup;
 
     try materializeHookTranscriptForThread(allocator, thread);
     if (thread.pending_session_start_source) |source| {
@@ -29788,6 +29817,23 @@ fn turnPromptWithContextBlocks(
 
 fn materializeHookTranscriptForThread(allocator: std.mem.Allocator, thread: *const LoadedThread) !void {
     if (thread.path) |path| try session_store.saveTranscript(allocator, path, &thread.transcript);
+}
+
+fn createLoadedThreadForDetachedReview(
+    allocator: std.mem.Allocator,
+    cfg: config.Config,
+    source: *const LoadedThread,
+) !LoadedThread {
+    var empty_params = try std.json.ObjectMap.init(allocator, &.{}, &.{});
+    defer empty_params.deinit(allocator);
+
+    var thread = try createLoadedThreadFromForkParams(allocator, cfg, empty_params, source);
+    errdefer thread.deinit(allocator);
+    try replaceOwnedString(allocator, &thread.model, cfg.model);
+    thread.runtime_overrides.model = true;
+    try replaceOptionalOwnedString(allocator, &thread.pending_session_start_source, "resume");
+    try thread.transcript.setModelProvider(allocator, thread.model_provider);
+    return thread;
 }
 
 fn persistHookContextsForNextTurn(
