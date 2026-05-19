@@ -526,8 +526,10 @@ terminal transcript.
 
 ## Auth
 
-`codex-zig` reuses the same `$CODEX_HOME/auth.json` file as the Rust CLI. The
-current Zig auth surface supports:
+`codex-zig` reuses the same `$CODEX_HOME/auth.json` file as the Rust CLI by
+default, and also honors Rust's `cli_auth_credentials_store` setting for file,
+macOS keychain, auto, and process-local ephemeral auth storage. The current Zig
+auth surface supports:
 
 ```sh
 codex-zig login status
@@ -539,16 +541,19 @@ codex-zig logout
 ```
 
 `login` starts a local browser OAuth callback flow on macOS, writes the
-resulting ChatGPT tokens to `auth.json`, and persists a best-effort
+resulting ChatGPT tokens to the selected auth store, and persists a best-effort
 token-exchanged `OPENAI_API_KEY` when the issuer returns one. `login
 --device-auth` implements the ChatGPT device-code fallback directly in Zig and
 does not request the browser-login API-key exchange.
+App-server `chatgptAuthTokens` logins are treated as external auth and stay in
+the process-local ephemeral store, taking precedence over persistent auth until
+logout clears both active and persistent entries.
 `login --with-access-token` stores the token in the Rust CLI-compatible
 `agent_identity` auth shape; full upstream JWT/JWKS verification and
 agent-task authorization are still tracked as parity work. `CODEX_ACCESS_TOKEN`
 can also provide the access token without writing `auth.json`.
 `logout` best-effort revokes managed ChatGPT OAuth tokens before removing the
-selected `CODEX_HOME/auth.json`.
+selected auth store entry.
 
 ## Sessions
 
