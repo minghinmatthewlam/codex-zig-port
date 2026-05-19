@@ -25754,6 +25754,7 @@ fn handleJsonRpcLine(allocator: std.mem.Allocator, state: *AppServerState, line:
     if (std.mem.eql(u8, method, "initialize")) {
         try updateInitializeCapabilities(allocator, state, object.get("params"));
         try queueInitializeConfigWarningNotifications(allocator, state);
+        try queueInitialRemoteControlStatusNotification(allocator, state);
         const result = try renderInitializeResult(allocator);
         defer allocator.free(result);
         return try renderJsonRpcResult(allocator, id_value.?, result);
@@ -31967,6 +31968,29 @@ fn renderMcpServerStatusUpdatedNotification(
     try appendJsonString(allocator, &notification, status.label());
     try notification.appendSlice(allocator, ",\"error\":");
     try appendOptionalJsonString(allocator, &notification, error_message);
+    try notification.appendSlice(allocator, "}}");
+    return notification.toOwnedSlice(allocator);
+}
+
+fn queueInitialRemoteControlStatusNotification(allocator: std.mem.Allocator, state: *AppServerState) !void {
+    const notification = try renderRemoteControlStatusChangedNotification(allocator, "disabled", null);
+    var notification_moved = false;
+    errdefer if (!notification_moved) allocator.free(notification);
+    try queuePendingServerNotification(allocator, state, "remoteControl/status/changed", notification);
+    notification_moved = true;
+}
+
+fn renderRemoteControlStatusChangedNotification(
+    allocator: std.mem.Allocator,
+    status: []const u8,
+    environment_id: ?[]const u8,
+) ![]const u8 {
+    var notification = std.ArrayList(u8).empty;
+    errdefer notification.deinit(allocator);
+    try notification.appendSlice(allocator, "{\"jsonrpc\":\"2.0\",\"method\":\"remoteControl/status/changed\",\"params\":{\"status\":");
+    try appendJsonString(allocator, &notification, status);
+    try notification.appendSlice(allocator, ",\"environmentId\":");
+    try appendOptionalJsonString(allocator, &notification, environment_id);
     try notification.appendSlice(allocator, "}}");
     return notification.toOwnedSlice(allocator);
 }
@@ -55167,6 +55191,41 @@ test "app-server initialize result exposes server info" {
 
     try std.testing.expect(std.mem.indexOf(u8, result, "\"name\":\"codex-zig-app-server\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, result, "\"capabilities\":{}") != null);
+}
+
+test "app-server initialize emits remote-control status snapshot" {
+    const allocator = std.testing.allocator;
+    var state = AppServerState{};
+    defer state.deinit(allocator);
+
+    const response = try handleJsonRpcLine(
+        allocator,
+        &state,
+        "{\"jsonrpc\":\"2.0\",\"id\":\"initialize\",\"method\":\"initialize\",\"params\":{\"clientInfo\":{\"name\":\"test\",\"version\":\"0\"},\"capabilities\":{\"optOutNotificationMethods\":[\"configWarning\"]}}}",
+    );
+    defer allocator.free(response.?);
+
+    try std.testing.expect(std.mem.indexOf(u8, response.?, "\"id\":\"initialize\"") != null);
+    try std.testing.expectEqual(@as(usize, 1), state.pending_notifications.items.len);
+    try std.testing.expect(std.mem.indexOf(u8, state.pending_notifications.items[0], "\"method\":\"remoteControl/status/changed\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, state.pending_notifications.items[0], "\"status\":\"disabled\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, state.pending_notifications.items[0], "\"environmentId\":null") != null);
+}
+
+test "app-server initialize honors remote-control status opt-out" {
+    const allocator = std.testing.allocator;
+    var state = AppServerState{};
+    defer state.deinit(allocator);
+
+    const response = try handleJsonRpcLine(
+        allocator,
+        &state,
+        "{\"jsonrpc\":\"2.0\",\"id\":\"initialize\",\"method\":\"initialize\",\"params\":{\"clientInfo\":{\"name\":\"test\",\"version\":\"0\"},\"capabilities\":{\"optOutNotificationMethods\":[\"configWarning\",\"remoteControl/status/changed\"]}}}",
+    );
+    defer allocator.free(response.?);
+
+    try std.testing.expect(std.mem.indexOf(u8, response.?, "\"id\":\"initialize\"") != null);
+    try std.testing.expectEqual(@as(usize, 0), state.pending_notifications.items.len);
 }
 
 test "app-server marketplace methods validate params" {
