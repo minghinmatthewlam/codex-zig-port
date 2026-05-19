@@ -64,6 +64,7 @@ const WEBSOCKET_DEFAULT_MAX_CLOCK_SKEW_SECONDS: u64 = 30;
 const WEBSOCKET_MIN_SIGNED_BEARER_SECRET_BYTES: usize = 32;
 const net = std.Io.net;
 var app_server_stdout_mutex: std.Io.Mutex = .init;
+var app_server_shutdown_requested = std.atomic.Value(bool).init(false);
 
 extern "c" fn openpty(
     amaster: *c_int,
@@ -77,6 +78,80 @@ const WebsocketAuthMode = enum {
     capability_token,
     signed_bearer_token,
 };
+
+fn appServerShutdownRequested() bool {
+    return app_server_shutdown_requested.load(.acquire);
+}
+
+fn requestAppServerShutdown(_: std.posix.SIG) callconv(.c) void {
+    if (app_server_shutdown_requested.swap(true, .acq_rel)) {
+        std.c._exit(0);
+    }
+}
+
+const AppServerShutdownSignalHandlers = struct {
+    old_int: std.posix.Sigaction,
+    old_term: std.posix.Sigaction,
+
+    fn install() AppServerShutdownSignalHandlers {
+        app_server_shutdown_requested.store(false, .release);
+        const action = std.posix.Sigaction{
+            .handler = .{ .handler = requestAppServerShutdown },
+            .mask = std.posix.sigemptyset(),
+            .flags = 0,
+        };
+        var handlers: AppServerShutdownSignalHandlers = undefined;
+        std.posix.sigaction(.INT, &action, &handlers.old_int);
+        std.posix.sigaction(.TERM, &action, &handlers.old_term);
+        return handlers;
+    }
+
+    fn deinit(self: *const AppServerShutdownSignalHandlers) void {
+        std.posix.sigaction(.INT, &self.old_int, null);
+        std.posix.sigaction(.TERM, &self.old_term, null);
+        app_server_shutdown_requested.store(false, .release);
+    }
+};
+
+fn acceptAppServerStream(server: *net.Server) net.Server.AcceptError!?net.Stream {
+    while (true) {
+        const rc = std.posix.system.accept(server.socket.handle, null, null);
+        switch (std.posix.errno(rc)) {
+            .SUCCESS => {
+                const fd: std.posix.fd_t = @intCast(rc);
+                errdefer closeFd(fd);
+                try setFdCloexec(fd);
+                return .{ .socket = .{ .handle = fd, .address = server.socket.address } };
+            },
+            .INTR => {
+                if (appServerShutdownRequested()) return null;
+                continue;
+            },
+            else => |err| switch (err) {
+                .AGAIN => return error.WouldBlock,
+                .BADF => return error.SocketNotListening,
+                .CONNABORTED => return error.ConnectionAborted,
+                .INVAL => return error.SocketNotListening,
+                .MFILE => return error.ProcessFdQuotaExceeded,
+                .NFILE => return error.SystemFdQuotaExceeded,
+                .NOBUFS, .NOMEM => return error.SystemResources,
+                .PROTO => return error.ProtocolFailure,
+                .PERM => return error.BlockedByFirewall,
+                else => return std.posix.unexpectedErrno(err),
+            },
+        }
+    }
+}
+
+fn setFdCloexec(fd: std.posix.fd_t) net.Server.AcceptError!void {
+    while (true) {
+        switch (std.posix.errno(std.posix.system.fcntl(fd, std.posix.F.SETFD, @as(usize, std.posix.FD_CLOEXEC)))) {
+            .SUCCESS => return,
+            .INTR => continue,
+            else => |err| return std.posix.unexpectedErrno(err),
+        }
+    }
+}
 
 const WebsocketAuthArgs = struct {
     ws_auth: ?WebsocketAuthMode = null,
@@ -24993,6 +25068,9 @@ const UnixServer = struct {
     invocation_options: InvocationOptions = .{},
 
     fn run(self: *UnixServer) !void {
+        const shutdown_handlers = AppServerShutdownSignalHandlers.install();
+        defer shutdown_handlers.deinit();
+
         const io = std.Io.Threaded.global_single_threaded.io();
         try ensureParentDir(io, self.socket_path);
         try deleteSocketFileIfSocket(self.allocator, io, self.socket_path);
@@ -25008,8 +25086,8 @@ const UnixServer = struct {
         var state = try initAppServerState(self.allocator, self.invocation_options, false);
         defer state.deinit(self.allocator);
 
-        while (true) {
-            var stream = try server.accept(io);
+        while (!appServerShutdownRequested()) {
+            var stream = (try acceptAppServerStream(&server)) orelse break;
             self.handleConnection(&state, io, &stream) catch |err| {
                 const message = std.fmt.allocPrint(
                     self.allocator,
@@ -25058,7 +25136,7 @@ const UnixServer = struct {
         state.connection_output = output_state;
         defer state.connection_output = null;
 
-        while (true) {
+        while (!appServerShutdownRequested()) {
             const line_opt = try reader.interface.takeDelimiter('\n');
             const line = line_opt orelse break;
             const trimmed = std.mem.trim(u8, line, " \t\r\n");
@@ -25087,6 +25165,9 @@ const WebSocketServer = struct {
     invocation_options: InvocationOptions = .{},
 
     fn run(self: *WebSocketServer) !void {
+        const shutdown_handlers = AppServerShutdownSignalHandlers.install();
+        defer shutdown_handlers.deinit();
+
         const io = std.Io.Threaded.global_single_threaded.io();
         var address = net.IpAddress.parse(self.address.host, self.address.port) catch return error.UnsupportedAppServerListenUrl;
         var server = try address.listen(io, .{ .reuse_address = true });
@@ -25100,8 +25181,8 @@ const WebSocketServer = struct {
         var state = try initAppServerState(self.allocator, self.invocation_options, false);
         defer state.deinit(self.allocator);
 
-        while (true) {
-            var stream = try server.accept(io);
+        while (!appServerShutdownRequested()) {
+            var stream = (try acceptAppServerStream(&server)) orelse break;
             self.handleConnection(&state, io, &stream) catch |err| {
                 const message = std.fmt.allocPrint(
                     self.allocator,
@@ -25201,7 +25282,7 @@ const WebSocketServer = struct {
         state.connection_output = output_state;
         defer state.connection_output = null;
 
-        while (true) {
+        while (!appServerShutdownRequested()) {
             const payload = try readWebSocketTextFrame(self.allocator, &reader.interface, &writer.interface, state.connection_output) orelse return;
             defer self.allocator.free(payload);
             const trimmed = std.mem.trim(u8, payload, " \t\r\n");
