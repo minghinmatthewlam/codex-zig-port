@@ -8343,7 +8343,6 @@ def run_external_auth_refresh_rpc_smoke(binary: Path) -> None:
                 "email": email,
                 "exp": 4_102_444_800,
                 "https://api.openai.com/auth": {
-                    "chatgpt_plan_type": "pro",
                     "chatgpt_account_id": account_id,
                 },
             }
@@ -8444,6 +8443,26 @@ def run_external_auth_refresh_rpc_smoke(binary: Path) -> None:
                     "method": "account/updated",
                     "params": {"authMode": "chatgptAuthTokens", "planType": "pro"},
                 }
+                assert not (codex_home / "auth.json").exists()
+
+                def assert_external_auth_status(request_id: str, expected_token: str) -> None:
+                    write_json_line(
+                        proc,
+                        {
+                            "jsonrpc": "2.0",
+                            "id": request_id,
+                            "method": "getAuthStatus",
+                            "params": {"includeToken": True},
+                        },
+                    )
+                    status = read_json_line(proc, 5)
+                    assert status["id"] == request_id
+                    assert status["result"] == {
+                        "authMethod": "chatgptAuthTokens",
+                        "authToken": expected_token,
+                        "requiresOpenaiAuth": True,
+                    }
+                    assert not (codex_home / "auth.json").exists()
 
                 with tempfile.TemporaryDirectory(prefix=f"codex-zig-auth-refresh-{name}-cwd-", dir="/tmp") as cwd:
                     write_json_line(
@@ -8566,9 +8585,7 @@ def run_external_auth_refresh_rpc_smoke(binary: Path) -> None:
                         assert resolved["params"]["threadId"] == thread_id
                         assert server.request_paths == ["/responses"]
                         assert server.request_headers[0]["authorization"] == f"Bearer {initial_access_token}"
-                        auth_json = json.loads((codex_home / "auth.json").read_text(encoding="utf-8"))
-                        assert auth_json["tokens"]["access_token"] == initial_access_token
-                        assert auth_json["tokens"]["account_id"] == initial_account_id
+                        assert_external_auth_status(f"{name}-status-after-interrupt", initial_access_token)
                     elif expected_success:
                         resolved = read_json_line(proc, 5)
                         assert resolved["method"] == "serverRequest/resolved"
@@ -8598,13 +8615,24 @@ def run_external_auth_refresh_rpc_smoke(binary: Path) -> None:
                         assert server.request_headers[1]["authorization"] == f"Bearer {refreshed_access_token}"
                         assert server.request_bodies[0]["model"] == "gpt-turn-smoke"
                         assert server.request_bodies[1]["model"] == "gpt-turn-smoke"
-                        auth_json = json.loads((codex_home / "auth.json").read_text(encoding="utf-8"))
-                        assert auth_json["auth_mode"] == "chatgptAuthTokens"
-                        assert auth_json["tokens"] == {
-                            "id_token": refreshed_access_token,
-                            "access_token": refreshed_access_token,
-                            "refresh_token": "",
-                            "account_id": refresh_account_id,
+                        assert_external_auth_status(f"{name}-status-after-refresh", refreshed_access_token)
+                        write_json_line(
+                            proc,
+                            {
+                                "jsonrpc": "2.0",
+                                "id": f"{name}-account-after-refresh",
+                                "method": "account/read",
+                            },
+                        )
+                        account_after_refresh = read_json_line(proc, 5)
+                        assert account_after_refresh["id"] == f"{name}-account-after-refresh"
+                        assert account_after_refresh["result"] == {
+                            "account": {
+                                "type": "chatgpt",
+                                "email": f"refreshed-{name}@example.com",
+                                "planType": "pro",
+                            },
+                            "requiresOpenaiAuth": True,
                         }
                     else:
                         messages = read_json_lines_until(
@@ -8637,9 +8665,7 @@ def run_external_auth_refresh_rpc_smoke(binary: Path) -> None:
                         assert expected_error in error_notification["params"]["error"]["message"]
                         assert server.request_paths == ["/responses"]
                         assert server.request_headers[0]["authorization"] == f"Bearer {initial_access_token}"
-                        auth_json = json.loads((codex_home / "auth.json").read_text(encoding="utf-8"))
-                        assert auth_json["tokens"]["access_token"] == initial_access_token
-                        assert auth_json["tokens"]["account_id"] == initial_account_id
+                        assert_external_auth_status(f"{name}-status-after-failure", initial_access_token)
 
                 assert proc.stdin is not None
                 proc.stdin.close()
@@ -32790,6 +32816,7 @@ def run_account_read_rpc_smoke(binary: Path) -> None:
     chatgpt_home = Path(tempfile.mkdtemp(prefix="codex-zig-app-server-account-chatgpt-", dir="/tmp"))
     bedrock_home = Path(tempfile.mkdtemp(prefix="codex-zig-app-server-account-bedrock-", dir="/tmp"))
     custom_home = Path(tempfile.mkdtemp(prefix="codex-zig-app-server-account-custom-", dir="/tmp"))
+    provider_auth_home = Path(tempfile.mkdtemp(prefix="codex-zig-app-server-account-provider-auth-", dir="/tmp"))
     oss_home = Path(tempfile.mkdtemp(prefix="codex-zig-app-server-account-oss-", dir="/tmp"))
     try:
         no_auth = request(no_auth_home, "account-no-auth", _OMIT)
@@ -32855,6 +32882,42 @@ def run_account_read_rpc_smoke(binary: Path) -> None:
         assert custom["id"] == "account-custom"
         assert custom["result"] == {"account": None, "requiresOpenaiAuth": False}
 
+        (provider_auth_home / "config.toml").write_text(
+            '\n'.join(
+                [
+                    'model_provider = "provider-auth"',
+                    "",
+                    "[model_providers.provider-auth]",
+                    'base_url = "https://proxy.example/v1"',
+                    'wire_api = "responses"',
+                    'requires_openai_auth = true',
+                    'env_key = "MISSING_PROVIDER_AUTH_TOKEN"',
+                    "",
+                ]
+            ),
+            encoding="utf-8",
+        )
+        (provider_auth_home / "auth.json").write_text(
+            json.dumps(
+                {
+                    "auth_mode": "chatgpt",
+                    "tokens": {
+                        "id_token": id_token,
+                        "access_token": "chatgpt-access-token",
+                        "refresh_token": "chatgpt-refresh-token",
+                        "account_id": "acct_123",
+                    },
+                }
+            ),
+            encoding="utf-8",
+        )
+        provider_auth = request(provider_auth_home, "account-provider-auth", {"refreshToken": False})
+        assert provider_auth["id"] == "account-provider-auth"
+        assert provider_auth["result"] == {
+            "account": {"type": "chatgpt", "email": "user@example.com", "planType": "pro"},
+            "requiresOpenaiAuth": True,
+        }
+
         (oss_home / "config.toml").write_text('oss_provider = "ollama"\n', encoding="utf-8")
         oss = request(oss_home, "account-oss", {})
         assert oss["id"] == "account-oss"
@@ -32869,6 +32932,7 @@ def run_account_read_rpc_smoke(binary: Path) -> None:
         shutil.rmtree(chatgpt_home, ignore_errors=True)
         shutil.rmtree(bedrock_home, ignore_errors=True)
         shutil.rmtree(custom_home, ignore_errors=True)
+        shutil.rmtree(provider_auth_home, ignore_errors=True)
         shutil.rmtree(oss_home, ignore_errors=True)
 
 
@@ -32891,6 +32955,7 @@ def run_get_auth_status_rpc_smoke(binary: Path) -> None:
     refresh_home = Path(tempfile.mkdtemp(prefix="codex-zig-app-server-auth-status-refresh-", dir="/tmp"))
     agent_identity_home = Path(tempfile.mkdtemp(prefix="codex-zig-app-server-auth-status-agent-", dir="/tmp"))
     custom_home = Path(tempfile.mkdtemp(prefix="codex-zig-app-server-auth-status-custom-", dir="/tmp"))
+    provider_auth_home = Path(tempfile.mkdtemp(prefix="codex-zig-app-server-auth-status-provider-auth-", dir="/tmp"))
     oss_home = Path(tempfile.mkdtemp(prefix="codex-zig-app-server-auth-status-oss-", dir="/tmp"))
     refresh_server: ThreadingHTTPServer | None = None
     try:
@@ -33031,6 +33096,43 @@ def run_get_auth_status_rpc_smoke(binary: Path) -> None:
             "requiresOpenaiAuth": False,
         }
 
+        (provider_auth_home / "config.toml").write_text(
+            '\n'.join(
+                [
+                    'model_provider = "provider-auth"',
+                    "",
+                    "[model_providers.provider-auth]",
+                    'base_url = "https://proxy.example/v1"',
+                    'wire_api = "responses"',
+                    'requires_openai_auth = true',
+                    'env_key = "MISSING_PROVIDER_AUTH_TOKEN"',
+                    "",
+                ]
+            ),
+            encoding="utf-8",
+        )
+        (provider_auth_home / "auth.json").write_text(
+            json.dumps(
+                {
+                    "auth_mode": "chatgpt",
+                    "tokens": {
+                        "id_token": id_token,
+                        "access_token": access_token,
+                        "refresh_token": "refresh-token",
+                        "account_id": "acct_123",
+                    },
+                }
+            ),
+            encoding="utf-8",
+        )
+        provider_auth = request(provider_auth_home, "auth-status-provider-auth", {"includeToken": True, "refreshToken": False})
+        assert provider_auth["id"] == "auth-status-provider-auth"
+        assert provider_auth["result"] == {
+            "authMethod": "chatgpt",
+            "authToken": access_token,
+            "requiresOpenaiAuth": True,
+        }
+
         (oss_home / "config.toml").write_text('oss_provider = "ollama"\n', encoding="utf-8")
         oss = request(oss_home, "auth-status-oss", _OMIT, {"OPENAI_API_KEY": "test-api-key"})
         assert oss["id"] == "auth-status-oss"
@@ -33057,6 +33159,7 @@ def run_get_auth_status_rpc_smoke(binary: Path) -> None:
         shutil.rmtree(refresh_home, ignore_errors=True)
         shutil.rmtree(agent_identity_home, ignore_errors=True)
         shutil.rmtree(custom_home, ignore_errors=True)
+        shutil.rmtree(provider_auth_home, ignore_errors=True)
         shutil.rmtree(oss_home, ignore_errors=True)
 
 
@@ -33494,14 +33597,7 @@ def run_account_login_rpc_smoke(binary: Path) -> None:
             }
 
             auth_json = json.loads((codex_home / "auth.json").read_text(encoding="utf-8"))
-            assert auth_json["auth_mode"] == "chatgptAuthTokens"
-            assert auth_json["tokens"] == {
-                "id_token": access_token,
-                "access_token": access_token,
-                "refresh_token": "",
-                "account_id": "acct_external",
-            }
-            assert isinstance(auth_json["last_refresh"], str)
+            assert auth_json == {"auth_mode": "apikey", "OPENAI_API_KEY": "test-api-key"}
 
             write_json_line(proc, {"jsonrpc": "2.0", "id": "after-auth-token-login", "method": "account/read"})
             after_auth_token_login = read_json_line(proc, 5)
@@ -33588,6 +33684,16 @@ def run_account_login_rpc_smoke(binary: Path) -> None:
                 "to update it or account/logout to clear it."
             )
 
+            write_json_line(proc, {"jsonrpc": "2.0", "id": "logout-external", "method": "account/logout"})
+            logout_external = read_json_line(proc, 5)
+            assert logout_external["id"] == "logout-external"
+            assert logout_external["result"] == {}
+            assert read_json_line(proc, 5) == {
+                "method": "account/updated",
+                "params": {"authMode": None, "planType": None},
+            }
+            assert not (codex_home / "auth.json").exists()
+
             assert proc.stdin is not None
             proc.stdin.close()
             proc.wait(timeout=5)
@@ -33635,6 +33741,182 @@ def run_account_login_rpc_smoke(binary: Path) -> None:
             "forced-workspace-chatgpt",
             "allowed_workspace_id=acct_expected",
         )
+    finally:
+        shutil.rmtree(codex_home, ignore_errors=True)
+
+
+def run_account_ephemeral_auth_store_rpc_smoke(binary: Path) -> None:
+    codex_home = Path(tempfile.mkdtemp(prefix="codex-zig-app-server-account-ephemeral-auth-", dir="/tmp"))
+    try:
+        (codex_home / "config.toml").write_text(
+            'cli_auth_credentials_store = "ephemeral"\n',
+            encoding="utf-8",
+        )
+        env = os.environ.copy()
+        env.pop("OPENAI_API_KEY", None)
+        env.pop("CODEX_ACCESS_TOKEN", None)
+        env["CODEX_HOME"] = str(codex_home)
+
+        proc = subprocess.Popen(
+            [str(binary), "app-server"],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            env=env,
+        )
+        try:
+            write_json_line(
+                proc,
+                {
+                    "jsonrpc": "2.0",
+                    "id": "login-api-key",
+                    "method": "account/login/start",
+                    "params": {"type": "apiKey", "apiKey": "ephemeral-api-key"},
+                },
+            )
+            login_api_key = read_json_line(proc, 5)
+            assert login_api_key["id"] == "login-api-key"
+            assert login_api_key["result"] == {"type": "apiKey"}
+            assert read_json_line(proc, 5) == {
+                "method": "account/login/completed",
+                "params": {"loginId": None, "success": True, "error": None},
+            }
+            assert read_json_line(proc, 5) == {
+                "method": "account/updated",
+                "params": {"authMode": "apikey", "planType": None},
+            }
+            assert not (codex_home / "auth.json").exists()
+
+            write_json_line(proc, {"jsonrpc": "2.0", "id": "api-account", "method": "account/read"})
+            api_account = read_json_line(proc, 5)
+            assert api_account["id"] == "api-account"
+            assert api_account["result"] == {"account": {"type": "apiKey"}, "requiresOpenaiAuth": True}
+
+            write_json_line(
+                proc,
+                {
+                    "jsonrpc": "2.0",
+                    "id": "api-status",
+                    "method": "getAuthStatus",
+                    "params": {"includeToken": True},
+                },
+            )
+            api_status = read_json_line(proc, 5)
+            assert api_status["id"] == "api-status"
+            assert api_status["result"] == {
+                "authMethod": "apikey",
+                "authToken": "ephemeral-api-key",
+                "requiresOpenaiAuth": True,
+            }
+
+            write_json_line(proc, {"jsonrpc": "2.0", "id": "logout-api", "method": "account/logout"})
+            logout_api = read_json_line(proc, 5)
+            assert logout_api["id"] == "logout-api"
+            assert logout_api["result"] == {}
+            assert read_json_line(proc, 5) == {
+                "method": "account/updated",
+                "params": {"authMode": None, "planType": None},
+            }
+
+            write_json_line(
+                proc,
+                {
+                    "jsonrpc": "2.0",
+                    "id": "initialize-auth-tokens",
+                    "method": "initialize",
+                    "params": {
+                        "clientInfo": {"name": "app-server-smoke", "version": "0"},
+                        "capabilities": EXPERIMENTAL_API_CAPABILITIES,
+                    },
+                },
+            )
+            assert read_json_line(proc, 5)["id"] == "initialize-auth-tokens"
+
+            access_token = encode_unsigned_jwt(
+                {
+                    "email": "ephemeral@example.com",
+                    "https://api.openai.com/auth": {
+                        "chatgpt_account_id": "acct_ephemeral",
+                    },
+                }
+            )
+            write_json_line(
+                proc,
+                {
+                    "jsonrpc": "2.0",
+                    "id": "login-auth-tokens",
+                    "method": "account/login/start",
+                    "params": {
+                        "type": "chatgptAuthTokens",
+                        "accessToken": access_token,
+                        "chatgptAccountId": "acct_ephemeral",
+                        "chatgptPlanType": "pro",
+                    },
+                },
+            )
+            login_auth_tokens = read_json_line(proc, 5)
+            assert login_auth_tokens["id"] == "login-auth-tokens"
+            assert login_auth_tokens["result"] == {"type": "chatgptAuthTokens"}
+            assert read_json_line(proc, 5) == {
+                "method": "account/login/completed",
+                "params": {"loginId": None, "success": True, "error": None},
+            }
+            assert read_json_line(proc, 5) == {
+                "method": "account/updated",
+                "params": {"authMode": "chatgptAuthTokens", "planType": "pro"},
+            }
+            assert not (codex_home / "auth.json").exists()
+
+            write_json_line(proc, {"jsonrpc": "2.0", "id": "chatgpt-account", "method": "account/read"})
+            chatgpt_account = read_json_line(proc, 5)
+            assert chatgpt_account["id"] == "chatgpt-account"
+            assert chatgpt_account["result"] == {
+                "account": {"type": "chatgpt", "email": "ephemeral@example.com", "planType": "pro"},
+                "requiresOpenaiAuth": True,
+            }
+
+            write_json_line(
+                proc,
+                {
+                    "jsonrpc": "2.0",
+                    "id": "api-key-while-external-auth",
+                    "method": "account/login/start",
+                    "params": {"type": "apiKey", "apiKey": "replacement-api-key"},
+                },
+            )
+            blocked_api_key = read_json_line(proc, 5)
+            assert blocked_api_key["id"] == "api-key-while-external-auth"
+            assert blocked_api_key["error"]["code"] == -32600
+            assert blocked_api_key["error"]["message"] == (
+                "External auth is active. Use account/login/start (chatgptAuthTokens) "
+                "to update it or account/logout to clear it."
+            )
+
+            write_json_line(proc, {"jsonrpc": "2.0", "id": "logout-chatgpt", "method": "account/logout"})
+            logout_chatgpt = read_json_line(proc, 5)
+            assert logout_chatgpt["id"] == "logout-chatgpt"
+            assert logout_chatgpt["result"] == {}
+            assert read_json_line(proc, 5) == {
+                "method": "account/updated",
+                "params": {"authMode": None, "planType": None},
+            }
+
+            write_json_line(proc, {"jsonrpc": "2.0", "id": "after-logout", "method": "account/read"})
+            after_logout = read_json_line(proc, 5)
+            assert after_logout["id"] == "after-logout"
+            assert after_logout["result"] == {"account": None, "requiresOpenaiAuth": True}
+            assert not (codex_home / "auth.json").exists()
+
+            assert proc.stdin is not None
+            proc.stdin.close()
+            proc.wait(timeout=5)
+            if proc.returncode != 0:
+                raise AssertionError(f"app-server exited {proc.returncode}: {proc.stderr.read()}")
+        finally:
+            if proc.poll() is None:
+                proc.kill()
+                proc.wait(timeout=5)
     finally:
         shutil.rmtree(codex_home, ignore_errors=True)
 
@@ -46305,6 +46587,8 @@ def main() -> None:
     print("app-server-account-logout-rpc-e2e: ok")
     run_account_login_rpc_smoke(binary)
     print("app-server-account-login-rpc-e2e: ok")
+    run_account_ephemeral_auth_store_rpc_smoke(binary)
+    print("app-server-account-ephemeral-auth-store-rpc-e2e: ok")
     run_external_auth_refresh_rpc_smoke(binary)
     print("app-server-external-auth-refresh-rpc-e2e: ok")
     run_account_login_cancel_rpc_smoke(binary)

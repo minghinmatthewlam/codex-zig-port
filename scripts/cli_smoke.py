@@ -7825,17 +7825,22 @@ def mcp_oauth_store_key(name: str, url: str) -> str:
     return f"{name}|{hashlib.sha256(payload.encode()).hexdigest()[:16]}"
 
 
+def cli_auth_store_key(codex_home: Path) -> str:
+    canonical = codex_home.resolve() if codex_home.exists() else codex_home
+    return f"cli|{hashlib.sha256(str(canonical).encode()).hexdigest()[:16]}"
+
+
 def has_macos_security() -> bool:
     return sys.platform == "darwin" and Path("/usr/bin/security").exists()
 
 
-def cleanup_mcp_oauth_keyring_entry(account: str) -> None:
+def cleanup_keyring_entry(service: str, account: str) -> None:
     subprocess.run(
         [
             "/usr/bin/security",
             "delete-generic-password",
             "-s",
-            "Codex MCP Credentials",
+            service,
             "-a",
             account,
         ],
@@ -7845,6 +7850,29 @@ def cleanup_mcp_oauth_keyring_entry(account: str) -> None:
         timeout=5,
         check=False,
     )
+
+
+def read_keyring_entry(service: str, account: str) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        [
+            "/usr/bin/security",
+            "find-generic-password",
+            "-w",
+            "-s",
+            service,
+            "-a",
+            account,
+        ],
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        timeout=5,
+        check=False,
+    )
+
+
+def cleanup_mcp_oauth_keyring_entry(account: str) -> None:
+    cleanup_keyring_entry("Codex MCP Credentials", account)
 
 
 def write_mcp_oauth_keyring_entry(account: str, payload: str) -> None:
@@ -8154,6 +8182,79 @@ def run_logout_revoke_smoke(binary: Path) -> None:
     finally:
         revoke_server.shutdown()
         revoke_server.server_close()
+        shutil.rmtree(temp_root, ignore_errors=True)
+
+
+def run_cli_auth_keyring_store_smoke(binary: Path) -> None:
+    if not has_macos_security():
+        return
+
+    temp_root = Path(tempfile.mkdtemp(prefix="codex-zig-cli-auth-keyring-", dir="/tmp"))
+    codex_home = temp_root / "codex-home"
+    codex_home.mkdir()
+    keyring_account = cli_auth_store_key(codex_home)
+    cleanup_keyring_entry("Codex Auth", keyring_account)
+    try:
+        (codex_home / "config.toml").write_text(
+            'cli_auth_credentials_store = "keyring"\n',
+            encoding="utf-8",
+        )
+        env = os.environ.copy()
+        env["CODEX_HOME"] = str(codex_home)
+        env.pop("OPENAI_API_KEY", None)
+        env.pop("CODEX_ACCESS_TOKEN", None)
+
+        login = subprocess.run(
+            [str(binary.resolve()), "login", "--with-api-key"],
+            cwd=temp_root,
+            env=env,
+            input="sk-keyring-test-123456789\n",
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=5,
+            check=True,
+        )
+        assert login.stdout == ""
+        assert login.stderr == "Successfully logged in\n"
+        assert not (codex_home / "auth.json").exists()
+
+        keyring_read = read_keyring_entry("Codex Auth", keyring_account)
+        assert keyring_read.returncode == 0, keyring_read.stderr
+        stored_auth = json.loads(keyring_read.stdout)
+        assert stored_auth["auth_mode"] == "apikey"
+        assert stored_auth["OPENAI_API_KEY"] == "sk-keyring-test-123456789"
+
+        status = subprocess.run(
+            [str(binary.resolve()), "login", "status"],
+            cwd=temp_root,
+            env=env,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=5,
+            check=True,
+        )
+        assert status.stdout == ""
+        assert "Logged in using an API key" in status.stderr
+        assert "sk-keyri" in status.stderr
+
+        logout = subprocess.run(
+            [str(binary.resolve()), "logout"],
+            cwd=temp_root,
+            env=env,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=5,
+            check=True,
+        )
+        assert logout.stdout == ""
+        assert logout.stderr == "Successfully logged out\n"
+        assert not (codex_home / "auth.json").exists()
+        assert read_keyring_entry("Codex Auth", keyring_account).returncode == 44
+    finally:
+        cleanup_keyring_entry("Codex Auth", keyring_account)
         shutil.rmtree(temp_root, ignore_errors=True)
 
 
@@ -9415,6 +9516,7 @@ def main() -> None:
     run_exec_streamable_http_mcp_keyring_oauth_smoke(binary)
     run_mcp_server_schema_smoke(binary)
     run_logout_revoke_smoke(binary)
+    run_cli_auth_keyring_store_smoke(binary)
     run_mcp_oauth_login_logout_smoke(binary)
     run_exec_git_repo_check_smoke(binary)
     run_yolo_approval_conflict_smoke(binary)
@@ -9452,6 +9554,7 @@ def main() -> None:
     print("cli-exec-streamable-http-mcp-keyring-oauth-e2e: ok")
     print("cli-mcp-server-schema-e2e: ok")
     print("cli-logout-revoke-e2e: ok")
+    print("cli-auth-keyring-store-e2e: ok")
     print("cli-mcp-oauth-login-logout-e2e: ok")
     print("cli-exec-git-check-e2e: ok")
     print("cli-yolo-approval-conflict-e2e: ok")
