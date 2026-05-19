@@ -6923,6 +6923,1072 @@ def run_turn_start_rpc_smoke(binary: Path) -> None:
         shutil.rmtree(codex_home, ignore_errors=True)
 
 
+def git_capture(cwd: Path, *args: str) -> str:
+    return subprocess.run(
+        ["git", *args],
+        cwd=cwd,
+        check=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    ).stdout.strip()
+
+
+def setup_review_base_branch_repo(root: Path) -> str:
+    origin = root / "origin.git"
+    peer = root / "peer"
+    repo = root / "repo"
+    git_capture(root, "init", "--bare", origin.name)
+    git_capture(root, "clone", str(origin), repo.name)
+    git_capture(repo, "config", "user.email", "review@example.com")
+    git_capture(repo, "config", "user.name", "Review Smoke")
+    repo.joinpath("base.txt").write_text("base\n", encoding="utf-8")
+    git_capture(repo, "add", "base.txt")
+    git_capture(repo, "commit", "-m", "base")
+    git_capture(repo, "branch", "-M", "main")
+    git_capture(repo, "push", "-u", "origin", "main")
+    git_capture(origin, "symbolic-ref", "HEAD", "refs/heads/main")
+
+    git_capture(root, "clone", str(origin), peer.name)
+    git_capture(peer, "config", "user.email", "review@example.com")
+    git_capture(peer, "config", "user.name", "Review Smoke")
+    peer.joinpath("base.txt").write_text("base\nupstream\n", encoding="utf-8")
+    git_capture(peer, "commit", "-am", "upstream")
+    git_capture(peer, "push", "origin", "main")
+
+    git_capture(repo, "fetch", "origin", "main")
+    git_capture(repo, "checkout", "-b", "feature", "origin/main")
+    upstream_base = git_capture(repo, "rev-parse", "HEAD")
+    repo.joinpath("base.txt").write_text("base\nupstream\nfeature\n", encoding="utf-8")
+    git_capture(repo, "commit", "-am", "feature")
+    return upstream_base
+
+
+def run_review_start_rpc_smoke(binary: Path) -> None:
+    server, base_url = start_turn_responses_server()
+    codex_home = Path(tempfile.mkdtemp(prefix="codex-zig-app-server-review-start-", dir="/tmp"))
+    try:
+        config_path = codex_home / "config.toml"
+        config_path.write_text(
+            "\n".join(
+                [
+                    f'openai_base_url = "{base_url}"',
+                    'model = "gpt-thread-smoke"',
+                    'review_model = "gpt-review-smoke"',
+                    'web_search = "live"',
+                    'developer_instructions = "review must not inherit this"',
+                    "",
+                ]
+            ),
+            encoding="utf-8",
+        )
+        review_mcp_log = codex_home / "review_mcp_started.log"
+        review_mcp_server = codex_home / "review_mcp_server.py"
+        review_mcp_server.write_text(
+            "\n".join(
+                [
+                    "import json",
+                    "import sys",
+                    "from pathlib import Path",
+                    f"Path({json.dumps(str(review_mcp_log))}).write_text('started\\n', encoding='utf-8')",
+                    "for line in sys.stdin:",
+                    "    if not line.strip():",
+                    "        continue",
+                    "    request = json.loads(line)",
+                    "    request_id = request.get('id')",
+                    "    if request_id is None:",
+                    "        continue",
+                    "    method = request.get('method')",
+                    "    if method == 'initialize':",
+                    "        result = {'protocolVersion': '2025-03-26', 'serverInfo': {'name': 'review-mcp', 'version': '0.1.0'}, 'capabilities': {'tools': {}}}",
+                    "    elif method == 'tools/list':",
+                    "        result = {'tools': [{'name': 'lookup', 'description': 'Lookup docs', 'inputSchema': {'type': 'object'}}]}",
+                    "    else:",
+                    "        result = {}",
+                    "    print(json.dumps({'jsonrpc': '2.0', 'id': request_id, 'result': result}, separators=(',', ':')), flush=True)",
+                ]
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        review_mcp_config = "\n".join(
+            [
+                "",
+                "[mcp_servers.review_should_not_start]",
+                'command = "python3"',
+                f"args = [{json.dumps(str(review_mcp_server))}]",
+                "",
+            ]
+        )
+        env = os.environ.copy()
+        env["CODEX_HOME"] = str(codex_home)
+        env["OPENAI_API_KEY"] = "test-api-key"
+        env.pop("CODEX_ACCESS_TOKEN", None)
+
+        proc = subprocess.Popen(
+            [str(binary), "app-server"],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            env=env,
+        )
+        try:
+            structured_review_text = json.dumps(
+                {
+                    "findings": [
+                        {
+                            "title": "[P2] Tighten check",
+                            "body": "This is actionable.",
+                            "confidence_score": 0.9,
+                            "priority": 2,
+                            "code_location": {
+                                "absolute_file_path": "/tmp/example.zig",
+                                "line_range": {"start": 12, "end": 14},
+                            },
+                        }
+                    ],
+                    "overall_correctness": "patch is correct",
+                    "overall_explanation": "Looks correct",
+                    "overall_confidence_score": 0.8,
+                },
+                separators=(",", ":"),
+            )
+            server.response_payloads.append(
+                b'data: {"type":"response.output_text.delta","delta":"parent-only answer"}\n\n'
+                b"data: [DONE]\n\n"
+            )
+            blocked_review_file_name = "review-should-not-write.txt"
+            blocked_review_patch = (
+                "*** Begin Patch\n"
+                f"*** Add File: {blocked_review_file_name}\n"
+                "+review wrote this\n"
+                "*** End Patch\n"
+            )
+            review_tool_calls = [
+                {
+                    "type": "function_call",
+                    "call_id": "review-blocked-patch-call",
+                    "name": "apply_patch",
+                    "arguments": json.dumps(
+                        {"patch": blocked_review_patch},
+                        separators=(",", ":"),
+                    ),
+                },
+                {
+                    "type": "function_call",
+                    "call_id": "review-disabled-stdin-call",
+                    "name": "write_stdin",
+                    "arguments": json.dumps(
+                        {"session_id": 999_999, "chars": "should not dispatch"},
+                        separators=(",", ":"),
+                    ),
+                },
+                {
+                    "type": "function_call",
+                    "call_id": "review-disabled-permissions-call",
+                    "name": "request_permissions",
+                    "arguments": json.dumps(
+                        {
+                            "permissions": {"network": True},
+                            "reason": "review should stay non-interactive",
+                        },
+                        separators=(",", ":"),
+                    ),
+                },
+                {
+                    "type": "function_call",
+                    "call_id": "review-disabled-user-input-call",
+                    "name": "request_user_input",
+                    "arguments": json.dumps(
+                        {
+                            "questions": [
+                                {
+                                    "id": "confirm",
+                                    "header": "Confirm",
+                                    "question": "Should review ask?",
+                                    "options": [
+                                        {
+                                            "label": "No",
+                                            "description": "Review must not ask.",
+                                        }
+                                    ],
+                                }
+                            ]
+                        },
+                        separators=(",", ":"),
+                    ),
+                },
+            ]
+            server.response_payloads.append(
+                (
+                    "".join(
+                        "data: "
+                        + json.dumps(
+                            {
+                                "type": "response.output_item.done",
+                                "item": tool_call,
+                            },
+                            separators=(",", ":"),
+                        )
+                        + "\n\n"
+                        for tool_call in review_tool_calls
+                    )
+                    + "data: [DONE]\n\n"
+                ).encode()
+            )
+            server.response_payloads.append(
+                (
+                    "data: "
+                    + json.dumps(
+                        {
+                            "type": "response.output_text.delta",
+                            "delta": structured_review_text,
+                        },
+                        separators=(",", ":"),
+                    )
+                    + "\n\ndata: [DONE]\n\n"
+                ).encode()
+            )
+            expected_rendered_review = (
+                "Looks correct\n\n"
+                "Review comment:\n\n"
+                "- [P2] Tighten check - /tmp/example.zig:12-14\n"
+                "  This is actionable."
+            )
+
+            def assert_review_tool_surface(request):
+                tool_names = {
+                    tool.get("name")
+                    for tool in request.get("tools", [])
+                    if tool.get("type") == "function"
+                }
+                assert "exec_command" in tool_names
+                assert "apply_patch" in tool_names
+                assert "write_stdin" not in tool_names
+                assert "list_mcp_resources" not in tool_names
+                assert "list_mcp_resource_templates" not in tool_names
+                assert "read_mcp_resource" not in tool_names
+                assert not any(
+                    isinstance(name, str) and name.startswith("mcp__")
+                    for name in tool_names
+                )
+
+            write_json_line(
+                proc,
+                {
+                    "jsonrpc": "2.0",
+                    "id": "initialize",
+                    "method": "initialize",
+                    "params": {
+                        "clientInfo": {"name": "app-server-review-smoke", "version": "0"},
+                        "capabilities": EXPERIMENTAL_API_CAPABILITIES,
+                    },
+                },
+            )
+            assert read_json_line(proc, 5)["id"] == "initialize"
+
+            with tempfile.TemporaryDirectory(prefix="codex-zig-review-start-cwd-", dir="/tmp") as cwd_root:
+                cwd = str(Path(cwd_root) / "repo")
+                upstream_base = setup_review_base_branch_repo(Path(cwd_root))
+                write_json_line(
+                    proc,
+                    {
+                        "jsonrpc": "2.0",
+                        "id": "thread-start-for-review",
+                        "method": "thread/start",
+                        "params": {
+                            "cwd": cwd,
+                            "approvalPolicy": "never",
+                            "sandbox": "danger-full-access",
+                        },
+                    },
+                )
+                thread_start = read_json_line(proc, 5)
+                assert thread_start["id"] == "thread-start-for-review"
+                thread = thread_start["result"]["thread"]
+                thread_id = thread["id"]
+                assert_thread_started_notification(read_json_line(proc, 5), thread)
+
+                write_json_line(
+                    proc,
+                    {
+                        "jsonrpc": "2.0",
+                        "id": "turn-start-parent-context",
+                        "method": "turn/start",
+                        "params": {
+                            "threadId": thread_id,
+                            "input": [
+                                {
+                                    "type": "text",
+                                    "text": "Seed parent context that review must not see",
+                                },
+                            ],
+                        },
+                    },
+                )
+                assert_turn_start_rpc_completed(
+                    proc, thread_id, "turn-start-parent-context"
+                )
+
+                hook_log = Path(cwd_root) / "review_hook_log.jsonl"
+                hook_script = Path(cwd) / ".codex" / "review_hook.py"
+                hook_script.parent.mkdir(parents=True)
+                hook_script.write_text(
+                    "\n".join(
+                        [
+                            "import json",
+                            "import sys",
+                            "from pathlib import Path",
+                            "payload = json.load(sys.stdin)",
+                            f"Path({json.dumps(str(hook_log))}).open('a', encoding='utf-8').write(json.dumps(payload, separators=(',', ':')) + '\\n')",
+                            "event = payload.get('hook_event_name')",
+                            "if event == 'SessionStart':",
+                            "    print(json.dumps({'hookSpecificOutput': {'hookEventName': 'SessionStart', 'additionalContext': 'review session hook context'}}))",
+                            "elif event == 'UserPromptSubmit':",
+                            "    print(json.dumps({'hookSpecificOutput': {'hookEventName': 'UserPromptSubmit', 'additionalContext': 'review prompt hook context'}}))",
+                        ]
+                    )
+                    + "\n",
+                    encoding="utf-8",
+                )
+                Path(cwd, ".codex", "config.toml").write_text(
+                    "\n".join(
+                        [
+                            "hooks = true",
+                            "",
+                            "[[hooks.SessionStart]]",
+                            "[[hooks.SessionStart.hooks]]",
+                            f'command = "python3 {hook_script}"',
+                            'statusMessage = "review session hook"',
+                            "",
+                            "[[hooks.UserPromptSubmit]]",
+                            "[[hooks.UserPromptSubmit.hooks]]",
+                            f'command = "python3 {hook_script}"',
+                            'statusMessage = "review prompt hook"',
+                            "",
+                        ]
+                    ),
+                    encoding="utf-8",
+                )
+
+                write_json_line(
+                    proc,
+                    {
+                        "jsonrpc": "2.0",
+                        "id": "hooks-list-for-review-start",
+                        "method": "hooks/list",
+                        "params": {"cwds": [cwd]},
+                    },
+                )
+                hooks = read_json_line(proc, 5)
+                assert hooks["id"] == "hooks-list-for-review-start"
+                review_hooks = hooks["result"]["data"][0]["hooks"]
+                assert [hook["eventName"] for hook in review_hooks] == [
+                    "sessionStart",
+                    "userPromptSubmit",
+                ]
+                write_json_line(
+                    proc,
+                    {
+                        "jsonrpc": "2.0",
+                        "id": "trust-review-start-hooks",
+                        "method": "config/batchWrite",
+                        "params": {
+                            "edits": [
+                                {
+                                    "keyPath": "hooks.state",
+                                    "value": {
+                                        hook["key"]: {
+                                            "enabled": True,
+                                            "trusted_hash": hook["currentHash"],
+                                        }
+                                        for hook in review_hooks
+                                    },
+                                    "mergeStrategy": "upsert",
+                                }
+                            ],
+                            "reloadUserConfig": True,
+                            "expectedVersion": None,
+                        },
+                    },
+                )
+                trust_hooks = read_json_line(proc, 5)
+                assert trust_hooks["id"] == "trust-review-start-hooks"
+                assert trust_hooks["result"]["status"] == "ok"
+
+                write_json_line(
+                    proc,
+                    {
+                        "jsonrpc": "2.0",
+                        "id": "review-start-empty-custom",
+                        "method": "review/start",
+                        "params": {
+                            "threadId": thread_id,
+                            "target": {"type": "custom", "instructions": "   "},
+                        },
+                    },
+                )
+                empty_custom = read_json_line(proc, 5)
+                assert empty_custom["id"] == "review-start-empty-custom"
+                assert empty_custom["error"]["code"] == -32600
+                assert empty_custom["error"]["message"] == "instructions must not be empty"
+
+                write_json_line(
+                    proc,
+                    {
+                        "jsonrpc": "2.0",
+                        "id": "review-start-detached",
+                        "method": "review/start",
+                        "params": {
+                            "threadId": thread_id,
+                            "delivery": "detached",
+                            "target": {"type": "commit", "sha": "1234567deadbeef"},
+                        },
+                    },
+                )
+                detached = read_json_line(proc, 5)
+                assert detached["id"] == "review-start-detached"
+                assert detached["error"]["code"] == -32603
+                assert "detached delivery" in detached["error"]["message"]
+
+                write_json_line(
+                    proc,
+                    {
+                        "jsonrpc": "2.0",
+                        "id": "review-start-reject-turn-cwd",
+                        "method": "review/start",
+                        "params": {
+                            "threadId": thread_id,
+                            "cwd": "/tmp",
+                            "target": {"type": "custom", "instructions": "Review this"},
+                        },
+                    },
+                )
+                reject_turn_cwd = read_json_line(proc, 5)
+                assert reject_turn_cwd["id"] == "review-start-reject-turn-cwd"
+                assert reject_turn_cwd["error"]["code"] == -32602
+                assert "only support threadId, target, and delivery" in reject_turn_cwd["error"][
+                    "message"
+                ]
+
+                assert not review_mcp_log.exists()
+                config_path.write_text(
+                    config_path.read_text(encoding="utf-8") + review_mcp_config,
+                    encoding="utf-8",
+                )
+
+                write_json_line(
+                    proc,
+                    {
+                        "jsonrpc": "2.0",
+                        "id": "review-start-inline",
+                        "method": "review/start",
+                        "params": {
+                            "threadId": thread_id,
+                            "delivery": "inline",
+                            "target": {
+                                "type": "custom",
+                                "instructions": "  Review security issues  ",
+                            },
+                        },
+                    },
+                )
+                review_start = read_json_line(proc, 5)
+                assert review_start["id"] == "review-start-inline"
+                result = review_start["result"]
+                assert result["reviewThreadId"] == thread_id
+                turn = result["turn"]
+                review_turn_id = turn["id"]
+                assert turn["status"] == "inProgress"
+                assert turn["itemsView"] == "notLoaded"
+                assert turn["items"] == [
+                    {
+                        "type": "userMessage",
+                        "id": review_turn_id,
+                        "content": [
+                            {
+                                "type": "text",
+                                "text": "Review security issues",
+                                "text_elements": [],
+                            }
+                        ],
+                    }
+                ]
+
+                assert_thread_status_notification(read_json_line(proc, 5), thread_id, "active")
+                started = read_json_line(proc, 5)
+                assert started["method"] == "turn/started"
+                assert started["params"]["threadId"] == thread_id
+                assert started["params"]["turn"]["id"] == review_turn_id
+                entered_started = read_json_line(proc, 5)
+                assert entered_started["method"] == "item/started"
+                assert entered_started["params"]["turnId"] == review_turn_id
+                assert entered_started["params"]["item"] == {
+                    "type": "enteredReviewMode",
+                    "id": review_turn_id,
+                    "review": "Review security issues",
+                }
+                entered_completed = read_json_line(proc, 5)
+                assert entered_completed["method"] == "item/completed"
+                assert entered_completed["params"]["item"] == entered_started["params"]["item"]
+                review_hook_started = read_json_line(proc, 5)
+                assert review_hook_started["method"] == "hook/started"
+                assert review_hook_started["params"]["threadId"] == thread_id
+                assert review_hook_started["params"]["turnId"] == review_turn_id
+                assert (
+                    review_hook_started["params"]["run"]["statusMessage"]
+                    == "review prompt hook"
+                )
+                review_hook_completed = read_json_line(proc, 5)
+                assert review_hook_completed["method"] == "hook/completed"
+                assert review_hook_completed["params"]["threadId"] == thread_id
+                assert review_hook_completed["params"]["turnId"] == review_turn_id
+                assert review_hook_completed["params"]["run"]["entries"] == [
+                    {"kind": "context", "text": "review prompt hook context"}
+                ]
+                raw_review_call_ids = set()
+                while True:
+                    candidate = read_json_line(proc, 5)
+                    if (
+                        candidate.get("method") == "item/started"
+                        and candidate["params"]["item"]["type"] == "exitedReviewMode"
+                    ):
+                        exited_started = candidate
+                        break
+                    assert candidate["method"] == "rawResponseItem/completed"
+                    assert candidate["params"]["threadId"] == thread_id
+                    assert candidate["params"]["turnId"] == review_turn_id
+                    assert candidate["params"]["item"]["type"] == "function_call"
+                    raw_review_call_ids.add(candidate["params"]["item"]["call_id"])
+                assert {
+                    "review-blocked-patch-call",
+                    "review-disabled-stdin-call",
+                    "review-disabled-permissions-call",
+                    "review-disabled-user-input-call",
+                }.issubset(raw_review_call_ids)
+                assert exited_started["method"] == "item/started"
+                assert exited_started["params"]["item"] == {
+                    "type": "exitedReviewMode",
+                    "id": review_turn_id,
+                    "review": expected_rendered_review,
+                }
+                exited_completed = read_json_line(proc, 5)
+                assert exited_completed["method"] == "item/completed"
+                assert exited_completed["params"]["item"] == exited_started["params"]["item"]
+                agent_started = read_json_line(proc, 5)
+                assert agent_started["method"] == "item/started"
+                assert agent_started["params"]["item"]["type"] == "agentMessage"
+                assert agent_started["params"]["item"]["text"] == expected_rendered_review
+                agent_completed = read_json_line(proc, 5)
+                assert agent_completed["method"] == "item/completed"
+                assert agent_completed["params"]["item"] == agent_started["params"]["item"]
+                completed = read_json_line(proc, 5)
+                assert completed["method"] == "turn/completed"
+                assert completed["params"]["turn"]["status"] == "completed"
+                assert_thread_status_notification(read_json_line(proc, 5), thread_id, "idle")
+                assert not Path(cwd, blocked_review_file_name).exists()
+
+                write_json_line(
+                    proc,
+                    {
+                        "jsonrpc": "2.0",
+                        "id": "thread-read-after-review-start",
+                        "method": "thread/read",
+                        "params": {"threadId": thread_id, "includeTurns": True},
+                    },
+                )
+                read_after_review = read_json_line(proc, 5)
+                assert read_after_review["id"] == "thread-read-after-review-start"
+                review_turn_texts = []
+                for stored_turn in read_after_review["result"]["thread"]["turns"]:
+                    for item in stored_turn["items"]:
+                        if item["type"] == "agentMessage":
+                            review_turn_texts.append(item["text"])
+                        elif item["type"] == "userMessage":
+                            review_turn_texts.extend(
+                                content["text"]
+                                for content in item["content"]
+                                if content["type"] == "text"
+                            )
+                assert expected_rendered_review in review_turn_texts
+                assert any(
+                    "<user_action>" in text
+                    and "<action>review</action>" in text
+                    and expected_rendered_review in text
+                    for text in review_turn_texts
+                )
+
+                write_json_line(
+                    proc,
+                    {
+                        "jsonrpc": "2.0",
+                        "id": "review-start-base-branch",
+                        "method": "review/start",
+                        "params": {
+                            "threadId": thread_id,
+                            "delivery": "inline",
+                            "target": {"type": "baseBranch", "branch": " main "},
+                        },
+                    },
+                )
+                base_review_start = read_json_line(proc, 5)
+                assert base_review_start["id"] == "review-start-base-branch"
+                base_result = base_review_start["result"]
+                assert base_result["reviewThreadId"] == thread_id
+                base_turn = base_result["turn"]
+                base_turn_id = base_turn["id"]
+                assert base_turn["items"][0]["content"][0]["text"] == "changes against 'main'"
+                assert_thread_status_notification(read_json_line(proc, 5), thread_id, "active")
+                base_started = read_json_line(proc, 5)
+                assert base_started["method"] == "turn/started"
+                assert base_started["params"]["turn"]["id"] == base_turn_id
+                base_entered_started = read_json_line(proc, 5)
+                assert base_entered_started["params"]["item"] == {
+                    "type": "enteredReviewMode",
+                    "id": base_turn_id,
+                    "review": "changes against 'main'",
+                }
+                base_entered_completed = read_json_line(proc, 5)
+                assert (
+                    base_entered_completed["params"]["item"]
+                    == base_entered_started["params"]["item"]
+                )
+                base_hook_started = read_json_line(proc, 5)
+                assert base_hook_started["method"] == "hook/started"
+                assert base_hook_started["params"]["turnId"] == base_turn_id
+                base_hook_completed = read_json_line(proc, 5)
+                assert base_hook_completed["method"] == "hook/completed"
+                assert base_hook_completed["params"]["turnId"] == base_turn_id
+                assert base_hook_completed["params"]["run"]["entries"] == [
+                    {"kind": "context", "text": "review prompt hook context"}
+                ]
+                base_exited_started = read_json_line(proc, 5)
+                assert base_exited_started["params"]["item"]["type"] == "exitedReviewMode"
+                base_exited_completed = read_json_line(proc, 5)
+                assert base_exited_completed["params"]["item"] == base_exited_started["params"]["item"]
+                base_agent_started = read_json_line(proc, 5)
+                assert base_agent_started["params"]["item"]["type"] == "agentMessage"
+                base_agent_completed = read_json_line(proc, 5)
+                assert base_agent_completed["params"]["item"] == base_agent_started["params"]["item"]
+                base_completed = read_json_line(proc, 5)
+                assert base_completed["method"] == "turn/completed"
+                assert_thread_status_notification(read_json_line(proc, 5), thread_id, "idle")
+
+                write_json_line(
+                    proc,
+                    {
+                        "jsonrpc": "2.0",
+                        "id": "thread-start-for-review-hooks",
+                        "method": "thread/start",
+                        "params": {
+                            "cwd": cwd,
+                            "approvalPolicy": "never",
+                            "sandbox": "danger-full-access",
+                        },
+                    },
+                )
+                hook_thread_start = read_json_line(proc, 5)
+                assert hook_thread_start["id"] == "thread-start-for-review-hooks"
+                hook_thread = hook_thread_start["result"]["thread"]
+                hook_thread_id = hook_thread["id"]
+                assert_thread_started_notification(read_json_line(proc, 5), hook_thread)
+
+                write_json_line(
+                    proc,
+                    {
+                        "jsonrpc": "2.0",
+                        "id": "review-start-with-session-hook",
+                        "method": "review/start",
+                        "params": {
+                            "threadId": hook_thread_id,
+                            "delivery": "inline",
+                            "target": {
+                                "type": "custom",
+                                "instructions": "Review startup hook path",
+                            },
+                        },
+                    },
+                )
+                hook_review_start = read_json_line(proc, 5)
+                assert hook_review_start["id"] == "review-start-with-session-hook"
+                hook_review_turn_id = hook_review_start["result"]["turn"]["id"]
+                assert_thread_status_notification(read_json_line(proc, 5), hook_thread_id, "active")
+                hook_review_turn_started = read_json_line(proc, 5)
+                assert hook_review_turn_started["method"] == "turn/started"
+                assert hook_review_turn_started["params"]["turn"]["id"] == hook_review_turn_id
+                hook_entered_started = read_json_line(proc, 5)
+                assert hook_entered_started["method"] == "item/started"
+                assert hook_entered_started["params"]["item"]["type"] == "enteredReviewMode"
+                hook_entered_completed = read_json_line(proc, 5)
+                assert hook_entered_completed["params"]["item"] == hook_entered_started["params"]["item"]
+                session_hook_started = read_json_line(proc, 5)
+                assert session_hook_started["method"] == "hook/started"
+                assert session_hook_started["params"]["turnId"] == hook_review_turn_id
+                assert session_hook_started["params"]["run"]["statusMessage"] == "review session hook"
+                session_hook_completed = read_json_line(proc, 5)
+                assert session_hook_completed["method"] == "hook/completed"
+                assert session_hook_completed["params"]["turnId"] == hook_review_turn_id
+                assert session_hook_completed["params"]["run"]["entries"] == [
+                    {"kind": "context", "text": "review session hook context"}
+                ]
+                prompt_hook_started = read_json_line(proc, 5)
+                assert prompt_hook_started["method"] == "hook/started"
+                assert prompt_hook_started["params"]["turnId"] == hook_review_turn_id
+                prompt_hook_completed = read_json_line(proc, 5)
+                assert prompt_hook_completed["method"] == "hook/completed"
+                assert prompt_hook_completed["params"]["turnId"] == hook_review_turn_id
+                assert prompt_hook_completed["params"]["run"]["entries"] == [
+                    {"kind": "context", "text": "review prompt hook context"}
+                ]
+                hook_exited_started = read_json_line(proc, 5)
+                assert hook_exited_started["params"]["item"]["type"] == "exitedReviewMode"
+                hook_exited_completed = read_json_line(proc, 5)
+                assert hook_exited_completed["params"]["item"] == hook_exited_started["params"]["item"]
+                hook_agent_started = read_json_line(proc, 5)
+                assert hook_agent_started["params"]["item"]["type"] == "agentMessage"
+                hook_agent_completed = read_json_line(proc, 5)
+                assert hook_agent_completed["params"]["item"] == hook_agent_started["params"]["item"]
+                hook_completed = read_json_line(proc, 5)
+                assert hook_completed["method"] == "turn/completed"
+                assert_thread_status_notification(read_json_line(proc, 5), hook_thread_id, "idle")
+                assert not review_mcp_log.exists()
+                config_path.write_text(
+                    config_path.read_text(encoding="utf-8").replace(review_mcp_config, ""),
+                    encoding="utf-8",
+                )
+
+                write_json_line(
+                    proc,
+                    {
+                        "jsonrpc": "2.0",
+                        "id": "turn-start-after-initial-review",
+                        "method": "turn/start",
+                        "params": {
+                            "threadId": hook_thread_id,
+                            "input": [
+                                {
+                                    "type": "text",
+                                    "text": "Normal turn after initial review",
+                                },
+                            ],
+                        },
+                    },
+                )
+                normal_turn_start = read_json_line(proc, 5)
+                assert normal_turn_start["id"] == "turn-start-after-initial-review"
+                normal_turn_id = normal_turn_start["result"]["turn"]["id"]
+                assert_thread_status_notification(read_json_line(proc, 5), hook_thread_id, "active")
+                normal_turn_started = read_json_line(proc, 5)
+                assert normal_turn_started["method"] == "turn/started"
+                assert normal_turn_started["params"]["turn"]["id"] == normal_turn_id
+                normal_prompt_hook_started = read_json_line(proc, 5)
+                assert normal_prompt_hook_started["method"] == "hook/started"
+                assert normal_prompt_hook_started["params"]["turnId"] == normal_turn_id
+                normal_prompt_hook_completed = read_json_line(proc, 5)
+                assert normal_prompt_hook_completed["method"] == "hook/completed"
+                assert normal_prompt_hook_completed["params"]["turnId"] == normal_turn_id
+                assert normal_prompt_hook_completed["params"]["run"]["entries"] == [
+                    {"kind": "context", "text": "review prompt hook context"}
+                ]
+                normal_user_started = read_json_line(proc, 5)
+                assert normal_user_started["method"] == "item/started"
+                assert normal_user_started["params"]["item"]["type"] == "userMessage"
+                normal_user_completed = read_json_line(proc, 5)
+                assert normal_user_completed["method"] == "item/completed"
+                normal_agent_started = read_json_line(proc, 5)
+                assert normal_agent_started["method"] == "item/started"
+                assert normal_agent_started["params"]["item"]["type"] == "agentMessage"
+                normal_agent_delta = read_json_line(proc, 5)
+                assert normal_agent_delta["method"] == "item/agentMessage/delta"
+                normal_agent_completed = read_json_line(proc, 5)
+                assert normal_agent_completed["method"] == "item/completed"
+                normal_turn_completed = read_json_line(proc, 5)
+                assert normal_turn_completed["method"] == "turn/completed"
+                assert_thread_status_notification(read_json_line(proc, 5), hook_thread_id, "idle")
+
+                write_json_line(
+                    proc,
+                    {
+                        "jsonrpc": "2.0",
+                        "id": "thread-start-for-review-setup-error",
+                        "method": "thread/start",
+                        "params": {
+                            "cwd": cwd,
+                            "approvalPolicy": "never",
+                            "sandbox": "danger-full-access",
+                        },
+                    },
+                )
+                setup_error_thread_start = read_json_line(proc, 5)
+                assert setup_error_thread_start["id"] == "thread-start-for-review-setup-error"
+                setup_error_thread = setup_error_thread_start["result"]["thread"]
+                setup_error_thread_id = setup_error_thread["id"]
+                assert_thread_started_notification(read_json_line(proc, 5), setup_error_thread)
+                setup_error_path_value = setup_error_thread["path"]
+                assert isinstance(setup_error_path_value, str)
+                setup_error_path = Path(setup_error_path_value)
+                setup_error_path.parent.mkdir(parents=True, exist_ok=True)
+                assert not setup_error_path.exists()
+                setup_error_path.mkdir()
+
+                write_json_line(
+                    proc,
+                    {
+                        "jsonrpc": "2.0",
+                        "id": "review-start-setup-error",
+                        "method": "review/start",
+                        "params": {
+                            "threadId": setup_error_thread_id,
+                            "delivery": "inline",
+                            "target": {
+                                "type": "custom",
+                                "instructions": "Review setup failure path",
+                            },
+                        },
+                    },
+                )
+                setup_error_review_start = read_json_line(proc, 5)
+                assert setup_error_review_start["id"] == "review-start-setup-error"
+                setup_error_turn_id = setup_error_review_start["result"]["turn"]["id"]
+                assert_thread_status_notification(
+                    read_json_line(proc, 5), setup_error_thread_id, "active"
+                )
+                setup_error_started = read_json_line(proc, 5)
+                assert setup_error_started["method"] == "turn/started"
+                assert setup_error_started["params"]["turn"]["id"] == setup_error_turn_id
+                setup_error_entered_started = read_json_line(proc, 5)
+                assert setup_error_entered_started["method"] == "item/started"
+                assert setup_error_entered_started["params"]["item"] == {
+                    "type": "enteredReviewMode",
+                    "id": setup_error_turn_id,
+                    "review": "Review setup failure path",
+                }
+                setup_error_entered_completed = read_json_line(proc, 5)
+                assert (
+                    setup_error_entered_completed["params"]["item"]
+                    == setup_error_entered_started["params"]["item"]
+                )
+                setup_error_exited_started = read_json_line(proc, 5)
+                assert setup_error_exited_started["method"] == "item/started"
+                assert setup_error_exited_started["params"]["item"] == {
+                    "type": "exitedReviewMode",
+                    "id": setup_error_turn_id,
+                    "review": "Reviewer failed to output a response.",
+                }
+                setup_error_exited_completed = read_json_line(proc, 5)
+                assert (
+                    setup_error_exited_completed["params"]["item"]
+                    == setup_error_exited_started["params"]["item"]
+                )
+                setup_error_completed = read_json_line(proc, 5)
+                assert setup_error_completed["method"] == "turn/completed"
+                assert setup_error_completed["params"]["turn"]["status"] == "failed"
+                setup_error_notification = read_json_line(proc, 5)
+                assert setup_error_notification["method"] == "error"
+                assert (
+                    "review/start failed to prepare review"
+                    in setup_error_notification["params"]["error"]["message"]
+                )
+                assert setup_error_notification["params"]["willRetry"] is False
+                assert_thread_status_notification(
+                    read_json_line(proc, 5), setup_error_thread_id, "systemError"
+                )
+
+                write_json_line(
+                    proc,
+                    {
+                        "jsonrpc": "2.0",
+                        "id": "review-start-setup-error-again",
+                        "method": "review/start",
+                        "params": {
+                            "threadId": setup_error_thread_id,
+                            "delivery": "inline",
+                            "target": {
+                                "type": "custom",
+                                "instructions": "Review setup failure path again",
+                            },
+                        },
+                    },
+                )
+                setup_error_again = read_json_line(proc, 5)
+                assert setup_error_again["id"] == "review-start-setup-error-again"
+                setup_error_again_turn_id = setup_error_again["result"]["turn"]["id"]
+                assert setup_error_again_turn_id != setup_error_turn_id
+                assert_thread_status_notification(
+                    read_json_line(proc, 5), setup_error_thread_id, "active"
+                )
+                setup_error_again_started = read_json_line(proc, 5)
+                assert setup_error_again_started["method"] == "turn/started"
+                assert (
+                    setup_error_again_started["params"]["turn"]["id"]
+                    == setup_error_again_turn_id
+                )
+                setup_error_again_entered_started = read_json_line(proc, 5)
+                assert setup_error_again_entered_started["method"] == "item/started"
+                assert setup_error_again_entered_started["params"]["item"] == {
+                    "type": "enteredReviewMode",
+                    "id": setup_error_again_turn_id,
+                    "review": "Review setup failure path again",
+                }
+                setup_error_again_entered_completed = read_json_line(proc, 5)
+                assert (
+                    setup_error_again_entered_completed["params"]["item"]
+                    == setup_error_again_entered_started["params"]["item"]
+                )
+                setup_error_again_exited_started = read_json_line(proc, 5)
+                assert setup_error_again_exited_started["method"] == "item/started"
+                assert setup_error_again_exited_started["params"]["item"] == {
+                    "type": "exitedReviewMode",
+                    "id": setup_error_again_turn_id,
+                    "review": "Reviewer failed to output a response.",
+                }
+                setup_error_again_exited_completed = read_json_line(proc, 5)
+                assert (
+                    setup_error_again_exited_completed["params"]["item"]
+                    == setup_error_again_exited_started["params"]["item"]
+                )
+                setup_error_again_completed = read_json_line(proc, 5)
+                assert setup_error_again_completed["method"] == "turn/completed"
+                assert setup_error_again_completed["params"]["turn"]["status"] == "failed"
+                setup_error_again_notification = read_json_line(proc, 5)
+                assert setup_error_again_notification["method"] == "error"
+                assert (
+                    "review/start failed to prepare review"
+                    in setup_error_again_notification["params"]["error"]["message"]
+                )
+                assert_thread_status_notification(
+                    read_json_line(proc, 5), setup_error_thread_id, "systemError"
+                )
+
+                assert server.request_paths == ["/responses"] * 6
+                prior_request = server.request_bodies[0]
+                assert (
+                    prior_request["input"][0]["content"][0]["text"]
+                    == "Seed parent context that review must not see"
+                )
+                custom_request = server.request_bodies[1]
+                assert custom_request["model"] == "gpt-review-smoke"
+                assert_review_tool_surface(custom_request)
+                assert custom_request["instructions"].startswith("# Review guidelines:")
+                assert "review must not inherit this" not in custom_request["instructions"]
+                assert not any(
+                    tool.get("type") == "web_search"
+                    for tool in custom_request.get("tools", [])
+                )
+                assert len(custom_request["input"]) == 2
+                assert "Seed parent context" not in json.dumps(custom_request["input"])
+                custom_request_text = custom_request["input"][0]["content"][0]["text"]
+                assert custom_request_text == "Review security issues"
+                assert custom_request["input"][1]["role"] == "developer"
+                assert (
+                    custom_request["input"][1]["content"][0]["text"]
+                    == "review prompt hook context"
+                )
+                custom_after_tool_request = server.request_bodies[2]
+                assert custom_after_tool_request["model"] == "gpt-review-smoke"
+                assert_review_tool_surface(custom_after_tool_request)
+                assert "Seed parent context" not in json.dumps(
+                    custom_after_tool_request["input"]
+                )
+                assert "review prompt hook context" in json.dumps(
+                    custom_after_tool_request["input"]
+                )
+                assert any(
+                    item.get("type") == "function_call_output"
+                    and item.get("call_id") == "review-blocked-patch-call"
+                    and "blocked by sandbox_mode=read-only" in item.get("output", "")
+                    for item in custom_after_tool_request["input"]
+                )
+                assert any(
+                    item.get("type") == "function_call_output"
+                    and item.get("call_id") == "review-disabled-stdin-call"
+                    and "write_stdin is disabled in this session" in item.get("output", "")
+                    for item in custom_after_tool_request["input"]
+                )
+                assert any(
+                    item.get("type") == "function_call_output"
+                    and item.get("call_id") == "review-disabled-permissions-call"
+                    and "request_permissions is disabled in this session"
+                    in item.get("output", "")
+                    for item in custom_after_tool_request["input"]
+                )
+                assert any(
+                    item.get("type") == "function_call_output"
+                    and item.get("call_id") == "review-disabled-user-input-call"
+                    and "request_user_input is disabled in this session"
+                    in item.get("output", "")
+                    for item in custom_after_tool_request["input"]
+                )
+                base_request = server.request_bodies[3]
+                assert base_request["model"] == "gpt-review-smoke"
+                assert_review_tool_surface(base_request)
+                assert base_request["instructions"].startswith("# Review guidelines:")
+                assert "review must not inherit this" not in base_request["instructions"]
+                assert not any(
+                    tool.get("type") == "web_search"
+                    for tool in base_request.get("tools", [])
+                )
+                assert len(base_request["input"]) == 2
+                assert "Seed parent context" not in json.dumps(base_request["input"])
+                assert "review prompt hook context" in json.dumps(base_request["input"])
+                base_request_text = base_request["input"][0]["content"][0]["text"]
+                assert f"merge base commit for this comparison is {upstream_base}" in base_request_text
+                assert "Run `git diff " + upstream_base + "`" in base_request_text
+                hook_review_request = server.request_bodies[4]
+                assert hook_review_request["model"] == "gpt-review-smoke"
+                assert_review_tool_surface(hook_review_request)
+                assert "review session hook context" in json.dumps(
+                    hook_review_request["input"]
+                )
+                assert "review prompt hook context" in json.dumps(
+                    hook_review_request["input"]
+                )
+                hook_review_text = hook_review_request["input"][1]["content"][0]["text"]
+                assert hook_review_text == "Review startup hook path"
+                normal_after_review_request = server.request_bodies[5]
+                assert normal_after_review_request["model"] == "gpt-thread-smoke"
+                assert "review session hook context" in json.dumps(
+                    normal_after_review_request["input"]
+                )
+                assert "Normal turn after initial review" in json.dumps(
+                    normal_after_review_request["input"]
+                )
+
+                hook_inputs = [
+                    json.loads(line)
+                    for line in hook_log.read_text(encoding="utf-8").splitlines()
+                ]
+                assert [entry["hook_event_name"] for entry in hook_inputs] == [
+                    "UserPromptSubmit",
+                    "UserPromptSubmit",
+                    "SessionStart",
+                    "UserPromptSubmit",
+                    "UserPromptSubmit",
+                ]
+                assert hook_inputs[0]["prompt"] == "Review security issues"
+                assert hook_inputs[1]["prompt"].startswith(
+                    "Review the code changes against the base branch"
+                )
+                assert hook_inputs[2]["source"] == "startup"
+                assert hook_inputs[3]["prompt"] == "Review startup hook path"
+                assert hook_inputs[4]["prompt"] == "Normal turn after initial review"
+
+            assert proc.stdin is not None
+            proc.stdin.close()
+            proc.wait(timeout=5)
+            if proc.returncode != 0:
+                raise AssertionError(f"app-server exited {proc.returncode}: {proc.stderr.read()}")
+        finally:
+            if proc.poll() is None:
+                proc.kill()
+                proc.wait(timeout=5)
+    finally:
+        server.shutdown()
+        server.server_close()
+        shutil.rmtree(codex_home, ignore_errors=True)
+
+
 def run_external_auth_refresh_rpc_smoke(binary: Path) -> None:
     def chatgpt_token(email: str, account_id: str) -> str:
         return encode_unsigned_jwt(
@@ -43171,6 +44237,8 @@ def main() -> None:
     print("app-server-unmaterialized-thread-history-e2e: ok")
     run_turn_start_rpc_smoke(binary)
     print("app-server-turn-start-rpc-e2e: ok")
+    run_review_start_rpc_smoke(binary)
+    print("app-server-review-start-rpc-e2e: ok")
     run_turn_project_model_controls_rpc_smoke(binary)
     print("app-server-turn-project-model-controls-rpc-e2e: ok")
     run_turn_plan_updated_notification_smoke(binary)
