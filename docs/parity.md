@@ -292,6 +292,11 @@ TypeScript and JSON Schema artifacts now include
 included in the top-level `ServerNotification` `"serverRequest/resolved"`,
 `"item/mcpToolCall/progress"`, `"mcpServer/startupStatus/updated"`, and
 `"remoteControl/status/changed"` union variants. Runtime emission is now
+covered for the Rust-compatible initial
+`remoteControl/status/changed` snapshot after app-server `initialize`, currently
+reporting Zig's headless remote-control runtime as `disabled` with
+`environmentId: null` and honoring client notification opt-out. Runtime emission
+is also now
 covered for `serverRequest/resolved` when a tracked pending server request is
 answered by a standalone JSON-RPC client result or error envelope, when an
 app-server `turn/start` command approval, file-change approval, or
@@ -305,8 +310,8 @@ while app-server `turn/start` discovers configured MCP tools, and for
 configured MCP tools invoked during app-server `turn/start`, plus MCP server
 `notifications/progress` messages received while the tool call is in flight.
 Dispatching the remaining dynamic tool-call, account refresh, and legacy
-approval surfaces remains planned, as does runtime emission for the remaining
-control/status notifications.
+approval surfaces remains planned, as does full connected/connecting/errored
+remote-control transport status parity.
 
 Additional app-server server-request generation coverage: generated TypeScript
 artifacts now include the top-level `ServerRequest` union for

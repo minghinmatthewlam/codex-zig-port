@@ -263,6 +263,8 @@ The first demo slice targets macOS and focuses on the interactive CLI surface:
 - suppress implemented Rust experimental app-server server notifications,
   including `thread/goal/*` and `process/*`, until the client enables
   `experimentalApi`
+- emit app-server `remoteControl/status/changed` after `initialize` with the
+  current disabled remote-control status, honoring notification opt-out
 - include experimental `permissionProfile` and `activePermissionProfile`
   fields on `thread/start`, `thread/resume`, and `thread/fork` responses only
   after the client enables `experimentalApi`
