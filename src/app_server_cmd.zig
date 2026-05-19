@@ -35789,6 +35789,9 @@ fn createLoadedThreadFromResumeParams(
     var transcript_copy = try transcript.clone(allocator);
     errdefer transcript_copy.deinit(allocator);
 
+    const request_config = try threadRequestConfigFromParams(params);
+    const use_request_profile = request_config.profile_present;
+
     const model = try allocator.dupe(u8, optionalStringParam(params, "model") orelse cfg.model);
     errdefer allocator.free(model);
 
@@ -35797,7 +35800,11 @@ fn createLoadedThreadFromResumeParams(
 
     const configured_model_provider = try config.loadModelProviderId(allocator, cfg.active_profile);
     defer if (configured_model_provider) |value| allocator.free(value);
-    const model_provider = try allocator.dupe(u8, optionalStringParam(params, "modelProvider") orelse transcript.model_provider orelse configured_model_provider orelse "openai");
+    const default_model_provider = if (use_request_profile)
+        configured_model_provider orelse "openai"
+    else
+        transcript.model_provider orelse configured_model_provider orelse "openai";
+    const model_provider = try allocator.dupe(u8, optionalStringParam(params, "modelProvider") orelse default_model_provider);
     errdefer allocator.free(model_provider);
 
     const service_tier = try threadStartServiceTier(allocator, cfg, params);
@@ -35870,7 +35877,7 @@ fn createLoadedThreadFromResumeParams(
             .model_context_window = false,
             .model_auto_compact_token_limit = false,
             .model_verbosity = false,
-            .model_provider = paramPresent(params, "modelProvider") or transcript.model_provider != null,
+            .model_provider = paramPresent(params, "modelProvider") or (!use_request_profile and transcript.model_provider != null),
             .service_tier = paramPresent(params, "serviceTier"),
             .approval_policy = paramPresent(params, "approvalPolicy"),
             .approvals_reviewer = paramPresent(params, "approvalsReviewer"),

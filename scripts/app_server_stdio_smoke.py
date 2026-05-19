@@ -13488,7 +13488,14 @@ def run_thread_resume_rpc_smoke(binary: Path) -> None:
     codex_home = Path(tempfile.mkdtemp(prefix="codex-zig-app-server-resume-", dir="/tmp"))
     try:
         codex_home.joinpath("config.toml").write_text(
-            f'openai_base_url = "{base_url}"\nmodel = "gpt-resume-smoke"\n',
+            (
+                f'openai_base_url = "{base_url}"\n'
+                'model = "gpt-resume-smoke"\n'
+                "\n"
+                "[profiles.provider_override]\n"
+                'model = "gpt-profile-resume-smoke"\n'
+                'model_provider = "profile_provider"\n'
+            ),
             encoding="utf-8",
         )
         resume_thread_id = "11111111-1111-4111-8111-111111111111"
@@ -13610,6 +13617,51 @@ def run_thread_resume_rpc_smoke(binary: Path) -> None:
                                 "type": "user_message",
                                 "message": "rust rollout hello",
                                 "kind": "plain",
+                            },
+                        },
+                        separators=(",", ":"),
+                    ),
+                    "",
+                ]
+            ),
+            encoding="utf-8",
+        )
+        profile_provider_thread_id = "12345678-1234-4234-8234-123456789abc"
+        profile_provider_rollout_path = (
+            sessions_dir / f"rollout-{profile_provider_thread_id}.jsonl"
+        )
+        profile_provider_rollout_path.write_text(
+            "\n".join(
+                [
+                    json.dumps(
+                        {
+                            "timestamp": "2025-01-05T12:00:00Z",
+                            "type": "session_meta",
+                            "payload": {
+                                "id": profile_provider_thread_id,
+                                "timestamp": "2025-01-05T12:00:00Z",
+                                "cwd": "/",
+                                "originator": "codex",
+                                "cli_version": "0.0.0",
+                                "source": "cli",
+                                "model_provider": "saved_provider",
+                            },
+                        },
+                        separators=(",", ":"),
+                    ),
+                    json.dumps(
+                        {
+                            "timestamp": "2025-01-05T12:00:00Z",
+                            "type": "response_item",
+                            "payload": {
+                                "type": "message",
+                                "role": "user",
+                                "content": [
+                                    {
+                                        "type": "input_text",
+                                        "text": "profile provider resume hello",
+                                    }
+                                ],
                             },
                         },
                         separators=(",", ":"),
@@ -15054,6 +15106,56 @@ def run_thread_resume_rpc_smoke(binary: Path) -> None:
                 proc,
                 {
                     "jsonrpc": "2.0",
+                    "id": "thread-resume-profile-provider",
+                    "method": "thread/resume",
+                    "params": {
+                        "threadId": profile_provider_thread_id,
+                        "config": {"profile": "provider_override"},
+                    },
+                },
+            )
+            profile_provider_resume = read_json_line(proc, 5)
+            assert profile_provider_resume["id"] == "thread-resume-profile-provider"
+            profile_provider_result = profile_provider_resume["result"]
+            assert profile_provider_result["model"] == "gpt-profile-resume-smoke"
+            assert profile_provider_result["modelProvider"] == "profile_provider"
+
+            write_json_line(
+                proc,
+                {
+                    "jsonrpc": "2.0",
+                    "id": "thread-list-profile-provider",
+                    "method": "thread/list",
+                    "params": {"modelProviders": ["profile_provider"]},
+                },
+            )
+            profile_provider_list = read_json_line(proc, 5)
+            assert profile_provider_list["id"] == "thread-list-profile-provider"
+            assert any(
+                thread["id"] == profile_provider_thread_id
+                for thread in profile_provider_list["result"]["data"]
+            )
+
+            write_json_line(
+                proc,
+                {
+                    "jsonrpc": "2.0",
+                    "id": "thread-list-saved-provider",
+                    "method": "thread/list",
+                    "params": {"modelProviders": ["saved_provider"]},
+                },
+            )
+            saved_provider_list = read_json_line(proc, 5)
+            assert saved_provider_list["id"] == "thread-list-saved-provider"
+            assert all(
+                thread["id"] != profile_provider_thread_id
+                for thread in saved_provider_list["result"]["data"]
+            )
+
+            write_json_line(
+                proc,
+                {
+                    "jsonrpc": "2.0",
                     "id": "conversation-summary-relative-path",
                     "method": "getConversationSummary",
                     "params": {
@@ -15098,7 +15200,10 @@ def run_thread_resume_rpc_smoke(binary: Path) -> None:
             )
             loaded = read_json_line(proc, 5)
             assert loaded["id"] == "loaded-threads-after-resume"
-            assert loaded["result"] == {"data": [resume_thread_id], "nextCursor": None}
+            loaded_thread_ids = set(loaded["result"]["data"])
+            assert resume_thread_id in loaded_thread_ids
+            assert profile_provider_thread_id in loaded_thread_ids
+            assert loaded["result"]["nextCursor"] is None
 
             write_json_line(
                 proc,
@@ -15112,6 +15217,24 @@ def run_thread_resume_rpc_smoke(binary: Path) -> None:
             unsubscribe_resumed_thread = read_json_line(proc, 5)
             assert unsubscribe_resumed_thread["id"] == "unsubscribe-resumed-thread"
             assert unsubscribe_resumed_thread["result"] == {"status": "unsubscribed"}
+
+            write_json_line(
+                proc,
+                {
+                    "jsonrpc": "2.0",
+                    "id": "unsubscribe-profile-provider-thread",
+                    "method": "thread/unsubscribe",
+                    "params": {"threadId": profile_provider_thread_id},
+                },
+            )
+            unsubscribe_profile_provider_thread = read_json_line(proc, 5)
+            assert (
+                unsubscribe_profile_provider_thread["id"]
+                == "unsubscribe-profile-provider-thread"
+            )
+            assert unsubscribe_profile_provider_thread["result"] == {
+                "status": "unsubscribed"
+            }
 
             archived_fork_thread_id = "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee"
             archived_fork_path = (
