@@ -5780,7 +5780,7 @@ def run_responses_api_proxy_smoke(binary: Path) -> None:
                 text=True,
             )
             assert proxy.stdin is not None
-            proxy.stdin.write("sk-proxy_123\n")
+            proxy.stdin.write("proxy-test-token_123\n")
             proxy.stdin.close()
             try:
                 info = wait_for_json_file(server_info, proxy)
@@ -5812,7 +5812,7 @@ def run_responses_api_proxy_smoke(binary: Path) -> None:
                 if upstream.request_bodies != [{"model": "gpt-test", "input": "hello"}]:
                     raise AssertionError(f"unexpected upstream bodies: {upstream.request_bodies!r}")
                 forwarded_auth = header_value(upstream.request_headers[0], "Authorization")
-                if forwarded_auth != "Bearer sk-proxy_123":
+                if forwarded_auth != "Bearer proxy-test-token_123":
                     raise AssertionError(f"proxy did not replace Authorization: {forwarded_auth!r}")
                 if header_value(upstream.request_headers[0], "X-Codex-Test") != "proxy-smoke":
                     raise AssertionError(f"proxy did not forward custom headers: {upstream.request_headers[0]!r}")
@@ -7934,7 +7934,7 @@ def run_mcp_server_schema_smoke(binary: Path) -> None:
         (codex_home / "config.toml").write_text("", encoding="utf-8")
         env = os.environ.copy()
         env["CODEX_HOME"] = str(codex_home)
-        env["OPENAI_API_KEY"] = "sk-mcp-server-schema-smoke"
+        env["OPENAI_API_KEY"] = "test-mcp-server-schema-api-key"
         requests = "\n".join(
             [
                 json.dumps(

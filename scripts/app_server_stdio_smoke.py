@@ -1316,7 +1316,7 @@ class DeviceAuthBackendHandler(BaseHTTPRequestHandler):
                 if DeviceAuthBackendHandler.mode == "api-key-exchange-failure":
                     self._send_json(500, {"error": "api-key-exchange-failed"})
                     return
-                self._send_json(200, {"access_token": "sk-token-exchange"})
+                self._send_json(200, {"access_token": "token-exchange-api-key"})
                 return
 
             auth_claims = {
@@ -32235,7 +32235,7 @@ def run_get_auth_status_rpc_smoke(binary: Path) -> None:
             json.dumps(
                 {
                     "auth_mode": "chatgpt",
-                    "OPENAI_API_KEY": "sk-preserved",
+                    "OPENAI_API_KEY": "preserved-api-key",
                     "tokens": {
                         "id_token": id_token,
                         "access_token": expired_access_token,
@@ -32259,7 +32259,7 @@ def run_get_auth_status_rpc_smoke(binary: Path) -> None:
             "requiresOpenaiAuth": True,
         }
         refreshed_auth_json = json.loads((refresh_home / "auth.json").read_text(encoding="utf-8"))
-        assert refreshed_auth_json["OPENAI_API_KEY"] == "sk-preserved"
+        assert refreshed_auth_json["OPENAI_API_KEY"] == "preserved-api-key"
         assert refreshed_auth_json["tokens"]["access_token"] == refreshed_access_token
         assert refreshed_auth_json["tokens"]["refresh_token"] == "refreshed-refresh-token"
         assert len(RefreshTokenBackendHandler.requests) == 1
@@ -33164,7 +33164,7 @@ def run_account_login_browser_callback_rpc_smoke(binary: Path, backend_mode: str
             if backend_mode == "api-key-exchange-failure":
                 assert "OPENAI_API_KEY" not in auth_json
             else:
-                assert auth_json["OPENAI_API_KEY"] == "sk-token-exchange"
+                assert auth_json["OPENAI_API_KEY"] == "token-exchange-api-key"
             assert [request["path"] for request in DeviceAuthBackendHandler.requests] == [
                 "/oauth/token",
                 "/oauth/token",

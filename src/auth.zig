@@ -1193,7 +1193,7 @@ test "derives revoke endpoint from refresh endpoint override" {
 test "managed chatgpt revoke token selection matches Rust logout" {
     const managed_refresh = managedChatGptTokenForRevoke(.{
         .auth_mode = "chatgpt",
-        .OPENAI_API_KEY = "sk-preserved",
+        .OPENAI_API_KEY = "preserved-api-key",
         .tokens = .{ .access_token = "access-token", .refresh_token = "refresh-token" },
     }).?;
     try std.testing.expectEqual(RevokeTokenKind.refresh, managed_refresh.kind);

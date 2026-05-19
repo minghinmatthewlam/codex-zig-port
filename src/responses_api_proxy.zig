@@ -513,6 +513,6 @@ pub fn printHelp() void {
 }
 
 test "responses-api-proxy auth reader trims newline and validates token" {
-    try std.testing.expect(isValidApiKey("sk-abc_123"));
+    try std.testing.expect(isValidApiKey("proxy-test-token_123"));
     try std.testing.expect(!isValidApiKey("sk abc"));
 }

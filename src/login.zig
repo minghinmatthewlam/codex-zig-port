@@ -1748,14 +1748,14 @@ test "chatgpt token save persists exchanged api key when provided" {
         .id_token = id_token,
         .access_token = "chatgpt-access-token",
         .refresh_token = "chatgpt-refresh-token",
-    }, "sk-token-exchange");
+    }, "token-exchange-api-key");
 
     const path = try std.fs.path.join(allocator, &.{ root, "auth.json" });
     defer allocator.free(path);
     const bytes = try std.Io.Dir.cwd().readFileAlloc(std.Io.Threaded.global_single_threaded.io(), path, allocator, .limited(4096));
     defer allocator.free(bytes);
 
-    try std.testing.expect(std.mem.indexOf(u8, bytes, "\"OPENAI_API_KEY\": \"sk-token-exchange\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, bytes, "\"OPENAI_API_KEY\": \"token-exchange-api-key\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, bytes, "\"auth_mode\": \"chatgpt\"") != null);
 
     var credentials = try auth.loadNoRefresh(allocator, root);
