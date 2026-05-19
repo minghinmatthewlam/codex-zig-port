@@ -54,9 +54,16 @@ pub const StartupStatusCallback = struct {
     on_startup_status: *const fn (ctx: *anyopaque, server_name: []const u8, status: StartupStatus, error_message: ?[]const u8) anyerror!void,
 };
 
+pub const ServerFilter = enum {
+    all,
+    required,
+    optional,
+};
+
 pub const LoadCatalogOptions = struct {
     startup_status_callback: ?StartupStatusCallback = null,
     elicitation_callback: ?ElicitationCallback = null,
+    server_filter: ServerFilter = .all,
 };
 
 pub const CallOutput = struct {
@@ -227,13 +234,20 @@ pub fn loadCatalogWithOptions(
 
     for (servers.items.items) |server| {
         if (!server.enabled) continue;
+        switch (options.server_filter) {
+            .all => {},
+            .required => if (!server.required) continue,
+            .optional => if (server.required) continue,
+        }
         if (options.startup_status_callback) |callback| {
             try callback.on_startup_status(callback.ctx, server.name, .starting, null);
         }
         appendServerTools(allocator, codex_home, server, &specs, options) catch |err| {
             std.debug.print("[mcp] failed to list tools for {s}: {s}\n", .{ server.name, @errorName(err) });
             if (options.startup_status_callback) |callback| {
-                try callback.on_startup_status(callback.ctx, server.name, .failed, @errorName(err));
+                const message = try std.fmt.allocPrint(allocator, "MCP client for `{s}` failed to start: {s}", .{ server.name, @errorName(err) });
+                defer allocator.free(message);
+                try callback.on_startup_status(callback.ctx, server.name, .failed, message);
             }
             continue;
         };
