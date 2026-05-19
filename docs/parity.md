@@ -53,7 +53,7 @@ Current app-server `config/read` coverage also includes user
 `exclude_slash_tmp`, including user origins/layers and post-`config/batchWrite`
 reads. Legacy managed config reads now cover top-level `model`,
 `review_model`, `model_context_window`,
-`model_auto_compact_token_limit`, `approval_policy`, `sandbox_mode`,
+`model_auto_compact_token_limit`, `approval_policy`, `approvals_reviewer`, `sandbox_mode`,
 `web_search`, `model_reasoning_effort`, `model_verbosity`, and
 `service_tier`, plus managed `sandbox_workspace_write` leaf precedence over
 user roots and booleans. Trusted project
@@ -61,7 +61,7 @@ user roots and booleans. Trusted project
 with project-over-user leaf precedence across nested project stacks. System
 config reads now cover the same supported scalar fields as trusted project
 config (`model`, `review_model`, `model_context_window`,
-`model_auto_compact_token_limit`, `approval_policy`, `sandbox_mode`,
+`model_auto_compact_token_limit`, `approval_policy`, `approvals_reviewer`, `sandbox_mode`,
 `web_search`, `model_reasoning_effort`, `model_verbosity`, and `service_tier`)
 plus table-form
 `sandbox_workspace_write`, with system-below-user and system-below-project leaf
@@ -686,6 +686,9 @@ Additional app-server config/read coverage: `config/read` now includes
 config responses plus user, trusted-project, system, and legacy managed-config
 origin/layer metadata.
 
+`approvals_reviewer` is covered as a runtime config scalar, raw CLI config
+override, app-server `config/read`/write field, and loaded-thread reload value.
+
 Additional remote TUI slash-command coverage: remote app-server TUI sessions now
 support `/status`, `/compact`, `/model [MODEL]`, `/fast [on|off|status]`,
 `/rename <TITLE>`, `/history [N]`, `/personality`, `/permissions`, `/approval [MODE]`, `/sandbox [MODE]`,
@@ -780,10 +783,10 @@ signals to both transports. Active-turn drain parity remains planned.
 
 Additional app-server config reload coverage: `config/batchWrite` honors
 `reloadUserConfig` for already-loaded threads by refreshing default-derived
-model, model provider, service tier, approval policy, sandbox mode, and
-reasoning effort from the latest config while preserving explicit per-thread
-overrides. Full hot-reload notifications and full config-manager parity remain
-planned.
+model, model provider, service tier, approval policy, approvals reviewer,
+sandbox mode, and reasoning effort from the latest config while preserving
+explicit per-thread overrides. Full hot-reload notifications and full
+config-manager parity remain planned.
 
 Additional app-server thread-start coverage: `thread/start` now creates an in-memory loaded thread, returns a Rust-shaped `ThreadStartResponse` with a full thread object, supports ephemeral starts without materializing a rollout file, gives persistent starts an absolute rollout path, feeds the created ID into `thread/loaded/list`, lets `thread/read` return the loaded thread, returns `notSubscribed` for unsubscribing a loaded but unsubscribed thread, emits a Rust-shaped `thread/started` notification after the response unless the connection opted out, includes the experimental `permissionProfile` / `activePermissionProfile` response fields only for experimental clients, and persists trusted project state for explicit elevated `cwd` starts so the same request and later starts load supported trusted `.codex/config.toml` project fields, including TOML-escaped project paths. Nested Git cwd and linked-worktree starts trust the repository root, while read-only/default starts do not persist project trust. TypeScript and JSON schema generation include the current `thread/start` request/response shape plus `ThreadStartedNotification`. Loaded-thread hot reload and full thread schema parity remain planned.
 

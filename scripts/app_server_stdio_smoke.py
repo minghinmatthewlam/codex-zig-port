@@ -28038,6 +28038,7 @@ def run_config_read_rpc_smoke(binary: Path) -> None:
                 'model = "gpt-project"',
                 'review_model = "gpt-project-review"',
                 'approval_policy = "on-request"',
+                'approvals_reviewer = "auto_review"',
                 'sandbox_mode = "workspace-write"',
                 'web_search = "cached"',
                 'model_reasoning_effort = "high"',
@@ -28084,6 +28085,7 @@ def run_config_read_rpc_smoke(binary: Path) -> None:
                 'model = "gpt-child"',
                 'review_model = "gpt-child-review"',
                 'approval_policy = "on-failure"',
+                'approvals_reviewer = "user"',
                 'model_reasoning_effort = "low"',
                 'service_tier = "flex"',
                 'sandbox_workspace_write = { exclude_tmpdir_env_var = true }',
@@ -28108,6 +28110,7 @@ def run_config_read_rpc_smoke(binary: Path) -> None:
                 'developer_instructions = "user developer instructions"',
                 'compact_prompt = "user compact prompt"',
                 'approval_policy = "never"',
+                'approvals_reviewer = "user"',
                 'sandbox_mode = "danger-full-access"',
                 'web_search = "live"',
                 'service_tier = "flex"',
@@ -28173,6 +28176,7 @@ def run_config_read_rpc_smoke(binary: Path) -> None:
                 'model = "gpt-system"',
                 'review_model = "gpt-system-review"',
                 'approval_policy = "on-failure"',
+                'approvals_reviewer = "auto_review"',
                 'sandbox_mode = "read-only"',
                 'web_search = "cached"',
                 'model_reasoning_effort = "medium"',
@@ -28249,6 +28253,7 @@ def run_config_read_rpc_smoke(binary: Path) -> None:
         assert config_body["developer_instructions"] == "user developer instructions"
         assert config_body["compact_prompt"] == "user compact prompt"
         assert config_body["approval_policy"] == "never"
+        assert config_body["approvals_reviewer"] == "user"
         assert config_body["sandbox_mode"] == "danger-full-access"
         assert config_body["sandbox_workspace_write"] == {
             "writable_roots": ["/tmp/codex-zig-user-root"],
@@ -28329,6 +28334,7 @@ def run_config_read_rpc_smoke(binary: Path) -> None:
             "developer_instructions",
             "compact_prompt",
             "approval_policy",
+            "approvals_reviewer",
             "sandbox_mode",
             "sandbox_workspace_write.writable_roots.0",
             "sandbox_workspace_write.network_access",
@@ -28386,6 +28392,7 @@ def run_config_read_rpc_smoke(binary: Path) -> None:
             "developer_instructions": "user developer instructions",
             "compact_prompt": "user compact prompt",
             "approval_policy": "never",
+            "approvals_reviewer": "user",
             "sandbox_mode": "danger-full-access",
             "sandbox_workspace_write": {
                 "writable_roots": ["/tmp/codex-zig-user-root"],
@@ -28440,6 +28447,7 @@ def run_config_read_rpc_smoke(binary: Path) -> None:
             "developer_instructions": "system developer instructions",
             "compact_prompt": "system compact prompt",
             "approval_policy": "on-failure",
+            "approvals_reviewer": "guardian_subagent",
             "sandbox_mode": "read-only",
             "web_search": "cached",
             "model_reasoning_effort": "medium",
@@ -28510,6 +28518,7 @@ def run_config_read_rpc_smoke(binary: Path) -> None:
         assert project_config_body["model"] == "gpt-project"
         assert project_config_body["review_model"] == "gpt-project-review"
         assert project_config_body["approval_policy"] == "on-request"
+        assert project_config_body["approvals_reviewer"] == "guardian_subagent"
         assert project_config_body["sandbox_mode"] == "workspace-write"
         assert project_config_body["web_search"] == "cached"
         assert project_config_body["model_reasoning_effort"] == "high"
@@ -28598,6 +28607,7 @@ def run_config_read_rpc_smoke(binary: Path) -> None:
             "model",
             "review_model",
             "approval_policy",
+            "approvals_reviewer",
             "sandbox_mode",
             "web_search",
             "model_reasoning_effort",
@@ -28657,6 +28667,7 @@ def run_config_read_rpc_smoke(binary: Path) -> None:
             "model": "gpt-project",
             "review_model": "gpt-project-review",
             "approval_policy": "on-request",
+            "approvals_reviewer": "guardian_subagent",
             "sandbox_mode": "workspace-write",
             "web_search": "cached",
             "model_reasoning_effort": "high",
@@ -28728,6 +28739,7 @@ def run_config_read_rpc_smoke(binary: Path) -> None:
         assert nested_config_body["model"] == "gpt-child"
         assert nested_config_body["review_model"] == "gpt-child-review"
         assert nested_config_body["approval_policy"] == "on-failure"
+        assert nested_config_body["approvals_reviewer"] == "user"
         assert nested_config_body["sandbox_mode"] == "workspace-write"
         assert nested_config_body["web_search"] == "cached"
         assert nested_config_body["model_reasoning_effort"] == "low"
@@ -28765,6 +28777,7 @@ def run_config_read_rpc_smoke(binary: Path) -> None:
         assert nested_origins["model"]["name"] == child_project_source
         assert nested_origins["review_model"]["name"] == child_project_source
         assert nested_origins["approval_policy"]["name"] == child_project_source
+        assert nested_origins["approvals_reviewer"]["name"] == child_project_source
         assert nested_origins["sandbox_mode"]["name"] == project_source
         assert nested_origins["web_search"]["name"] == project_source
         assert nested_origins["tools.web_search.context_size"]["name"] == project_source
@@ -28793,6 +28806,7 @@ def run_config_read_rpc_smoke(binary: Path) -> None:
             "model": "gpt-child",
             "review_model": "gpt-child-review",
             "approval_policy": "on-failure",
+            "approvals_reviewer": "user",
             "model_reasoning_effort": "low",
             "service_tier": "flex",
             "sandbox_workspace_write": {
@@ -28815,6 +28829,7 @@ def run_config_read_rpc_smoke(binary: Path) -> None:
             "model": "gpt-project",
             "review_model": "gpt-project-review",
             "approval_policy": "on-request",
+            "approvals_reviewer": "guardian_subagent",
             "sandbox_mode": "workspace-write",
             "web_search": "cached",
             "model_reasoning_effort": "high",
@@ -28882,6 +28897,7 @@ def run_config_read_rpc_smoke(binary: Path) -> None:
                     'model = "gpt-managed"',
                     'review_model = "gpt-managed-review"',
                     'approval_policy = "on-request"',
+                    'approvals_reviewer = "auto_review"',
                     'web_search = "disabled"',
                     'model_reasoning_effort = "low"',
                     'service_tier = "priority"',
@@ -28933,6 +28949,7 @@ def run_config_read_rpc_smoke(binary: Path) -> None:
         assert managed_config_body["model"] == "gpt-managed"
         assert managed_config_body["review_model"] == "gpt-managed-review"
         assert managed_config_body["approval_policy"] == "on-request"
+        assert managed_config_body["approvals_reviewer"] == "guardian_subagent"
         assert managed_config_body["sandbox_mode"] == "danger-full-access"
         assert managed_config_body["web_search"] == "disabled"
         assert managed_config_body["model_reasoning_effort"] == "low"
@@ -29020,6 +29037,7 @@ def run_config_read_rpc_smoke(binary: Path) -> None:
             "model",
             "review_model",
             "approval_policy",
+            "approvals_reviewer",
             "web_search",
             "model_reasoning_effort",
             "instructions",
@@ -29077,6 +29095,7 @@ def run_config_read_rpc_smoke(binary: Path) -> None:
             "model": "gpt-managed",
             "review_model": "gpt-managed-review",
             "approval_policy": "on-request",
+            "approvals_reviewer": "guardian_subagent",
             "web_search": "disabled",
             "model_reasoning_effort": "low",
             "instructions": "managed base instructions",
@@ -29142,6 +29161,7 @@ def run_config_read_rpc_smoke(binary: Path) -> None:
         assert managed_layers[1]["config"]["model"] == "gpt-config"
         assert managed_layers[1]["config"]["review_model"] == "gpt-user-review"
         assert managed_layers[1]["config"]["approval_policy"] == "never"
+        assert managed_layers[1]["config"]["approvals_reviewer"] == "user"
         assert managed_layers[1]["config"]["sandbox_workspace_write"] == {
             "writable_roots": ["/tmp/codex-zig-user-root"],
             "network_access": True,
@@ -29847,6 +29867,7 @@ def run_config_write_overridden_metadata_rpc_smoke(binary: Path) -> None:
                 'developer_instructions = "managed developer instructions"',
                 'compact_prompt = "managed compact prompt"',
                 'approval_policy = "never"',
+                'approvals_reviewer = "auto_review"',
                 "",
             ]
         ),
@@ -30012,6 +30033,22 @@ def run_config_write_overridden_metadata_rpc_smoke(binary: Path) -> None:
         assert metadata["overridingLayer"]["version"].startswith("sha256:")
         assert metadata["effectiveValue"] == "never"
 
+        write_reviewer_overridden = rpc(
+            "config-write-managed-reviewer-overridden",
+            "config/value/write",
+            {
+                "keyPath": "approvals_reviewer",
+                "value": "user",
+                "mergeStrategy": "replace",
+            },
+        )
+        assert write_reviewer_overridden["id"] == "config-write-managed-reviewer-overridden"
+        assert write_reviewer_overridden["result"]["status"] == "okOverridden"
+        assert (
+            write_reviewer_overridden["result"]["overriddenMetadata"]["effectiveValue"]
+            == "guardian_subagent"
+        )
+
         after_write = rpc("config-read-after-overridden-write", "config/read", {})
         assert after_write["id"] == "config-read-after-overridden-write"
         assert after_write["result"]["config"]["review_model"] == "gpt-managed-review"
@@ -30025,6 +30062,7 @@ def run_config_write_overridden_metadata_rpc_smoke(binary: Path) -> None:
         )
         assert after_write["result"]["config"]["compact_prompt"] == "managed compact prompt"
         assert after_write["result"]["config"]["approval_policy"] == "never"
+        assert after_write["result"]["config"]["approvals_reviewer"] == "guardian_subagent"
 
         batch = rpc(
             "config-batch-managed-overridden",
@@ -30038,6 +30076,11 @@ def run_config_write_overridden_metadata_rpc_smoke(binary: Path) -> None:
                     },
                     {
                         "keyPath": "approval_policy",
+                        "value": None,
+                        "mergeStrategy": "replace",
+                    },
+                    {
+                        "keyPath": "approvals_reviewer",
                         "value": None,
                         "mergeStrategy": "replace",
                     },
@@ -30074,6 +30117,28 @@ def run_config_write_overridden_metadata_rpc_smoke(binary: Path) -> None:
         assert duplicate_final_same["result"]["status"] == "ok"
         assert duplicate_final_same["result"]["overriddenMetadata"] is None
 
+        duplicate_reviewer_final_same = rpc(
+            "config-batch-managed-reviewer-duplicate-final-same",
+            "config/batchWrite",
+            {
+                "edits": [
+                    {
+                        "keyPath": "approvals_reviewer",
+                        "value": "user",
+                        "mergeStrategy": "replace",
+                    },
+                    {
+                        "keyPath": "approvals_reviewer",
+                        "value": "guardian_subagent",
+                        "mergeStrategy": "replace",
+                    },
+                ],
+            },
+        )
+        assert duplicate_reviewer_final_same["id"] == "config-batch-managed-reviewer-duplicate-final-same"
+        assert duplicate_reviewer_final_same["result"]["status"] == "ok"
+        assert duplicate_reviewer_final_same["result"]["overriddenMetadata"] is None
+
         invalid_user_value = rpc(
             "config-write-managed-invalid-user-value",
             "config/value/write",
@@ -30089,6 +30154,19 @@ def run_config_write_overridden_metadata_rpc_smoke(binary: Path) -> None:
         config_contents = config_path.read_text(encoding="utf-8")
         assert 'approval_policy = "never"' in config_contents
         assert "temporary-invalid-policy" not in config_contents
+
+        invalid_reviewer_value = rpc(
+            "config-write-managed-invalid-reviewer-value",
+            "config/value/write",
+            {
+                "keyPath": "approvals_reviewer",
+                "value": "robot",
+                "mergeStrategy": "replace",
+            },
+        )
+        assert invalid_reviewer_value["id"] == "config-write-managed-invalid-reviewer-value"
+        assert invalid_reviewer_value["error"]["code"] == -32602
+        assert "InvalidApprovalsReviewer" in invalid_reviewer_value["error"]["message"]
 
         invalid_user_type = rpc(
             "config-write-managed-invalid-user-type",
@@ -30126,6 +30204,7 @@ def run_config_batch_write_rpc_smoke(binary: Path) -> None:
             [
                 'model = "gpt-old"',
                 'approval_policy = "on-request"',
+                'approvals_reviewer = "user"',
                 "",
                 "[features]",
                 "goals = false",
@@ -30169,6 +30248,7 @@ def run_config_batch_write_rpc_smoke(binary: Path) -> None:
         assert default_thread["result"]["model"] == "gpt-old"
         assert default_thread["result"]["serviceTier"] is None
         assert default_thread["result"]["reasoningEffort"] is None
+        assert default_thread["result"]["approvalsReviewer"] == "user"
         default_thread_id = default_thread["result"]["thread"]["id"]
         assert_thread_started_notification(
             read_json_line(proc, 5), default_thread["result"]["thread"]
@@ -30177,11 +30257,12 @@ def run_config_batch_write_rpc_smoke(binary: Path) -> None:
         explicit_thread = rpc(
             "config-batch-explicit-thread-start",
             "thread/start",
-            {"model": "gpt-explicit", "serviceTier": "priority"},
+            {"model": "gpt-explicit", "serviceTier": "priority", "approvalsReviewer": "user"},
         )
         assert explicit_thread["id"] == "config-batch-explicit-thread-start"
         assert explicit_thread["result"]["model"] == "gpt-explicit"
         assert explicit_thread["result"]["serviceTier"] == "priority"
+        assert explicit_thread["result"]["approvalsReviewer"] == "user"
         explicit_thread_id = explicit_thread["result"]["thread"]["id"]
         assert_thread_started_notification(
             read_json_line(proc, 5), explicit_thread["result"]["thread"]
@@ -30195,6 +30276,7 @@ def run_config_batch_write_rpc_smoke(binary: Path) -> None:
                     {"keyPath": "model", "value": "gpt-batch", "mergeStrategy": "replace"},
                     {"keyPath": "service_tier", "value": "flex", "mergeStrategy": "replace"},
                     {"keyPath": "model_reasoning_effort", "value": "high", "mergeStrategy": "replace"},
+                    {"keyPath": "approvals_reviewer", "value": "auto_review", "mergeStrategy": "replace"},
                     {"keyPath": "features.goals", "value": True, "mergeStrategy": "upsert"},
                     {"keyPath": "tui.status_line", "value": ["model", "cwd"], "mergeStrategy": "replace"},
                     {
@@ -30235,11 +30317,13 @@ def run_config_batch_write_rpc_smoke(binary: Path) -> None:
         assert after_batch["result"]["config"]["model"] == "gpt-batch"
         assert after_batch["result"]["config"]["service_tier"] == "flex"
         assert after_batch["result"]["config"]["model_reasoning_effort"] == "high"
+        assert after_batch["result"]["config"]["approvals_reviewer"] == "guardian_subagent"
         assert after_batch["result"]["config"]["features"]["goals"] is True
 
         contents = config_path.read_text(encoding="utf-8")
         assert 'service_tier = "flex"' in contents
         assert 'model_reasoning_effort = "high"' in contents
+        assert 'approvals_reviewer = "auto_review"' in contents
         assert 'status_line = ["model", "cwd"]' in contents
         assert 'state = {"hook-one" = {"enabled" = false}, "hook-two" = {"trusted_hash" = "hash-123"}}' in contents
         assert 'bearer_token_env_var = "NEW_TOKEN"' in contents
@@ -30257,6 +30341,7 @@ def run_config_batch_write_rpc_smoke(binary: Path) -> None:
         assert default_fork["result"]["model"] == "gpt-batch"
         assert default_fork["result"]["serviceTier"] == "flex"
         assert default_fork["result"]["reasoningEffort"] == "high"
+        assert default_fork["result"]["approvalsReviewer"] == "guardian_subagent"
         assert_thread_started_notification(
             read_json_line(proc, 5), default_fork["result"]["thread"]
         )
@@ -30270,6 +30355,7 @@ def run_config_batch_write_rpc_smoke(binary: Path) -> None:
         assert explicit_fork["result"]["model"] == "gpt-explicit"
         assert explicit_fork["result"]["serviceTier"] == "priority"
         assert explicit_fork["result"]["reasoningEffort"] == "high"
+        assert explicit_fork["result"]["approvalsReviewer"] == "user"
         assert_thread_started_notification(
             read_json_line(proc, 5), explicit_fork["result"]["thread"]
         )

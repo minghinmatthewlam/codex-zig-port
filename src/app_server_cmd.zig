@@ -35169,6 +35169,7 @@ fn applyThreadStartProjectLayersToConfig(
     if (project_layers.developerInstructions()) |value| try replaceConfigOptionalString(allocator, &cfg.developer_instructions, value);
     if (project_layers.compactPrompt()) |value| try replaceConfigOptionalString(allocator, &cfg.compact_prompt, value);
     if (project_layers.approvalPolicy()) |value| cfg.approval_policy = value;
+    if (project_layers.approvalsReviewer()) |value| cfg.approvals_reviewer = value;
     if (project_layers.sandboxMode()) |value| cfg.sandbox_mode = value;
     if (project_layers.webSearchMode()) |value| cfg.web_search_mode = value;
     if (project_layers.modelReasoningEffort()) |value| cfg.model_reasoning_effort = value;
@@ -35487,7 +35488,8 @@ fn createLoadedThreadFromStartParams(
     const approval_policy = try allocator.dupe(u8, optionalStringParam(params, "approvalPolicy") orelse cfg.approval_policy.label());
     errdefer allocator.free(approval_policy);
 
-    const approvals_reviewer = try allocator.dupe(u8, optionalStringParam(params, "approvalsReviewer") orelse "user");
+    const requested_approvals_reviewer = try optionalApprovalsReviewerLifecycleParam(params, "approvalsReviewer");
+    const approvals_reviewer = try allocator.dupe(u8, requested_approvals_reviewer orelse cfg.approvals_reviewer.label());
     errdefer allocator.free(approvals_reviewer);
 
     const sandbox_mode = try allocator.dupe(u8, optionalStringParam(params, "sandbox") orelse cfg.sandbox_mode.label());
@@ -35645,7 +35647,8 @@ fn createLoadedThreadFromHistoryParams(
     const approval_policy = try allocator.dupe(u8, optionalStringParam(params, "approvalPolicy") orelse cfg.approval_policy.label());
     errdefer allocator.free(approval_policy);
 
-    const approvals_reviewer = try allocator.dupe(u8, optionalStringParam(params, "approvalsReviewer") orelse "user");
+    const requested_approvals_reviewer = try optionalApprovalsReviewerParam(params, "approvalsReviewer");
+    const approvals_reviewer = try allocator.dupe(u8, requested_approvals_reviewer orelse cfg.approvals_reviewer.label());
     errdefer allocator.free(approvals_reviewer);
 
     const sandbox_mode = try allocator.dupe(u8, optionalStringParam(params, "sandbox") orelse cfg.sandbox_mode.label());
@@ -35819,7 +35822,8 @@ fn createLoadedThreadFromResumeParams(
     const approval_policy = try allocator.dupe(u8, optionalStringParam(params, "approvalPolicy") orelse cfg.approval_policy.label());
     errdefer allocator.free(approval_policy);
 
-    const approvals_reviewer = try allocator.dupe(u8, optionalStringParam(params, "approvalsReviewer") orelse "user");
+    const requested_approvals_reviewer = try optionalApprovalsReviewerParam(params, "approvalsReviewer");
+    const approvals_reviewer = try allocator.dupe(u8, requested_approvals_reviewer orelse cfg.approvals_reviewer.label());
     errdefer allocator.free(approvals_reviewer);
 
     const sandbox_mode = try allocator.dupe(u8, optionalStringParam(params, "sandbox") orelse cfg.sandbox_mode.label());
@@ -36005,7 +36009,9 @@ fn createLoadedThreadFromForkParams(
     const approval_policy = try allocator.dupe(u8, optionalStringParam(params, "approvalPolicy") orelse default_approval_policy);
     errdefer allocator.free(approval_policy);
 
-    const approvals_reviewer = try allocator.dupe(u8, optionalStringParam(params, "approvalsReviewer") orelse source.approvals_reviewer);
+    const default_approvals_reviewer = if (use_request_profile) cfg.approvals_reviewer.label() else source.approvals_reviewer;
+    const requested_approvals_reviewer = try optionalApprovalsReviewerParam(params, "approvalsReviewer");
+    const approvals_reviewer = try allocator.dupe(u8, requested_approvals_reviewer orelse default_approvals_reviewer);
     errdefer allocator.free(approvals_reviewer);
 
     const default_sandbox_mode = if (use_request_profile) cfg.sandbox_mode.label() else source.sandbox_mode;
@@ -36119,7 +36125,7 @@ fn createLoadedThreadFromForkParams(
             .model_provider = paramPresent(params, "modelProvider") or (!use_request_profile and source.runtime_overrides.model_provider),
             .service_tier = paramPresent(params, "serviceTier") or (!use_request_profile and source.runtime_overrides.service_tier),
             .approval_policy = paramPresent(params, "approvalPolicy") or (!use_request_profile and source.runtime_overrides.approval_policy),
-            .approvals_reviewer = paramPresent(params, "approvalsReviewer") or source.runtime_overrides.approvals_reviewer,
+            .approvals_reviewer = paramPresent(params, "approvalsReviewer") or (!use_request_profile and source.runtime_overrides.approvals_reviewer),
             .sandbox_mode = sandbox_override or (!use_request_profile and source.runtime_overrides.sandbox_mode),
             .web_search_mode = request_config.web_search_mode_present or (!use_request_profile and source.runtime_overrides.web_search_mode),
             .reasoning_effort = !use_request_profile and source.runtime_overrides.reasoning_effort,
@@ -36451,8 +36457,13 @@ fn optionalApprovalsReviewerParam(params: std.json.ObjectMap, name: []const u8) 
     const value = params.get(name) orelse return null;
     if (value == .null) return null;
     if (value != .string) return error.InvalidTurnContextOverride;
-    const reviewer = ApprovalsReviewer.parse(value.string) catch return error.InvalidTurnContextOverride;
+    const reviewer = config.ApprovalsReviewer.parse(value.string) catch return error.InvalidTurnContextOverride;
     return reviewer.label();
+}
+
+fn optionalApprovalsReviewerLifecycleParam(params: ?std.json.ObjectMap, name: []const u8) !?[]const u8 {
+    const object = params orelse return null;
+    return optionalApprovalsReviewerParam(object, name);
 }
 
 fn paramPresent(params: ?std.json.ObjectMap, name: []const u8) bool {
@@ -48969,24 +48980,6 @@ const NetworkRequirements = struct {
     }
 };
 
-const ApprovalsReviewer = enum {
-    user,
-    auto_review,
-
-    fn parse(value: []const u8) !ApprovalsReviewer {
-        if (std.mem.eql(u8, value, "user")) return .user;
-        if (std.mem.eql(u8, value, "auto_review") or std.mem.eql(u8, value, "guardian_subagent")) return .auto_review;
-        return error.InvalidApprovalsReviewer;
-    }
-
-    fn label(self: ApprovalsReviewer) []const u8 {
-        return switch (self) {
-            .user => "user",
-            .auto_review => "guardian_subagent",
-        };
-    }
-};
-
 fn loadConfigRequirementsReadRequirements(allocator: std.mem.Allocator) !ConfigRequirementsReadRequirements {
     var requirements = try loadSystemConfigRequirements(allocator);
     errdefer requirements.deinit(allocator);
@@ -49039,7 +49032,7 @@ fn loadLegacyManagedConfigRequirements(allocator: std.mem.Allocator) !ConfigRequ
     }
     if (try config.topLevelStringValue(allocator, payload, "approvals_reviewer")) |value| {
         defer allocator.free(value);
-        const approvals_reviewer = try ApprovalsReviewer.parse(value);
+        const approvals_reviewer = try config.ApprovalsReviewer.parse(value);
         requirements.allowed_approvals_reviewers = switch (approvals_reviewer) {
             .user => try stringListFromLabels(allocator, &.{"user"}),
             .auto_review => try stringListFromLabels(allocator, &.{ "guardian_subagent", "user" }),
@@ -49102,7 +49095,7 @@ fn parseAllowedRequirementList(
 fn requirementLabel(kind: RequirementListKind, value: []const u8) ![]const u8 {
     return switch (kind) {
         .approval_policy => (try config.ApprovalPolicy.parse(value)).label(),
-        .approvals_reviewer => (try ApprovalsReviewer.parse(value)).label(),
+        .approvals_reviewer => (try config.ApprovalsReviewer.parse(value)).label(),
         .sandbox_mode => (try config.SandboxMode.parse(value)).label(),
         .web_search_mode => (try config.WebSearchMode.parse(value)).label(),
     };
@@ -49736,7 +49729,11 @@ const ConfigMergeStrategy = enum {
     upsert,
 };
 
-fn handleConfigValueWrite(allocator: std.mem.Allocator, id_value: std.json.Value, params_value: ?std.json.Value) ![]const u8 {
+fn handleConfigValueWrite(
+    allocator: std.mem.Allocator,
+    id_value: std.json.Value,
+    params_value: ?std.json.Value,
+) ![]const u8 {
     const params = params_value orelse return renderJsonRpcError(allocator, id_value, -32602, "config/value/write params must be an object");
     if (params != .object) return renderJsonRpcError(allocator, id_value, -32602, "config/value/write params must be an object");
 
@@ -49833,6 +49830,9 @@ fn reloadLoadedThreadRuntimeConfig(allocator: std.mem.Allocator, state: *AppServ
         }
         if (!thread.runtime_overrides.approval_policy) {
             try replaceOwnedString(allocator, &thread.approval_policy, cfg.approval_policy.label());
+        }
+        if (!thread.runtime_overrides.approvals_reviewer) {
+            try replaceOwnedString(allocator, &thread.approvals_reviewer, cfg.approvals_reviewer.label());
         }
         if (!thread.runtime_overrides.sandbox_mode) {
             try replaceOwnedString(allocator, &thread.sandbox_mode, cfg.sandbox_mode.label());
@@ -49951,6 +49951,7 @@ fn handleConfigWriteEdits(
     const overridden_metadata = if (managed_layer) |layer|
         renderFirstManagedConfigWriteOverrideMetadata(allocator, layer, edits, updated) catch |err| switch (err) {
             error.InvalidApprovalPolicy,
+            error.InvalidApprovalsReviewer,
             error.InvalidSandboxMode,
             error.InvalidWebSearchMode,
             error.InvalidReasoningEffort,
@@ -50373,6 +50374,8 @@ fn renderManagedConfigWriteOverrideValueJson(
         if (layer.compact_prompt) |value| return renderStringOverrideValue(allocator, value, key_path, user_config_bytes);
     } else if (std.mem.eql(u8, key_path, "approval_policy")) {
         if (layer.approval_policy) |value| return renderStringOverrideValue(allocator, value.label(), key_path, user_config_bytes);
+    } else if (std.mem.eql(u8, key_path, "approvals_reviewer")) {
+        if (layer.approvals_reviewer) |value| return renderStringOverrideValue(allocator, value.label(), key_path, user_config_bytes);
     } else if (std.mem.eql(u8, key_path, "sandbox_mode")) {
         if (layer.sandbox_mode) |value| return renderStringOverrideValue(allocator, value.label(), key_path, user_config_bytes);
     } else if (std.mem.eql(u8, key_path, "web_search")) {
@@ -50467,6 +50470,14 @@ fn configWriteUserScalarValue(
         if (try configWriteRequiredTopLevelStringValue(allocator, user_config_bytes, "approval_policy")) |value| {
             defer allocator.free(value);
             const normalized = try allocator.dupe(u8, (try config.ApprovalPolicy.parse(value)).label());
+            return normalized;
+        }
+        return null;
+    }
+    if (std.mem.eql(u8, key_path, "approvals_reviewer")) {
+        if (try configWriteRequiredTopLevelStringValue(allocator, user_config_bytes, "approvals_reviewer")) |value| {
+            defer allocator.free(value);
+            const normalized = try allocator.dupe(u8, (try config.ApprovalsReviewer.parse(value)).label());
             return normalized;
         }
         return null;
@@ -50645,6 +50656,9 @@ fn renderConfigReadResponse(
     const system_approval_policy = if (system_layer) |layer| layer.approval_policy else null;
     const approval_policy = if (managed_layer) |layer| layer.approval_policy orelse project_layers.approvalPolicy() orelse configReadUserOrSystemApprovalPolicy(cfg.approval_policy, user_layer, system_approval_policy) else project_layers.approvalPolicy() orelse configReadUserOrSystemApprovalPolicy(cfg.approval_policy, user_layer, system_approval_policy);
     try appendJsonStringField(allocator, &result, &first, "approval_policy", approval_policy.label());
+    const system_approvals_reviewer = if (system_layer) |layer| layer.approvals_reviewer else null;
+    const approvals_reviewer = if (managed_layer) |layer| layer.approvals_reviewer orelse project_layers.approvalsReviewer() orelse configReadUserOrSystemApprovalsReviewer(cfg.approvals_reviewer, user_layer, system_approvals_reviewer) else project_layers.approvalsReviewer() orelse configReadUserOrSystemApprovalsReviewer(cfg.approvals_reviewer, user_layer, system_approvals_reviewer);
+    try appendJsonStringField(allocator, &result, &first, "approvals_reviewer", approvals_reviewer.label());
     const system_sandbox_mode = if (system_layer) |layer| layer.sandbox_mode else null;
     const sandbox_mode = if (managed_layer) |layer| layer.sandbox_mode orelse project_layers.sandboxMode() orelse configReadUserOrSystemSandboxMode(cfg.sandbox_mode, user_layer, system_sandbox_mode) else project_layers.sandboxMode() orelse configReadUserOrSystemSandboxMode(cfg.sandbox_mode, user_layer, system_sandbox_mode);
     try appendJsonStringField(allocator, &result, &first, "sandbox_mode", sandbox_mode.label());
@@ -50702,6 +50716,7 @@ const ConfigReadManagedLayer = struct {
     developer_instructions: ?[]const u8 = null,
     compact_prompt: ?[]const u8 = null,
     approval_policy: ?config.ApprovalPolicy = null,
+    approvals_reviewer: ?config.ApprovalsReviewer = null,
     sandbox_mode: ?config.SandboxMode = null,
     web_search_mode: ?config.WebSearchMode = null,
     model_reasoning_effort: ?config.ReasoningEffort = null,
@@ -50758,6 +50773,7 @@ const ConfigReadProjectLayer = struct {
     developer_instructions: ?[]const u8,
     compact_prompt: ?[]const u8,
     approval_policy: ?config.ApprovalPolicy,
+    approvals_reviewer: ?config.ApprovalsReviewer,
     sandbox_mode: ?config.SandboxMode,
     web_search_mode: ?config.WebSearchMode,
     model_reasoning_effort: ?config.ReasoningEffort,
@@ -50799,6 +50815,7 @@ const ConfigReadSystemLayer = struct {
     developer_instructions: ?[]const u8,
     compact_prompt: ?[]const u8,
     approval_policy: ?config.ApprovalPolicy,
+    approvals_reviewer: ?config.ApprovalsReviewer,
     sandbox_mode: ?config.SandboxMode,
     web_search_mode: ?config.WebSearchMode,
     model_reasoning_effort: ?config.ReasoningEffort,
@@ -50864,6 +50881,15 @@ fn configReadUserOrSystemApprovalPolicy(
     system_value: ?config.ApprovalPolicy,
 ) config.ApprovalPolicy {
     if (if (user_layer) |layer| configReadUserLayerHasOriginKey(layer, "approval_policy") else false) return user_value;
+    return system_value orelse user_value;
+}
+
+fn configReadUserOrSystemApprovalsReviewer(
+    user_value: config.ApprovalsReviewer,
+    user_layer: ?ConfigReadUserLayer,
+    system_value: ?config.ApprovalsReviewer,
+) config.ApprovalsReviewer {
+    if (if (user_layer) |layer| configReadUserLayerHasOriginKey(layer, "approvals_reviewer") else false) return user_value;
     return system_value orelse user_value;
 }
 
@@ -50976,6 +51002,13 @@ const ConfigReadProjectLayers = struct {
     fn approvalPolicy(self: ConfigReadProjectLayers) ?config.ApprovalPolicy {
         for (self.items) |layer| {
             if (layer.approval_policy) |policy| return policy;
+        }
+        return null;
+    }
+
+    fn approvalsReviewer(self: ConfigReadProjectLayers) ?config.ApprovalsReviewer {
+        for (self.items) |layer| {
+            if (layer.approvals_reviewer) |reviewer| return reviewer;
         }
         return null;
     }
@@ -51885,6 +51918,7 @@ fn loadConfigReadManagedLayer(allocator: std.mem.Allocator) !?ConfigReadManagedL
     var compact_prompt: ?[]const u8 = null;
     errdefer if (compact_prompt) |value| allocator.free(value);
     var approval_policy: ?config.ApprovalPolicy = null;
+    var approvals_reviewer: ?config.ApprovalsReviewer = null;
     var sandbox_mode: ?config.SandboxMode = null;
     var web_search_mode: ?config.WebSearchMode = null;
     var model_reasoning_effort: ?config.ReasoningEffort = null;
@@ -51931,6 +51965,11 @@ fn loadConfigReadManagedLayer(allocator: std.mem.Allocator) !?ConfigReadManagedL
         defer allocator.free(value);
         approval_policy = try config.ApprovalPolicy.parse(value);
         try appendUniqueOriginKey(allocator, &origin_keys, "approval_policy");
+    }
+    if (try config.topLevelStringValue(allocator, payload, "approvals_reviewer")) |value| {
+        defer allocator.free(value);
+        approvals_reviewer = try config.ApprovalsReviewer.parse(value);
+        try appendUniqueOriginKey(allocator, &origin_keys, "approvals_reviewer");
     }
     if (try config.topLevelStringValue(allocator, payload, "sandbox_mode")) |value| {
         defer allocator.free(value);
@@ -51990,6 +52029,7 @@ fn loadConfigReadManagedLayer(allocator: std.mem.Allocator) !?ConfigReadManagedL
         .developer_instructions = developer_instructions,
         .compact_prompt = compact_prompt,
         .approval_policy = approval_policy,
+        .approvals_reviewer = approvals_reviewer,
         .sandbox_mode = sandbox_mode,
         .web_search_mode = web_search_mode,
         .model_reasoning_effort = model_reasoning_effort,
@@ -52029,6 +52069,7 @@ fn loadConfigReadSystemLayer(allocator: std.mem.Allocator) !ConfigReadSystemLaye
     var compact_prompt: ?[]const u8 = null;
     errdefer if (compact_prompt) |value| allocator.free(value);
     var approval_policy: ?config.ApprovalPolicy = null;
+    var approvals_reviewer: ?config.ApprovalsReviewer = null;
     var sandbox_mode: ?config.SandboxMode = null;
     var web_search_mode: ?config.WebSearchMode = null;
     var model_reasoning_effort: ?config.ReasoningEffort = null;
@@ -52075,6 +52116,11 @@ fn loadConfigReadSystemLayer(allocator: std.mem.Allocator) !ConfigReadSystemLaye
         defer allocator.free(value);
         approval_policy = try config.ApprovalPolicy.parse(value);
         try appendUniqueOriginKey(allocator, &origin_keys, "approval_policy");
+    }
+    if (try config.topLevelStringValue(allocator, payload, "approvals_reviewer")) |value| {
+        defer allocator.free(value);
+        approvals_reviewer = try config.ApprovalsReviewer.parse(value);
+        try appendUniqueOriginKey(allocator, &origin_keys, "approvals_reviewer");
     }
     if (try config.topLevelStringValue(allocator, payload, "sandbox_mode")) |value| {
         defer allocator.free(value);
@@ -52134,6 +52180,7 @@ fn loadConfigReadSystemLayer(allocator: std.mem.Allocator) !ConfigReadSystemLaye
         .developer_instructions = developer_instructions,
         .compact_prompt = compact_prompt,
         .approval_policy = approval_policy,
+        .approvals_reviewer = approvals_reviewer,
         .sandbox_mode = sandbox_mode,
         .web_search_mode = web_search_mode,
         .model_reasoning_effort = model_reasoning_effort,
@@ -52395,6 +52442,7 @@ fn loadConfigReadProjectLayer(
     var compact_prompt: ?[]const u8 = null;
     errdefer if (compact_prompt) |value| allocator.free(value);
     var approval_policy: ?config.ApprovalPolicy = null;
+    var approvals_reviewer: ?config.ApprovalsReviewer = null;
     var sandbox_mode: ?config.SandboxMode = null;
     var web_search_mode: ?config.WebSearchMode = null;
     var model_reasoning_effort: ?config.ReasoningEffort = null;
@@ -52443,6 +52491,11 @@ fn loadConfigReadProjectLayer(
             defer allocator.free(value);
             approval_policy = try config.ApprovalPolicy.parse(value);
             try appendUniqueOriginKey(allocator, &origin_keys, "approval_policy");
+        }
+        if (try config.topLevelStringValue(allocator, config_bytes, "approvals_reviewer")) |value| {
+            defer allocator.free(value);
+            approvals_reviewer = try config.ApprovalsReviewer.parse(value);
+            try appendUniqueOriginKey(allocator, &origin_keys, "approvals_reviewer");
         }
         if (try config.topLevelStringValue(allocator, config_bytes, "sandbox_mode")) |value| {
             defer allocator.free(value);
@@ -52500,6 +52553,7 @@ fn loadConfigReadProjectLayer(
         .developer_instructions = developer_instructions,
         .compact_prompt = compact_prompt,
         .approval_policy = approval_policy,
+        .approvals_reviewer = approvals_reviewer,
         .sandbox_mode = sandbox_mode,
         .web_search_mode = web_search_mode,
         .model_reasoning_effort = model_reasoning_effort,
@@ -52550,6 +52604,7 @@ fn isConfigReadOriginField(key: []const u8) bool {
         std.mem.eql(u8, key, "developer_instructions") or
         std.mem.eql(u8, key, "compact_prompt") or
         std.mem.eql(u8, key, "approval_policy") or
+        std.mem.eql(u8, key, "approvals_reviewer") or
         std.mem.eql(u8, key, "sandbox_mode") or
         std.mem.eql(u8, key, "forced_chatgpt_workspace_id") or
         std.mem.eql(u8, key, "forced_login_method") or
@@ -53477,6 +53532,8 @@ fn appendConfigReadProjectLayerConfig(
             try appendJsonMaybeStringField(allocator, result, &first, key, layer.compact_prompt);
         } else if (std.mem.eql(u8, key, "approval_policy")) {
             if (layer.approval_policy) |policy| try appendJsonStringField(allocator, result, &first, key, policy.label());
+        } else if (std.mem.eql(u8, key, "approvals_reviewer")) {
+            if (layer.approvals_reviewer) |reviewer| try appendJsonStringField(allocator, result, &first, key, reviewer.label());
         } else if (std.mem.eql(u8, key, "sandbox_mode")) {
             if (layer.sandbox_mode) |mode| try appendJsonStringField(allocator, result, &first, key, mode.label());
         } else if (std.mem.eql(u8, key, "forced_chatgpt_workspace_id")) {
@@ -53523,6 +53580,7 @@ fn appendConfigReadManagedLayerConfig(
     if (layer.developer_instructions) |value| try appendJsonStringField(allocator, result, &first, "developer_instructions", value);
     if (layer.compact_prompt) |value| try appendJsonStringField(allocator, result, &first, "compact_prompt", value);
     if (layer.approval_policy) |policy| try appendJsonStringField(allocator, result, &first, "approval_policy", policy.label());
+    if (layer.approvals_reviewer) |reviewer| try appendJsonStringField(allocator, result, &first, "approvals_reviewer", reviewer.label());
     if (layer.sandbox_mode) |mode| try appendJsonStringField(allocator, result, &first, "sandbox_mode", mode.label());
     if (layer.forced_chatgpt_workspace_id) |value| try appendJsonStringField(allocator, result, &first, "forced_chatgpt_workspace_id", value);
     if (layer.forced_login_method) |method| try appendJsonStringField(allocator, result, &first, "forced_login_method", method.label());
@@ -53569,6 +53627,8 @@ fn appendConfigReadSystemLayerConfig(
             try appendJsonMaybeStringField(allocator, result, &first, key, layer.compact_prompt);
         } else if (std.mem.eql(u8, key, "approval_policy")) {
             if (layer.approval_policy) |policy| try appendJsonStringField(allocator, result, &first, key, policy.label());
+        } else if (std.mem.eql(u8, key, "approvals_reviewer")) {
+            if (layer.approvals_reviewer) |reviewer| try appendJsonStringField(allocator, result, &first, key, reviewer.label());
         } else if (std.mem.eql(u8, key, "sandbox_mode")) {
             if (layer.sandbox_mode) |mode| try appendJsonStringField(allocator, result, &first, key, mode.label());
         } else if (std.mem.eql(u8, key, "forced_chatgpt_workspace_id")) {
@@ -53627,6 +53687,8 @@ fn appendConfigReadUserLayerConfig(
             try appendJsonMaybeStringField(allocator, result, &first, key, cfg.compact_prompt);
         } else if (std.mem.eql(u8, key, "approval_policy")) {
             try appendJsonStringField(allocator, result, &first, key, cfg.approval_policy.label());
+        } else if (std.mem.eql(u8, key, "approvals_reviewer")) {
+            try appendJsonStringField(allocator, result, &first, key, cfg.approvals_reviewer.label());
         } else if (std.mem.eql(u8, key, "sandbox_mode")) {
             try appendJsonStringField(allocator, result, &first, key, cfg.sandbox_mode.label());
         } else if (std.mem.eql(u8, key, "forced_chatgpt_workspace_id")) {
@@ -56756,6 +56818,7 @@ test "config/read user origin keys include active profile scalars" {
         \\model = "base-model"
         \\profile = "work"
         \\approval_policy = "on-request"
+        \\approvals_reviewer = "user"
         \\base_instructions = "base instructions"
         \\
         \\[features]
@@ -56764,6 +56827,7 @@ test "config/read user origin keys include active profile scalars" {
         \\[profiles.work]
         \\model = "profile-model"
         \\sandbox_mode = "danger-full-access"
+        \\approvals_reviewer = "auto_review"
         \\profile = "ignored-profile-key"
         \\base_instructions = "profile base instructions"
         \\
@@ -56779,12 +56843,13 @@ test "config/read user origin keys include active profile scalars" {
         allocator.free(keys);
     }
 
-    try std.testing.expectEqual(@as(usize, 5), keys.len);
+    try std.testing.expectEqual(@as(usize, 6), keys.len);
     try std.testing.expectEqualStrings("model", keys[0]);
     try std.testing.expectEqualStrings("profile", keys[1]);
     try std.testing.expectEqualStrings("approval_policy", keys[2]);
-    try std.testing.expectEqualStrings("instructions", keys[3]);
-    try std.testing.expectEqualStrings("sandbox_mode", keys[4]);
+    try std.testing.expectEqualStrings("approvals_reviewer", keys[3]);
+    try std.testing.expectEqualStrings("instructions", keys[4]);
+    try std.testing.expectEqualStrings("sandbox_mode", keys[5]);
 }
 
 test "app-server config write path comparison normalizes Rust path aliases" {

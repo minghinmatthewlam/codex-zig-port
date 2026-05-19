@@ -25,6 +25,7 @@ pub const Config = struct {
     oss_provider: ?[]const u8,
     installation_id: []const u8,
     approval_policy: ApprovalPolicy,
+    approvals_reviewer: ApprovalsReviewer = .user,
     sandbox_mode: SandboxMode,
     web_search_mode: ?WebSearchMode,
     model_reasoning_effort: ?ReasoningEffort,
@@ -178,6 +179,7 @@ pub const RuntimeOverrides = struct {
     chatgpt_base_url: ?[]const u8 = null,
     oss_provider: ?[]const u8 = null,
     approval_policy: ?ApprovalPolicy = null,
+    approvals_reviewer: ?ApprovalsReviewer = null,
     sandbox_mode: ?SandboxMode = null,
     web_search_mode: ?WebSearchMode = null,
     service_tier: ?[]const u8 = null,
@@ -201,6 +203,7 @@ pub fn mergeRuntimeOverrides(base: RuntimeOverrides, overrides: RuntimeOverrides
     if (overrides.chatgpt_base_url) |value| merged.chatgpt_base_url = value;
     if (overrides.oss_provider) |value| merged.oss_provider = value;
     if (overrides.approval_policy) |value| merged.approval_policy = value;
+    if (overrides.approvals_reviewer) |value| merged.approvals_reviewer = value;
     if (overrides.sandbox_mode) |value| merged.sandbox_mode = value;
     if (overrides.web_search_mode) |value| merged.web_search_mode = value;
     if (overrides.service_tier) |value| merged.service_tier = value;
@@ -317,6 +320,9 @@ pub fn applyRuntimeOverrides(
     if (overrides.approval_policy) |approval_policy| {
         cfg.approval_policy = approval_policy;
     }
+    if (overrides.approvals_reviewer) |approvals_reviewer| {
+        cfg.approvals_reviewer = approvals_reviewer;
+    }
     if (overrides.sandbox_mode) |sandbox_mode| {
         cfg.sandbox_mode = sandbox_mode;
     }
@@ -390,6 +396,8 @@ pub fn applyRawConfigOverride(
         runtime_overrides.oss_provider = value;
     } else if (std.mem.eql(u8, key, "approval_policy")) {
         runtime_overrides.approval_policy = try ApprovalPolicy.parse(value);
+    } else if (std.mem.eql(u8, key, "approvals_reviewer")) {
+        runtime_overrides.approvals_reviewer = try ApprovalsReviewer.parse(value);
     } else if (std.mem.eql(u8, key, "sandbox_mode")) {
         runtime_overrides.sandbox_mode = try SandboxMode.parse(value);
     } else if (std.mem.eql(u8, key, "web_search")) {
@@ -473,6 +481,24 @@ pub const ApprovalPolicy = enum {
         if (std.mem.eql(u8, value, "on-request") or std.mem.eql(u8, value, "on_request")) return .on_request;
         if (std.mem.eql(u8, value, "never")) return .never;
         return error.InvalidApprovalPolicy;
+    }
+};
+
+pub const ApprovalsReviewer = enum {
+    user,
+    auto_review,
+
+    pub fn label(self: ApprovalsReviewer) []const u8 {
+        return switch (self) {
+            .user => "user",
+            .auto_review => "guardian_subagent",
+        };
+    }
+
+    pub fn parse(value: []const u8) !ApprovalsReviewer {
+        if (std.mem.eql(u8, value, "user")) return .user;
+        if (std.mem.eql(u8, value, "auto_review") or std.mem.eql(u8, value, "guardian_subagent")) return .auto_review;
+        return error.InvalidApprovalsReviewer;
     }
 };
 
@@ -802,6 +828,7 @@ pub fn loadWithOptions(allocator: std.mem.Allocator, options: LoadOptions) !Conf
     errdefer allocator.free(installation_id);
 
     const approval_policy = try resolveApprovalPolicy(allocator, config_view, active_profile);
+    const approvals_reviewer = try resolveApprovalsReviewer(allocator, config_view, active_profile);
     const sandbox_mode = try resolveSandboxMode(allocator, config_view, active_profile);
     const web_search_mode = try resolveWebSearchMode(allocator, config_view, active_profile);
     const model_reasoning_effort = try resolveModelReasoningEffort(allocator, config_view, active_profile);
@@ -847,6 +874,7 @@ pub fn loadWithOptions(allocator: std.mem.Allocator, options: LoadOptions) !Conf
         .oss_provider = oss_provider,
         .installation_id = installation_id,
         .approval_policy = approval_policy,
+        .approvals_reviewer = approvals_reviewer,
         .sandbox_mode = sandbox_mode,
         .web_search_mode = web_search_mode,
         .model_reasoning_effort = model_reasoning_effort,
@@ -1082,6 +1110,20 @@ fn resolveApprovalPolicy(allocator: std.mem.Allocator, config_view: ConfigView, 
     }
 
     return .on_request;
+}
+
+fn resolveApprovalsReviewer(allocator: std.mem.Allocator, config_view: ConfigView, active_profile: ?[]const u8) !ApprovalsReviewer {
+    if (try env.getOwned(allocator, "CODEX_ZIG_APPROVALS_REVIEWER")) |value| {
+        defer allocator.free(value);
+        return ApprovalsReviewer.parse(value);
+    }
+
+    if (try config_view.getScopedString(allocator, active_profile, "approvals_reviewer")) |value| {
+        defer allocator.free(value);
+        return ApprovalsReviewer.parse(value);
+    }
+
+    return .user;
 }
 
 fn resolveSandboxMode(allocator: std.mem.Allocator, config_view: ConfigView, active_profile: ?[]const u8) !SandboxMode {
@@ -2805,14 +2847,17 @@ test "approval and sandbox labels parse config strings" {
     const view = ConfigView{
         .bytes =
         \\approval_policy = "never"
+        \\approvals_reviewer = "auto_review"
         \\sandbox_mode = "read-only"
         \\
         ,
     };
 
     try std.testing.expectEqual(ApprovalPolicy.never, try resolveApprovalPolicy(allocator, view, null));
+    try std.testing.expectEqual(ApprovalsReviewer.auto_review, try resolveApprovalsReviewer(allocator, view, null));
     try std.testing.expectEqual(SandboxMode.read_only, try resolveSandboxMode(allocator, view, null));
     try std.testing.expectEqualStrings("on-request", ApprovalPolicy.on_request.label());
+    try std.testing.expectEqualStrings("guardian_subagent", ApprovalsReviewer.auto_review.label());
     try std.testing.expectEqualStrings("danger-full-access", SandboxMode.danger_full_access.label());
     try std.testing.expectEqual(WebSearchMode.live, try WebSearchMode.parse("live"));
     try std.testing.expectEqualStrings("cached", WebSearchMode.cached.label());
@@ -2926,6 +2971,7 @@ test "profile values override top-level config values" {
         \\model = "base-model"
         \\oss_provider = "ollama"
         \\approval_policy = "on-request"
+        \\approvals_reviewer = "user"
         \\sandbox_mode = "read-only"
         \\web_search = "cached"
         \\model_reasoning_effort = "low"
@@ -2941,6 +2987,7 @@ test "profile values override top-level config values" {
         \\model = "profile-model"
         \\oss_provider = "lmstudio"
         \\approval_policy = "never"
+        \\approvals_reviewer = "guardian_subagent"
         \\sandbox_mode = "danger-full-access"
         \\web_search = "live"
         \\model_reasoning_effort = "high"
@@ -2974,6 +3021,7 @@ test "profile values override top-level config values" {
     try std.testing.expectEqualStrings("lmstudio", oss_provider.?);
 
     try std.testing.expectEqual(ApprovalPolicy.never, try resolveApprovalPolicy(allocator, view, active_profile.?));
+    try std.testing.expectEqual(ApprovalsReviewer.auto_review, try resolveApprovalsReviewer(allocator, view, active_profile.?));
     try std.testing.expectEqual(SandboxMode.danger_full_access, try resolveSandboxMode(allocator, view, active_profile.?));
     try std.testing.expectEqual(WebSearchMode.live, (try resolveWebSearchMode(allocator, view, active_profile.?)).?);
     try std.testing.expectEqual(ReasoningEffort.high, (try resolveModelReasoningEffort(allocator, view, active_profile.?)).?);
@@ -3542,6 +3590,7 @@ test "raw cli config overrides map supported fields" {
     try applyRawConfigOverride(&runtime, &profile, "chatgpt_base_url=http://127.0.0.1:2");
     try applyRawConfigOverride(&runtime, &profile, "oss_provider=ollama");
     try applyRawConfigOverride(&runtime, &profile, "approval_policy=never");
+    try applyRawConfigOverride(&runtime, &profile, "approvals_reviewer=auto_review");
     try applyRawConfigOverride(&runtime, &profile, "sandbox_mode=read-only");
     try applyRawConfigOverride(&runtime, &profile, "web_search=live");
     try applyRawConfigOverride(&runtime, &profile, "service_tier=fast");
@@ -3564,6 +3613,7 @@ test "raw cli config overrides map supported fields" {
     try std.testing.expectEqualStrings("http://127.0.0.1:2", runtime.chatgpt_base_url.?);
     try std.testing.expectEqualStrings("ollama", runtime.oss_provider.?);
     try std.testing.expectEqual(ApprovalPolicy.never, runtime.approval_policy.?);
+    try std.testing.expectEqual(ApprovalsReviewer.auto_review, runtime.approvals_reviewer.?);
     try std.testing.expectEqual(SandboxMode.read_only, runtime.sandbox_mode.?);
     try std.testing.expectEqual(WebSearchMode.live, runtime.web_search_mode.?);
     try std.testing.expectEqualStrings("fast", runtime.service_tier.?);
@@ -3686,6 +3736,7 @@ test "oss mode applies local provider defaults" {
         .oss_provider = try allocator.dupe(u8, "ollama"),
         .installation_id = try allocator.dupe(u8, "install"),
         .approval_policy = .never,
+        .approvals_reviewer = .user,
         .sandbox_mode = .read_only,
         .web_search_mode = null,
         .model_reasoning_effort = null,
