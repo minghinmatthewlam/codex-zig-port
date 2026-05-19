@@ -19,6 +19,9 @@ stdin payloads, emits `hook/started` / `hook/completed` lifecycle
 notifications, records additional context as developer messages for accepted
 turns, persists stopped/blocked-turn additional context as developer messages
 for the next accepted turn, and keeps untrusted or disabled hooks inert.
+Loaded-session `config/batchWrite` reloads now cover hook trust and disable
+state: untrusted hooks stay inert, trusted hooks run on the next turn, and
+disabled trusted hooks stop running without restarting the thread.
 Managed hooks, full config-layer parity, broader hook event execution, complete
 hook outcome parity, and broader developer-message context plumbing remain
 planned.
@@ -794,7 +797,9 @@ Additional app-server config reload coverage: `config/batchWrite` honors
 `reloadUserConfig` for already-loaded threads by refreshing default-derived
 model, model provider, service tier, approval policy, approvals reviewer,
 sandbox mode, and reasoning effort from the latest config while preserving
-explicit per-thread overrides. `config/value/write` keeps Rust-compatible
+explicit per-thread overrides. The hook runtime smoke also covers reloaded
+`hooks.state` trust and disable changes on already-loaded threads.
+`config/value/write` keeps Rust-compatible
 single-value write behavior and treats `reloadUserConfig` as an unknown
 extension field rather than a reload flag. Full hot-reload notifications and
 full config-manager parity remain planned.

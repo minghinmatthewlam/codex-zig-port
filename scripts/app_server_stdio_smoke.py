@@ -20699,6 +20699,45 @@ def run_user_prompt_submit_hook_notification_smoke(binary: Path) -> None:
             assert prompt_hook["eventName"] == "userPromptSubmit"
             assert prompt_hook["trustStatus"] == "untrusted"
 
+            def start_hook_test_turn(request_id: str, prompt: str) -> str:
+                write_json_line(
+                    proc,
+                    {
+                        "jsonrpc": "2.0",
+                        "id": request_id,
+                        "method": "turn/start",
+                        "params": {
+                            "threadId": thread_id,
+                            "input": [{"type": "text", "text": prompt}],
+                        },
+                    },
+                )
+                turn_response = read_json_line(proc, 5)
+                assert turn_response["id"] == request_id
+                turn_id = turn_response["result"]["turn"]["id"]
+                assert_thread_status_notification(read_json_line(proc, 5), thread_id, "active")
+                assert read_json_line(proc, 5)["method"] == "turn/started"
+                return turn_id
+
+            def consume_plain_turn_notifications() -> None:
+                assert read_json_line(proc, 5)["method"] == "item/started"
+                assert read_json_line(proc, 5)["method"] == "item/completed"
+                assert read_json_line(proc, 5)["method"] == "item/started"
+                assert read_json_line(proc, 5)["method"] == "item/agentMessage/delta"
+                assert read_json_line(proc, 5)["method"] == "item/completed"
+                assert read_json_line(proc, 5)["method"] == "turn/completed"
+                assert_thread_status_notification(read_json_line(proc, 5), thread_id, "idle")
+
+            start_hook_test_turn(
+                "turn-start-before-trusting-prompt-hook",
+                "untrusted hook runtime prompt",
+            )
+            consume_plain_turn_notifications()
+            assert not hook_log.exists()
+            request_texts_by_role = request_input_texts_by_role(server.request_bodies[-1])
+            assert request_texts_by_role.get("user") == ["untrusted hook runtime prompt"]
+            assert request_texts_by_role.get("developer") is None
+
             write_json_line(
                 proc,
                 {
@@ -20731,19 +20770,22 @@ def run_user_prompt_submit_hook_notification_smoke(binary: Path) -> None:
                 proc,
                 {
                     "jsonrpc": "2.0",
-                    "id": "turn-start-with-prompt-hook",
-                    "method": "turn/start",
-                    "params": {
-                        "threadId": thread_id,
-                        "input": [{"type": "text", "text": "hook runtime prompt"}],
-                    },
+                    "id": "hooks-list-after-trust-runtime",
+                    "method": "hooks/list",
+                    "params": {"cwds": [str(cwd)]},
                 },
             )
-            turn_response = read_json_line(proc, 5)
-            assert turn_response["id"] == "turn-start-with-prompt-hook"
-            turn_id = turn_response["result"]["turn"]["id"]
-            assert_thread_status_notification(read_json_line(proc, 5), thread_id, "active")
-            assert read_json_line(proc, 5)["method"] == "turn/started"
+            trusted_hooks = read_json_line(proc, 5)
+            assert trusted_hooks["id"] == "hooks-list-after-trust-runtime"
+            trusted_prompt_hook = trusted_hooks["result"]["data"][0]["hooks"][0]
+            assert trusted_prompt_hook["key"] == prompt_hook["key"]
+            assert trusted_prompt_hook["enabled"] is True
+            assert trusted_prompt_hook["trustStatus"] == "trusted"
+
+            turn_id = start_hook_test_turn(
+                "turn-start-with-prompt-hook",
+                "hook runtime prompt",
+            )
 
             hook_started = read_json_line(proc, 5)
             assert hook_started["method"] == "hook/started"
@@ -20775,13 +20817,7 @@ def run_user_prompt_submit_hook_notification_smoke(binary: Path) -> None:
                 }
             ]
 
-            assert read_json_line(proc, 5)["method"] == "item/started"
-            assert read_json_line(proc, 5)["method"] == "item/completed"
-            assert read_json_line(proc, 5)["method"] == "item/started"
-            assert read_json_line(proc, 5)["method"] == "item/agentMessage/delta"
-            assert read_json_line(proc, 5)["method"] == "item/completed"
-            assert read_json_line(proc, 5)["method"] == "turn/completed"
-            assert_thread_status_notification(read_json_line(proc, 5), thread_id, "idle")
+            consume_plain_turn_notifications()
 
             hook_inputs = [
                 json.loads(line)
@@ -20800,11 +20836,69 @@ def run_user_prompt_submit_hook_notification_smoke(binary: Path) -> None:
             assert hook_input["transcript_exists"] is True
 
             assert server.request_bodies
-            request_texts_by_role = request_input_texts_by_role(server.request_bodies[0])
-            assert request_texts_by_role.get("user") == ["hook runtime prompt"]
+            request_texts_by_role = request_input_texts_by_role(server.request_bodies[-1])
+            assert request_texts_by_role.get("user", [])[-1:] == ["hook runtime prompt"]
             assert request_texts_by_role.get("developer") == [
                 "  hook context from runtime\n    indented line  "
             ]
+
+            write_json_line(
+                proc,
+                {
+                    "jsonrpc": "2.0",
+                    "id": "disable-loaded-user-prompt-hook",
+                    "method": "config/batchWrite",
+                    "params": {
+                        "edits": [
+                            {
+                                "keyPath": "hooks.state",
+                                "value": {
+                                    prompt_hook["key"]: {
+                                        "enabled": False,
+                                        "trusted_hash": prompt_hook["currentHash"],
+                                    }
+                                },
+                                "mergeStrategy": "upsert",
+                            }
+                        ],
+                        "reloadUserConfig": True,
+                        "expectedVersion": None,
+                    },
+                },
+            )
+            disable_response = read_json_line(proc, 5)
+            assert disable_response["id"] == "disable-loaded-user-prompt-hook"
+            assert disable_response["result"]["status"] == "ok"
+
+            write_json_line(
+                proc,
+                {
+                    "jsonrpc": "2.0",
+                    "id": "hooks-list-after-disable-runtime",
+                    "method": "hooks/list",
+                    "params": {"cwds": [str(cwd)]},
+                },
+            )
+            disabled_hooks = read_json_line(proc, 5)
+            assert disabled_hooks["id"] == "hooks-list-after-disable-runtime"
+            disabled_prompt_hook = disabled_hooks["result"]["data"][0]["hooks"][0]
+            assert disabled_prompt_hook["key"] == prompt_hook["key"]
+            assert disabled_prompt_hook["enabled"] is False
+            assert disabled_prompt_hook["trustStatus"] == "trusted"
+
+            start_hook_test_turn(
+                "turn-start-after-disabling-prompt-hook",
+                "disabled hook runtime prompt",
+            )
+            consume_plain_turn_notifications()
+            hook_inputs = [
+                json.loads(line)
+                for line in hook_log.read_text(encoding="utf-8").splitlines()
+                if line.strip()
+            ]
+            assert len(hook_inputs) == 1
+            request_texts_by_role = request_input_texts_by_role(server.request_bodies[-1])
+            assert request_texts_by_role.get("user", [])[-1:] == ["disabled hook runtime prompt"]
         finally:
             proc.kill()
             proc.wait(timeout=5)
