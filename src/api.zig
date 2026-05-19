@@ -654,6 +654,9 @@ pub fn buildRequestBodyWithOptions(
     var tools_list = std.ArrayList(Tool).empty;
     defer tools_list.deinit(allocator);
     const shell_tools_enabled = options.feature_overrides.get("shell_tool") orelse true;
+    const write_stdin_tool_enabled = shell_tools_enabled and (options.feature_overrides.get("write_stdin_tool") orelse true);
+    const mcp_resource_tools_enabled = options.feature_overrides.get("mcp_resource_tools") orelse true;
+    const configured_mcp_tools_enabled = options.feature_overrides.get("mcp_tools") orelse true;
     const request_permissions_tool_enabled = options.feature_overrides.get("request_permissions_tool") orelse false;
     const request_user_input_tool_enabled = options.feature_overrides.get("request_user_input_tool") orelse false;
     const default_mode_request_user_input_enabled = options.feature_overrides.get("default_mode_request_user_input") orelse false;
@@ -669,7 +672,10 @@ pub fn buildRequestBodyWithOptions(
         const exec_command_tool = Tool{
             .type = "function",
             .name = "exec_command",
-            .description = "Runs a shell command, returning terminal-style output. Set tty=true for a PTY-backed long-running session that can receive input through write_stdin.",
+            .description = if (write_stdin_tool_enabled)
+                "Runs a shell command, returning terminal-style output. Set tty=true for a PTY-backed long-running session that can receive input through write_stdin."
+            else
+                "Runs a shell command, returning terminal-style output.",
             .parameters = try appendParsedJsonValue(allocator, &parsed_parameter_values,
                 \\{"type":"object","properties":{"cmd":{"type":"string","description":"Shell command to execute."},"workdir":{"type":"string","description":"Optional working directory to run the command in; defaults to the current workspace."},"shell":{"type":"string","description":"Shell binary to launch. Defaults to /bin/zsh."},"tty":{"type":"boolean","description":"When true, start a PTY-backed long-running session instead of waiting for completion."},"yield_time_ms":{"type":"number","description":"Milliseconds to wait for initial session output when tty=true; one-shot exec waits for completion."},"max_output_tokens":{"type":"number","description":"Maximum approximate tokens to return. Excess output is truncated."},"login":{"type":"boolean","description":"Whether to run the shell with login semantics."}},"required":["cmd"],"additionalProperties":false}
             ),
@@ -751,7 +757,7 @@ pub fn buildRequestBodyWithOptions(
         };
         if (shell_tools_enabled) {
             try tools_list.append(allocator, exec_command_tool);
-            try tools_list.append(allocator, write_stdin_tool);
+            if (write_stdin_tool_enabled) try tools_list.append(allocator, write_stdin_tool);
             try tools_list.append(allocator, shell_tool);
             try tools_list.append(allocator, shell_command_tool);
         }
@@ -763,9 +769,11 @@ pub fn buildRequestBodyWithOptions(
         if (request_user_input_tool_enabled) {
             try tools_list.append(allocator, request_user_input_tool);
         }
-        try tools_list.append(allocator, list_mcp_resources_tool);
-        try tools_list.append(allocator, list_mcp_resource_templates_tool);
-        try tools_list.append(allocator, read_mcp_resource_tool);
+        if (mcp_resource_tools_enabled) {
+            try tools_list.append(allocator, list_mcp_resources_tool);
+            try tools_list.append(allocator, list_mcp_resource_templates_tool);
+            try tools_list.append(allocator, read_mcp_resource_tool);
+        }
         if (cfg.web_search_mode) |web_search_mode| {
             if (web_search_mode.externalWebAccess()) |external_web_access| {
                 try tools_list.append(allocator, .{
@@ -774,24 +782,26 @@ pub fn buildRequestBodyWithOptions(
                 });
             }
         }
-        for (options.mcp_tools) |mcp_tool| {
-            const parameters = appendParsedJsonValue(allocator, &parsed_parameter_values, mcp_tool.input_schema_json) catch
-                try appendParsedJsonValue(allocator, &parsed_parameter_values, "{\"type\":\"object\"}");
-            const description = if (mcp_tool.description.len > 0)
-                mcp_tool.description
-            else
-                "Call a configured MCP server tool.";
-            try tools_list.append(allocator, .{
-                .type = "function",
-                .name = mcp_tool.callable_name,
-                .description = description,
-                .parameters = parameters,
-            });
+        if (configured_mcp_tools_enabled) {
+            for (options.mcp_tools) |mcp_tool| {
+                const parameters = appendParsedJsonValue(allocator, &parsed_parameter_values, mcp_tool.input_schema_json) catch
+                    try appendParsedJsonValue(allocator, &parsed_parameter_values, "{\"type\":\"object\"}");
+                const description = if (mcp_tool.description.len > 0)
+                    mcp_tool.description
+                else
+                    "Call a configured MCP server tool.";
+                try tools_list.append(allocator, .{
+                    .type = "function",
+                    .name = mcp_tool.callable_name,
+                    .description = description,
+                    .parameters = parameters,
+                });
+            }
         }
     }
     const include = [_][]const u8{};
 
-    const base_instructions = try baseInstructionsForConfig(allocator, cfg, shell_tools_enabled);
+    const base_instructions = try baseInstructionsForConfig(allocator, cfg, shell_tools_enabled, write_stdin_tool_enabled);
     defer allocator.free(base_instructions);
     const instructions = try agents_md.buildInstructions(allocator, base_instructions);
     defer allocator.free(instructions);
@@ -1071,6 +1081,10 @@ const shellToolInstructions =
     \\When you need to inspect files or run commands, call exec_command. Use write_stdin for running exec_command sessions. shell_command and shell remain supported.
 ;
 
+const shellToolInstructionsWithoutStdin =
+    \\When you need to inspect files or run commands, call exec_command. shell_command and shell remain supported.
+;
+
 const baseInstructionsTail =
     \\When you need to edit files, prefer apply_patch with a focused Codex-style patch.
     \\For multi-step work, call update_plan with concise steps and current statuses.
@@ -1084,7 +1098,12 @@ const friendlyPersonalityInstructions =
 const pragmaticPersonalityInstructions =
     "You are a deeply pragmatic, effective software engineer.";
 
-fn baseInstructionsForConfig(allocator: std.mem.Allocator, cfg: config.Config, shell_tools_enabled: bool) ![]const u8 {
+fn baseInstructionsForConfig(
+    allocator: std.mem.Allocator,
+    cfg: config.Config,
+    shell_tools_enabled: bool,
+    write_stdin_tool_enabled: bool,
+) ![]const u8 {
     var out = std.ArrayList(u8).empty;
     errdefer out.deinit(allocator);
     if (cfg.base_instructions) |base_override| {
@@ -1093,7 +1112,7 @@ fn baseInstructionsForConfig(allocator: std.mem.Allocator, cfg: config.Config, s
         try out.appendSlice(allocator, baseInstructions);
         try out.append(allocator, '\n');
         if (shell_tools_enabled) {
-            try out.appendSlice(allocator, shellToolInstructions);
+            try out.appendSlice(allocator, if (write_stdin_tool_enabled) shellToolInstructions else shellToolInstructionsWithoutStdin);
             try out.append(allocator, '\n');
         }
         try out.appendSlice(allocator, baseInstructionsTail);
@@ -1457,6 +1476,55 @@ test "runtime feature overrides can disable shell tools" {
     try std.testing.expect(std.mem.indexOf(u8, body, "\"name\":\"apply_patch\"") != null);
 }
 
+test "runtime feature overrides can disable write_stdin without disabling shell inspection" {
+    const allocator = std.testing.allocator;
+    const cfg = config.Config{
+        .codex_home = ".",
+        .active_profile = null,
+        .model = "demo-model",
+        .openai_base_url = "https://example.invalid/v1",
+        .chatgpt_base_url = "https://example.invalid/backend-api/codex",
+        .oss_provider = null,
+        .installation_id = "install-test",
+        .approval_policy = .on_request,
+        .sandbox_mode = .workspace_write,
+        .web_search_mode = null,
+        .model_reasoning_effort = null,
+        .service_tier = null,
+        .syntax_theme = null,
+        .personality = null,
+        .tui_status_line = null,
+        .tui_terminal_title = null,
+        .tui_alternate_screen = .auto,
+    };
+    const history = [_]HistoryItem{.{
+        .kind = .message,
+        .role = "user",
+        .content_type = "input_text",
+        .text = "hello",
+    }};
+
+    var feature_overrides = features_cmd.FeatureOverrides{};
+    defer feature_overrides.deinit(allocator);
+    try feature_overrides.put(allocator, "write_stdin_tool", false);
+
+    const body = try buildRequestBodyWithOptions(allocator, cfg, history[0..], .{
+        .feature_overrides = feature_overrides,
+    });
+    defer allocator.free(body);
+
+    var parsed = try std.json.parseFromSlice(std.json.Value, allocator, body, .{});
+    defer parsed.deinit();
+    const instructions = parsed.value.object.get("instructions").?.string;
+
+    try std.testing.expect(std.mem.indexOf(u8, instructions, "call exec_command") != null);
+    try std.testing.expect(std.mem.indexOf(u8, instructions, "write_stdin") == null);
+    try std.testing.expect(std.mem.indexOf(u8, body, "\"name\":\"exec_command\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, body, "\"name\":\"write_stdin\"") == null);
+    try std.testing.expect(std.mem.indexOf(u8, body, "\"name\":\"shell\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, body, "\"name\":\"shell_command\"") != null);
+}
+
 test "builds request with configured reasoning controls" {
     const allocator = std.testing.allocator;
     const cfg = config.Config{
@@ -1652,6 +1720,53 @@ test "builds mcp function tools from catalog" {
     try std.testing.expect(found);
 }
 
+test "runtime feature overrides can disable configured mcp function tools" {
+    const allocator = std.testing.allocator;
+    const cfg = config.Config{
+        .codex_home = ".",
+        .active_profile = null,
+        .model = "demo-model",
+        .openai_base_url = "https://example.invalid/v1",
+        .chatgpt_base_url = "https://example.invalid/backend-api/codex",
+        .oss_provider = null,
+        .installation_id = "install-test",
+        .approval_policy = .on_request,
+        .sandbox_mode = .workspace_write,
+        .web_search_mode = null,
+        .model_reasoning_effort = null,
+        .service_tier = null,
+        .syntax_theme = null,
+        .personality = null,
+        .tui_status_line = null,
+        .tui_terminal_title = null,
+        .tui_alternate_screen = .auto,
+    };
+    const history = [_]HistoryItem{.{
+        .kind = .message,
+        .role = "user",
+        .content_type = "input_text",
+        .text = "use mcp",
+    }};
+    const mcp_tools = [_]mcp_runtime.ToolSpec{.{
+        .server_name = "demo",
+        .raw_tool_name = "echo",
+        .callable_name = "mcp__demo__echo",
+        .description = "Echo through MCP",
+        .input_schema_json = "{\"type\":\"object\"}",
+    }};
+    var feature_overrides = features_cmd.FeatureOverrides{};
+    defer feature_overrides.deinit(allocator);
+    try feature_overrides.put(allocator, "mcp_tools", false);
+
+    const body = try buildRequestBodyWithOptions(allocator, cfg, history[0..], .{
+        .mcp_tools = mcp_tools[0..],
+        .feature_overrides = feature_overrides,
+    });
+    defer allocator.free(body);
+
+    try std.testing.expect(std.mem.indexOf(u8, body, "\"name\":\"mcp__demo__echo\"") == null);
+}
+
 test "builds mcp resource function tools" {
     const allocator = std.testing.allocator;
     const cfg = config.Config{
@@ -1707,6 +1822,47 @@ test "builds mcp resource function tools" {
         }
         try std.testing.expect(found);
     }
+}
+
+test "runtime feature overrides can disable mcp resource function tools" {
+    const allocator = std.testing.allocator;
+    const cfg = config.Config{
+        .codex_home = ".",
+        .active_profile = null,
+        .model = "demo-model",
+        .openai_base_url = "https://example.invalid/v1",
+        .chatgpt_base_url = "https://example.invalid/backend-api/codex",
+        .oss_provider = null,
+        .installation_id = "install-test",
+        .approval_policy = .on_request,
+        .sandbox_mode = .workspace_write,
+        .web_search_mode = null,
+        .model_reasoning_effort = null,
+        .service_tier = null,
+        .syntax_theme = null,
+        .personality = null,
+        .tui_status_line = null,
+        .tui_terminal_title = null,
+        .tui_alternate_screen = .auto,
+    };
+    const history = [_]HistoryItem{.{
+        .kind = .message,
+        .role = "user",
+        .content_type = "input_text",
+        .text = "use resources",
+    }};
+    var feature_overrides = features_cmd.FeatureOverrides{};
+    defer feature_overrides.deinit(allocator);
+    try feature_overrides.put(allocator, "mcp_resource_tools", false);
+
+    const body = try buildRequestBodyWithOptions(allocator, cfg, history[0..], .{
+        .feature_overrides = feature_overrides,
+    });
+    defer allocator.free(body);
+
+    try std.testing.expect(std.mem.indexOf(u8, body, "\"name\":\"list_mcp_resources\"") == null);
+    try std.testing.expect(std.mem.indexOf(u8, body, "\"name\":\"list_mcp_resource_templates\"") == null);
+    try std.testing.expect(std.mem.indexOf(u8, body, "\"name\":\"read_mcp_resource\"") == null);
 }
 
 test "can omit tools for compact-style turns" {

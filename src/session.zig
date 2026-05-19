@@ -563,11 +563,15 @@ pub fn runTurnWithOptions(
     try turn_writable_roots.appendSlice(allocator, options.additional_writable_roots);
     var turn_network_enabled = options.network_enabled;
 
-    var mcp_catalog = try mcp_runtime.loadCatalogWithOptions(allocator, cfg.codex_home, .{
-        .startup_status_callback = options.mcp_startup_status_callback,
-        .elicitation_callback = options.mcp_elicitation_callback,
-    });
-    defer mcp_catalog.deinit(allocator);
+    const load_mcp_tools = options.include_tools and mcpToolsEnabled(options);
+    var mcp_catalog = if (load_mcp_tools)
+        try mcp_runtime.loadCatalogWithOptions(allocator, cfg.codex_home, .{
+            .startup_status_callback = options.mcp_startup_status_callback,
+            .elicitation_callback = options.mcp_elicitation_callback,
+        })
+    else
+        mcp_runtime.Catalog{ .tools = &.{} };
+    defer if (load_mcp_tools) mcp_catalog.deinit(allocator);
 
     var rounds: usize = 0;
     while (rounds < 8) : (rounds += 1) {
@@ -576,7 +580,7 @@ pub fn runTurnWithOptions(
         create_options.output_schema = options.output_schema;
         create_options.input_images = options.input_images;
         create_options.include_tools = options.include_tools;
-        create_options.mcp_tools = if (options.include_tools) mcp_catalog.tools else &.{};
+        create_options.mcp_tools = if (load_mcp_tools) mcp_catalog.tools else &.{};
         create_options.feature_overrides = options.feature_overrides;
         create_options.external_auth_refresh_callback = options.external_auth_refresh_callback;
         if (options.stream_text and !options.json_events and !options.plan_mode) {
@@ -662,19 +666,25 @@ pub fn runTurnWithOptions(
             }
 
             var tool_result = if (std.mem.eql(u8, call.name, "request_permissions"))
-                try runRequestPermissionsToolCall(
-                    allocator,
-                    call,
-                    options,
-                    &turn_writable_roots,
-                    &turn_network_enabled,
-                )
+                if (requestPermissionsToolEnabled(options))
+                    try runRequestPermissionsToolCall(
+                        allocator,
+                        call,
+                        options,
+                        &turn_writable_roots,
+                        &turn_network_enabled,
+                    )
+                else
+                    try disabledToolResult(allocator, call)
             else if (std.mem.eql(u8, call.name, "request_user_input"))
-                try runRequestUserInputToolCall(
-                    allocator,
-                    call,
-                    options,
-                )
+                if (requestUserInputToolEnabled(options))
+                    try runRequestUserInputToolCall(
+                        allocator,
+                        call,
+                        options,
+                    )
+                else
+                    try disabledToolResult(allocator, call)
             else
                 try runToolCall(
                     allocator,
@@ -730,7 +740,11 @@ fn runToolCall(
         };
     }
 
-    if (mcp_runtime.isResourceToolName(call.name)) {
+    if (std.mem.eql(u8, call.name, "write_stdin") and !writeStdinToolEnabled(options)) {
+        return try disabledToolResult(allocator, call);
+    }
+
+    if (mcp_runtime.isResourceToolName(call.name) and mcpResourceToolsEnabled(options)) {
         var output = mcp_runtime.callResourceTool(allocator, cfg.codex_home, call.name, call.arguments) catch |err| {
             return .{
                 .call_id = try allocator.dupe(u8, call.call_id),
@@ -746,36 +760,38 @@ fn runToolCall(
         };
     }
 
-    if (mcp_catalog.find(call.name)) |mcp_tool| {
-        try reportMcpToolCallProgress(allocator, options, call.call_id, "calling", mcp_tool.server_name, mcp_tool.raw_tool_name, null);
-        var mcp_progress_context = McpRuntimeProgressContext{
-            .allocator = allocator,
-            .callback = options.mcp_tool_call_progress_callback,
-            .item_id = call.call_id,
-            .server_name = mcp_tool.server_name,
-            .tool_name = mcp_tool.raw_tool_name,
-        };
-        var output = mcp_runtime.callToolWithOptions(allocator, cfg.codex_home, mcp_tool, call.arguments, .{
-            .elicitation_callback = options.mcp_elicitation_callback,
-            .progress_callback = if (options.mcp_tool_call_progress_callback != null) .{
-                .ctx = &mcp_progress_context,
-                .on_progress = handleMcpRuntimeProgress,
-            } else null,
-        }) catch |err| {
-            try reportMcpToolCallProgress(allocator, options, call.call_id, "failed", mcp_tool.server_name, mcp_tool.raw_tool_name, @errorName(err));
+    if (mcpToolsEnabled(options)) {
+        if (mcp_catalog.find(call.name)) |mcp_tool| {
+            try reportMcpToolCallProgress(allocator, options, call.call_id, "calling", mcp_tool.server_name, mcp_tool.raw_tool_name, null);
+            var mcp_progress_context = McpRuntimeProgressContext{
+                .allocator = allocator,
+                .callback = options.mcp_tool_call_progress_callback,
+                .item_id = call.call_id,
+                .server_name = mcp_tool.server_name,
+                .tool_name = mcp_tool.raw_tool_name,
+            };
+            var output = mcp_runtime.callToolWithOptions(allocator, cfg.codex_home, mcp_tool, call.arguments, .{
+                .elicitation_callback = options.mcp_elicitation_callback,
+                .progress_callback = if (options.mcp_tool_call_progress_callback != null) .{
+                    .ctx = &mcp_progress_context,
+                    .on_progress = handleMcpRuntimeProgress,
+                } else null,
+            }) catch |err| {
+                try reportMcpToolCallProgress(allocator, options, call.call_id, "failed", mcp_tool.server_name, mcp_tool.raw_tool_name, @errorName(err));
+                return .{
+                    .call_id = try allocator.dupe(u8, call.call_id),
+                    .summary = try allocator.dupe(u8, "mcp failed"),
+                    .output = try std.fmt.allocPrint(allocator, "mcp tool failed: {s}", .{@errorName(err)}),
+                };
+            };
+            defer output.deinit(allocator);
+            try reportMcpToolCallProgress(allocator, options, call.call_id, "completed", mcp_tool.server_name, mcp_tool.raw_tool_name, null);
             return .{
                 .call_id = try allocator.dupe(u8, call.call_id),
-                .summary = try allocator.dupe(u8, "mcp failed"),
-                .output = try std.fmt.allocPrint(allocator, "mcp tool failed: {s}", .{@errorName(err)}),
+                .summary = try allocator.dupe(u8, output.summary),
+                .output = try allocator.dupe(u8, output.output),
             };
-        };
-        defer output.deinit(allocator);
-        try reportMcpToolCallProgress(allocator, options, call.call_id, "completed", mcp_tool.server_name, mcp_tool.raw_tool_name, null);
-        return .{
-            .call_id = try allocator.dupe(u8, call.call_id),
-            .summary = try allocator.dupe(u8, output.summary),
-            .output = try allocator.dupe(u8, output.output),
-        };
+        }
     }
 
     var tool_result = try tools.runFunctionCall(allocator, call, .{
@@ -801,7 +817,7 @@ fn runToolCall(
             try callback.on_diff_updated(callback.ctx);
         }
     }
-    if (std.mem.eql(u8, call.name, "write_stdin") and !std.mem.eql(u8, tool_result.summary, "unknown session")) {
+    if (std.mem.eql(u8, call.name, "write_stdin") and writeStdinToolEnabled(options) and !std.mem.eql(u8, tool_result.summary, "unknown session")) {
         try reportTerminalInteraction(allocator, options, call.call_id, call.arguments);
     }
     if (isCommandExecutionToolName(call.name) and tool_result.output.len > 0) {
@@ -811,6 +827,34 @@ fn runToolCall(
     }
 
     return tool_result;
+}
+
+fn disabledToolResult(allocator: std.mem.Allocator, call: api.FunctionCall) !tools.ToolResult {
+    return .{
+        .call_id = try allocator.dupe(u8, call.call_id),
+        .summary = try allocator.dupe(u8, "disabled tool"),
+        .output = try std.fmt.allocPrint(allocator, "{s} is disabled in this session", .{call.name}),
+    };
+}
+
+fn mcpToolsEnabled(options: TurnOptions) bool {
+    return options.feature_overrides.get("mcp_tools") orelse true;
+}
+
+fn mcpResourceToolsEnabled(options: TurnOptions) bool {
+    return options.feature_overrides.get("mcp_resource_tools") orelse true;
+}
+
+fn writeStdinToolEnabled(options: TurnOptions) bool {
+    return options.feature_overrides.get("write_stdin_tool") orelse true;
+}
+
+fn requestPermissionsToolEnabled(options: TurnOptions) bool {
+    return options.feature_overrides.get("request_permissions_tool") orelse false;
+}
+
+fn requestUserInputToolEnabled(options: TurnOptions) bool {
+    return options.feature_overrides.get("request_user_input_tool") orelse false;
 }
 
 const McpRuntimeProgressContext = struct {
