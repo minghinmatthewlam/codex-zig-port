@@ -39,6 +39,7 @@ pub const Config = struct {
     compact_prompt: ?[]const u8 = null,
     forced_login_method: ?ForcedLoginMethod = null,
     forced_chatgpt_workspace_id: ?[]const u8 = null,
+    cli_auth_credentials_store_mode: AuthCredentialsStoreMode = .file,
     tui_status_line: ?StringList,
     tui_terminal_title: ?StringList,
     tui_alternate_screen: AltScreenMode,
@@ -246,6 +247,30 @@ pub const AltScreenMode = enum {
             .auto => "auto",
             .always => "always",
             .never => "never",
+        };
+    }
+};
+
+pub const AuthCredentialsStoreMode = enum {
+    file,
+    keyring,
+    auto,
+    ephemeral,
+
+    pub fn parse(value: []const u8) !AuthCredentialsStoreMode {
+        if (std.mem.eql(u8, value, "file")) return .file;
+        if (std.mem.eql(u8, value, "keyring")) return .keyring;
+        if (std.mem.eql(u8, value, "auto")) return .auto;
+        if (std.mem.eql(u8, value, "ephemeral")) return .ephemeral;
+        return error.InvalidAuthCredentialsStoreMode;
+    }
+
+    pub fn label(self: AuthCredentialsStoreMode) []const u8 {
+        return switch (self) {
+            .file => "file",
+            .keyring => "keyring",
+            .auto => "auto",
+            .ephemeral => "ephemeral",
         };
     }
 };
@@ -848,6 +873,7 @@ pub fn loadWithOptions(allocator: std.mem.Allocator, options: LoadOptions) !Conf
     const forced_login_method = try resolveForcedLoginMethod(allocator, config_view, active_profile);
     const forced_chatgpt_workspace_id = try resolveForcedChatGptWorkspaceId(allocator, config_view, active_profile);
     errdefer if (forced_chatgpt_workspace_id) |value| allocator.free(value);
+    const cli_auth_credentials_store_mode = try resolveCliAuthCredentialsStoreMode(allocator, config_view);
     var tui_status_line = try resolveTuiStringArray(allocator, config_view, "status_line");
     errdefer if (tui_status_line) |*value| value.deinit(allocator);
     var tui_terminal_title = try resolveTuiStringArray(allocator, config_view, "terminal_title");
@@ -888,6 +914,7 @@ pub fn loadWithOptions(allocator: std.mem.Allocator, options: LoadOptions) !Conf
         .compact_prompt = compact_prompt,
         .forced_login_method = forced_login_method,
         .forced_chatgpt_workspace_id = forced_chatgpt_workspace_id,
+        .cli_auth_credentials_store_mode = cli_auth_credentials_store_mode,
         .tui_status_line = tui_status_line,
         .tui_terminal_title = tui_terminal_title,
         .tui_alternate_screen = tui_alternate_screen,
@@ -1254,6 +1281,12 @@ fn resolveForcedChatGptWorkspaceId(allocator: std.mem.Allocator, config_view: Co
     }
 
     return null;
+}
+
+fn resolveCliAuthCredentialsStoreMode(allocator: std.mem.Allocator, config_view: ConfigView) !AuthCredentialsStoreMode {
+    const value = try config_view.getTopLevelString(allocator, "cli_auth_credentials_store");
+    defer if (value) |owned| allocator.free(owned);
+    return AuthCredentialsStoreMode.parse(value orelse "file");
 }
 
 fn resolveTuiStringArray(allocator: std.mem.Allocator, config_view: ConfigView, key: []const u8) !?StringList {
@@ -2981,6 +3014,7 @@ test "profile values override top-level config values" {
         \\personality = "friendly"
         \\forced_login_method = "api"
         \\forced_chatgpt_workspace_id = "base-workspace"
+        \\cli_auth_credentials_store = "keyring"
         \\chatgpt_base_url = "https://base.example/codex"
         \\
         \\[profiles.work]
@@ -3037,6 +3071,7 @@ test "profile values override top-level config values" {
     const forced_workspace = try resolveForcedChatGptWorkspaceId(allocator, view, active_profile.?);
     defer allocator.free(forced_workspace.?);
     try std.testing.expectEqualStrings("profile-workspace", forced_workspace.?);
+    try std.testing.expectEqual(AuthCredentialsStoreMode.keyring, try resolveCliAuthCredentialsStoreMode(allocator, view));
     try std.testing.expectEqual(@as(?bool, true), WebSearchMode.live.externalWebAccess());
     try std.testing.expectEqual(@as(?bool, false), WebSearchMode.cached.externalWebAccess());
     try std.testing.expect(WebSearchMode.disabled.externalWebAccess() == null);
@@ -3055,6 +3090,17 @@ test "review model resolves from top-level config" {
     const review_model = try resolveReviewModel(allocator, view);
     defer allocator.free(review_model.?);
     try std.testing.expectEqualStrings("review-model", review_model.?);
+}
+
+test "cli auth credentials store resolves from top-level config" {
+    const allocator = std.testing.allocator;
+    try std.testing.expectEqual(AuthCredentialsStoreMode.file, try resolveCliAuthCredentialsStoreMode(allocator, .{ .bytes = "" }));
+    try std.testing.expectEqual(AuthCredentialsStoreMode.auto, try resolveCliAuthCredentialsStoreMode(allocator, .{ .bytes = "cli_auth_credentials_store = \"auto\"\n" }));
+    try std.testing.expectEqual(AuthCredentialsStoreMode.ephemeral, try resolveCliAuthCredentialsStoreMode(allocator, .{ .bytes = "cli_auth_credentials_store = \"ephemeral\"\n" }));
+    try std.testing.expectError(
+        error.InvalidAuthCredentialsStoreMode,
+        resolveCliAuthCredentialsStoreMode(allocator, .{ .bytes = "cli_auth_credentials_store = \"unknown\"\n" }),
+    );
 }
 
 test "model context limits resolve from top-level config" {
