@@ -4664,6 +4664,196 @@ def run_thread_started_opt_out_smoke(binary: Path) -> None:
         shutil.rmtree(codex_home, ignore_errors=True)
 
 
+def run_thread_realtime_lifecycle_smoke(binary: Path) -> None:
+    codex_home = Path(tempfile.mkdtemp(prefix="codex-zig-thread-realtime-", dir="/tmp"))
+    (codex_home / "config.toml").write_text(
+        "suppress_unstable_features_warning = true\n"
+        "\n"
+        "[features]\n"
+        "realtime_conversation = true\n",
+        encoding="utf-8",
+    )
+    env = os.environ.copy()
+    env["CODEX_HOME"] = str(codex_home)
+    proc = subprocess.Popen(
+        [str(binary), "app-server"],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        env=env,
+    )
+    try:
+        write_json_line(
+            proc,
+            {
+                "jsonrpc": "2.0",
+                "id": "initialize-realtime",
+                "method": "initialize",
+                "params": {
+                    "clientInfo": {"name": "app-server-smoke", "version": "0"},
+                    "capabilities": EXPERIMENTAL_API_CAPABILITIES,
+                },
+            },
+        )
+        initialized = read_json_line(proc, 5)
+        assert initialized["id"] == "initialize-realtime"
+
+        write_json_line(
+            proc,
+            {
+                "jsonrpc": "2.0",
+                "id": "thread-start-realtime",
+                "method": "thread/start",
+                "params": {"ephemeral": True},
+            },
+        )
+        started = read_json_line(proc, 5)
+        assert started["id"] == "thread-start-realtime"
+        thread = started["result"]["thread"]
+        thread_id = thread["id"]
+        assert_thread_started_notification(read_json_line(proc, 5), thread)
+
+        write_json_line(
+            proc,
+            {
+                "jsonrpc": "2.0",
+                "id": "thread-realtime-append-text-before-start",
+                "method": "thread/realtime/appendText",
+                "params": {"threadId": thread_id, "text": "before start"},
+            },
+        )
+        append_text_before_start = read_json_line(proc, 5)
+        assert append_text_before_start["id"] == "thread-realtime-append-text-before-start"
+        assert append_text_before_start["result"] == {}
+        append_text_error = read_json_line(proc, 5)
+        assert append_text_error == {
+            "jsonrpc": "2.0",
+            "method": "thread/realtime/error",
+            "params": {
+                "threadId": thread_id,
+                "message": "conversation is not running",
+            },
+        }
+
+        write_json_line(
+            proc,
+            {
+                "jsonrpc": "2.0",
+                "id": "thread-realtime-start-websocket",
+                "method": "thread/realtime/start",
+                "params": {
+                    "threadId": thread_id,
+                    "outputModality": "audio",
+                    "prompt": "backend prompt",
+                    "realtimeSessionId": "session-smoke",
+                    "transport": {"type": "websocket"},
+                    "voice": "marin",
+                },
+            },
+        )
+        realtime_start = read_json_line(proc, 5)
+        assert realtime_start["id"] == "thread-realtime-start-websocket"
+        assert realtime_start["result"] == {}
+        realtime_started = read_json_line(proc, 5)
+        assert realtime_started == {
+            "jsonrpc": "2.0",
+            "method": "thread/realtime/started",
+            "params": {
+                "threadId": thread_id,
+                "realtimeSessionId": "session-smoke",
+                "version": "v2",
+            },
+        }
+
+        write_json_line(
+            proc,
+            {
+                "jsonrpc": "2.0",
+                "id": "thread-realtime-append-text-active",
+                "method": "thread/realtime/appendText",
+                "params": {"threadId": thread_id, "text": "hello realtime"},
+            },
+        )
+        append_text_active = read_json_line(proc, 5)
+        assert append_text_active["id"] == "thread-realtime-append-text-active"
+        assert append_text_active["result"] == {}
+
+        write_json_line(
+            proc,
+            {
+                "jsonrpc": "2.0",
+                "id": "thread-realtime-append-audio-active",
+                "method": "thread/realtime/appendAudio",
+                "params": {
+                    "threadId": thread_id,
+                    "audio": EXPECTED_REALTIME_AUDIO_CHUNK,
+                },
+            },
+        )
+        append_audio_active = read_json_line(proc, 5)
+        assert append_audio_active["id"] == "thread-realtime-append-audio-active"
+        assert append_audio_active["result"] == {}
+
+        write_json_line(
+            proc,
+            {
+                "jsonrpc": "2.0",
+                "id": "thread-realtime-stop-active",
+                "method": "thread/realtime/stop",
+                "params": {"threadId": thread_id},
+            },
+        )
+        realtime_stop = read_json_line(proc, 5)
+        assert realtime_stop["id"] == "thread-realtime-stop-active"
+        assert realtime_stop["result"] == {}
+        realtime_closed = read_json_line(proc, 5)
+        assert realtime_closed == {
+            "jsonrpc": "2.0",
+            "method": "thread/realtime/closed",
+            "params": {"threadId": thread_id, "reason": "requested"},
+        }
+
+        write_json_line(
+            proc,
+            {
+                "jsonrpc": "2.0",
+                "id": "thread-realtime-start-webrtc",
+                "method": "thread/realtime/start",
+                "params": {
+                    "threadId": thread_id,
+                    "outputModality": "audio",
+                    "transport": {"type": "webrtc", "sdp": "v=0\\r\\n"},
+                },
+            },
+        )
+        realtime_start_webrtc = read_json_line(proc, 5)
+        assert realtime_start_webrtc["id"] == "thread-realtime-start-webrtc"
+        assert realtime_start_webrtc["result"] == {}
+        realtime_webrtc_error = read_json_line(proc, 5)
+        assert realtime_webrtc_error == {
+            "jsonrpc": "2.0",
+            "method": "thread/realtime/error",
+            "params": {
+                "threadId": thread_id,
+                "message": (
+                    "realtime WebRTC transport requires upstream realtime backend support"
+                ),
+            },
+        }
+
+        assert proc.stdin is not None
+        proc.stdin.close()
+        proc.wait(timeout=5)
+        if proc.returncode != 0:
+            raise AssertionError(f"app-server exited {proc.returncode}: {proc.stderr.read()}")
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+            proc.wait(timeout=5)
+        shutil.rmtree(codex_home, ignore_errors=True)
+
+
 def run_thread_start_project_trust_rpc_smoke(binary: Path) -> None:
     def rpc(codex_home: Path, request_id: str, params: dict) -> dict:
         env = os.environ.copy()
@@ -48941,6 +49131,8 @@ def main() -> None:
     print("app-server-stdio-e2e: ok")
     run_thread_started_opt_out_smoke(binary)
     print("app-server-thread-started-opt-out-e2e: ok")
+    run_thread_realtime_lifecycle_smoke(binary)
+    print("app-server-thread-realtime-lifecycle-e2e: ok")
     run_thread_start_project_trust_rpc_smoke(binary)
     print("app-server-thread-start-project-trust-rpc-e2e: ok")
     run_unmaterialized_thread_history_smoke(binary)

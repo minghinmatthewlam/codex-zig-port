@@ -1150,9 +1150,16 @@ Additional app-server loaded-thread realtime feature coverage:
 `thread/realtime/start`, `thread/realtime/stop`,
 `thread/realtime/appendText`, and `thread/realtime/appendAudio` now reject
 already-loaded threads with Rust's `thread {id} does not support realtime
-conversation` error while the `realtime_conversation` feature is disabled. Full
-feature-enabled realtime session start, append, stop, and notification lifecycle
-remain planned.
+conversation` error while the `realtime_conversation` feature is disabled. When
+the feature is enabled, the websocket transport has an in-process lifecycle:
+`thread/realtime/start` records a thread-scoped session and emits
+`thread/realtime/started` with the requested realtime session id or the thread
+session id, active `appendText`/`appendAudio` requests return Rust-shaped empty
+responses, inactive appends emit `thread/realtime/error`, and
+`thread/realtime/stop` clears the active session and emits
+`thread/realtime/closed` with reason `requested`. WebRTC SDP exchange, upstream
+Realtime API websocket streaming, transcript/audio/backend item fanout, and
+full startup-context/backend prompt handling remain planned.
 
 Additional app-server goal coverage: `thread/goal/set`, `thread/goal/get`, and `thread/goal/clear` honor the `goals` feature gate, validate `threadId`, objective/status/token-budget params, reject ephemeral loaded threads, maintain loaded-thread goal state for already-loaded persistent threads, persist set/update/clear changes into Zig-native transcript metadata, restore saved goals through `thread/resume`, emit `thread/goal/updated` and `thread/goal/cleared` notifications, return Rust-shaped `thread not found` responses for valid missing threads in the current no-store runtime, and include generated TypeScript and JSON schemas for the goal requests, responses, `thread/goal/updated`, and `thread/goal/cleared` until full state-db-backed goal parity lands.
 

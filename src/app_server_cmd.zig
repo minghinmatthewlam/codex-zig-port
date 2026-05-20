@@ -608,6 +608,7 @@ const LoadedThread = struct {
     created_at: i64,
     updated_at: i64,
     status: ThreadRuntimeStatus = .idle,
+    realtime_session: ?LoadedThreadRealtimeSession = null,
 
     fn deinit(self: *LoadedThread, allocator: std.mem.Allocator) void {
         allocator.free(self.id);
@@ -645,6 +646,16 @@ const LoadedThread = struct {
         self.transcript.deinit(allocator);
         allocator.free(self.turns_json);
         if (self.pending_session_start_source) |value| allocator.free(value);
+        if (self.realtime_session) |*session| session.deinit(allocator);
+    }
+};
+
+const LoadedThreadRealtimeSession = struct {
+    session_id: ?[]const u8,
+    version: []const u8,
+
+    fn deinit(self: *LoadedThreadRealtimeSession, allocator: std.mem.Allocator) void {
+        if (self.session_id) |value| allocator.free(value);
     }
 };
 
@@ -35224,13 +35235,14 @@ fn handleThreadMethod(
         if (!isUuidString(thread_id)) {
             return renderInvalidThreadId(allocator, id_value, thread_id);
         }
-        if (findLoadedThread(state, thread_id) == null) {
+        const thread_index = findLoadedThreadIndex(state, thread_id) orelse {
             return renderThreadNotFound(allocator, id_value, thread_id);
-        }
+        };
         if (!(try appServerFeatureEnabled(allocator, state, "realtime_conversation"))) {
             return renderThreadRealtimeFeatureDisabled(allocator, id_value, thread_id);
         }
-        return renderParsedButNotImplemented(allocator, id_value, method);
+        try stopLoadedThreadRealtime(allocator, state, thread_index);
+        return renderJsonRpcResult(allocator, id_value, "{}");
     }
     if (std.mem.eql(u8, method, "thread/realtime/appendText")) {
         const object = parseThreadObjectParams(params_value) catch |err| switch (err) {
@@ -35244,13 +35256,14 @@ fn handleThreadMethod(
         if (!isUuidString(thread_id)) {
             return renderInvalidThreadId(allocator, id_value, thread_id);
         }
-        if (findLoadedThread(state, thread_id) == null) {
+        const thread_index = findLoadedThreadIndex(state, thread_id) orelse {
             return renderThreadNotFound(allocator, id_value, thread_id);
-        }
+        };
         if (!(try appServerFeatureEnabled(allocator, state, "realtime_conversation"))) {
             return renderThreadRealtimeFeatureDisabled(allocator, id_value, thread_id);
         }
-        return renderParsedButNotImplemented(allocator, id_value, method);
+        try requireLoadedThreadRealtimeRunning(allocator, state, thread_index);
+        return renderJsonRpcResult(allocator, id_value, "{}");
     }
     if (std.mem.eql(u8, method, "thread/realtime/appendAudio")) {
         const object = parseThreadObjectParams(params_value) catch |err| switch (err) {
@@ -35265,13 +35278,14 @@ fn handleThreadMethod(
         if (!isUuidString(thread_id)) {
             return renderInvalidThreadId(allocator, id_value, thread_id);
         }
-        if (findLoadedThread(state, thread_id) == null) {
+        const thread_index = findLoadedThreadIndex(state, thread_id) orelse {
             return renderThreadNotFound(allocator, id_value, thread_id);
-        }
+        };
         if (!(try appServerFeatureEnabled(allocator, state, "realtime_conversation"))) {
             return renderThreadRealtimeFeatureDisabled(allocator, id_value, thread_id);
         }
-        return renderParsedButNotImplemented(allocator, id_value, method);
+        try requireLoadedThreadRealtimeRunning(allocator, state, thread_index);
+        return renderJsonRpcResult(allocator, id_value, "{}");
     }
     if (std.mem.eql(u8, method, "thread/realtime/start")) {
         const object = parseThreadObjectParams(params_value) catch |err| switch (err) {
@@ -35286,13 +35300,14 @@ fn handleThreadMethod(
         if (!isUuidString(thread_id)) {
             return renderInvalidThreadId(allocator, id_value, thread_id);
         }
-        if (findLoadedThread(state, thread_id) == null) {
+        const thread_index = findLoadedThreadIndex(state, thread_id) orelse {
             return renderThreadNotFound(allocator, id_value, thread_id);
-        }
+        };
         if (!(try appServerFeatureEnabled(allocator, state, "realtime_conversation"))) {
             return renderThreadRealtimeFeatureDisabled(allocator, id_value, thread_id);
         }
-        return renderParsedButNotImplemented(allocator, id_value, method);
+        try startLoadedThreadRealtime(allocator, state, thread_index, object);
+        return renderJsonRpcResult(allocator, id_value, "{}");
     }
     return renderParsedButNotImplemented(allocator, id_value, method);
 }
@@ -39995,6 +40010,166 @@ fn renderThreadRealtimeFeatureDisabled(allocator: std.mem.Allocator, id_value: s
     );
     defer allocator.free(message);
     return renderJsonRpcError(allocator, id_value, -32600, message);
+}
+
+fn startLoadedThreadRealtime(
+    allocator: std.mem.Allocator,
+    state: *AppServerState,
+    thread_index: usize,
+    object: std.json.ObjectMap,
+) !void {
+    var thread = &state.loaded_threads.items[thread_index];
+    if (thread.realtime_session) |*session| {
+        session.deinit(allocator);
+        thread.realtime_session = null;
+    }
+
+    const transport = threadRealtimeStartTransport(object);
+    if (std.mem.eql(u8, transport, "webrtc")) {
+        try queueThreadRealtimeErrorNotification(
+            allocator,
+            state,
+            thread.id,
+            "realtime WebRTC transport requires upstream realtime backend support",
+        );
+        return;
+    }
+
+    var session_id: ?[]const u8 = null;
+    errdefer if (session_id) |value| allocator.free(value);
+    const requested_session_id = optionalStringParam(object, "realtimeSessionId") orelse thread.session_id;
+    session_id = try allocator.dupe(u8, requested_session_id);
+
+    thread.realtime_session = .{
+        .session_id = session_id,
+        .version = "v2",
+    };
+    session_id = null;
+
+    try queueThreadRealtimeStartedNotification(
+        allocator,
+        state,
+        thread.id,
+        thread.realtime_session.?.session_id,
+        thread.realtime_session.?.version,
+    );
+}
+
+fn stopLoadedThreadRealtime(
+    allocator: std.mem.Allocator,
+    state: *AppServerState,
+    thread_index: usize,
+) !void {
+    var thread = &state.loaded_threads.items[thread_index];
+    if (thread.realtime_session) |*session| {
+        session.deinit(allocator);
+        thread.realtime_session = null;
+    }
+    try queueThreadRealtimeClosedNotification(allocator, state, thread.id, "requested");
+}
+
+fn requireLoadedThreadRealtimeRunning(
+    allocator: std.mem.Allocator,
+    state: *AppServerState,
+    thread_index: usize,
+) !void {
+    const thread = &state.loaded_threads.items[thread_index];
+    if (thread.realtime_session != null) return;
+    try queueThreadRealtimeErrorNotification(allocator, state, thread.id, "conversation is not running");
+}
+
+fn threadRealtimeStartTransport(object: std.json.ObjectMap) []const u8 {
+    const value = object.get("transport") orelse return "websocket";
+    if (value == .null) return "websocket";
+    return value.object.get("type").?.string;
+}
+
+fn queueThreadRealtimeStartedNotification(
+    allocator: std.mem.Allocator,
+    state: *AppServerState,
+    thread_id: []const u8,
+    realtime_session_id: ?[]const u8,
+    version: []const u8,
+) !void {
+    const notification = try renderThreadRealtimeStartedNotification(allocator, thread_id, realtime_session_id, version);
+    var notification_moved = false;
+    errdefer if (!notification_moved) allocator.free(notification);
+    try queuePendingServerNotification(allocator, state, "thread/realtime/started", notification);
+    notification_moved = true;
+}
+
+fn queueThreadRealtimeClosedNotification(
+    allocator: std.mem.Allocator,
+    state: *AppServerState,
+    thread_id: []const u8,
+    reason: ?[]const u8,
+) !void {
+    const notification = try renderThreadRealtimeClosedNotification(allocator, thread_id, reason);
+    var notification_moved = false;
+    errdefer if (!notification_moved) allocator.free(notification);
+    try queuePendingServerNotification(allocator, state, "thread/realtime/closed", notification);
+    notification_moved = true;
+}
+
+fn queueThreadRealtimeErrorNotification(
+    allocator: std.mem.Allocator,
+    state: *AppServerState,
+    thread_id: []const u8,
+    message: []const u8,
+) !void {
+    const notification = try renderThreadRealtimeErrorNotification(allocator, thread_id, message);
+    var notification_moved = false;
+    errdefer if (!notification_moved) allocator.free(notification);
+    try queuePendingServerNotification(allocator, state, "thread/realtime/error", notification);
+    notification_moved = true;
+}
+
+fn renderThreadRealtimeStartedNotification(
+    allocator: std.mem.Allocator,
+    thread_id: []const u8,
+    realtime_session_id: ?[]const u8,
+    version: []const u8,
+) ![]const u8 {
+    var notification = std.ArrayList(u8).empty;
+    errdefer notification.deinit(allocator);
+    try notification.appendSlice(allocator, "{\"jsonrpc\":\"2.0\",\"method\":\"thread/realtime/started\",\"params\":{\"threadId\":");
+    try appendJsonString(allocator, &notification, thread_id);
+    try notification.appendSlice(allocator, ",\"realtimeSessionId\":");
+    try appendOptionalJsonString(allocator, &notification, realtime_session_id);
+    try notification.appendSlice(allocator, ",\"version\":");
+    try appendJsonString(allocator, &notification, version);
+    try notification.appendSlice(allocator, "}}");
+    return notification.toOwnedSlice(allocator);
+}
+
+fn renderThreadRealtimeClosedNotification(
+    allocator: std.mem.Allocator,
+    thread_id: []const u8,
+    reason: ?[]const u8,
+) ![]const u8 {
+    var notification = std.ArrayList(u8).empty;
+    errdefer notification.deinit(allocator);
+    try notification.appendSlice(allocator, "{\"jsonrpc\":\"2.0\",\"method\":\"thread/realtime/closed\",\"params\":{\"threadId\":");
+    try appendJsonString(allocator, &notification, thread_id);
+    try notification.appendSlice(allocator, ",\"reason\":");
+    try appendOptionalJsonString(allocator, &notification, reason);
+    try notification.appendSlice(allocator, "}}");
+    return notification.toOwnedSlice(allocator);
+}
+
+fn renderThreadRealtimeErrorNotification(
+    allocator: std.mem.Allocator,
+    thread_id: []const u8,
+    message: []const u8,
+) ![]const u8 {
+    var notification = std.ArrayList(u8).empty;
+    errdefer notification.deinit(allocator);
+    try notification.appendSlice(allocator, "{\"jsonrpc\":\"2.0\",\"method\":\"thread/realtime/error\",\"params\":{\"threadId\":");
+    try appendJsonString(allocator, &notification, thread_id);
+    try notification.appendSlice(allocator, ",\"message\":");
+    try appendJsonString(allocator, &notification, message);
+    try notification.appendSlice(allocator, "}}");
+    return notification.toOwnedSlice(allocator);
 }
 
 fn parseThreadObjectParams(params_value: ?std.json.Value) !std.json.ObjectMap {
