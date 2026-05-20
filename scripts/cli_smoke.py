@@ -2021,6 +2021,41 @@ def make_exec_provider_query_params_env(temp_root: Path, base_url: str) -> dict[
     return env
 
 
+def make_exec_oss_clears_provider_metadata_env(temp_root: Path, base_url: str) -> dict[str, str]:
+    codex_home = temp_root / "codex-home"
+    codex_home.mkdir()
+    (codex_home / "config.toml").write_text(
+        "\n".join(
+            [
+                'model = "gpt-provider-stale"',
+                'model_provider = "corp"',
+                'oss_provider = "ollama"',
+                "",
+                "[model_providers.corp]",
+                f'base_url = "{base_url}/custom"',
+                'env_key = "CORP_API_KEY"',
+                'wire_api = "responses"',
+                'requires_openai_auth = false',
+                'query_params = { "api-version" = "2025-04-01-preview", "deployment" = "codex-test" }',
+                'http_headers = { "X-Corp-Static" = "static-value" }',
+                "",
+                "[model_providers.corp.env_http_headers]",
+                '"X-Corp-Env" = "CORP_HEADER_TOKEN"',
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    env = os.environ.copy()
+    env["CODEX_HOME"] = str(codex_home)
+    env["CODEX_OSS_BASE_URL"] = f"{base_url}/v1"
+    env["CORP_API_KEY"] = "provider-token"
+    env["CORP_HEADER_TOKEN"] = "env-header-value"
+    env.pop("OPENAI_API_KEY", None)
+    env.pop("CODEX_ACCESS_TOKEN", None)
+    return env
+
+
 def make_exec_provider_command_auth_env(
     temp_root: Path,
     base_url: str,
@@ -6946,6 +6981,51 @@ def run_exec_provider_query_params_smoke(binary: Path) -> None:
         shutil.rmtree(temp_root, ignore_errors=True)
 
 
+def run_exec_oss_clears_provider_metadata_smoke(binary: Path) -> None:
+    temp_root = Path(tempfile.mkdtemp(prefix="codex-zig-cli-oss-provider-metadata-", dir="/tmp"))
+    server, base_url = start_exec_responses_server()
+    try:
+        env = make_exec_oss_clears_provider_metadata_env(temp_root, base_url)
+
+        result = subprocess.run(
+            [
+                str(binary.resolve()),
+                "exec",
+                "--skip-git-repo-check",
+                "--oss",
+                "--local-provider",
+                "ollama",
+                "use",
+                "oss",
+                "provider",
+                "metadata",
+            ],
+            cwd=temp_root,
+            env=env,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=5,
+            check=True,
+        )
+        assert result.stdout == "stored reply\n"
+        assert len(server.request_bodies) == 1
+        assert server.request_paths == ["/v1/responses"]
+        assert server.request_bodies[0]["model"] == "gpt-oss:20b"
+        assert (
+            server.request_bodies[0]["input"][-1]["content"][0]["text"]
+            == "use oss provider metadata"
+        )
+        headers = server.request_headers[0]
+        assert header_value(headers, "Authorization") is None
+        assert header_value(headers, "X-Corp-Static") is None
+        assert header_value(headers, "X-Corp-Env") is None
+    finally:
+        server.shutdown()
+        server.server_close()
+        shutil.rmtree(temp_root, ignore_errors=True)
+
+
 def run_exec_provider_command_auth_smoke(binary: Path) -> None:
     temp_root = Path(tempfile.mkdtemp(prefix="codex-zig-cli-provider-command-auth-", dir="/tmp"))
     server, base_url = start_exec_responses_server()
@@ -9505,6 +9585,7 @@ def main() -> None:
     run_exec_provider_wire_api_smoke(binary)
     run_exec_provider_headers_smoke(binary)
     run_exec_provider_query_params_smoke(binary)
+    run_exec_oss_clears_provider_metadata_smoke(binary)
     run_exec_provider_command_auth_smoke(binary)
     run_exec_provider_command_auth_refresh_smoke(binary)
     run_exec_provider_command_auth_refresh_interval_smoke(binary)
@@ -9543,6 +9624,7 @@ def main() -> None:
     print("cli-exec-provider-wire-api-e2e: ok")
     print("cli-exec-provider-headers-e2e: ok")
     print("cli-exec-provider-query-params-e2e: ok")
+    print("cli-exec-oss-provider-metadata-e2e: ok")
     print("cli-exec-provider-command-auth-e2e: ok")
     print("cli-exec-provider-command-auth-refresh-e2e: ok")
     print("cli-exec-provider-command-auth-refresh-interval-e2e: ok")

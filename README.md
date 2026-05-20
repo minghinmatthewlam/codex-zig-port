@@ -592,6 +592,9 @@ The current port supports Responses wire API providers, rejects the removed
 marks invalid. Command-backed provider tokens are cached while fresh, rerun
 after `refresh_interval_ms` before a later request, and force-refreshed once on
 401 before retrying the request.
+When `--oss` is active, the local OSS request path ignores configured custom
+provider request metadata so remote-provider query params, HTTP headers, and
+provider auth are not sent to the local endpoint.
 
 ```sh
 codex-zig --profile work auth-status

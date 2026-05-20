@@ -1155,3 +1155,10 @@ feature-enabled realtime session start, append, stop, and notification lifecycle
 remain planned.
 
 Additional app-server goal coverage: `thread/goal/set`, `thread/goal/get`, and `thread/goal/clear` honor the `goals` feature gate, validate `threadId`, objective/status/token-budget params, reject ephemeral loaded threads, maintain loaded-thread goal state for already-loaded persistent threads, persist set/update/clear changes into Zig-native transcript metadata, restore saved goals through `thread/resume`, emit `thread/goal/updated` and `thread/goal/cleared` notifications, return Rust-shaped `thread not found` responses for valid missing threads in the current no-store runtime, and include generated TypeScript and JSON schemas for the goal requests, responses, `thread/goal/updated`, and `thread/goal/cleared` until full state-db-backed goal parity lands.
+
+Additional CLI OSS config coverage: `--oss` now clears configured custom
+provider request metadata before constructing the local OSS request. Focused
+CLI smoke coverage verifies an exec request with a configured custom provider,
+query params, static headers, and env-backed headers still targets the local
+`/v1/responses` endpoint with the OSS default model and without stale provider
+authorization, query params, or custom headers.
