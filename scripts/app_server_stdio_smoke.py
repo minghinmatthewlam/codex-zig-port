@@ -38653,15 +38653,10 @@ def run_apps_list_rpc_smoke(binary: Path) -> None:
         system_requirements_path.write_text(
             "\n".join(
                 [
-                    "[apps.gmail]",
-                    "enabled = true",
-                    "",
-                    "[apps.slack]",
-                    "enabled = false",
-                    "",
-                    "[apps.calendar]",
-                    "enabled = false",
-                    "",
+                    "[apps]",
+                    'gmail = { enabled = true }',
+                    "slack.enabled = false",
+                    'calendar = { enabled = false }',
                 ]
             ),
             encoding="utf-8",
