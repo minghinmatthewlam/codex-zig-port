@@ -33488,6 +33488,25 @@ def run_config_value_write_rpc_smoke(binary: Path) -> None:
         )
         assert config_path.read_text(encoding="utf-8") == before_rejected_scalar_write
 
+        rejected_quoted_profile_scalar = rpc(
+            "config-write-reject-quoted-profile-scalar-requirement",
+            "config/value/write",
+            {
+                "filePath": str(config_path),
+                "keyPath": 'profiles."prod=eu".sandbox_mode',
+                "value": "danger-full-access",
+                "mergeStrategy": "replace",
+                "expectedVersion": allowed_approval["result"]["version"],
+            },
+        )
+        assert rejected_quoted_profile_scalar["id"] == "config-write-reject-quoted-profile-scalar-requirement"
+        assert rejected_quoted_profile_scalar["error"]["code"] == -32602
+        assert (
+            'invalid value for `sandbox_mode`: `profiles.prod=eu.sandbox_mode="danger-full-access"`'
+            in rejected_quoted_profile_scalar["error"]["message"]
+        )
+        assert config_path.read_text(encoding="utf-8") == before_rejected_scalar_write
+
         clear_approval = rpc(
             "config-write-clear-approval-requirement",
             "config/value/write",
