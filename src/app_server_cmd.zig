@@ -3739,11 +3739,11 @@ const CONFIG_REQUIREMENTS_TS =
     \\import type { SandboxMode } from "./SandboxMode";
     \\
     \\export interface ConfigRequirements {
-    \\  allowedApprovalPolicies: AskForApproval[] | null;
-    \\  allowedSandboxModes: SandboxMode[] | null;
-    \\  allowedWebSearchModes: WebSearchMode[] | null;
-    \\  featureRequirements: Record<string, boolean | undefined> | null;
-    \\  enforceResidency: ResidencyRequirement | null;
+    \\  allowedApprovalPolicies?: AskForApproval[] | null;
+    \\  allowedSandboxModes?: SandboxMode[] | null;
+    \\  allowedWebSearchModes?: WebSearchMode[] | null;
+    \\  featureRequirements?: Record<string, boolean | undefined> | null;
+    \\  enforceResidency?: ResidencyRequirement | null;
     \\}
     \\
     ;
@@ -3759,14 +3759,14 @@ const CONFIG_REQUIREMENTS_EXPERIMENTAL_TS =
     \\import type { SandboxMode } from "./SandboxMode";
     \\
     \\export interface ConfigRequirements {
-    \\  allowedApprovalPolicies: AskForApproval[] | null;
-    \\  allowedApprovalsReviewers: ApprovalsReviewer[] | null;
-    \\  allowedSandboxModes: SandboxMode[] | null;
-    \\  allowedWebSearchModes: WebSearchMode[] | null;
-    \\  featureRequirements: Record<string, boolean | undefined> | null;
-    \\  hooks: ManagedHooksRequirements | null;
-    \\  enforceResidency: ResidencyRequirement | null;
-    \\  network: NetworkRequirements | null;
+    \\  allowedApprovalPolicies?: AskForApproval[] | null;
+    \\  allowedApprovalsReviewers?: ApprovalsReviewer[] | null;
+    \\  allowedSandboxModes?: SandboxMode[] | null;
+    \\  allowedWebSearchModes?: WebSearchMode[] | null;
+    \\  featureRequirements?: Record<string, boolean | undefined> | null;
+    \\  hooks?: ManagedHooksRequirements | null;
+    \\  enforceResidency?: ResidencyRequirement | null;
+    \\  network?: NetworkRequirements | null;
     \\}
     \\
     ;
