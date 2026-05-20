@@ -42556,9 +42556,64 @@ def run_json_schema_smoke(binary: Path) -> None:
             ]["anyOf"][0]["items"]["$ref"]
             == "#/$defs/SandboxMode"
         )
+        config_requirement_properties = config_requirements_response["$defs"][
+            "ConfigRequirements"
+        ]["properties"]
+        assert (
+            config_requirement_properties["allowedApprovalsReviewers"]["anyOf"][0][
+                "items"
+            ]["$ref"]
+            == "#/$defs/ApprovalsReviewer"
+        )
+        assert (
+            config_requirement_properties["hooks"]["anyOf"][0]["$ref"]
+            == "#/$defs/ManagedHooksRequirements"
+        )
+        assert (
+            config_requirement_properties["network"]["anyOf"][0]["$ref"]
+            == "#/$defs/NetworkRequirements"
+        )
         assert config_requirements_response["$defs"]["ResidencyRequirement"][
             "enum"
         ] == ["us"]
+        stable_schema_out_dir = Path(
+            tempfile.mkdtemp(prefix="codex-zig-json-schema-stable-", dir="/tmp")
+        )
+        try:
+            stable_proc = subprocess.run(
+                [
+                    str(binary),
+                    "app-server",
+                    "generate-json-schema",
+                    "--out",
+                    str(stable_schema_out_dir),
+                ],
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                timeout=5,
+                check=False,
+            )
+            assert stable_proc.returncode == 0, stable_proc.stderr
+            stable_config_requirements_response = json.loads(
+                (
+                    stable_schema_out_dir
+                    / "v2"
+                    / "ConfigRequirementsReadResponse.json"
+                ).read_text(encoding="utf-8")
+            )
+            stable_config_requirement_properties = stable_config_requirements_response[
+                "$defs"
+            ]["ConfigRequirements"]["properties"]
+            assert "allowedApprovalsReviewers" not in stable_config_requirement_properties
+            assert "hooks" not in stable_config_requirement_properties
+            assert "network" not in stable_config_requirement_properties
+            assert "required" not in stable_config_requirements_response["$defs"][
+                "ConfigRequirements"
+            ]
+        finally:
+            shutil.rmtree(stable_schema_out_dir, ignore_errors=True)
         config_value_write_params = json.loads(
             (out_dir / "v2" / "ConfigValueWriteParams.json").read_text(
                 encoding="utf-8"
@@ -46125,8 +46180,14 @@ def run_typescript_generation_smoke(binary: Path) -> None:
             ],
             "ConfigRequirements": [
                 'import type { ResidencyRequirement } from "./ResidencyRequirement";',
+                'import type { ApprovalsReviewer } from "./ApprovalsReviewer";',
+                'import type { ManagedHooksRequirements } from "./ManagedHooksRequirements";',
+                'import type { NetworkRequirements } from "./NetworkRequirements";',
                 "allowedApprovalPolicies: AskForApproval[] | null;",
+                "allowedApprovalsReviewers: ApprovalsReviewer[] | null;",
+                "hooks: ManagedHooksRequirements | null;",
                 "enforceResidency: ResidencyRequirement | null;",
+                "network: NetworkRequirements | null;",
             ],
             "ConfigRequirementsReadResponse": [
                 'import type { ConfigRequirements } from "./ConfigRequirements";',
@@ -46308,6 +46369,34 @@ def run_typescript_generation_smoke(binary: Path) -> None:
         ]:
             assert f'method: "{method}";' in server_request
             assert f"params: {params_type};" in server_request
+        stable_ts_out_dir = Path(
+            tempfile.mkdtemp(prefix="codex-zig-typescript-stable-", dir="/tmp")
+        )
+        try:
+            stable_proc = subprocess.run(
+                [
+                    str(binary),
+                    "app-server",
+                    "generate-ts",
+                    "--out",
+                    str(stable_ts_out_dir),
+                ],
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                timeout=5,
+                check=False,
+            )
+            assert stable_proc.returncode == 0, stable_proc.stderr
+            stable_config_requirements = (
+                stable_ts_out_dir / "v2" / "ConfigRequirements.ts"
+            ).read_text(encoding="utf-8")
+            assert "allowedApprovalsReviewers" not in stable_config_requirements
+            assert "ManagedHooksRequirements" not in stable_config_requirements
+            assert "NetworkRequirements" not in stable_config_requirements
+        finally:
+            shutil.rmtree(stable_ts_out_dir, ignore_errors=True)
         for generated_name, snippets in {
             "ApplyPatchApprovalParams": [
                 'import type { FileChange } from "./FileChange";',
