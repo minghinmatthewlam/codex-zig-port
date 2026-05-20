@@ -29465,9 +29465,21 @@ fn handleTurnStart(
         return try renderJsonRpcErrorForFailure(allocator, id_value, "turn/start failed to load project config", err);
     };
 
+    var runtime_requirements = loadConfigRequirementsReadRequirements(allocator) catch |err| {
+        return try renderJsonRpcErrorForFailure(allocator, id_value, "turn/start failed to load config requirements", err);
+    };
+    defer runtime_requirements.deinit(allocator);
+    validateTurnScalarRequirementOverrides(allocator, object, runtime_requirements) catch |err| switch (err) {
+        error.InvalidTurnContextOverride => return try renderJsonRpcError(allocator, id_value, -32602, "invalid turn context override"),
+        else => return try renderRuntimeRequirementOverrideError(allocator, id_value, err),
+    };
+
     applyTurnStartRuntimeConfigOverrides(allocator, &cfg, thread, object) catch |err| switch (err) {
         error.InvalidTurnContextOverride => return try renderJsonRpcError(allocator, id_value, -32602, "invalid turn context override"),
         else => return err,
+    };
+    applyRuntimeScalarRequirementsToConfigWithRequirements(&cfg, runtime_requirements) catch |err| {
+        return try renderJsonRpcErrorForFailure(allocator, id_value, "turn/start failed to apply config requirements", err);
     };
 
     var credentials = loadCredentialsForLoadedThread(allocator, &cfg, thread) catch |err| {
@@ -29478,6 +29490,12 @@ fn handleTurnStart(
     applyTurnStartRuntimeOverrides(allocator, &cfg, thread, object) catch |err| switch (err) {
         error.InvalidTurnContextOverride => return try renderJsonRpcError(allocator, id_value, -32602, "invalid turn context override"),
         else => return err,
+    };
+    applyRuntimeScalarRequirementsToLoadedThreadWithRequirements(allocator, thread, runtime_requirements) catch |err| {
+        return try renderJsonRpcErrorForFailure(allocator, id_value, "turn/start failed to apply runtime requirements", err);
+    };
+    applyRuntimeScalarRequirementsToConfigWithRequirements(&cfg, runtime_requirements) catch |err| {
+        return try renderJsonRpcErrorForFailure(allocator, id_value, "turn/start failed to apply config requirements", err);
     };
 
     const turn_id = try allocateNextTurnIdForThread(allocator, thread);
@@ -31712,6 +31730,46 @@ fn applyLoadedThreadRuntimeToConfig(
     try applyLoadedThreadOssModeToConfig(allocator, cfg, thread);
 }
 
+fn applyRuntimeScalarRequirementsToLoadedThreadWithRequirements(
+    allocator: std.mem.Allocator,
+    thread: *LoadedThread,
+    requirements: ConfigRequirementsReadRequirements,
+) !void {
+    const approval_policy = try configReadRequirementApprovalPolicy(
+        config.ApprovalPolicy.parse(thread.approval_policy) catch return error.InvalidLoadedThreadRuntime,
+        requirements,
+    );
+    if (!std.mem.eql(u8, thread.approval_policy, approval_policy.label())) {
+        try replaceOwnedString(allocator, &thread.approval_policy, approval_policy.label());
+    }
+
+    const approvals_reviewer = try configReadRequirementApprovalsReviewer(
+        config.ApprovalsReviewer.parse(thread.approvals_reviewer) catch return error.InvalidLoadedThreadRuntime,
+        requirements,
+    );
+    if (!std.mem.eql(u8, thread.approvals_reviewer, approvals_reviewer.label())) {
+        try replaceOwnedString(allocator, &thread.approvals_reviewer, approvals_reviewer.label());
+    }
+
+    const sandbox_mode = try configReadRequirementSandboxMode(
+        config.SandboxMode.parse(thread.sandbox_mode) catch return error.InvalidLoadedThreadRuntime,
+        requirements,
+    );
+    if (!std.mem.eql(u8, thread.sandbox_mode, sandbox_mode.label())) {
+        const sandbox_runtime_override = thread.runtime_overrides.sandbox_mode;
+        try resetLoadedThreadSandboxProfile(
+            allocator,
+            thread,
+            sandbox_mode,
+            defaultNetworkEnabledForSandboxMode(sandbox_mode),
+            false,
+        );
+        thread.runtime_overrides.sandbox_mode = sandbox_runtime_override;
+    }
+
+    thread.web_search_mode = try configReadRequirementWebSearchMode(thread.web_search_mode, requirements);
+}
+
 fn applyReviewStartConstraints(allocator: std.mem.Allocator, cfg: *config.Config) !void {
     cfg.web_search_mode = .disabled;
     cfg.approval_policy = .never;
@@ -31733,6 +31791,58 @@ fn applyReviewStartFeatureOverrides(
     try overrides.put(allocator, "request_user_input_tool", false);
     try overrides.put(allocator, "default_mode_request_user_input", false);
     try overrides.put(allocator, "goal_tools", false);
+}
+
+fn validateTurnScalarRequirementOverrides(
+    allocator: std.mem.Allocator,
+    params: std.json.ObjectMap,
+    requirements: ConfigRequirementsReadRequirements,
+) !void {
+    if (optionalStringParam(params, "approvalPolicy")) |approval_policy| {
+        try validateRuntimeApprovalPolicyAllowed(
+            config.ApprovalPolicy.parse(approval_policy) catch return error.InvalidTurnContextOverride,
+            requirements,
+        );
+    }
+    if (try optionalApprovalsReviewerParam(params, "approvalsReviewer")) |approvals_reviewer| {
+        try validateRuntimeApprovalsReviewerAllowed(
+            config.ApprovalsReviewer.parse(approvals_reviewer) catch return error.InvalidTurnContextOverride,
+            requirements,
+        );
+    }
+
+    const permissions_value = params.get("permissions");
+    const has_permissions = permissions_value != null and permissions_value.? != .null;
+    if (has_permissions) {
+        if (params.get("sandboxPolicy")) |sandbox_policy| {
+            if (sandbox_policy != .null) return error.InvalidTurnContextOverride;
+        }
+        if (params.get("sandbox")) |sandbox| {
+            if (sandbox != .null) return error.InvalidTurnContextOverride;
+        }
+        var profile = parseTurnStartPermissionSelection(allocator, permissions_value.?) catch return error.InvalidTurnContextOverride;
+        defer profile.deinit(allocator);
+        try validateRuntimeSandboxModeAllowed(profile.mode, requirements);
+    } else if (params.get("sandboxPolicy")) |sandbox_policy| {
+        if (sandbox_policy != .null and params.get("sandbox") != null and params.get("sandbox").? != .null) {
+            return error.InvalidTurnContextOverride;
+        }
+        if (sandbox_policy != .null) {
+            var sandbox_selection = parseTurnStartSandboxPolicy(allocator, sandbox_policy) catch return error.InvalidTurnContextOverride;
+            defer sandbox_selection.deinit(allocator);
+            try validateRuntimeSandboxModeAllowed(sandbox_selection.mode, requirements);
+        } else if (optionalStringParam(params, "sandbox")) |sandbox| {
+            try validateRuntimeSandboxModeAllowed(
+                config.SandboxMode.parse(sandbox) catch return error.InvalidTurnContextOverride,
+                requirements,
+            );
+        }
+    } else if (optionalStringParam(params, "sandbox")) |sandbox| {
+        try validateRuntimeSandboxModeAllowed(
+            config.SandboxMode.parse(sandbox) catch return error.InvalidTurnContextOverride,
+            requirements,
+        );
+    }
 }
 
 fn applyTurnStartRuntimeConfigOverrides(
@@ -35410,6 +35520,53 @@ fn loadConfigForLoadedThread(allocator: std.mem.Allocator, thread: *const Loaded
     return config.loadWithOptions(allocator, .{ .profile = thread.active_profile });
 }
 
+fn applyRuntimeScalarRequirementsToConfigWithRequirements(
+    cfg: *config.Config,
+    requirements: ConfigRequirementsReadRequirements,
+) !void {
+    cfg.approval_policy = try configReadRequirementApprovalPolicy(cfg.approval_policy, requirements);
+    cfg.approvals_reviewer = try configReadRequirementApprovalsReviewer(cfg.approvals_reviewer, requirements);
+    cfg.sandbox_mode = try configReadRequirementSandboxMode(cfg.sandbox_mode, requirements);
+    cfg.web_search_mode = try configReadRequirementWebSearchMode(cfg.web_search_mode, requirements);
+}
+
+fn runtimeRequirementListAllows(allowed: ?config.StringList, label: []const u8) bool {
+    const list = allowed orelse return true;
+    if (list.items.len == 0) return false;
+    return configReadRequirementListContains(list, label);
+}
+
+fn runtimeRequirementAllowsWebSearchMode(value: ?config.WebSearchMode, requirements: ConfigRequirementsReadRequirements) bool {
+    const mode = value orelse return true;
+    const allowed = requirements.allowed_web_search_modes orelse return true;
+    if (allowed.items.len == 0) return mode == .disabled;
+    return configReadRequirementListContains(allowed, mode.label());
+}
+
+fn validateRuntimeApprovalPolicyAllowed(value: config.ApprovalPolicy, requirements: ConfigRequirementsReadRequirements) !void {
+    if (!runtimeRequirementListAllows(requirements.allowed_approval_policies, value.label())) {
+        return error.RuntimeApprovalPolicyDisallowed;
+    }
+}
+
+fn validateRuntimeApprovalsReviewerAllowed(value: config.ApprovalsReviewer, requirements: ConfigRequirementsReadRequirements) !void {
+    if (!runtimeRequirementListAllows(requirements.allowed_approvals_reviewers, value.label())) {
+        return error.RuntimeApprovalsReviewerDisallowed;
+    }
+}
+
+fn validateRuntimeSandboxModeAllowed(value: config.SandboxMode, requirements: ConfigRequirementsReadRequirements) !void {
+    if (!runtimeRequirementListAllows(requirements.allowed_sandbox_modes, value.label())) {
+        return error.RuntimeSandboxModeDisallowed;
+    }
+}
+
+fn validateRuntimeWebSearchModeAllowed(value: ?config.WebSearchMode, requirements: ConfigRequirementsReadRequirements) !void {
+    if (!runtimeRequirementAllowsWebSearchMode(value, requirements)) {
+        return error.RuntimeWebSearchModeDisallowed;
+    }
+}
+
 fn applyThreadRequestConfigOverrides(
     allocator: std.mem.Allocator,
     cfg: *config.Config,
@@ -35427,6 +35584,40 @@ fn applyThreadRequestConfigOverrides(
     if (request_config.oss_mode_present and request_config.oss_mode) {
         try config.applyOssMode(cfg, allocator, null, explicit_model);
     }
+}
+
+fn validateLifecycleScalarRequirementOverrides(
+    params: ?std.json.ObjectMap,
+    request_config: ThreadRequestConfigOverrides,
+    requirements: ConfigRequirementsReadRequirements,
+) !void {
+    if (optionalStringParam(params, "approvalPolicy")) |approval_policy| {
+        try validateRuntimeApprovalPolicyAllowed(try config.ApprovalPolicy.parse(approval_policy), requirements);
+    }
+    if (try optionalApprovalsReviewerLifecycleParam(params, "approvalsReviewer")) |approvals_reviewer| {
+        try validateRuntimeApprovalsReviewerAllowed(try config.ApprovalsReviewer.parse(approvals_reviewer), requirements);
+    }
+    if (optionalStringParam(params, "sandbox")) |sandbox| {
+        try validateRuntimeSandboxModeAllowed(try config.SandboxMode.parse(sandbox), requirements);
+    }
+    if (request_config.web_search_mode_present) {
+        try validateRuntimeWebSearchModeAllowed(request_config.web_search_mode, requirements);
+    }
+}
+
+fn renderRuntimeRequirementOverrideError(
+    allocator: std.mem.Allocator,
+    id_value: std.json.Value,
+    err: anyerror,
+) ![]const u8 {
+    const message = switch (err) {
+        error.RuntimeApprovalPolicyDisallowed => "approvalPolicy is disallowed by requirements",
+        error.RuntimeApprovalsReviewerDisallowed => "approvalsReviewer is disallowed by requirements",
+        error.RuntimeSandboxModeDisallowed => "sandbox is disallowed by requirements",
+        error.RuntimeWebSearchModeDisallowed => "config.web_search is disallowed by requirements",
+        else => return err,
+    };
+    return renderJsonRpcError(allocator, id_value, -32602, message);
 }
 
 fn threadOssProviderForRequest(
@@ -35498,11 +35689,25 @@ fn handleThreadStart(
     };
     defer cfg.deinit(allocator);
 
+    var runtime_requirements = loadConfigRequirementsReadRequirements(allocator) catch |err| {
+        return renderJsonRpcErrorForFailure(allocator, id_value, "thread/start failed to load config requirements", err);
+    };
+    defer runtime_requirements.deinit(allocator);
+    validateLifecycleScalarRequirementOverrides(params, request_config, runtime_requirements) catch |err| {
+        return renderRuntimeRequirementOverrideError(allocator, id_value, err);
+    };
+    applyRuntimeScalarRequirementsToConfigWithRequirements(&cfg, runtime_requirements) catch |err| {
+        return renderJsonRpcErrorForFailure(allocator, id_value, "thread/start failed to apply config requirements", err);
+    };
+
     applyThreadStartProjectTrustAndConfig(allocator, &cfg, params) catch |err| {
         return renderJsonRpcErrorForFailure(allocator, id_value, "thread/start failed to load project config", err);
     };
     applyThreadRequestConfigOverrides(allocator, &cfg, request_config, paramPresent(params, "model")) catch |err| {
         return renderJsonRpcErrorForFailure(allocator, id_value, "thread/start failed to apply config override", err);
+    };
+    applyRuntimeScalarRequirementsToConfigWithRequirements(&cfg, runtime_requirements) catch |err| {
+        return renderJsonRpcErrorForFailure(allocator, id_value, "thread/start failed to apply config requirements", err);
     };
 
     var mcp_startup_check = runThreadStartMcpStartupCheck(allocator, state, &cfg) catch |err| {
@@ -35519,6 +35724,9 @@ fn handleThreadStart(
     };
     var thread_moved = false;
     errdefer if (!thread_moved) thread.deinit(allocator);
+    applyRuntimeScalarRequirementsToLoadedThreadWithRequirements(allocator, &thread, runtime_requirements) catch |err| {
+        return renderJsonRpcErrorForFailure(allocator, id_value, "thread/start failed to apply runtime requirements", err);
+    };
 
     const result = try renderThreadLifecycleResponse(allocator, &thread, true, state.experimental_api_enabled);
     defer allocator.free(result);
@@ -35813,8 +36021,18 @@ fn handleThreadResume(
         return renderJsonRpcErrorForFailure(allocator, id_value, "thread/resume failed to load config", err);
     };
     defer cfg.deinit(allocator);
+    var runtime_requirements = loadConfigRequirementsReadRequirements(allocator) catch |err| {
+        return renderJsonRpcErrorForFailure(allocator, id_value, "thread/resume failed to load config requirements", err);
+    };
+    defer runtime_requirements.deinit(allocator);
+    validateLifecycleScalarRequirementOverrides(object, request_config, runtime_requirements) catch |err| {
+        return renderRuntimeRequirementOverrideError(allocator, id_value, err);
+    };
     applyThreadRequestConfigOverrides(allocator, &cfg, request_config, paramPresent(object, "model")) catch |err| {
         return renderJsonRpcErrorForFailure(allocator, id_value, "thread/resume failed to apply config override", err);
+    };
+    applyRuntimeScalarRequirementsToConfigWithRequirements(&cfg, runtime_requirements) catch |err| {
+        return renderJsonRpcErrorForFailure(allocator, id_value, "thread/resume failed to apply config requirements", err);
     };
 
     if (object.get("history")) |history| {
@@ -35826,6 +36044,9 @@ fn handleThreadResume(
             };
             var thread_moved = false;
             errdefer if (!thread_moved) thread.deinit(allocator);
+            applyRuntimeScalarRequirementsToLoadedThreadWithRequirements(allocator, &thread, runtime_requirements) catch |err| {
+                return renderJsonRpcErrorForFailure(allocator, id_value, "thread/resume failed to apply runtime requirements", err);
+            };
 
             var mcp_startup_check = runThreadStartMcpStartupCheck(allocator, state, &cfg) catch |err| {
                 return renderJsonRpcErrorForFailure(allocator, id_value, "thread/resume failed to initialize MCP servers", err);
@@ -35881,6 +36102,9 @@ fn handleThreadResume(
     };
     var thread_moved = false;
     errdefer if (!thread_moved) thread.deinit(allocator);
+    applyRuntimeScalarRequirementsToLoadedThreadWithRequirements(allocator, &thread, runtime_requirements) catch |err| {
+        return renderJsonRpcErrorForFailure(allocator, id_value, "thread/resume failed to apply runtime requirements", err);
+    };
     applyStateResumeMetadata(allocator, cfg.codex_home, object, &thread) catch |err| {
         return renderJsonRpcErrorForFailure(allocator, id_value, "thread/resume failed to apply state metadata", err);
     };
@@ -35938,8 +36162,18 @@ fn handleThreadFork(
         return renderJsonRpcErrorForFailure(allocator, id_value, "thread/fork failed to load config", err);
     };
     defer cfg.deinit(allocator);
+    var runtime_requirements = loadConfigRequirementsReadRequirements(allocator) catch |err| {
+        return renderJsonRpcErrorForFailure(allocator, id_value, "thread/fork failed to load config requirements", err);
+    };
+    defer runtime_requirements.deinit(allocator);
+    validateLifecycleScalarRequirementOverrides(object, request_config, runtime_requirements) catch |err| {
+        return renderRuntimeRequirementOverrideError(allocator, id_value, err);
+    };
     applyThreadRequestConfigOverrides(allocator, &cfg, request_config, paramPresent(object, "model")) catch |err| {
         return renderJsonRpcErrorForFailure(allocator, id_value, "thread/fork failed to apply config override", err);
+    };
+    applyRuntimeScalarRequirementsToConfigWithRequirements(&cfg, runtime_requirements) catch |err| {
+        return renderJsonRpcErrorForFailure(allocator, id_value, "thread/fork failed to apply config requirements", err);
     };
 
     if (optionalStringParam(object, "path")) |path| {
@@ -35948,7 +36182,7 @@ fn handleThreadFork(
             else => return renderJsonRpcErrorForFailure(allocator, id_value, "thread/fork failed to load source transcript", err),
         };
         defer source.deinit(allocator);
-        return handleThreadForkWithSource(allocator, state, id_value, object, cfg, &source);
+        return handleThreadForkWithSource(allocator, state, id_value, object, cfg, &source, runtime_requirements);
     }
 
     const source_thread_id = requiredThreadIdParam(object) catch |err| switch (err) {
@@ -35961,13 +36195,13 @@ fn handleThreadFork(
             else => return renderJsonRpcErrorForFailure(allocator, id_value, "thread/fork failed to load source transcript", err),
         };
         defer stored_source.deinit(allocator);
-        return handleThreadForkWithSource(allocator, state, id_value, object, cfg, &stored_source);
+        return handleThreadForkWithSource(allocator, state, id_value, object, cfg, &stored_source, runtime_requirements);
     }
     if (!isUuidString(source_thread_id)) {
         return renderInvalidThreadId(allocator, id_value, source_thread_id);
     }
     if (findLoadedThread(state, source_thread_id)) |source| {
-        return handleThreadForkWithSource(allocator, state, id_value, object, cfg, source);
+        return handleThreadForkWithSource(allocator, state, id_value, object, cfg, source, runtime_requirements);
     }
 
     var stored_source = createStoredThreadFromParamsIncludingArchived(allocator, cfg, object) catch |err| switch (err) {
@@ -35976,7 +36210,7 @@ fn handleThreadFork(
         else => return renderJsonRpcErrorForFailure(allocator, id_value, "thread/fork failed to load source transcript", err),
     };
     defer stored_source.deinit(allocator);
-    return handleThreadForkWithSource(allocator, state, id_value, object, cfg, &stored_source);
+    return handleThreadForkWithSource(allocator, state, id_value, object, cfg, &stored_source, runtime_requirements);
 }
 
 fn handleThreadForkWithSource(
@@ -35986,12 +36220,16 @@ fn handleThreadForkWithSource(
     params: std.json.ObjectMap,
     cfg: config.Config,
     source: *const LoadedThread,
+    runtime_requirements: ConfigRequirementsReadRequirements,
 ) ![]const u8 {
     var thread = createLoadedThreadFromForkParams(allocator, cfg, params, source) catch |err| {
         return renderJsonRpcErrorForFailure(allocator, id_value, "thread/fork failed to create thread", err);
     };
     var thread_moved = false;
     errdefer if (!thread_moved) thread.deinit(allocator);
+    applyRuntimeScalarRequirementsToLoadedThreadWithRequirements(allocator, &thread, runtime_requirements) catch |err| {
+        return renderJsonRpcErrorForFailure(allocator, id_value, "thread/fork failed to apply runtime requirements", err);
+    };
 
     const include_turns = !(optionalBoolParam(params, "excludeTurns") orelse false);
     const result = try renderThreadLifecycleResponse(allocator, &thread, include_turns, state.experimental_api_enabled);
@@ -51339,12 +51577,19 @@ fn parseConfigReloadUserConfig(object: std.json.ObjectMap) !bool {
 fn reloadLoadedThreadRuntimeConfig(allocator: std.mem.Allocator, state: *AppServerState) !void {
     if (state.loaded_threads.items.len == 0) return;
 
+    var runtime_requirements = loadConfigRequirementsReadRequirements(allocator) catch |err| switch (err) {
+        error.OutOfMemory => return err,
+        else => return,
+    };
+    defer runtime_requirements.deinit(allocator);
+
     for (state.loaded_threads.items) |*thread| {
         var cfg = loadConfigForLoadedThread(allocator, thread) catch |err| switch (err) {
             error.OutOfMemory => return err,
             else => continue,
         };
         defer cfg.deinit(allocator);
+        applyRuntimeScalarRequirementsToConfigWithRequirements(&cfg, runtime_requirements) catch continue;
         if (thread.oss_provider) |provider| {
             replaceConfigOptionalString(allocator, &cfg.oss_provider, provider) catch |err| switch (err) {
                 error.OutOfMemory => return err,
@@ -51407,6 +51652,10 @@ fn reloadLoadedThreadRuntimeConfig(allocator: std.mem.Allocator, state: *AppServ
         if (!thread.runtime_overrides.web_search_mode) {
             thread.web_search_mode = cfg.web_search_mode;
         }
+        applyRuntimeScalarRequirementsToLoadedThreadWithRequirements(allocator, thread, runtime_requirements) catch |err| switch (err) {
+            error.OutOfMemory => return err,
+            else => continue,
+        };
         if (!thread.runtime_overrides.reasoning_effort) {
             if (cfg.model_reasoning_effort) |effort| {
                 try replaceOptionalOwnedString(allocator, &thread.reasoning_effort, effort.label());
@@ -61685,6 +61934,87 @@ test "config/read scalar requirements fall back to first allowed value" {
     try std.testing.expectError(
         error.ConfigReadRequirementsNoSupportedSandboxModes,
         configReadRequirementSandboxMode(.danger_full_access, unsupported_sandbox),
+    );
+}
+
+test "runtime scalar requirements constrain config and loaded thread state" {
+    const allocator = std.testing.allocator;
+    var requirements = ConfigRequirementsReadRequirements{
+        .allowed_approval_policies = try stringListFromLabels(allocator, &.{"on-request"}),
+        .allowed_approvals_reviewers = try stringListFromLabels(allocator, &.{"guardian_subagent"}),
+        .allowed_sandbox_modes = try stringListFromLabels(allocator, &.{"read-only"}),
+        .allowed_web_search_modes = try stringListFromLabels(allocator, &.{ "cached", "disabled" }),
+    };
+    defer requirements.deinit(allocator);
+
+    var cfg = try testAppServerConfig(allocator, "gpt-5.5");
+    defer cfg.deinit(allocator);
+    cfg.approval_policy = .never;
+    cfg.approvals_reviewer = .user;
+    cfg.sandbox_mode = .danger_full_access;
+    cfg.web_search_mode = .live;
+
+    try applyRuntimeScalarRequirementsToConfigWithRequirements(&cfg, requirements);
+    try std.testing.expectEqual(config.ApprovalPolicy.on_request, cfg.approval_policy);
+    try std.testing.expectEqual(config.ApprovalsReviewer.auto_review, cfg.approvals_reviewer);
+    try std.testing.expectEqual(config.SandboxMode.read_only, cfg.sandbox_mode);
+    try std.testing.expectEqual(config.WebSearchMode.cached, cfg.web_search_mode.?);
+
+    var thread_cfg = try testAppServerConfig(allocator, "gpt-5.5");
+    defer thread_cfg.deinit(allocator);
+    thread_cfg.approval_policy = .never;
+    thread_cfg.approvals_reviewer = .user;
+    thread_cfg.sandbox_mode = .danger_full_access;
+    thread_cfg.web_search_mode = .live;
+
+    var params = try std.json.parseFromSlice(std.json.Value, allocator, "{\"ephemeral\":true}", .{});
+    defer params.deinit();
+    var thread = try createLoadedThreadFromStartParams(allocator, thread_cfg, params.value.object);
+    defer thread.deinit(allocator);
+    thread.runtime_overrides.sandbox_mode = true;
+
+    try applyRuntimeScalarRequirementsToLoadedThreadWithRequirements(allocator, &thread, requirements);
+    try std.testing.expectEqualStrings("on-request", thread.approval_policy);
+    try std.testing.expectEqualStrings("guardian_subagent", thread.approvals_reviewer);
+    try std.testing.expectEqualStrings("read-only", thread.sandbox_mode);
+    try std.testing.expect(!thread.sandbox_network_enabled);
+    try std.testing.expect(thread.runtime_overrides.sandbox_mode);
+    try std.testing.expectEqual(config.WebSearchMode.cached, thread.web_search_mode.?);
+}
+
+test "runtime scalar requirements reject explicit lifecycle overrides" {
+    const allocator = std.testing.allocator;
+    var requirements = ConfigRequirementsReadRequirements{
+        .allowed_approval_policies = try stringListFromLabels(allocator, &.{"on-request"}),
+        .allowed_approvals_reviewers = try stringListFromLabels(allocator, &.{"guardian_subagent"}),
+        .allowed_sandbox_modes = try stringListFromLabels(allocator, &.{"read-only"}),
+        .allowed_web_search_modes = try stringListFromLabels(allocator, &.{"cached"}),
+    };
+    defer requirements.deinit(allocator);
+
+    var lifecycle_params = try std.json.parseFromSlice(
+        std.json.Value,
+        allocator,
+        "{\"approvalPolicy\":\"never\",\"approvalsReviewer\":\"user\",\"sandbox\":\"danger-full-access\",\"config\":{\"web_search\":\"live\"}}",
+        .{},
+    );
+    defer lifecycle_params.deinit();
+    const request_config = try threadRequestConfigFromParams(lifecycle_params.value.object);
+    try std.testing.expectError(
+        error.RuntimeApprovalPolicyDisallowed,
+        validateLifecycleScalarRequirementOverrides(lifecycle_params.value.object, request_config, requirements),
+    );
+
+    var turn_params = try std.json.parseFromSlice(
+        std.json.Value,
+        allocator,
+        "{\"sandboxPolicy\":{\"type\":\"dangerFullAccess\"}}",
+        .{},
+    );
+    defer turn_params.deinit();
+    try std.testing.expectError(
+        error.RuntimeSandboxModeDisallowed,
+        validateTurnScalarRequirementOverrides(allocator, turn_params.value.object, requirements),
     );
 }
 
