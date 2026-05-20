@@ -56218,7 +56218,7 @@ fn refreshModelCatalogCacheIfAllowed(allocator: std.mem.Allocator) !?RefreshedMo
 
 fn modelCatalogOnlineRefreshAllowed(cfg: *const config.Config, credentials: auth_mod.Credentials) bool {
     return switch (credentials.mode) {
-        .chatgpt, .chatgpt_auth_tokens, .agent_identity => true,
+        .chatgpt, .chatgpt_auth_tokens, .agent_identity => cfg.oss_provider == null and cfg.model_provider_requires_openai_auth,
         .api_key => cfg.model_provider_auth_command != null,
         .local_oss => false,
     };

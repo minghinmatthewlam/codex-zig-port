@@ -29875,6 +29875,24 @@ def run_model_rpc_smoke(binary: Path) -> None:
 [model_providers.custom]
 base_url = "{model_catalog_base_url}"
 wire_api = "responses"
+''',
+            encoding="utf-8",
+        )
+        custom_provider_models = rpc("model-list-custom-provider-no-auth-refresh", "model/list", {"limit": 5})
+        assert custom_provider_models["id"] == "model-list-custom-provider-no-auth-refresh"
+        custom_provider_ids = [
+            item["id"] for item in custom_provider_models["result"]["data"]
+        ]
+        assert "online-alpha" not in custom_provider_ids
+        assert custom_provider_ids[0] == "gpt-5.5"
+        assert not cache_path.exists()
+        assert len(ModelCatalogBackendHandler.requests) == 1
+
+        (codex_home / "config.toml").write_text(
+            f'''model_provider = "custom"
+[model_providers.custom]
+base_url = "{model_catalog_base_url}"
+wire_api = "responses"
 [model_providers.custom.auth]
 command = "/bin/echo"
 args = ["provider-token"]
