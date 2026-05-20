@@ -38482,8 +38482,10 @@ def run_account_add_credits_nudge_rpc_smoke(binary: Path) -> None:
 def run_apps_list_rpc_smoke(binary: Path) -> None:
     codex_home = Path(tempfile.mkdtemp(prefix="codex-zig-app-server-apps-list-", dir="/tmp"))
     workspace_root = Path(tempfile.mkdtemp(prefix="codex-zig-app-server-apps-list-workspace-", dir="/tmp"))
+    system_requirements_path = codex_home / "requirements.toml"
     env = os.environ.copy()
     env["CODEX_HOME"] = str(codex_home)
+    env["CODEX_APP_SERVER_SYSTEM_REQUIREMENTS_PATH"] = str(system_requirements_path)
     proc = subprocess.Popen(
         [str(binary), "app-server"],
         stdin=subprocess.PIPE,
@@ -38648,6 +38650,22 @@ def run_apps_list_rpc_smoke(binary: Path) -> None:
             ),
             encoding="utf-8",
         )
+        system_requirements_path.write_text(
+            "\n".join(
+                [
+                    "[apps.gmail]",
+                    "enabled = true",
+                    "",
+                    "[apps.slack]",
+                    "enabled = false",
+                    "",
+                    "[apps.calendar]",
+                    "enabled = false",
+                    "",
+                ]
+            ),
+            encoding="utf-8",
+        )
         write_plugin_app_marketplace(
             codex_home,
             "local-market",
@@ -38678,9 +38696,9 @@ def run_apps_list_rpc_smoke(binary: Path) -> None:
         )
 
         gmail_app = expected_app("gmail", "Gmail", "Read mail", False, "Gmail Plugin")
-        slack_app = expected_app("slack", "Slack", None, True, "Gmail Plugin")
+        slack_app = expected_app("slack", "Slack", None, False, "Gmail Plugin")
         calendar_app = expected_app(
-            "calendar", "Calendar", None, True, "Calendar Plugin"
+            "calendar", "Calendar", None, False, "Calendar Plugin"
         )
         zoom_app = expected_app("zoom", "Zoom", None, True, "Zoom Plugin")
 
