@@ -5,6 +5,8 @@ const cli_utils = @import("cli_utils.zig");
 const config = @import("config.zig");
 const features_cmd = @import("features_cmd.zig");
 const git_diff = @import("git_diff.zig");
+const review_output = @import("review_output.zig");
+const review_prompt = @import("review_prompt.zig");
 const session = @import("session.zig");
 const session_store = @import("session_store.zig");
 const workdir = @import("workdir.zig");
@@ -105,6 +107,7 @@ pub fn runRawArgsWithOptions(allocator: std.mem.Allocator, raw_args: []const []c
         parsed.config_overrides.model != null or
         parsed.model != null;
     try applyReviewModel(allocator, &cfg, explicit_model);
+    try applyReviewBaseInstructions(allocator, &cfg);
 
     var feature_overrides = features_cmd.FeatureOverrides{};
     defer feature_overrides.deinit(allocator);
@@ -139,24 +142,30 @@ pub fn runRawArgsWithOptions(allocator: std.mem.Allocator, raw_args: []const []c
     defer if (session_path) |path| allocator.free(path);
 
     const effective_json_events = options.json_events or parsed.json;
+    var output_schema = try review_output.parseOutputSchema(allocator);
+    defer output_schema.deinit();
     const answer = try session.runTurnWithOptions(allocator, cfg, &credentials, &transcript, prompt, .{
         .prompt_for_approval = false,
         .feature_overrides = feature_overrides,
         .json_events = effective_json_events,
+        .output_schema = output_schema.value,
     });
     defer allocator.free(answer);
+    const display_answer = try review_output.renderText(allocator, answer);
+    defer allocator.free(display_answer);
 
+    try storeDisplayAnswerInTranscript(allocator, &transcript, display_answer);
     if (session_path) |path| {
         try session_store.saveTranscript(allocator, path, &transcript);
     }
 
     if (parsed.last_message_file orelse options.last_message_file) |path| {
-        try writeFile(path, answer);
+        try writeFile(path, display_answer);
     }
 
     if (!effective_json_events) {
-        try cli_utils.writeStdout(answer);
-        if (answer.len == 0 or answer[answer.len - 1] != '\n') {
+        try cli_utils.writeStdout(display_answer);
+        if (display_answer.len == 0 or display_answer[display_answer.len - 1] != '\n') {
             try cli_utils.writeStdout("\n");
         }
     }
@@ -375,6 +384,46 @@ fn applyReviewModel(allocator: std.mem.Allocator, cfg: *config.Config, explicit_
     cfg.model = next_model;
 }
 
+fn applyReviewBaseInstructions(allocator: std.mem.Allocator, cfg: *config.Config) !void {
+    const next_instructions = try allocator.dupe(u8, review_prompt.text);
+    if (cfg.base_instructions) |existing| allocator.free(existing);
+    cfg.base_instructions = next_instructions;
+}
+
+fn storeDisplayAnswerInTranscript(
+    allocator: std.mem.Allocator,
+    transcript: *session.Transcript,
+    display_answer: []const u8,
+) !void {
+    var index = transcript.history.items.len;
+    while (index > 0) {
+        index -= 1;
+        const item = &transcript.history.items[index];
+        if (item.kind != .message) continue;
+        if (item.role == null or !std.mem.eql(u8, item.role.?, "assistant")) break;
+        const copy = try allocator.dupe(u8, display_answer);
+        if (item.text) |existing| allocator.free(existing);
+        item.text = copy;
+        return;
+    }
+    if (display_answer.len > 0) {
+        try transcript.appendAssistantMessage(allocator, display_answer);
+    }
+}
+
+test "review transcript stores rendered structured output" {
+    var transcript = session.Transcript{};
+    defer transcript.deinit(std.testing.allocator);
+    try transcript.appendUserMessage(std.testing.allocator, "review this");
+    try transcript.appendAssistantMessage(std.testing.allocator,
+        \\{"findings":[],"overall_correctness":"patch is correct","overall_explanation":"Looks correct","overall_confidence_score":0.8}
+    );
+
+    try storeDisplayAnswerInTranscript(std.testing.allocator, &transcript, "Looks correct");
+
+    try std.testing.expectEqualStrings("Looks correct", transcript.history.items[1].text.?);
+}
+
 fn writeFile(path: []const u8, bytes: []const u8) !void {
     try std.Io.Dir.cwd().writeFile(std.Io.Threaded.global_single_threaded.io(), .{
         .sub_path = path,
@@ -455,9 +504,6 @@ pub fn printHelp() void {
         \\  --commit SHA      Review the changes introduced by a commit
         \\  --disable FEATURE Disable a feature for this invocation
         \\  --title TITLE     Optional title for --commit review context
-        \\
-        \\Planned:
-        \\  structured review JSON
         \\
     , .{});
 }

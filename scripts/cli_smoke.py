@@ -1823,6 +1823,11 @@ def default_exec_response_payload() -> bytes:
     )
 
 
+def output_text_response_payload(text: str) -> bytes:
+    event = {"type": "response.output_text.delta", "delta": text}
+    return f"data: {json.dumps(event, separators=(',', ':'))}\n\ndata: [DONE]\n\n".encode()
+
+
 def function_call_response_payload(call_id: str, name: str, arguments: dict) -> bytes:
     event = {
         "type": "response.output_item.done",
@@ -6405,6 +6410,28 @@ def run_exec_review_smoke(binary: Path) -> None:
             encoding="utf-8",
         )
 
+        structured_review_text = json.dumps(
+            {
+                "findings": [
+                    {
+                        "title": "[P2] Tighten check",
+                        "body": "This is actionable.",
+                        "confidence_score": 0.9,
+                        "priority": 2,
+                        "code_location": {
+                            "absolute_file_path": "/tmp/review.zig",
+                            "line_range": {"start": 3, "end": 3},
+                        },
+                    }
+                ],
+                "overall_correctness": "patch is correct",
+                "overall_explanation": "Looks correct",
+                "overall_confidence_score": 0.8,
+            },
+            separators=(",", ":"),
+        )
+        server.response_payloads.append(output_text_response_payload(structured_review_text))
+        structured_last_message_path = repo / "structured-review.txt"
         reviewed = subprocess.run(
             [
                 str(binary.resolve()),
@@ -6414,6 +6441,8 @@ def run_exec_review_smoke(binary: Path) -> None:
                 "-c",
                 "review_model=gpt-exec-review",
                 "review",
+                "-o",
+                str(structured_last_message_path),
                 "--uncommitted",
             ],
             cwd=temp_root,
@@ -6424,9 +6453,29 @@ def run_exec_review_smoke(binary: Path) -> None:
             timeout=5,
             check=True,
         )
-        assert reviewed.stdout == "stored reply\n"
+        assert reviewed.stdout == (
+            "Looks correct\n\n"
+            "Review comment:\n\n"
+            "- [P2] Tighten check - /tmp/review.zig:3-3\n"
+            "  This is actionable.\n"
+        )
+        assert structured_last_message_path.read_text(encoding="utf-8") == (
+            "Looks correct\n\n"
+            "Review comment:\n\n"
+            "- [P2] Tighten check - /tmp/review.zig:3-3\n"
+            "  This is actionable."
+        )
         assert len(server.request_bodies) == 1
         assert server.request_bodies[0]["model"] == "gpt-exec-review"
+        assert "# Review guidelines:" in server.request_bodies[0]["instructions"]
+        review_format = server.request_bodies[0]["text"]["format"]
+        assert review_format["type"] == "json_schema"
+        assert review_format["schema"]["required"] == [
+            "findings",
+            "overall_correctness",
+            "overall_explanation",
+            "overall_confidence_score",
+        ]
         prompt = server.request_bodies[0]["input"][-1]["content"][0]["text"]
         assert "Review the uncommitted changes below." in prompt
         assert "diff --git a/review.txt b/review.txt" in prompt
@@ -6579,6 +6628,16 @@ def run_review_stdin_smoke(binary: Path) -> None:
         repo.mkdir()
         git(repo, "init", "--quiet")
 
+        structured_stdin_review_text = json.dumps(
+            {
+                "findings": [],
+                "overall_correctness": "patch is correct",
+                "overall_explanation": "No actionable issues.",
+                "overall_confidence_score": 0.8,
+            },
+            separators=(",", ":"),
+        )
+        server.response_payloads.append(output_text_response_payload(structured_stdin_review_text))
         reviewed = subprocess.run(
             [str(binary.resolve()), "review", "-"],
             cwd=repo,
@@ -6590,10 +6649,19 @@ def run_review_stdin_smoke(binary: Path) -> None:
             timeout=5,
             check=True,
         )
-        assert reviewed.stdout == "stored reply\n"
+        assert reviewed.stdout == "No actionable issues.\n"
         assert reviewed.stderr == "Reading review prompt from stdin...\n"
         assert len(server.request_bodies) == 1
         assert server.request_bodies[0]["model"] == "gpt-review-specialist"
+        assert "# Review guidelines:" in server.request_bodies[0]["instructions"]
+        review_format = server.request_bodies[0]["text"]["format"]
+        assert review_format["type"] == "json_schema"
+        assert review_format["schema"]["required"] == [
+            "findings",
+            "overall_correctness",
+            "overall_explanation",
+            "overall_confidence_score",
+        ]
         prompt = server.request_bodies[0]["input"][-1]["content"][0]["text"]
         assert "Review according to these instructions:" in prompt
         assert "focus on public API regressions" in prompt

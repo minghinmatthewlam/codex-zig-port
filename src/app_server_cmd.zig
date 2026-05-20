@@ -32,6 +32,7 @@ const plugin_config = @import("plugin_config.zig");
 const plugin_list = @import("plugin_list.zig");
 const plan_tool = @import("plan_tool.zig");
 const remote_plugin = @import("remote_plugin.zig");
+const review_output_mod = @import("review_output.zig");
 const review_prompt = @import("review_prompt.zig");
 const sandbox_mod = @import("sandbox.zig");
 const session_mod = @import("session.zig");
@@ -29108,6 +29109,8 @@ fn handleReviewStart(
         return response_payload;
     }
 
+    var output_schema = try review_output_mod.parseOutputSchema(allocator);
+    defer output_schema.deinit();
     const answer = session_mod.runTurnWithOptions(allocator, cfg, &credentials, &review_transcript, prompt, .{
         .prompt_for_approval = false,
         .approval_callback = approval_callback,
@@ -29173,6 +29176,7 @@ fn handleReviewStart(
             .ctx = &mcp_startup_status_context,
             .on_startup_status = handleSessionMcpStartupStatus,
         },
+        .output_schema = output_schema.value,
         .feature_overrides = turn_feature_overrides,
         .workdir = thread.cwd,
         .background_terminal_owner = thread.id,
@@ -29427,81 +29431,7 @@ fn buildReviewStartPrompt(allocator: std.mem.Allocator, cwd: []const u8, target:
 }
 
 fn renderReviewStartOutputText(allocator: std.mem.Allocator, text: []const u8) ![]const u8 {
-    const trimmed = std.mem.trim(u8, text, " \t\r\n");
-    if (trimmed.len == 0) return allocator.dupe(u8, "Reviewer failed to output a response.");
-    if (try renderReviewOutputJsonText(allocator, trimmed)) |rendered| return rendered;
-    if (std.mem.indexOfScalar(u8, trimmed, '{')) |start| {
-        if (std.mem.lastIndexOfScalar(u8, trimmed, '}')) |end| {
-            if (start < end) {
-                if (try renderReviewOutputJsonText(allocator, trimmed[start .. end + 1])) |rendered| return rendered;
-            }
-        }
-    }
-    return allocator.dupe(u8, trimmed);
-}
-
-fn renderReviewOutputJsonText(allocator: std.mem.Allocator, bytes: []const u8) !?[]const u8 {
-    var parsed = std.json.parseFromSlice(std.json.Value, allocator, bytes, .{}) catch return null;
-    defer parsed.deinit();
-    return try renderReviewOutputJsonValue(allocator, parsed.value);
-}
-
-fn renderReviewOutputJsonValue(allocator: std.mem.Allocator, value: std.json.Value) !?[]const u8 {
-    if (value != .object) return null;
-    const object = value.object;
-    const explanation_value = object.get("overall_explanation") orelse return null;
-    if (explanation_value != .string) return null;
-    const findings_value = object.get("findings") orelse return null;
-    if (findings_value != .array) return null;
-
-    var out = std.ArrayList(u8).empty;
-    var out_moved = false;
-    defer if (!out_moved) out.deinit(allocator);
-    const explanation = std.mem.trim(u8, explanation_value.string, " \t\r\n");
-    if (explanation.len > 0) try out.appendSlice(allocator, explanation);
-    if (findings_value.array.items.len > 0) {
-        if (out.items.len > 0) try out.appendSlice(allocator, "\n\n");
-        if (findings_value.array.items.len > 1) {
-            try out.appendSlice(allocator, "Full review comments:");
-        } else {
-            try out.appendSlice(allocator, "Review comment:");
-        }
-        for (findings_value.array.items) |finding_value| {
-            if (finding_value != .object) return null;
-            const finding = finding_value.object;
-            const title = jsonStringField(finding, "title") orelse return null;
-            const body = jsonStringField(finding, "body") orelse return null;
-            const location_value = finding.get("code_location") orelse return null;
-            if (location_value != .object) return null;
-            const location = location_value.object;
-            const path = jsonStringField(location, "absolute_file_path") orelse return null;
-            const line_range_value = location.get("line_range") orelse return null;
-            if (line_range_value != .object) return null;
-            const line_range = line_range_value.object;
-            const start = jsonIntegerField(line_range, "start") orelse return null;
-            const end = jsonIntegerField(line_range, "end") orelse return null;
-
-            try out.appendSlice(allocator, "\n\n- ");
-            try out.appendSlice(allocator, title);
-            try out.appendSlice(allocator, " - ");
-            try out.appendSlice(allocator, path);
-            try out.append(allocator, ':');
-            try appendInt(allocator, &out, start);
-            try out.append(allocator, '-');
-            try appendInt(allocator, &out, end);
-            if (body.len > 0) {
-                var lines = std.mem.splitScalar(u8, body, '\n');
-                while (lines.next()) |line| {
-                    try out.appendSlice(allocator, "\n  ");
-                    try out.appendSlice(allocator, line);
-                }
-            }
-        }
-    }
-    if (out.items.len == 0) return @as(?[]const u8, try allocator.dupe(u8, "Reviewer failed to output a response."));
-    const rendered = try out.toOwnedSlice(allocator);
-    out_moved = true;
-    return @as(?[]const u8, rendered);
+    return review_output_mod.renderText(allocator, text);
 }
 
 test "review output JSON fallback releases partial render buffer" {
@@ -29530,18 +29460,6 @@ test "review target parser rejects extra target fields" {
     defer parsed.deinit();
 
     try std.testing.expectError(error.InvalidReviewTarget, parseReviewStartTarget(std.testing.allocator, parsed.value.object));
-}
-
-fn jsonStringField(object: std.json.ObjectMap, name: []const u8) ?[]const u8 {
-    const value = object.get(name) orelse return null;
-    if (value != .string) return null;
-    return value.string;
-}
-
-fn jsonIntegerField(object: std.json.ObjectMap, name: []const u8) ?i64 {
-    const value = object.get(name) orelse return null;
-    if (value != .integer) return null;
-    return value.integer;
 }
 
 fn renderReviewStartRolloutUserMessage(allocator: std.mem.Allocator, review_output: []const u8) ![]const u8 {

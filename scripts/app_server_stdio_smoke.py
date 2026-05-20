@@ -8206,6 +8206,14 @@ def run_review_start_rpc_smoke(binary: Path) -> None:
                     isinstance(name, str) and name.startswith("mcp__")
                     for name in tool_names
                 )
+                review_format = request["text"]["format"]
+                assert review_format["type"] == "json_schema"
+                assert review_format["schema"]["required"] == [
+                    "findings",
+                    "overall_correctness",
+                    "overall_explanation",
+                    "overall_confidence_score",
+                ]
 
             write_json_line(
                 proc,
