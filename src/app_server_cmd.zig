@@ -575,6 +575,8 @@ const LoadedThread = struct {
     sandbox_writable_roots: config.StringList,
     sandbox_include_cwd_write_root: bool,
     sandbox_network_enabled: bool,
+    sandbox_exclude_tmpdir_env_var: bool,
+    sandbox_exclude_slash_tmp: bool,
     sandbox_external: bool,
     web_search_mode: ?config.WebSearchMode,
     reasoning_effort: ?[]const u8,
@@ -29741,6 +29743,9 @@ fn handleTurnStart(
     var turn_feature_overrides = try effectiveAppServerTurnFeatureOverrides(allocator, state, thread);
     defer turn_feature_overrides.deinit(allocator);
 
+    var effective_writable_roots = try loadedThreadEffectiveWritableRoots(allocator, thread);
+    defer effective_writable_roots.deinit(allocator);
+
     const answer = session_mod.runTurnWithOptions(allocator, cfg, &credentials, &thread.transcript, prompt_for_turn, .{
         .prompt_for_approval = approval_callback != null,
         .approval_callback = approval_callback,
@@ -29749,7 +29754,7 @@ fn handleTurnStart(
         .goal_tool_callback = goal_tool_callback,
         .mcp_elicitation_callback = mcp_elicitation_callback,
         .external_auth_refresh_callback = external_auth_refresh_callback,
-        .additional_writable_roots = thread.sandbox_writable_roots.items,
+        .additional_writable_roots = effective_writable_roots.items,
         .include_cwd_write_root = thread.sandbox_include_cwd_write_root,
         .network_enabled = thread.sandbox_network_enabled,
         .output_schema = optionalJsonParam(object, "outputSchema"),
@@ -31895,6 +31900,8 @@ fn applyTurnStartRuntimeOverrides(
             roots,
             profile.include_cwd_write_root,
             profile.network_enabled,
+            profile.exclude_tmpdir_env_var,
+            profile.exclude_slash_tmp,
             false,
         );
     } else if (params.get("sandboxPolicy")) |sandbox_policy| {
@@ -31913,6 +31920,8 @@ fn applyTurnStartRuntimeOverrides(
                 writable_roots,
                 true,
                 sandbox_selection.network_enabled,
+                sandbox_selection.exclude_tmpdir_env_var,
+                sandbox_selection.exclude_slash_tmp,
                 sandbox_selection.external,
             );
             writable_roots_moved = true;
@@ -32033,6 +32042,8 @@ fn turnContextProjectConfigCwd(
 const TurnStartSandboxPolicy = struct {
     mode: config.SandboxMode,
     network_enabled: bool,
+    exclude_tmpdir_env_var: bool = false,
+    exclude_slash_tmp: bool = false,
     external: bool = false,
     writable_roots: config.StringList,
     roots_moved: bool = false,
@@ -32074,11 +32085,19 @@ fn parseTurnStartSandboxPolicy(allocator: std.mem.Allocator, value: std.json.Val
     }
     if (std.mem.eql(u8, type_value.string, "workspaceWrite")) {
         try expectTurnStartSandboxPolicyNetworkDisabled(value.object);
-        try expectTurnStartSandboxPolicyBoolDefaultFalse(value.object, "excludeTmpdirEnvVar");
-        try expectTurnStartSandboxPolicyBoolDefaultFalse(value.object, "excludeSlashTmp");
         return .{
             .mode = .workspace_write,
             .network_enabled = false,
+            .exclude_tmpdir_env_var = parseCommandExecSandboxPolicyBool(
+                value.object,
+                "excludeTmpdirEnvVar",
+                error.InvalidTurnContextOverride,
+            ) catch return error.InvalidTurnContextOverride,
+            .exclude_slash_tmp = parseCommandExecSandboxPolicyBool(
+                value.object,
+                "excludeSlashTmp",
+                error.InvalidTurnContextOverride,
+            ) catch return error.InvalidTurnContextOverride,
             .writable_roots = try parseTurnStartSandboxPolicyWritableRoots(allocator, value.object),
         };
     }
@@ -32172,12 +32191,6 @@ fn expectTurnStartSandboxPolicyNetworkDisabled(object: std.json.ObjectMap) !void
     if (value != .bool or value.bool) return error.InvalidTurnContextOverride;
 }
 
-fn expectTurnStartSandboxPolicyBoolDefaultFalse(object: std.json.ObjectMap, field: []const u8) !void {
-    const value = object.get(field) orelse return;
-    if (value == .null) return;
-    if (value != .bool or value.bool) return error.InvalidTurnContextOverride;
-}
-
 fn emptyStringList(allocator: std.mem.Allocator) !config.StringList {
     return .{ .items = try allocator.alloc([]const u8, 0) };
 }
@@ -32206,6 +32219,8 @@ fn resetLoadedThreadSandboxProfile(
         roots,
         true,
         network_enabled,
+        false,
+        false,
         external,
     );
 }
@@ -32217,6 +32232,8 @@ fn replaceLoadedThreadSandboxProfile(
     roots: config.StringList,
     include_cwd_write_root: bool,
     network_enabled: bool,
+    exclude_tmpdir_env_var: bool,
+    exclude_slash_tmp: bool,
     external: bool,
 ) !void {
     try replaceOwnedString(allocator, &thread.sandbox_mode, mode.label());
@@ -32224,8 +32241,38 @@ fn replaceLoadedThreadSandboxProfile(
     thread.sandbox_writable_roots = roots;
     thread.sandbox_include_cwd_write_root = include_cwd_write_root;
     thread.sandbox_network_enabled = network_enabled;
+    thread.sandbox_exclude_tmpdir_env_var = exclude_tmpdir_env_var;
+    thread.sandbox_exclude_slash_tmp = exclude_slash_tmp;
     thread.sandbox_external = external;
     thread.runtime_overrides.sandbox_mode = true;
+}
+
+const LoadedThreadEffectiveWritableRoots = struct {
+    items: []const []const u8,
+    owned: bool = false,
+
+    fn deinit(self: *LoadedThreadEffectiveWritableRoots, allocator: std.mem.Allocator) void {
+        if (self.owned) allocator.free(self.items);
+    }
+};
+
+fn loadedThreadEffectiveWritableRoots(
+    allocator: std.mem.Allocator,
+    thread: *const LoadedThread,
+) !LoadedThreadEffectiveWritableRoots {
+    if (!std.mem.eql(u8, thread.sandbox_mode, "workspace-write")) {
+        return .{ .items = &.{} };
+    }
+
+    return .{
+        .items = try buildCommandExecWorkspaceWriteRoots(
+            allocator,
+            thread.sandbox_writable_roots.items,
+            if (thread.sandbox_exclude_tmpdir_env_var) null else commandExecCurrentAbsoluteEnv("TMPDIR"),
+            if (thread.sandbox_exclude_slash_tmp) null else "/tmp",
+        ),
+        .owned = true,
+    };
 }
 
 fn refreshLoadedThreadAfterTurn(allocator: std.mem.Allocator, thread: *LoadedThread, prompt: []const u8) !void {
@@ -32737,6 +32784,9 @@ fn handleLoadedThreadCompactStart(
     const item_id = try std.fmt.allocPrint(allocator, "item-{d}", .{thread.transcript.history.items.len});
     defer allocator.free(item_id);
 
+    var effective_writable_roots = try loadedThreadEffectiveWritableRoots(allocator, thread);
+    defer effective_writable_roots.deinit(allocator);
+
     const started_at_ms = currentUnixMilliseconds();
     const started_at = @divTrunc(started_at_ms, std.time.ms_per_s);
     const started_notification = try renderTurnNotification(allocator, "turn/started", thread.id, turn_id, "inProgress", started_at, null);
@@ -32746,7 +32796,7 @@ fn handleLoadedThreadCompactStart(
     const compact_prompt = appServerCompactPromptForConfig(cfg);
     const answer = session_mod.runTurnWithOptions(allocator, cfg, &credentials, &thread.transcript, compact_prompt, .{
         .prompt_for_approval = false,
-        .additional_writable_roots = thread.sandbox_writable_roots.items,
+        .additional_writable_roots = effective_writable_roots.items,
         .include_cwd_write_root = thread.sandbox_include_cwd_write_root,
         .network_enabled = thread.sandbox_network_enabled,
         .include_tools = false,
@@ -36554,6 +36604,8 @@ fn createLoadedThreadFromStartParams(
         .sandbox_writable_roots = sandbox_writable_roots,
         .sandbox_include_cwd_write_root = true,
         .sandbox_network_enabled = defaultNetworkEnabledForSandboxModeLabel(sandbox_mode),
+        .sandbox_exclude_tmpdir_env_var = false,
+        .sandbox_exclude_slash_tmp = false,
         .sandbox_external = false,
         .web_search_mode = cfg.web_search_mode,
         .reasoning_effort = reasoning_effort,
@@ -36703,6 +36755,8 @@ fn createLoadedThreadFromHistoryParams(
         .sandbox_writable_roots = sandbox_writable_roots,
         .sandbox_include_cwd_write_root = true,
         .sandbox_network_enabled = defaultNetworkEnabledForSandboxModeLabel(sandbox_mode),
+        .sandbox_exclude_tmpdir_env_var = false,
+        .sandbox_exclude_slash_tmp = false,
         .sandbox_external = false,
         .web_search_mode = cfg.web_search_mode,
         .reasoning_effort = reasoning_effort,
@@ -36877,6 +36931,8 @@ fn createLoadedThreadFromResumeParams(
         .sandbox_writable_roots = sandbox_writable_roots,
         .sandbox_include_cwd_write_root = true,
         .sandbox_network_enabled = defaultNetworkEnabledForSandboxModeLabel(sandbox_mode),
+        .sandbox_exclude_tmpdir_env_var = false,
+        .sandbox_exclude_slash_tmp = false,
         .sandbox_external = false,
         .web_search_mode = cfg.web_search_mode,
         .reasoning_effort = reasoning_effort,
@@ -37033,6 +37089,8 @@ fn createLoadedThreadFromForkParams(
     errdefer sandbox_writable_roots.deinit(allocator);
     const sandbox_include_cwd_write_root = if (reset_sandbox_profile) true else source.sandbox_include_cwd_write_root;
     const sandbox_network_enabled = if (reset_sandbox_profile) defaultNetworkEnabledForSandboxModeLabel(sandbox_mode) else source.sandbox_network_enabled;
+    const sandbox_exclude_tmpdir_env_var = if (reset_sandbox_profile) false else source.sandbox_exclude_tmpdir_env_var;
+    const sandbox_exclude_slash_tmp = if (reset_sandbox_profile) false else source.sandbox_exclude_slash_tmp;
     const sandbox_external = if (reset_sandbox_profile) false else source.sandbox_external;
 
     const web_search_mode = if (use_request_config_for_web_search) cfg.web_search_mode else source.web_search_mode;
@@ -37119,6 +37177,8 @@ fn createLoadedThreadFromForkParams(
         .sandbox_writable_roots = sandbox_writable_roots,
         .sandbox_include_cwd_write_root = sandbox_include_cwd_write_root,
         .sandbox_network_enabled = sandbox_network_enabled,
+        .sandbox_exclude_tmpdir_env_var = sandbox_exclude_tmpdir_env_var,
+        .sandbox_exclude_slash_tmp = sandbox_exclude_slash_tmp,
         .sandbox_external = sandbox_external,
         .web_search_mode = web_search_mode,
         .reasoning_effort = reasoning_effort,
@@ -39653,7 +39713,11 @@ fn appendThreadSandboxPolicyJson(allocator: std.mem.Allocator, result: *std.Arra
         }
         try result.appendSlice(allocator, "],\"networkAccess\":");
         try appendJsonBool(allocator, result, thread.sandbox_network_enabled);
-        try result.appendSlice(allocator, ",\"excludeTmpdirEnvVar\":false,\"excludeSlashTmp\":false}");
+        try result.appendSlice(allocator, ",\"excludeTmpdirEnvVar\":");
+        try appendJsonBool(allocator, result, thread.sandbox_exclude_tmpdir_env_var);
+        try result.appendSlice(allocator, ",\"excludeSlashTmp\":");
+        try appendJsonBool(allocator, result, thread.sandbox_exclude_slash_tmp);
+        try result.append(allocator, '}');
     }
 }
 
@@ -39684,6 +39748,12 @@ fn appendThreadPermissionProfileFileSystemJson(allocator: std.mem.Allocator, res
             try result.appendSlice(allocator, ",{\"path\":{\"type\":\"path\",\"path\":");
             try appendJsonString(allocator, result, root);
             try result.appendSlice(allocator, "},\"access\":\"write\"}");
+        }
+        if (!thread.sandbox_exclude_tmpdir_env_var) {
+            try result.appendSlice(allocator, ",{\"path\":{\"type\":\"special\",\"value\":{\"kind\":\"tmpdir\"}},\"access\":\"write\"}");
+        }
+        if (!thread.sandbox_exclude_slash_tmp) {
+            try result.appendSlice(allocator, ",{\"path\":{\"type\":\"special\",\"value\":{\"kind\":\"slash_tmp\"}},\"access\":\"write\"}");
         }
     }
     try result.appendSlice(allocator, "]}");
@@ -51114,6 +51184,8 @@ fn reloadLoadedThreadRuntimeConfig(allocator: std.mem.Allocator, state: *AppServ
             roots_moved = true;
             thread.sandbox_include_cwd_write_root = true;
             thread.sandbox_network_enabled = defaultNetworkEnabledForSandboxMode(cfg.sandbox_mode);
+            thread.sandbox_exclude_tmpdir_env_var = false;
+            thread.sandbox_exclude_slash_tmp = false;
             thread.sandbox_external = false;
         }
         if (!thread.runtime_overrides.web_search_mode) {
@@ -59891,6 +59963,8 @@ test "app-server goal reads persist refreshed accounting" {
         .sandbox_writable_roots = .{ .items = &.{} },
         .sandbox_include_cwd_write_root = true,
         .sandbox_network_enabled = true,
+        .sandbox_exclude_tmpdir_env_var = false,
+        .sandbox_exclude_slash_tmp = false,
         .sandbox_external = false,
         .web_search_mode = null,
         .reasoning_effort = null,

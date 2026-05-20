@@ -227,6 +227,8 @@ pub const SandboxPermissionProfile = struct {
     additional_writable_roots: StringList,
     include_cwd_write_root: bool = true,
     network_enabled: bool = true,
+    exclude_tmpdir_env_var: bool = true,
+    exclude_slash_tmp: bool = true,
 
     pub fn deinit(self: *SandboxPermissionProfile, allocator: std.mem.Allocator) void {
         self.additional_writable_roots.deinit(allocator);
@@ -477,6 +479,8 @@ fn resolveBuiltInSandboxPermissionProfile(allocator: std.mem.Allocator, profile:
         .mode = mode,
         .additional_writable_roots = .{ .items = try allocator.alloc([]const u8, 0) },
         .network_enabled = mode == .danger_full_access,
+        .exclude_tmpdir_env_var = mode != .workspace_write,
+        .exclude_slash_tmp = mode != .workspace_write,
     };
 }
 

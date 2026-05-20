@@ -1048,12 +1048,11 @@ cleanly to the current loaded-thread sandbox modes, including
 danger-full-access runtime mode. It rejects conflicts with the legacy
 `sandbox` field before issuing a provider request, rejects invalid relative
 writable roots and network-enabled non-external policies, stores the selected
-mode and custom roots on the loaded-thread runtime state, feeds those roots
-into model-requested shell tool sandboxing, and preserves them across
-subsequent thread lifecycle responses. The generated TypeScript and JSON
-schemas include `TurnStartParams.sandboxPolicy`. Full support for additional
-workspace-write root policy flags beyond the current false/default values
-remains planned.
+mode, custom roots, and workspace-write temp-root exclusion flags on the
+loaded-thread runtime state, feeds explicit roots plus default `$TMPDIR` and
+`/tmp` roots into model-requested shell tool sandboxing unless excluded, and
+preserves the selected policy across subsequent thread lifecycle responses. The
+generated TypeScript and JSON schemas include `TurnStartParams.sandboxPolicy`.
 
 Additional app-server turn-start permissions override coverage:
 `turn/start` now accepts Rust-compatible `permissions` profile selections for

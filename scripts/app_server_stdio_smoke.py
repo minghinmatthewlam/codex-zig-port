@@ -4983,6 +4983,8 @@ def run_turn_start_rpc_smoke(binary: Path) -> None:
     server, base_url = start_turn_responses_server()
     codex_home = Path(tempfile.mkdtemp(prefix="codex-zig-app-server-turn-start-", dir="/tmp"))
     try:
+        turn_tmpdir = codex_home / "turn-start-tmpdir"
+        turn_tmpdir.mkdir()
         codex_home.joinpath("config.toml").write_text(
             "\n".join(
                 [
@@ -4998,6 +5000,7 @@ def run_turn_start_rpc_smoke(binary: Path) -> None:
         env = os.environ.copy()
         env["CODEX_HOME"] = str(codex_home)
         env["OPENAI_API_KEY"] = "test-api-key"
+        env["TMPDIR"] = str(turn_tmpdir)
         env.pop("CODEX_ACCESS_TOKEN", None)
 
         proc = subprocess.Popen(
@@ -7155,9 +7158,338 @@ def run_turn_start_rpc_smoke(binary: Path) -> None:
                     "path": {"type": "path", "path": str(extra_sandbox_root)},
                     "access": "write",
                 } in permission_entries
+                assert {
+                    "path": {"type": "special", "value": {"kind": "tmpdir"}},
+                    "access": "write",
+                } in permission_entries
+                assert {
+                    "path": {"type": "special", "value": {"kind": "slash_tmp"}},
+                    "access": "write",
+                } in permission_entries
                 assert_thread_started_notification(
                     read_json_line(proc, 5),
                     fork_after_workspace_roots["result"]["thread"],
+                )
+
+                tmpdir_default_target = turn_tmpdir / "turn-start-temp-default.txt"
+                slash_tmp_default_target = (
+                    Path("/tmp") / f"{codex_home.name}-turn-start-temp-default.txt"
+                )
+                if slash_tmp_default_target.exists():
+                    slash_tmp_default_target.unlink()
+                default_temp_command = (
+                    f"printf tmp-default > {shlex.quote(str(tmpdir_default_target))} "
+                    f"&& printf slash-default > {shlex.quote(str(slash_tmp_default_target))} "
+                    "&& printf turn-start-temp-default-ok"
+                )
+                default_temp_call = {
+                    "type": "response.output_item.done",
+                    "item": {
+                        "type": "function_call",
+                        "call_id": "call-turn-sandbox-temp-default",
+                        "name": "exec_command",
+                        "arguments": json.dumps(
+                            {
+                                "cmd": default_temp_command,
+                                "workdir": cwd,
+                            }
+                        ),
+                    },
+                }
+                request_count_before_temp_default = len(server.request_paths)
+                server.response_payloads.append(
+                    (
+                        f"data: {json.dumps(default_temp_call)}\n\n"
+                        "data: [DONE]\n\n"
+                    ).encode()
+                )
+                write_json_line(
+                    proc,
+                    {
+                        "jsonrpc": "2.0",
+                        "id": "turn-start-workspace-sandbox-temp-defaults",
+                        "method": "turn/start",
+                        "params": {
+                            "threadId": thread_id,
+                            "approvalPolicy": "never",
+                            "sandboxPolicy": {
+                                "type": "workspaceWrite",
+                                "writableRoots": [str(extra_sandbox_root)],
+                                "networkAccess": False,
+                            },
+                            "input": [
+                                {
+                                    "type": "text",
+                                    "text": "use workspace sandbox temp defaults",
+                                },
+                            ],
+                        },
+                    },
+                )
+                assert_turn_start_rpc_completed(
+                    proc, thread_id, "turn-start-workspace-sandbox-temp-defaults"
+                )
+                assert len(server.request_paths) == request_count_before_temp_default + 2
+                default_temp_followup = server.request_bodies[-1]
+                default_temp_output = next(
+                    item
+                    for item in default_temp_followup["input"]
+                    if item.get("type") == "function_call_output"
+                    and item.get("call_id") == "call-turn-sandbox-temp-default"
+                )
+                assert "turn-start-temp-default-ok" in default_temp_output["output"], (
+                    default_temp_output["output"]
+                )
+                assert (
+                    tmpdir_default_target.read_text(encoding="utf-8")
+                    == "tmp-default"
+                )
+                assert (
+                    slash_tmp_default_target.read_text(encoding="utf-8")
+                    == "slash-default"
+                )
+                slash_tmp_default_target.unlink()
+
+                tmpdir_excluded_target = turn_tmpdir / "turn-start-temp-excluded.txt"
+                slash_tmp_excluded_target = (
+                    Path("/tmp") / f"{codex_home.name}-turn-start-temp-excluded.txt"
+                )
+                if slash_tmp_excluded_target.exists():
+                    slash_tmp_excluded_target.unlink()
+                excluded_temp_command = (
+                    f"! printf blocked > {shlex.quote(str(tmpdir_excluded_target))} "
+                    f"&& ! printf blocked > {shlex.quote(str(slash_tmp_excluded_target))} "
+                    "&& printf turn-start-temp-excluded-blocked"
+                )
+                excluded_temp_call = {
+                    "type": "response.output_item.done",
+                    "item": {
+                        "type": "function_call",
+                        "call_id": "call-turn-sandbox-temp-excluded",
+                        "name": "exec_command",
+                        "arguments": json.dumps(
+                            {
+                                "cmd": excluded_temp_command,
+                                "workdir": cwd,
+                            }
+                        ),
+                    },
+                }
+                request_count_before_temp_excluded = len(server.request_paths)
+                server.response_payloads.append(
+                    (
+                        f"data: {json.dumps(excluded_temp_call)}\n\n"
+                        "data: [DONE]\n\n"
+                    ).encode()
+                )
+                write_json_line(
+                    proc,
+                    {
+                        "jsonrpc": "2.0",
+                        "id": "turn-start-workspace-sandbox-temp-excluded",
+                        "method": "turn/start",
+                        "params": {
+                            "threadId": thread_id,
+                            "approvalPolicy": "never",
+                            "sandboxPolicy": {
+                                "type": "workspaceWrite",
+                                "writableRoots": [str(extra_sandbox_root)],
+                                "networkAccess": False,
+                                "excludeTmpdirEnvVar": True,
+                                "excludeSlashTmp": True,
+                            },
+                            "input": [
+                                {
+                                    "type": "text",
+                                    "text": "exclude workspace sandbox temp roots",
+                                },
+                            ],
+                        },
+                    },
+                )
+                assert_turn_start_rpc_completed(
+                    proc, thread_id, "turn-start-workspace-sandbox-temp-excluded"
+                )
+                assert len(server.request_paths) == request_count_before_temp_excluded + 2
+                excluded_temp_followup = server.request_bodies[-1]
+                excluded_temp_output = next(
+                    item
+                    for item in excluded_temp_followup["input"]
+                    if item.get("type") == "function_call_output"
+                    and item.get("call_id") == "call-turn-sandbox-temp-excluded"
+                )
+                assert "turn-start-temp-excluded-blocked" in excluded_temp_output[
+                    "output"
+                ], excluded_temp_output["output"]
+                assert not tmpdir_excluded_target.exists()
+                assert not slash_tmp_excluded_target.exists()
+
+                write_json_line(
+                    proc,
+                    {
+                        "jsonrpc": "2.0",
+                        "id": "thread-fork-after-workspace-sandbox-excludes",
+                        "method": "thread/fork",
+                        "params": {
+                            "threadId": thread_id,
+                            "ephemeral": True,
+                            "excludeTurns": True,
+                        },
+                    },
+                )
+                fork_after_workspace_excludes = read_json_line(proc, 5)
+                assert fork_after_workspace_excludes["id"] == (
+                    "thread-fork-after-workspace-sandbox-excludes"
+                )
+                assert fork_after_workspace_excludes["result"]["sandbox"] == {
+                    "type": "workspaceWrite",
+                    "writableRoots": [str(extra_sandbox_root)],
+                    "networkAccess": False,
+                    "excludeTmpdirEnvVar": True,
+                    "excludeSlashTmp": True,
+                }
+                excluded_permission_entries = fork_after_workspace_excludes["result"][
+                    "permissionProfile"
+                ]["fileSystem"]["entries"]
+                assert {
+                    "path": {"type": "path", "path": str(extra_sandbox_root)},
+                    "access": "write",
+                } in excluded_permission_entries
+                assert {
+                    "path": {"type": "special", "value": {"kind": "tmpdir"}},
+                    "access": "write",
+                } not in excluded_permission_entries
+                assert {
+                    "path": {"type": "special", "value": {"kind": "slash_tmp"}},
+                    "access": "write",
+                } not in excluded_permission_entries
+                assert_thread_started_notification(
+                    read_json_line(proc, 5),
+                    fork_after_workspace_excludes["result"]["thread"],
+                )
+
+                tmpdir_permissions_target = (
+                    turn_tmpdir / "turn-start-permissions-temp-default.txt"
+                )
+                slash_tmp_permissions_target = (
+                    Path("/tmp")
+                    / f"{codex_home.name}-turn-start-permissions-temp-default.txt"
+                )
+                if slash_tmp_permissions_target.exists():
+                    slash_tmp_permissions_target.unlink()
+                permissions_temp_command = (
+                    f"printf permissions-tmp > {shlex.quote(str(tmpdir_permissions_target))} "
+                    f"&& printf permissions-slash > {shlex.quote(str(slash_tmp_permissions_target))} "
+                    "&& printf turn-start-permissions-temp-ok"
+                )
+                permissions_temp_call = {
+                    "type": "response.output_item.done",
+                    "item": {
+                        "type": "function_call",
+                        "call_id": "call-turn-permissions-temp-default",
+                        "name": "exec_command",
+                        "arguments": json.dumps(
+                            {
+                                "cmd": permissions_temp_command,
+                                "workdir": cwd,
+                            }
+                        ),
+                    },
+                }
+                request_count_before_permissions_temp = len(server.request_paths)
+                server.response_payloads.append(
+                    (
+                        f"data: {json.dumps(permissions_temp_call)}\n\n"
+                        "data: [DONE]\n\n"
+                    ).encode()
+                )
+                write_json_line(
+                    proc,
+                    {
+                        "jsonrpc": "2.0",
+                        "id": "turn-start-permissions-workspace-temp-default",
+                        "method": "turn/start",
+                        "params": {
+                            "threadId": thread_id,
+                            "approvalPolicy": "never",
+                            "permissions": {"type": "profile", "id": ":workspace"},
+                            "input": [
+                                {
+                                    "type": "text",
+                                    "text": "use workspace permissions temp roots",
+                                },
+                            ],
+                        },
+                    },
+                )
+                assert_turn_start_rpc_completed(
+                    proc, thread_id, "turn-start-permissions-workspace-temp-default"
+                )
+                assert (
+                    len(server.request_paths) == request_count_before_permissions_temp + 2
+                )
+                permissions_temp_followup = server.request_bodies[-1]
+                permissions_temp_output = next(
+                    item
+                    for item in permissions_temp_followup["input"]
+                    if item.get("type") == "function_call_output"
+                    and item.get("call_id") == "call-turn-permissions-temp-default"
+                )
+                assert "turn-start-permissions-temp-ok" in permissions_temp_output[
+                    "output"
+                ], permissions_temp_output["output"]
+                assert (
+                    tmpdir_permissions_target.read_text(encoding="utf-8")
+                    == "permissions-tmp"
+                )
+                assert (
+                    slash_tmp_permissions_target.read_text(encoding="utf-8")
+                    == "permissions-slash"
+                )
+                slash_tmp_permissions_target.unlink()
+
+                write_json_line(
+                    proc,
+                    {
+                        "jsonrpc": "2.0",
+                        "id": "thread-fork-after-workspace-permissions",
+                        "method": "thread/fork",
+                        "params": {
+                            "threadId": thread_id,
+                            "ephemeral": True,
+                            "excludeTurns": True,
+                        },
+                    },
+                )
+                fork_after_workspace_permissions = read_json_line(proc, 5)
+                assert fork_after_workspace_permissions["id"] == (
+                    "thread-fork-after-workspace-permissions"
+                )
+                assert fork_after_workspace_permissions["result"]["sandbox"] == {
+                    "type": "workspaceWrite",
+                    "writableRoots": [],
+                    "networkAccess": False,
+                    "excludeTmpdirEnvVar": False,
+                    "excludeSlashTmp": False,
+                }
+                workspace_permissions_entries = fork_after_workspace_permissions[
+                    "result"
+                ]["permissionProfile"]["fileSystem"]["entries"]
+                assert {
+                    "path": {"type": "special", "value": {"kind": "project_roots"}},
+                    "access": "write",
+                } in workspace_permissions_entries
+                assert {
+                    "path": {"type": "special", "value": {"kind": "tmpdir"}},
+                    "access": "write",
+                } in workspace_permissions_entries
+                assert {
+                    "path": {"type": "special", "value": {"kind": "slash_tmp"}},
+                    "access": "write",
+                } in workspace_permissions_entries
+                assert_thread_started_notification(
+                    read_json_line(proc, 5),
+                    fork_after_workspace_permissions["result"]["thread"],
                 )
 
             assert proc.stdin is not None
@@ -14621,6 +14953,17 @@ def run_app_server_experimental_api_gate_smoke(binary: Path) -> None:
                             },
                             "access": "write",
                         },
+                        {
+                            "path": {"type": "special", "value": {"kind": "tmpdir"}},
+                            "access": "write",
+                        },
+                        {
+                            "path": {
+                                "type": "special",
+                                "value": {"kind": "slash_tmp"},
+                            },
+                            "access": "write",
+                        },
                     ],
                 },
                 "network": {"enabled": False},
@@ -14698,6 +15041,17 @@ def run_app_server_experimental_api_gate_smoke(binary: Path) -> None:
                             "path": {
                                 "type": "special",
                                 "value": {"kind": "project_roots"},
+                            },
+                            "access": "write",
+                        },
+                        {
+                            "path": {"type": "special", "value": {"kind": "tmpdir"}},
+                            "access": "write",
+                        },
+                        {
+                            "path": {
+                                "type": "special",
+                                "value": {"kind": "slash_tmp"},
                             },
                             "access": "write",
                         },
