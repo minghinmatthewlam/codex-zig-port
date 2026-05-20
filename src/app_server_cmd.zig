@@ -51601,7 +51601,7 @@ fn configWriteFeatureRequirementConflictMessage(
         }
         defer observeTomlMultilineStringOpen(&multiline_string, line_without_comment);
 
-        const eq = std.mem.indexOfScalar(u8, line, '=') orelse continue;
+        const eq = tomlAssignmentEqualsIndex(line) orelse continue;
         const lhs = std.mem.trim(u8, line[0..eq], " \t");
         const rhs = std.mem.trim(u8, line[eq + 1 ..], " \t");
         const current_section: ?[]const u8 = switch (current_scope) {
