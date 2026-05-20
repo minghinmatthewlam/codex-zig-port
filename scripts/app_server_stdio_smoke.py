@@ -30234,6 +30234,33 @@ def run_model_rpc_smoke(binary: Path) -> None:
         assert cached_online_models["result"]["data"][1]["id"] == "online-alpha"
         assert len(ModelCatalogBackendHandler.requests) == 1
 
+        (codex_home / "auth.json").write_text(
+            json.dumps(
+                {"auth_mode": "agentIdentity", "agent_identity": "remote-model-token-2"},
+                separators=(",", ":"),
+            ),
+            encoding="utf-8",
+        )
+        switched_online_models = rpc(
+            "model-list-online-account-switch-cache-miss",
+            "model/list",
+            {"limit": 5},
+        )
+        assert switched_online_models["id"] == "model-list-online-account-switch-cache-miss"
+        assert switched_online_models["result"]["data"][1]["id"] == "online-alpha"
+        assert len(ModelCatalogBackendHandler.requests) == 2
+        switched_request = ModelCatalogBackendHandler.requests[1]
+        assert switched_request["path"] == "/models"
+        assert switched_request["authorization"] == "Bearer remote-model-token-2"
+
+        (codex_home / "auth.json").unlink()
+        logged_out_models = rpc("model-list-online-logged-out-cache-miss", "model/list", {"limit": 5})
+        assert logged_out_models["id"] == "model-list-online-logged-out-cache-miss"
+        assert "online-alpha" not in [
+            item["id"] for item in logged_out_models["result"]["data"]
+        ]
+        assert len(ModelCatalogBackendHandler.requests) == 2
+
         cache_path.unlink()
         (codex_home / "config.toml").write_text(
             f'''model_provider = "custom"
@@ -30251,7 +30278,7 @@ wire_api = "responses"
         assert "online-alpha" not in custom_provider_ids
         assert custom_provider_ids[0] == "gpt-5.5"
         assert not cache_path.exists()
-        assert len(ModelCatalogBackendHandler.requests) == 1
+        assert len(ModelCatalogBackendHandler.requests) == 2
 
         provider_token_path = codex_home / "provider-token.txt"
         provider_auth_count_path = codex_home / "provider-auth-count.txt"
@@ -30312,8 +30339,8 @@ args = [{json.dumps(str(provider_auth_helper_path))}, {json.dumps(str(provider_t
         provider_ids = [item["id"] for item in provider_models["result"]["data"]]
         assert "online-alpha" in provider_ids
         assert "online-chatgpt-only" not in provider_ids
-        assert len(ModelCatalogBackendHandler.requests) == 2
-        provider_request = ModelCatalogBackendHandler.requests[1]
+        assert len(ModelCatalogBackendHandler.requests) == 3
+        provider_request = ModelCatalogBackendHandler.requests[2]
         assert provider_request["path"] == "/models"
         assert provider_request["query"] == {"client_version": ["0.124.0"]}
         assert provider_request["authorization"] == "Bearer provider-token"
@@ -30329,14 +30356,14 @@ args = [{json.dumps(str(provider_auth_helper_path))}, {json.dumps(str(provider_t
         ]
         assert "online-alpha" in provider_cached_ids
         assert "online-chatgpt-only" not in provider_cached_ids
-        assert len(ModelCatalogBackendHandler.requests) == 2
+        assert len(ModelCatalogBackendHandler.requests) == 3
         assert provider_auth_count_path.read_text(encoding="utf-8") == "2"
 
         provider_token_path.write_text("provider-token-rotated\n", encoding="utf-8")
         provider_rotated_models = rpc("model-list-provider-command-rotated-cache-miss", "model/list", {"limit": 10})
         assert provider_rotated_models["id"] == "model-list-provider-command-rotated-cache-miss"
-        assert len(ModelCatalogBackendHandler.requests) == 3
-        provider_rotated_request = ModelCatalogBackendHandler.requests[2]
+        assert len(ModelCatalogBackendHandler.requests) == 4
+        provider_rotated_request = ModelCatalogBackendHandler.requests[3]
         assert provider_rotated_request["path"] == "/models"
         assert provider_rotated_request["authorization"] == "Bearer provider-token-rotated"
         assert provider_auth_count_path.read_text(encoding="utf-8") == "3"
@@ -30361,8 +30388,8 @@ args = [{json.dumps(str(provider_auth_helper_path))}, {json.dumps(str(provider_t
         assert "online-chatgpt-only" in [
             item["id"] for item in chatgpt_after_provider_models["result"]["data"]
         ]
-        assert len(ModelCatalogBackendHandler.requests) == 4
-        chatgpt_after_provider_request = ModelCatalogBackendHandler.requests[3]
+        assert len(ModelCatalogBackendHandler.requests) == 5
+        chatgpt_after_provider_request = ModelCatalogBackendHandler.requests[4]
         assert chatgpt_after_provider_request["path"] == "/models"
         assert chatgpt_after_provider_request["authorization"] == "Bearer remote-model-token"
     finally:

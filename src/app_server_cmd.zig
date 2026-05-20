@@ -56320,8 +56320,16 @@ const ModelCatalogCacheScope = struct {
 };
 
 fn loadModelCatalogScopeCredentials(allocator: std.mem.Allocator, cfg: *const config.Config) !?auth_mod.Credentials {
-    if (cfg.model_provider_auth_command == null) return null;
-    return try auth_mod.loadForConfig(allocator, cfg);
+    var credentials = if (cfg.model_provider_auth_command != null)
+        try auth_mod.loadForConfig(allocator, cfg)
+    else
+        try auth_mod.loadCliAuthNoRefreshForConfig(allocator, cfg);
+    errdefer credentials.deinit(allocator);
+    if (!modelCatalogShouldScopeCredentials(cfg, credentials)) {
+        credentials.deinit(allocator);
+        return null;
+    }
+    return credentials;
 }
 
 fn loadFreshModelCatalogCacheForConfig(
@@ -56474,8 +56482,18 @@ fn modelCatalogOnlineRefreshAllowed(cfg: *const config.Config, credentials: auth
 }
 
 fn modelCatalogScopeCredentials(cfg: *const config.Config, credentials: auth_mod.Credentials) ?auth_mod.Credentials {
-    if (cfg.model_provider_auth_command != null) return credentials;
+    if (modelCatalogShouldScopeCredentials(cfg, credentials)) return credentials;
     return null;
+}
+
+fn modelCatalogShouldScopeCredentials(cfg: *const config.Config, credentials: auth_mod.Credentials) bool {
+    if (cfg.model_provider_auth_command != null) return true;
+    if (cfg.model_provider_env_key != null or cfg.model_provider_bearer_token != null) return false;
+    if (cfg.oss_provider != null or !cfg.model_provider_requires_openai_auth) return false;
+    return switch (credentials.mode) {
+        .chatgpt, .chatgpt_auth_tokens, .agent_identity => true,
+        .api_key, .local_oss => false,
+    };
 }
 
 fn modelCatalogCacheScope(
@@ -56505,7 +56523,7 @@ fn modelCatalogCacheScope(
 
     return .{
         .key = try key.toOwnedSlice(allocator),
-        .allow_unscoped = modelCatalogAllowsUnscopedCache(cfg),
+        .allow_unscoped = credentials == null and modelCatalogAllowsUnscopedCache(cfg),
     };
 }
 
@@ -56700,6 +56718,41 @@ test "model catalog cache scope includes credentials without leaking token" {
     try std.testing.expect(std.mem.indexOf(u8, scope.key, "credential.token") != null);
     try std.testing.expect(std.mem.indexOf(u8, scope.key, "provider-token") == null);
     try std.testing.expect(std.mem.indexOf(u8, scope.key, "acct-provider") == null);
+}
+
+test "model catalog cache scope includes backend auth but not default api keys" {
+    var cfg = testDefaultModelCatalogCacheConfig();
+    const backend_credentials: auth_mod.Credentials = .{
+        .mode = .agent_identity,
+        .token = "agent-token",
+        .account_id = "acct-one",
+    };
+    var backend_scope = try modelCatalogCacheScope(
+        std.testing.allocator,
+        &cfg,
+        modelCatalogScopeCredentials(&cfg, backend_credentials),
+    );
+    defer backend_scope.deinit(std.testing.allocator);
+
+    try std.testing.expect(!backend_scope.allow_unscoped);
+    try std.testing.expect(std.mem.indexOf(u8, backend_scope.key, "credential.token") != null);
+    try std.testing.expect(std.mem.indexOf(u8, backend_scope.key, "agent-token") == null);
+    try std.testing.expect(std.mem.indexOf(u8, backend_scope.key, "acct-one") == null);
+
+    const api_key_credentials: auth_mod.Credentials = .{
+        .mode = .api_key,
+        .token = "api-key-token",
+    };
+    var api_key_scope = try modelCatalogCacheScope(
+        std.testing.allocator,
+        &cfg,
+        modelCatalogScopeCredentials(&cfg, api_key_credentials),
+    );
+    defer api_key_scope.deinit(std.testing.allocator);
+
+    try std.testing.expect(api_key_scope.allow_unscoped);
+    try std.testing.expect(std.mem.indexOf(u8, api_key_scope.key, "credential.token") == null);
+    try std.testing.expect(std.mem.indexOf(u8, api_key_scope.key, "api-key-token") == null);
 }
 
 fn testDefaultModelCatalogCacheConfig() config.Config {
