@@ -709,6 +709,12 @@ Additional app-server config/read coverage: `config/read` now includes
 config responses plus user, trusted-project, system, and legacy managed-config
 origin/layer metadata.
 
+Additional app-server requirements coverage: `config/read` now applies parsed
+`requirements.toml` scalar allow-lists for `approval_policy`,
+`approvals_reviewer`, `sandbox_mode`, and `web_search` to the effective config
+response. Origin/source fidelity, write validation, thread hot reload, and full
+runtime managed/cloud requirements enforcement remain planned.
+
 `approvals_reviewer` is covered as a runtime config scalar, raw CLI config
 override, app-server `config/read`/write field, and loaded-thread reload value.
 
