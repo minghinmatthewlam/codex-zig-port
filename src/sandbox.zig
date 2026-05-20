@@ -246,13 +246,41 @@ fn resolveReadDeniedRoots(allocator: std.mem.Allocator, base_cwd: []const u8, ro
         const path = try resolveProfileRootPath(allocator, base_cwd, root);
         defer allocator.free(path);
         resolved[count] = realPathAlloc(allocator, path) catch |err| switch (err) {
-            error.FileNotFound, error.NotDir, error.AccessDenied => try allocator.dupe(u8, path),
+            error.FileNotFound, error.NotDir, error.AccessDenied => try canonicalMissingPath(allocator, path),
             else => return err,
         };
         count += 1;
     }
 
     return resolved;
+}
+
+fn canonicalMissingPath(allocator: std.mem.Allocator, absolute_path: []const u8) ![]const u8 {
+    var probe_end = absolute_path.len;
+    while (probe_end > 0) {
+        const probe = absolute_path[0..probe_end];
+        const real_parent = realPathAlloc(allocator, probe) catch |err| switch (err) {
+            error.FileNotFound, error.NotDir, error.AccessDenied => {
+                const parent = std.fs.path.dirname(probe) orelse return allocator.dupe(u8, absolute_path);
+                if (parent.len >= probe.len) return allocator.dupe(u8, absolute_path);
+                probe_end = parent.len;
+                continue;
+            },
+            else => return err,
+        };
+        errdefer allocator.free(real_parent);
+
+        const suffix = if (probe_end < absolute_path.len and absolute_path[probe_end] == std.fs.path.sep)
+            absolute_path[probe_end + 1 ..]
+        else
+            absolute_path[probe_end..];
+        if (suffix.len == 0) return real_parent;
+
+        const joined = try std.fs.path.join(allocator, &.{ real_parent, suffix });
+        allocator.free(real_parent);
+        return joined;
+    }
+    return allocator.dupe(u8, absolute_path);
 }
 
 fn freeResolvedRoots(allocator: std.mem.Allocator, roots: []const []const u8) void {
@@ -392,6 +420,37 @@ test "relative profile roots resolve against cwd override" {
     defer allocator.free(expected_secret);
 
     try std.testing.expect(std.mem.indexOf(u8, wrapped.profile, expected_extra) != null);
+    try std.testing.expect(std.mem.indexOf(u8, wrapped.profile, expected_secret) != null);
+}
+
+test "missing read-denied roots canonicalize symlinked parents" {
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
+
+    const allocator = std.testing.allocator;
+    var dir = std.testing.tmpDir(.{});
+    defer dir.cleanup();
+    var io_instance: std.Io.Threaded = .init(allocator, .{});
+    defer io_instance.deinit();
+    const io = io_instance.io();
+
+    try dir.dir.createDirPath(io, "secret");
+    try dir.dir.symLink(io, "secret", "alias", .{ .is_directory = true });
+
+    const root = try dir.dir.realPathFileAlloc(std.Io.Threaded.global_single_threaded.io(), ".", allocator);
+    defer allocator.free(root);
+    const secret_future = try std.fs.path.join(allocator, &.{ root, "secret", "future.txt" });
+    defer allocator.free(secret_future);
+
+    const argv = [_][]const u8{ "/bin/echo", "ok" };
+    var wrapped = try wrapArgvWithPolicy(allocator, .workspace_write, argv[0..], &.{}, .{
+        .cwd_override = root,
+        .read_denied_roots = &.{"alias/future.txt"},
+    });
+    defer wrapped.deinit(allocator);
+
+    const expected_secret = try std.fmt.allocPrint(allocator, "(deny file-write* (subpath \"{s}\"))", .{secret_future});
+    defer allocator.free(expected_secret);
+
     try std.testing.expect(std.mem.indexOf(u8, wrapped.profile, expected_secret) != null);
 }
 
