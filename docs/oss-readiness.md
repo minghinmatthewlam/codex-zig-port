@@ -18,8 +18,8 @@ parity tracker; implementation parity remains tracked in `docs/parity.md`.
   push protection, and Dependabot security updates enabled. GitHub reports
   non-provider pattern scanning and secret validity checks as disabled.
   `SECURITY.md` is exposed through the repository security-policy URL. CodeQL
-  Python code scanning is configured; the latest completed CodeQL run
-  `26134165392` passed on pushed head
+  Python code scanning is configured; checked CodeQL run `26134165392` passed
+  on implementation pushed head
   `7201b2ff7814f3cac8e7b6d1d2fcc77643168077`. Open-alert queries for
   CodeQL, Dependabot, and secret scanning returned empty arrays after the
   token-shaped smoke-fixture cleanup. Historical CodeQL alerts remain visible
@@ -29,7 +29,7 @@ parity tracker; implementation parity remains tracked in `docs/parity.md`.
 - CI: GitHub Actions runs formatting, Python smoke-script compilation, unit
   tests, and product-surface smoke tests on macOS with a direct Zig 0.16.0
   install from `ziglang.org` rather than a deprecated Node-based setup action.
-  Checked push run `26134165414` passed on pushed head
+  Checked implementation push run `26134165414` passed on pushed head
   `7201b2ff7814f3cac8e7b6d1d2fcc77643168077`. Local pre-push verification for
   the latest model-list remote-catalog parity slice included `zig build
   --summary all`, `zig build test --summary all`, `zig build e2e --summary
