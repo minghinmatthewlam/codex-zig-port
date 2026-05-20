@@ -61536,6 +61536,14 @@ test "config write feature requirements reject conflicting user and profile valu
     defer allocator.free(dotted_conflict.?);
     try std.testing.expect(std.mem.indexOf(u8, dotted_conflict.?, "profiles.enterprise.features.personality=false") != null);
 
+    const quoted_equals_profile_conflict = try configWriteFeatureRequirementConflictMessage(allocator,
+        \\profiles."prod=eu".features.personality = false
+        \\
+    , requirements);
+    try std.testing.expect(quoted_equals_profile_conflict != null);
+    defer allocator.free(quoted_equals_profile_conflict.?);
+    try std.testing.expect(std.mem.indexOf(u8, quoted_equals_profile_conflict.?, "profiles.prod=eu.features.personality=false") != null);
+
     const inline_conflict = try configWriteFeatureRequirementConflictMessage(allocator,
         \\features = { "personality" = false }
         \\
@@ -61722,6 +61730,14 @@ test "config write scalar requirements reject disallowed top-level and profile v
     try std.testing.expect(dotted_profile_conflict != null);
     defer allocator.free(dotted_profile_conflict.?);
     try std.testing.expect(std.mem.indexOf(u8, dotted_profile_conflict.?, "profiles.enterprise.approvals_reviewer=\"user\"") != null);
+
+    const quoted_equals_profile_conflict = try configWriteScalarRequirementConflictMessage(allocator,
+        \\profiles."prod=eu".sandbox_mode = "danger-full-access"
+        \\
+    , requirements);
+    try std.testing.expect(quoted_equals_profile_conflict != null);
+    defer allocator.free(quoted_equals_profile_conflict.?);
+    try std.testing.expect(std.mem.indexOf(u8, quoted_equals_profile_conflict.?, "profiles.prod=eu.sandbox_mode=\"danger-full-access\"") != null);
 
     const unrelated_nested_profile_inline = try configWriteScalarRequirementConflictMessage(allocator,
         \\profiles = { enterprise = { tools = { default = { note = "}" } } } }
