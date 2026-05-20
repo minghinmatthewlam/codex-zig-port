@@ -18,9 +18,9 @@ parity tracker; implementation parity remains tracked in `docs/parity.md`.
   push protection, and Dependabot security updates enabled. GitHub reports
   non-provider pattern scanning and secret validity checks as disabled.
   `SECURITY.md` is exposed through the repository security-policy URL. CodeQL
-  Python code scanning is configured; checked CodeQL run `26134165392` passed
+  Python code scanning is configured; checked CodeQL run `26138664827` passed
   on implementation pushed head
-  `7201b2ff7814f3cac8e7b6d1d2fcc77643168077`. Open-alert queries for
+  `2084eab746b36a41080b219f8775082424d98f52`. Open-alert queries for
   CodeQL, Dependabot, and secret scanning returned empty arrays after the
   token-shaped smoke-fixture cleanup. Historical CodeQL alerts remain visible
   through the API as fixed.
@@ -29,16 +29,16 @@ parity tracker; implementation parity remains tracked in `docs/parity.md`.
 - CI: GitHub Actions runs formatting, Python smoke-script compilation, unit
   tests, and product-surface smoke tests on macOS with a direct Zig 0.16.0
   install from `ziglang.org` rather than a deprecated Node-based setup action.
-  Checked implementation push run `26134165414` passed on pushed head
-  `7201b2ff7814f3cac8e7b6d1d2fcc77643168077`. Local pre-push verification for
+  Checked implementation push run `26138664828` passed on pushed head
+  `2084eab746b36a41080b219f8775082424d98f52`. Local pre-push verification for
   the latest model-list remote-catalog parity slice included `zig build
   --summary all`, `zig build test --summary all`, `zig build e2e --summary
   all`, focused app-server model RPC smoke coverage,
-  `python3 -m py_compile scripts/app_server_stdio_smoke.py`, and `git diff
-  --check`.
+  `python3 -m py_compile scripts/app_server_stdio_smoke.py`, `git diff
+  --check`, and a clean `codex review --base 34271ec`.
 - Fresh public clone proof: a clean HTTPS clone from
   `https://github.com/minghinmatthewlam/codex-zig-port` at pushed head
-  `7201b2ff7814f3cac8e7b6d1d2fcc77643168077` passed `python3 -m py_compile`
+  `2084eab746b36a41080b219f8775082424d98f52` passed `python3 -m py_compile`
   for the app-server, CLI, and TUI smoke scripts, `zig build --summary all`,
   `zig build test --summary all`, and `zig build e2e --summary all`. The same
   clone had no high-confidence OpenAI, GitHub, AWS, Google, or Slack token
