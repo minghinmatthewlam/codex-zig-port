@@ -30254,15 +30254,35 @@ wire_api = "responses"
         assert len(ModelCatalogBackendHandler.requests) == 1
 
         provider_token_path = codex_home / "provider-token.txt"
+        provider_auth_count_path = codex_home / "provider-auth-count.txt"
+        provider_auth_helper_path = codex_home / "provider-auth-helper.py"
         provider_token_path.write_text("provider-token\n", encoding="utf-8")
+        provider_auth_helper_path.write_text(
+            "\n".join(
+                [
+                    "from pathlib import Path",
+                    "import sys",
+                    "token_path = Path(sys.argv[1])",
+                    "count_path = Path(sys.argv[2])",
+                    "try:",
+                    "    count = int(count_path.read_text(encoding='utf-8'))",
+                    "except FileNotFoundError:",
+                    "    count = 0",
+                    "count_path.write_text(str(count + 1), encoding='utf-8')",
+                    "print(token_path.read_text(encoding='utf-8').strip())",
+                    "",
+                ]
+            ),
+            encoding="utf-8",
+        )
         (codex_home / "config.toml").write_text(
             f'''model_provider = "custom"
 [model_providers.custom]
 base_url = "{model_catalog_base_url}"
 wire_api = "responses"
 [model_providers.custom.auth]
-command = "/bin/cat"
-args = [{json.dumps(str(provider_token_path))}]
+command = {json.dumps(sys.executable)}
+args = [{json.dumps(str(provider_auth_helper_path))}, {json.dumps(str(provider_token_path))}, {json.dumps(str(provider_auth_count_path))}]
 ''',
             encoding="utf-8",
         )
@@ -30297,6 +30317,7 @@ args = [{json.dumps(str(provider_token_path))}]
         assert provider_request["path"] == "/models"
         assert provider_request["query"] == {"client_version": ["0.124.0"]}
         assert provider_request["authorization"] == "Bearer provider-token"
+        assert provider_auth_count_path.read_text(encoding="utf-8") == "1"
 
         provider_cache = json.loads(cache_path.read_text(encoding="utf-8"))
         assert provider_cache["models"][1]["slug"] == "online-chatgpt-only"
@@ -30309,6 +30330,7 @@ args = [{json.dumps(str(provider_token_path))}]
         assert "online-alpha" in provider_cached_ids
         assert "online-chatgpt-only" not in provider_cached_ids
         assert len(ModelCatalogBackendHandler.requests) == 2
+        assert provider_auth_count_path.read_text(encoding="utf-8") == "2"
 
         provider_token_path.write_text("provider-token-rotated\n", encoding="utf-8")
         provider_rotated_models = rpc("model-list-provider-command-rotated-cache-miss", "model/list", {"limit": 10})
@@ -30317,6 +30339,7 @@ args = [{json.dumps(str(provider_token_path))}]
         provider_rotated_request = ModelCatalogBackendHandler.requests[2]
         assert provider_rotated_request["path"] == "/models"
         assert provider_rotated_request["authorization"] == "Bearer provider-token-rotated"
+        assert provider_auth_count_path.read_text(encoding="utf-8") == "3"
 
         (codex_home / "config.toml").write_text(
             f'chatgpt_base_url = "{model_catalog_base_url}"\n',

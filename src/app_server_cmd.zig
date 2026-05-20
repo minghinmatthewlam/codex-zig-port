@@ -56141,19 +56141,39 @@ fn handleModelList(allocator: std.mem.Allocator, id_value: std.json.Value, param
     else
         0;
 
-    var cached_models = try loadFreshModelCatalogCache(allocator);
-    defer if (cached_models) |*cache| cache.deinit(allocator);
-    if (cached_models) |*cache| {
-        return handleCachedModelList(allocator, id_value, start, limit, include_hidden, cache, modelListUsesCodexBackend(allocator));
-    }
+    var cfg = config.loadWithOptions(allocator, .{}) catch null;
+    if (cfg) |*loaded_cfg| {
+        defer loaded_cfg.deinit(allocator);
 
-    var refreshed_models = refreshModelCatalogCacheIfAllowed(allocator) catch |err| switch (err) {
-        error.OutOfMemory => return err,
-        else => null,
-    };
-    defer if (refreshed_models) |*refresh| refresh.deinit(allocator);
-    if (refreshed_models) |*refresh| {
-        return handleCachedModelList(allocator, id_value, start, limit, include_hidden, &refresh.catalog, refresh.uses_codex_backend);
+        var maybe_scope_credentials = loadModelCatalogScopeCredentials(allocator, loaded_cfg) catch null;
+        defer if (maybe_scope_credentials) |*credentials| credentials.deinit(allocator);
+
+        var cached_models = try loadFreshModelCatalogCacheForConfig(allocator, loaded_cfg, maybe_scope_credentials);
+        defer if (cached_models) |*cache| cache.deinit(allocator);
+        if (cached_models) |*cache| {
+            return handleCachedModelList(allocator, id_value, start, limit, include_hidden, cache, modelListUsesCodexBackend(allocator));
+        }
+
+        var maybe_refresh_credentials = maybe_scope_credentials;
+        var refresh_credentials_owned = false;
+        if (maybe_refresh_credentials == null) {
+            maybe_refresh_credentials = auth_mod.loadForConfig(allocator, loaded_cfg) catch null;
+            refresh_credentials_owned = maybe_refresh_credentials != null;
+        }
+        defer if (refresh_credentials_owned) {
+            if (maybe_refresh_credentials) |*credentials| credentials.deinit(allocator);
+        };
+
+        if (maybe_refresh_credentials) |credentials| {
+            var refreshed_models = refreshModelCatalogCacheIfAllowedForConfig(allocator, loaded_cfg, credentials) catch |err| switch (err) {
+                error.OutOfMemory => return err,
+                else => null,
+            };
+            defer if (refreshed_models) |*refresh| refresh.deinit(allocator);
+            if (refreshed_models) |*refresh| {
+                return handleCachedModelList(allocator, id_value, start, limit, include_hidden, &refresh.catalog, refresh.uses_codex_backend);
+            }
+        }
     }
 
     const total = bundledModelListTotal(include_hidden);
@@ -56299,17 +56319,17 @@ const ModelCatalogCacheScope = struct {
     }
 };
 
-fn loadFreshModelCatalogCache(allocator: std.mem.Allocator) !?CachedModelCatalog {
-    var cfg = config.loadWithOptions(allocator, .{}) catch return null;
-    defer cfg.deinit(allocator);
+fn loadModelCatalogScopeCredentials(allocator: std.mem.Allocator, cfg: *const config.Config) !?auth_mod.Credentials {
+    if (cfg.model_provider_auth_command == null) return null;
+    return try auth_mod.loadForConfig(allocator, cfg);
+}
 
-    var maybe_credentials: ?auth_mod.Credentials = null;
-    if (cfg.model_provider_auth_command != null) {
-        maybe_credentials = auth_mod.loadForConfig(allocator, &cfg) catch return null;
-    }
-    defer if (maybe_credentials) |*credentials| credentials.deinit(allocator);
-
-    var scope = try modelCatalogCacheScope(allocator, &cfg, maybe_credentials);
+fn loadFreshModelCatalogCacheForConfig(
+    allocator: std.mem.Allocator,
+    cfg: *const config.Config,
+    credentials: ?auth_mod.Credentials,
+) !?CachedModelCatalog {
+    var scope = try modelCatalogCacheScope(allocator, cfg, credentials);
     defer scope.deinit(allocator);
     return loadModelCatalogCache(allocator, true, &scope);
 }
@@ -56424,15 +56444,6 @@ fn renewModelCatalogCacheForModelsEtag(
 
     var refreshed = try refreshModelCatalogCacheIfAllowedForConfig(allocator, cfg, credentials);
     defer if (refreshed) |*value| value.deinit(allocator);
-}
-
-fn refreshModelCatalogCacheIfAllowed(allocator: std.mem.Allocator) !?RefreshedModelCatalog {
-    var cfg = config.loadWithOptions(allocator, .{}) catch return null;
-    defer cfg.deinit(allocator);
-
-    var credentials = auth_mod.loadForConfig(allocator, &cfg) catch return null;
-    defer credentials.deinit(allocator);
-    return refreshModelCatalogCacheIfAllowedForConfig(allocator, &cfg, credentials);
 }
 
 fn refreshModelCatalogCacheIfAllowedForConfig(
