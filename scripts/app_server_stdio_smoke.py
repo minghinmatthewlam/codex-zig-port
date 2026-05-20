@@ -37259,6 +37259,18 @@ def run_experimental_feature_rpc_smoke(binary: Path) -> None:
         assert unknown_enablement["id"] == "feature-enable-unknown"
         assert unknown_enablement["error"]["code"] == -32600
         assert unknown_enablement["error"]["message"] == "invalid feature enablement `not_real`"
+
+        alias_enablement = rpc(
+            "feature-enable-alias",
+            "experimentalFeature/enablement/set",
+            {"enablement": {"connectors": True}},
+        )
+        assert alias_enablement["id"] == "feature-enable-alias"
+        assert alias_enablement["error"]["code"] == -32600
+        assert (
+            alias_enablement["error"]["message"]
+            == "invalid feature enablement `connectors`: use canonical feature key `apps`"
+        )
     finally:
         if proc.stdin is not None:
             proc.stdin.close()

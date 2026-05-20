@@ -621,6 +621,17 @@ pub fn isKnownFeature(key: []const u8) bool {
     return resolveFeatureKey(key) != null;
 }
 
+pub fn canonicalFeatureKey(key: []const u8) ?[]const u8 {
+    return resolveFeatureKey(key);
+}
+
+pub fn isCanonicalFeatureKey(key: []const u8) bool {
+    for (features) |feature| {
+        if (std.mem.eql(u8, feature.key, key)) return true;
+    }
+    return false;
+}
+
 fn resolveFeatureKey(key: []const u8) ?[]const u8 {
     for (features) |feature| {
         if (std.mem.eql(u8, feature.key, key)) return feature.key;

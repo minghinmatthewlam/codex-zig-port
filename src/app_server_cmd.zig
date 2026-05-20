@@ -58043,7 +58043,16 @@ fn handleExperimentalFeatureEnablementSet(
 
     for (enablement.object.keys(), enablement.object.values()) |key, value| {
         if (value != .bool) return renderJsonRpcError(allocator, id_value, -32602, "enablement values must be booleans");
-        if (!features_cmd.isKnownFeature(key)) {
+        if (!features_cmd.isCanonicalFeatureKey(key)) {
+            if (features_cmd.canonicalFeatureKey(key)) |canonical| {
+                const message = try std.fmt.allocPrint(
+                    allocator,
+                    "invalid feature enablement `{s}`: use canonical feature key `{s}`",
+                    .{ key, canonical },
+                );
+                defer allocator.free(message);
+                return renderJsonRpcError(allocator, id_value, -32600, message);
+            }
             const message = try std.fmt.allocPrint(allocator, "invalid feature enablement `{s}`", .{key});
             defer allocator.free(message);
             return renderJsonRpcError(allocator, id_value, -32600, message);
