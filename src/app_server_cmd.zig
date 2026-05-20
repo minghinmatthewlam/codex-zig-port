@@ -50645,7 +50645,8 @@ fn appendFeatureRequirementsSection(
     var in_section = false;
     var iter = std.mem.splitScalar(u8, payload, '\n');
     while (iter.next()) |line_raw| {
-        const line = std.mem.trim(u8, line_raw, " \t\r");
+        const line_without_comment = stripTomlLineComment(line_raw);
+        const line = std.mem.trim(u8, line_without_comment, " \t\r");
         if (line.len == 0 or line[0] == '#') continue;
         if (line[0] == '[') {
             in_section = isExactTomlSection(line, section_name);
@@ -50657,6 +50658,28 @@ fn appendFeatureRequirementsSection(
             try entries.append(allocator, entry);
         }
     }
+}
+
+fn stripTomlLineComment(line: []const u8) []const u8 {
+    var quote: ?u8 = null;
+    var escaped = false;
+    for (line, 0..) |byte, index| {
+        if (quote == null) {
+            if (byte == '#') return line[0..index];
+            if (byte == '"' or byte == 39) quote = byte;
+            continue;
+        }
+        if (quote.? == '"' and escaped) {
+            escaped = false;
+            continue;
+        }
+        if (quote.? == '"' and byte == '\\') {
+            escaped = true;
+            continue;
+        }
+        if (byte == quote.?) quote = null;
+    }
+    return line;
 }
 
 fn parseFeatureRequirementLine(allocator: std.mem.Allocator, line: []const u8) !?FeatureRequirement {
@@ -55589,10 +55612,17 @@ fn appendConfigReadFeaturesField(
 
 fn featureRequirementValue(feature_requirements: ?FeatureRequirementList, key: []const u8) ?bool {
     const requirements = feature_requirements orelse return null;
+    var value: ?bool = null;
     for (requirements.items) |entry| {
-        if (std.mem.eql(u8, entry.name, key)) return entry.enabled;
+        const canonical_key = canonicalFeatureRequirementKey(entry.name) orelse continue;
+        if (std.mem.eql(u8, canonical_key, key)) value = entry.enabled;
     }
-    return null;
+    return value;
+}
+
+fn canonicalFeatureRequirementKey(name: []const u8) ?[]const u8 {
+    if (std.mem.eql(u8, name, "auto_review")) return "guardian_approval";
+    return features_cmd.canonicalFeatureKey(name);
 }
 
 fn appendJsonFieldName(
@@ -59707,6 +59737,22 @@ test "config/read user origin keys include active profile scalars" {
     try std.testing.expectEqualStrings("approvals_reviewer", keys[3]);
     try std.testing.expectEqualStrings("instructions", keys[4]);
     try std.testing.expectEqualStrings("sandbox_mode", keys[5]);
+}
+
+test "feature requirements normalize aliases for effective feature values" {
+    const allocator = std.testing.allocator;
+    var requirements = (try parseFeatureRequirements(allocator,
+        \\[features] # managed feature pins
+        \\connectors = false # legacy apps alias
+        \\"auto_review" = false # guardian approval alias
+        \\"unknown#feature" = true # preserved raw key, ignored for effective features
+        \\
+    )).?;
+    defer requirements.deinit(allocator);
+
+    try std.testing.expectEqual(false, featureRequirementValue(requirements, "apps").?);
+    try std.testing.expectEqual(false, featureRequirementValue(requirements, "guardian_approval").?);
+    try std.testing.expect(featureRequirementValue(requirements, "unknown#feature") == null);
 }
 
 test "app-server config write path comparison normalizes Rust path aliases" {
