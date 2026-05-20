@@ -5200,6 +5200,13 @@ def run_turn_start_rpc_smoke(binary: Path) -> None:
                     "[features]",
                     "goals = true",
                     "",
+                    "[permissions.turn-read-deny-profile.filesystem]",
+                    '":root" = "read"',
+                    '":project_roots" = { "." = "write", "secret.txt" = "none" }',
+                    "",
+                    "[permissions.turn-read-deny-profile.network]",
+                    "enabled = true",
+                    "",
                 ]
             ),
             encoding="utf-8",
@@ -5234,6 +5241,7 @@ def run_turn_start_rpc_smoke(binary: Path) -> None:
             assert read_json_line(proc, 5)["id"] == "initialize"
 
             with tempfile.TemporaryDirectory(prefix="codex-zig-turn-start-cwd-", dir="/tmp") as cwd:
+                resolved_cwd = Path(cwd).resolve()
                 write_json_line(
                     proc,
                     {
@@ -5253,6 +5261,7 @@ def run_turn_start_rpc_smoke(binary: Path) -> None:
                 thread_id = thread["id"]
                 rollout_path = Path(thread["path"])
                 assert rollout_path.name == f"rollout-{thread_id}.jsonl"
+                assert thread["cwd"] == str(resolved_cwd)
                 assert_thread_started_notification(read_json_line(proc, 5), thread)
 
                 write_json_line(
@@ -5353,6 +5362,9 @@ def run_turn_start_rpc_smoke(binary: Path) -> None:
                 resume_after_goal_update = read_json_line(proc, 5)
                 assert resume_after_goal_update["id"] == "thread-resume-after-goal-update"
                 assert resume_after_goal_update["result"]["thread"]["id"] == thread_id
+                assert resume_after_goal_update["result"]["thread"]["cwd"] == str(
+                    resolved_cwd
+                ), resume_after_goal_update["result"]["thread"]["cwd"]
 
                 write_json_line(
                     proc,
@@ -5413,6 +5425,9 @@ def run_turn_start_rpc_smoke(binary: Path) -> None:
                 resume_after_goal_clear = read_json_line(proc, 5)
                 assert resume_after_goal_clear["id"] == "thread-resume-after-goal-clear"
                 assert resume_after_goal_clear["result"]["thread"]["id"] == thread_id
+                assert resume_after_goal_clear["result"]["thread"]["cwd"] == str(
+                    resolved_cwd
+                )
 
                 write_json_line(
                     proc,
@@ -5507,6 +5522,9 @@ def run_turn_start_rpc_smoke(binary: Path) -> None:
                 )
                 resume_after_metadata = read_json_line(proc, 5)
                 assert resume_after_metadata["id"] == "thread-resume-after-metadata"
+                assert resume_after_metadata["result"]["thread"]["cwd"] == str(
+                    resolved_cwd
+                )
                 assert (
                     resume_after_metadata["result"]["thread"]["gitInfo"]
                     == expected_git_info
@@ -7697,6 +7715,140 @@ def run_turn_start_rpc_smoke(binary: Path) -> None:
                 assert_thread_started_notification(
                     read_json_line(proc, 5),
                     fork_after_workspace_permissions["result"]["thread"],
+                )
+
+                turn_read_deny_secret = resolved_cwd / "secret.txt"
+                turn_read_deny_public = resolved_cwd / "public.txt"
+                turn_read_deny_allowed = resolved_cwd / "read-deny-allowed.txt"
+                turn_read_deny_secret.write_text("secret", encoding="utf-8")
+                turn_read_deny_public.write_text("public", encoding="utf-8")
+                turn_read_deny_command = (
+                    "! cat secret.txt "
+                    "&& cat public.txt "
+                    "&& ! printf nope > secret.txt "
+                    "&& printf ok > read-deny-allowed.txt "
+                    "&& printf turn-read-deny-ok"
+                )
+                turn_read_deny_call = {
+                    "type": "response.output_item.done",
+                    "item": {
+                        "type": "function_call",
+                        "call_id": "call-turn-permissions-read-deny",
+                        "name": "exec_command",
+                        "arguments": json.dumps(
+                            {
+                                "cmd": turn_read_deny_command,
+                                "workdir": str(resolved_cwd),
+                            }
+                        ),
+                    },
+                }
+                request_count_before_read_deny = len(server.request_paths)
+                server.response_payloads.append(
+                    (
+                        f"data: {json.dumps(turn_read_deny_call)}\n\n"
+                        "data: [DONE]\n\n"
+                    ).encode()
+                )
+                write_json_line(
+                    proc,
+                    {
+                        "jsonrpc": "2.0",
+                        "id": "turn-start-permissions-read-deny",
+                        "method": "turn/start",
+                        "params": {
+                            "threadId": thread_id,
+                            "approvalPolicy": "never",
+                            "permissions": {
+                                "type": "profile",
+                                "id": "turn-read-deny-profile",
+                            },
+                            "input": [
+                                {
+                                    "type": "text",
+                                    "text": "use read-deny permissions",
+                                },
+                            ],
+                        },
+                    },
+                )
+                assert_turn_start_rpc_completed(
+                    proc, thread_id, "turn-start-permissions-read-deny"
+                )
+                assert len(server.request_paths) == request_count_before_read_deny + 2
+                write_json_line(
+                    proc,
+                    {
+                        "jsonrpc": "2.0",
+                        "id": "thread-fork-during-read-deny-permissions",
+                        "method": "thread/fork",
+                        "params": {
+                            "threadId": thread_id,
+                            "ephemeral": True,
+                            "excludeTurns": True,
+                        },
+                    },
+                )
+                fork_during_read_deny = read_json_line(proc, 5)
+                assert fork_during_read_deny["id"] == (
+                    "thread-fork-during-read-deny-permissions"
+                )
+                read_deny_entries = fork_during_read_deny["result"][
+                    "permissionProfile"
+                ]["fileSystem"]["entries"]
+                assert {
+                    "path": {"type": "path", "path": str(turn_read_deny_secret)},
+                    "access": "none",
+                } in read_deny_entries, read_deny_entries
+                assert_thread_started_notification(
+                    read_json_line(proc, 5), fork_during_read_deny["result"]["thread"]
+                )
+                read_deny_followup = server.request_bodies[-1]
+                read_deny_output = next(
+                    item
+                    for item in read_deny_followup["input"]
+                    if item.get("type") == "function_call_output"
+                    and item.get("call_id") == "call-turn-permissions-read-deny"
+                )
+                assert "public" in read_deny_output["output"], read_deny_output[
+                    "output"
+                ]
+                assert "turn-read-deny-ok" in read_deny_output["output"], (
+                    read_deny_output["output"]
+                )
+                assert turn_read_deny_secret.read_text(encoding="utf-8") == "secret"
+                assert turn_read_deny_allowed.read_text(encoding="utf-8") == "ok"
+
+                write_json_line(
+                    proc,
+                    {
+                        "jsonrpc": "2.0",
+                        "id": "thread-fork-after-read-deny-permissions",
+                        "method": "thread/fork",
+                        "params": {
+                            "threadId": thread_id,
+                            "ephemeral": True,
+                            "excludeTurns": True,
+                        },
+                    },
+                )
+                fork_after_read_deny = read_json_line(proc, 5)
+                assert fork_after_read_deny["id"] == (
+                    "thread-fork-after-read-deny-permissions"
+                )
+                read_deny_entries = fork_after_read_deny["result"][
+                    "permissionProfile"
+                ]["fileSystem"]["entries"]
+                assert {
+                    "path": {"type": "path", "path": str(turn_read_deny_secret)},
+                    "access": "none",
+                } in read_deny_entries
+                assert {
+                    "path": {"type": "special", "value": {"kind": "project_roots"}},
+                    "access": "write",
+                } in read_deny_entries
+                assert_thread_started_notification(
+                    read_json_line(proc, 5), fork_after_read_deny["result"]["thread"]
                 )
 
             assert proc.stdin is not None

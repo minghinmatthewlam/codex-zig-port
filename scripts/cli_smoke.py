@@ -9112,6 +9112,10 @@ def run_sandbox_permission_profile_smoke(binary: Path) -> None:
         outside = temp_root / "outside"
         workspace.mkdir()
         outside.mkdir()
+        secret = workspace / "secret.txt"
+        public = workspace / "public.txt"
+        secret.write_text("secret", encoding="utf-8")
+        public.write_text("public", encoding="utf-8")
 
         read_only_denied = subprocess.run(
             [
@@ -9213,6 +9217,13 @@ def run_sandbox_permission_profile_smoke(binary: Path) -> None:
                     "[permissions.no-network-profile.network]",
                     "enabled = false",
                     "",
+                    "[permissions.read-deny-profile.filesystem]",
+                    '":root" = "read"',
+                    '":project_roots" = { "." = "write", "secret.txt" = "none" }',
+                    "",
+                    "[permissions.read-deny-profile.network]",
+                    "enabled = true",
+                    "",
                     "[permissions.minimal-profile.filesystem]",
                     '":minimal" = "read"',
                     "",
@@ -9250,6 +9261,103 @@ def run_sandbox_permission_profile_smoke(binary: Path) -> None:
         assert (workspace / "custom.txt").read_text(encoding="utf-8") == "ok"
         assert (extra / "custom.txt").read_text(encoding="utf-8") == "extra"
         assert not (outside / "custom-blocked.txt").exists()
+
+        denied_read = subprocess.run(
+            [
+                str(binary.resolve()),
+                "sandbox",
+                "macos",
+                "--permissions-profile",
+                "read-deny-profile",
+                "--cd",
+                str(workspace),
+                "--",
+                "/bin/cat",
+                "secret.txt",
+            ],
+            cwd=temp_root,
+            env=env,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=5,
+            check=False,
+        )
+        assert denied_read.returncode != 0
+        assert denied_read.stdout == ""
+
+        allowed_read = subprocess.run(
+            [
+                str(binary.resolve()),
+                "sandbox",
+                "macos",
+                "--permissions-profile",
+                "read-deny-profile",
+                "--cd",
+                str(workspace),
+                "--",
+                "/bin/cat",
+                "public.txt",
+            ],
+            cwd=temp_root,
+            env=env,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=5,
+            check=True,
+        )
+        assert allowed_read.stdout == "public"
+
+        denied_write = subprocess.run(
+            [
+                str(binary.resolve()),
+                "sandbox",
+                "macos",
+                "--permissions-profile",
+                "read-deny-profile",
+                "--cd",
+                str(workspace),
+                "--",
+                "/bin/sh",
+                "-c",
+                "printf nope > secret.txt",
+            ],
+            cwd=temp_root,
+            env=env,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=5,
+            check=False,
+        )
+        assert denied_write.returncode != 0
+        assert secret.read_text(encoding="utf-8") == "secret"
+
+        allowed_write = subprocess.run(
+            [
+                str(binary.resolve()),
+                "sandbox",
+                "macos",
+                "--permissions-profile",
+                "read-deny-profile",
+                "--cd",
+                str(workspace),
+                "--",
+                "/bin/sh",
+                "-c",
+                "printf ok > allowed-deny-profile.txt",
+            ],
+            cwd=temp_root,
+            env=env,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=5,
+            check=True,
+        )
+        assert allowed_write.stdout == ""
+        assert (workspace / "allowed-deny-profile.txt").read_text(encoding="utf-8") == "ok"
 
         network_probe = (
             "import urllib.request; "
