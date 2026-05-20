@@ -32531,6 +32531,7 @@ def run_config_read_rpc_smoke(binary: Path) -> None:
                     "[features]",
                     "apps = false",
                     "goals = true",
+                    "plugins = false",
                     "",
                     "[hooks]",
                     'managed_dir = "/tmp/codex-managed-hooks"',
@@ -32600,7 +32601,7 @@ def run_config_read_rpc_smoke(binary: Path) -> None:
                 "allowedApprovalsReviewers": ["guardian_subagent", "user"],
                 "allowedSandboxModes": ["danger-full-access"],
                 "allowedWebSearchModes": ["cached", "disabled"],
-                "featureRequirements": {"apps": False, "goals": True},
+                "featureRequirements": {"apps": False, "goals": True, "plugins": False},
                 "hooks": {
                     "managedDir": "/tmp/codex-managed-hooks",
                     "windowsManagedDir": "C:\\codex\\hooks",
@@ -32651,6 +32652,32 @@ def run_config_read_rpc_smoke(binary: Path) -> None:
             }
         }
 
+        feature_enablement = rpc(
+            "config-feature-enable",
+            "experimentalFeature/enablement/set",
+            {"enablement": {"apps": True, "memories": True, "plugins": True}},
+        )
+        assert feature_enablement["id"] == "config-feature-enable"
+        assert feature_enablement["result"]["enablement"] == {"apps": True, "memories": True, "plugins": True}
+
+        after_enablement = rpc("config-read-after-enable", "config/read", {})
+        after_features = after_enablement["result"]["config"]["features"]
+        assert after_features["apps"] is False
+        assert after_features["goals"] is True
+        assert after_features["memories"] is True
+        assert after_features["plugins"] is False
+        assert after_enablement["result"]["layers"] is None
+
+        feature_list_after_requirements = rpc("config-feature-list-after-requirements", "experimentalFeature/list", {})
+        listed_features = {
+            item["name"]: item["enabled"]
+            for item in feature_list_after_requirements["result"]["data"]
+        }
+        assert listed_features["apps"] is False
+        assert listed_features["goals"] is True
+        assert listed_features["memories"] is True
+        assert listed_features["plugins"] is False
+
         system_requirements_path.write_text(
             "\n".join(
                 [
@@ -32700,21 +32727,6 @@ def run_config_read_rpc_smoke(binary: Path) -> None:
                 "allowedSandboxModes": ["read-only", "workspace-write"],
             }
         }
-
-        feature_enablement = rpc(
-            "config-feature-enable",
-            "experimentalFeature/enablement/set",
-            {"enablement": {"apps": True, "memories": True}},
-        )
-        assert feature_enablement["id"] == "config-feature-enable"
-        assert feature_enablement["result"]["enablement"] == {"apps": True, "memories": True}
-
-        after_enablement = rpc("config-read-after-enable", "config/read", {})
-        after_features = after_enablement["result"]["config"]["features"]
-        assert after_features["apps"] is False
-        assert after_features["goals"] is True
-        assert after_features["memories"] is True
-        assert after_enablement["result"]["layers"] is None
 
         invalid_params = rpc("config-read-invalid", "config/read", {"includeLayers": "yes"})
         assert invalid_params["id"] == "config-read-invalid"

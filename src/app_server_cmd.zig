@@ -51692,7 +51692,12 @@ fn handleConfigRead(
     };
     defer project_layers.deinit(allocator);
 
-    const result = try renderConfigReadResponse(allocator, cfg, state.cli_feature_overrides, feature_overrides, state.runtime_feature_enablement, include_layers, managed_layer, project_layers, user_layer, system_layer);
+    var requirements = loadConfigRequirementsReadRequirements(allocator) catch |err| {
+        return renderJsonRpcErrorForFailure(allocator, id_value, "config/read failed to load config requirements", err);
+    };
+    defer requirements.deinit(allocator);
+
+    const result = try renderConfigReadResponse(allocator, cfg, state.cli_feature_overrides, feature_overrides, state.runtime_feature_enablement, requirements.feature_requirements, include_layers, managed_layer, project_layers, user_layer, system_layer);
     defer allocator.free(result);
     return renderJsonRpcResult(allocator, id_value, result);
 }
@@ -52149,6 +52154,7 @@ fn renderConfigReadResponse(
     cli_feature_overrides: features_cmd.FeatureOverrides,
     config_feature_overrides: features_cmd.FeatureOverrides,
     runtime_feature_enablement: features_cmd.FeatureOverrides,
+    feature_requirements: ?FeatureRequirementList,
     include_layers: bool,
     managed_layer: ?ConfigReadManagedLayer,
     project_layers: ConfigReadProjectLayers,
@@ -52233,7 +52239,7 @@ fn renderConfigReadResponse(
     try appendJsonMaybeStringField(allocator, &result, &first, "oss_provider", cfg.oss_provider);
     try appendJsonStringField(allocator, &result, &first, "openai_base_url", cfg.openai_base_url);
     try appendJsonStringField(allocator, &result, &first, "chatgpt_base_url", cfg.chatgpt_base_url);
-    try appendConfigReadFeaturesField(allocator, &result, &first, cli_feature_overrides, config_feature_overrides, runtime_feature_enablement);
+    try appendConfigReadFeaturesField(allocator, &result, &first, cli_feature_overrides, config_feature_overrides, runtime_feature_enablement, feature_requirements);
     try result.appendSlice(allocator, "},\"origins\":");
     try appendConfigReadOrigins(allocator, &result, managed_layer, project_layers, user_layer, system_layer);
     try result.appendSlice(allocator, ",\"layers\":");
@@ -55562,6 +55568,7 @@ fn appendConfigReadFeaturesField(
     cli_feature_overrides: features_cmd.FeatureOverrides,
     config_feature_overrides: features_cmd.FeatureOverrides,
     runtime_feature_enablement: features_cmd.FeatureOverrides,
+    feature_requirements: ?FeatureRequirementList,
 ) !void {
     try appendJsonFieldName(allocator, result, first, "features");
     try result.appendSlice(allocator, "{");
@@ -55569,7 +55576,8 @@ fn appendConfigReadFeaturesField(
         if (index > 0) try result.appendSlice(allocator, ",");
         const key_json = try std.json.Stringify.valueAlloc(allocator, feature.key, .{});
         defer allocator.free(key_json);
-        const enabled = cli_feature_overrides.get(feature.key) orelse
+        const enabled = featureRequirementValue(feature_requirements, feature.key) orelse
+            cli_feature_overrides.get(feature.key) orelse
             config_feature_overrides.get(feature.key) orelse
             runtime_feature_enablement.get(feature.key) orelse
             feature.default_enabled;
@@ -55577,6 +55585,14 @@ fn appendConfigReadFeaturesField(
         try result.appendSlice(allocator, if (enabled) ":true" else ":false");
     }
     try result.appendSlice(allocator, "}");
+}
+
+fn featureRequirementValue(feature_requirements: ?FeatureRequirementList, key: []const u8) ?bool {
+    const requirements = feature_requirements orelse return null;
+    for (requirements.items) |entry| {
+        if (std.mem.eql(u8, entry.name, key)) return entry.enabled;
+    }
+    return null;
 }
 
 fn appendJsonFieldName(
@@ -58336,6 +58352,10 @@ fn handleExperimentalFeatureList(
         return renderJsonRpcErrorForFailure(allocator, id_value, "experimentalFeature/list failed to load feature config", err);
     };
     defer feature_overrides.deinit(allocator);
+    var requirements = loadConfigRequirementsReadRequirements(allocator) catch |err| {
+        return renderJsonRpcErrorForFailure(allocator, id_value, "experimentalFeature/list failed to load config requirements", err);
+    };
+    defer requirements.deinit(allocator);
 
     const effective_limit = if (total == 0) 0 else @min(@max(limit orelse total, 1), total);
     const end = @min(start + effective_limit, total);
@@ -58345,7 +58365,8 @@ fn handleExperimentalFeatureList(
     try result.appendSlice(allocator, "{\"data\":[");
     for (all_features[start..end], 0..) |feature, index| {
         if (index > 0) try result.appendSlice(allocator, ",");
-        const enabled = state.cli_feature_overrides.get(feature.key) orelse
+        const enabled = featureRequirementValue(requirements.feature_requirements, feature.key) orelse
+            state.cli_feature_overrides.get(feature.key) orelse
             feature_overrides.get(feature.key) orelse
             state.runtime_feature_enablement.get(feature.key) orelse
             feature.default_enabled;
