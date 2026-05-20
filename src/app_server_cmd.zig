@@ -43130,6 +43130,8 @@ const CommandExecPermissionProfileSummary = struct {
     root_write: bool = false,
     non_root_read: bool = false,
     project_roots_write: bool = false,
+    tmpdir_write: bool = false,
+    slash_tmp_write: bool = false,
     path_writable_roots: std.ArrayList([]const u8) = .empty,
     unsupported: bool = false,
 
@@ -45360,10 +45362,17 @@ fn parseCommandExecPermissionProfile(
         if (!summary.root_read) return error.UnsupportedCommandExecPermissionProfile;
         return try commandExecFullFilesystemSandbox(allocator, network_enabled);
     }
-    if (summary.project_roots_write or summary.path_writable_roots.items.len > 0) {
+    if (summary.project_roots_write or summary.tmpdir_write or summary.slash_tmp_write or summary.path_writable_roots.items.len > 0) {
         if (!summary.root_read) return error.UnsupportedCommandExecPermissionProfile;
-        const roots = try summary.path_writable_roots.toOwnedSlice(allocator);
+        const explicit_roots = try summary.path_writable_roots.toOwnedSlice(allocator);
         summary.path_writable_roots = .empty;
+        defer allocator.free(explicit_roots);
+        const roots = try buildCommandExecWorkspaceWriteRoots(
+            allocator,
+            explicit_roots,
+            if (summary.tmpdir_write) commandExecCurrentAbsoluteEnv("TMPDIR") else null,
+            if (summary.slash_tmp_write) "/tmp" else null,
+        );
         return .{ .mode = .workspace_write, .writable_roots = roots, .include_cwd_write_root = summary.project_roots_write, .network_enabled = network_enabled };
     }
     if (summary.root_read) {
@@ -45445,6 +45454,14 @@ fn addCommandExecPermissionProfileEntry(
         summary.project_roots_write = true;
         return;
     }
+    if (try commandExecPermissionPathIsTmpdir(path)) {
+        summary.tmpdir_write = true;
+        return;
+    }
+    if (try commandExecPermissionPathIsSlashTmp(path)) {
+        summary.slash_tmp_write = true;
+        return;
+    }
     if (try commandExecPermissionPathAbsolute(path)) |absolute_path| {
         try summary.path_writable_roots.append(allocator, absolute_path);
         return;
@@ -45471,6 +45488,16 @@ fn commandExecPermissionPathIsProjectRoots(value: std.json.Value) !bool {
         if (subpath != .null) return false;
     }
     return true;
+}
+
+fn commandExecPermissionPathIsTmpdir(value: std.json.Value) !bool {
+    const kind = try commandExecPermissionSpecialPathKind(value);
+    return if (kind) |special| std.mem.eql(u8, special, "tmpdir") else false;
+}
+
+fn commandExecPermissionPathIsSlashTmp(value: std.json.Value) !bool {
+    const kind = try commandExecPermissionSpecialPathKind(value);
+    return if (kind) |special| std.mem.eql(u8, special, "slash_tmp") else false;
 }
 
 fn commandExecPermissionSpecialPathKind(value: std.json.Value) !?[]const u8 {
