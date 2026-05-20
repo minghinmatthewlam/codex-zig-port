@@ -28629,6 +28629,29 @@ def run_command_exec_rpc_smoke(binary: Path) -> None:
             },
             "network": {"enabled": False},
         }
+        project_roots_subpath_write_permission_profile = {
+            "type": "managed",
+            "fileSystem": {
+                "type": "restricted",
+                "entries": [
+                    {
+                        "path": {"type": "special", "value": {"kind": "root"}},
+                        "access": "read",
+                    },
+                    {
+                        "path": {
+                            "type": "special",
+                            "value": {
+                                "kind": "current_working_directory",
+                                "subpath": "writable-subdir",
+                            },
+                        },
+                        "access": "write",
+                    },
+                ],
+            },
+            "network": {"enabled": False},
+        }
         absolute_writable_root = root / "absolute-writable"
         absolute_writable_root.mkdir()
         absolute_write_permission_profile = {
@@ -28792,6 +28815,35 @@ def run_command_exec_rpc_smoke(binary: Path) -> None:
         assert child_cwd.joinpath("child.txt").read_text(encoding="utf-8") == "child"
         assert not cwd.joinpath("parent.txt").exists()
 
+        project_roots_subpath_dir = child_cwd / "writable-subdir"
+        project_roots_subpath_dir.mkdir()
+        permission_profile_project_roots_subpath = request_stdio_app_server(
+            binary,
+            {
+                "jsonrpc": "2.0",
+                "id": "command-exec-permission-profile-project-roots-subpath",
+                "method": "command/exec",
+                "params": {
+                    "command": [
+                        "/bin/sh",
+                        "-c",
+                        "printf subpath > writable-subdir/ok.txt && ! printf child > child-subpath-denied.txt && printf project-subpath",
+                    ],
+                    "cwd": str(child_cwd),
+                    "permissionProfile": project_roots_subpath_write_permission_profile,
+                },
+            },
+            env,
+        )
+        assert (
+            permission_profile_project_roots_subpath["id"]
+            == "command-exec-permission-profile-project-roots-subpath"
+        )
+        assert permission_profile_project_roots_subpath["result"]["exitCode"] == 0
+        assert permission_profile_project_roots_subpath["result"]["stdout"] == "project-subpath"
+        assert project_roots_subpath_dir.joinpath("ok.txt").read_text(encoding="utf-8") == "subpath"
+        assert not child_cwd.joinpath("child-subpath-denied.txt").exists()
+
         permission_profile_tmp_roots = {
             "type": "managed",
             "fileSystem": {
@@ -28865,6 +28917,53 @@ def run_command_exec_rpc_smoke(binary: Path) -> None:
         assert permission_profile_absolute_root["result"]["stdout"] == "absolute-root"
         assert absolute_writable_root.joinpath("ok.txt").read_text(encoding="utf-8") == "absolute"
         assert not child_cwd.joinpath("child-denied.txt").exists()
+
+        read_denied_target = child_cwd / "secret.txt"
+        read_denied_target.write_text("secret", encoding="utf-8")
+        read_deny_permission_profile = {
+            "type": "managed",
+            "fileSystem": {
+                "type": "restricted",
+                "entries": [
+                    {
+                        "path": {"type": "special", "value": {"kind": "root"}},
+                        "access": "read",
+                    },
+                    {
+                        "path": {"type": "special", "value": {"kind": "project_roots"}},
+                        "access": "write",
+                    },
+                    {
+                        "path": {"type": "path", "path": str(read_denied_target)},
+                        "access": "none",
+                    },
+                ],
+            },
+            "network": {"enabled": False},
+        }
+        permission_profile_read_deny = request_stdio_app_server(
+            binary,
+            {
+                "jsonrpc": "2.0",
+                "id": "command-exec-permission-profile-read-deny",
+                "method": "command/exec",
+                "params": {
+                    "command": [
+                        "/bin/sh",
+                        "-c",
+                        "printf allowed > allowed-read-deny.txt && ! cat secret.txt && ! rm secret.txt && printf read-deny",
+                    ],
+                    "cwd": str(child_cwd),
+                    "permissionProfile": read_deny_permission_profile,
+                },
+            },
+            env,
+        )
+        assert permission_profile_read_deny["id"] == "command-exec-permission-profile-read-deny"
+        assert permission_profile_read_deny["result"]["exitCode"] == 0
+        assert permission_profile_read_deny["result"]["stdout"] == "read-deny"
+        assert child_cwd.joinpath("allowed-read-deny.txt").read_text(encoding="utf-8") == "allowed"
+        assert read_denied_target.read_text(encoding="utf-8") == "secret"
 
         permission_profile_network_enabled = request_stdio_app_server(
             binary,
