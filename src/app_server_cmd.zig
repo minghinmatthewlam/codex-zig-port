@@ -565,6 +565,7 @@ const LoadedThread = struct {
     model_auto_compact_token_limit: ?i64,
     model_verbosity: ?[]const u8,
     model_provider: []const u8,
+    oss_provider: ?[]const u8,
     service_tier: ?[]const u8,
     active_profile: ?[]const u8,
     cwd: []const u8,
@@ -614,6 +615,7 @@ const LoadedThread = struct {
         allocator.free(self.model);
         if (self.model_verbosity) |value| allocator.free(value);
         allocator.free(self.model_provider);
+        if (self.oss_provider) |value| allocator.free(value);
         if (self.service_tier) |value| allocator.free(value);
         if (self.active_profile) |value| allocator.free(value);
         allocator.free(self.cwd);
@@ -28415,7 +28417,7 @@ fn handleReviewStart(
     try applyReviewStartConstraints(allocator, &cfg);
     try applyReviewModelForTurn(allocator, &cfg);
 
-    var credentials = auth_mod.loadForConfig(allocator, &cfg) catch |err| {
+    var credentials = loadCredentialsForLoadedThread(allocator, &cfg, parent_thread) catch |err| {
         return try renderJsonRpcErrorForFailure(allocator, id_value, "review/start failed to load auth", err);
     };
     defer credentials.deinit(allocator);
@@ -29428,7 +29430,7 @@ fn handleTurnStart(
         else => return err,
     };
 
-    var credentials = auth_mod.loadForConfig(allocator, &cfg) catch |err| {
+    var credentials = loadCredentialsForLoadedThread(allocator, &cfg, thread) catch |err| {
         return try renderJsonRpcErrorForFailure(allocator, id_value, "turn/start failed to load auth", err);
     };
     defer credentials.deinit(allocator);
@@ -31542,6 +31544,90 @@ fn testAppServerConfig(allocator: std.mem.Allocator, model: []const u8) !config.
     };
 }
 
+test "thread request config applies local OSS mode across loaded turns" {
+    const allocator = std.testing.allocator;
+
+    var start_params = try std.json.parseFromSlice(std.json.Value, allocator, "{\"ephemeral\":true,\"config\":{\"oss\":true,\"oss_provider\":\"ollama\"}}", .{});
+    defer start_params.deinit();
+    const request_config = try threadRequestConfigFromParams(start_params.value.object);
+
+    var start_cfg = try testAppServerConfig(allocator, "gpt-5.5");
+    defer start_cfg.deinit(allocator);
+    try applyThreadRequestConfigOverrides(allocator, &start_cfg, request_config, paramPresent(start_params.value.object, "model"));
+    try std.testing.expectEqualStrings("ollama", start_cfg.oss_provider.?);
+    try std.testing.expectEqualStrings("gpt-oss:20b", start_cfg.model);
+
+    var thread = try createLoadedThreadFromStartParams(allocator, start_cfg, start_params.value.object);
+    defer thread.deinit(allocator);
+    try std.testing.expectEqualStrings("ollama", thread.oss_provider.?);
+    try std.testing.expectEqualStrings("gpt-oss:20b", thread.model);
+
+    var turn_cfg = try testAppServerConfig(allocator, "gpt-other");
+    defer turn_cfg.deinit(allocator);
+    var turn_params = try std.json.parseFromSlice(std.json.Value, allocator, "{}", .{});
+    defer turn_params.deinit();
+
+    try applyTurnStartRuntimeConfigOverrides(allocator, &turn_cfg, &thread, turn_params.value.object);
+    try std.testing.expectEqualStrings("ollama", turn_cfg.oss_provider.?);
+    try std.testing.expectEqualStrings("gpt-oss:20b", turn_cfg.model);
+
+    var credentials = try loadCredentialsForLoadedThread(allocator, &turn_cfg, &thread);
+    defer credentials.deinit(allocator);
+    try std.testing.expectEqual(auth_mod.Credentials.Mode.local_oss, credentials.mode);
+
+    const inherited_provider = try forkThreadOssProvider(allocator, turn_cfg, .{}, false, &thread);
+    defer if (inherited_provider) |value| allocator.free(value);
+    try std.testing.expectEqualStrings("ollama", inherited_provider.?);
+
+    var clear_params = try std.json.parseFromSlice(std.json.Value, allocator, "{\"config\":{\"oss\":false}}", .{});
+    defer clear_params.deinit();
+    const clear_request_config = try threadRequestConfigFromParams(clear_params.value.object);
+    try std.testing.expect(try forkThreadOssProvider(allocator, turn_cfg, clear_request_config, false, &thread) == null);
+
+    var clear_cfg = try testAppServerConfig(allocator, "gpt-reset");
+    defer clear_cfg.deinit(allocator);
+    try applyThreadRequestConfigOverrides(allocator, &clear_cfg, clear_request_config, paramPresent(clear_params.value.object, "model"));
+    var cleared_fork = try createLoadedThreadFromForkParams(allocator, clear_cfg, clear_params.value.object, &thread);
+    defer cleared_fork.deinit(allocator);
+    try std.testing.expect(cleared_fork.oss_provider == null);
+    try std.testing.expectEqualStrings("gpt-reset", cleared_fork.model);
+    try std.testing.expectEqualStrings("openai", cleared_fork.model_provider);
+}
+
+test "thread request config uses OSS defaults when forking into local provider" {
+    const allocator = std.testing.allocator;
+
+    var source_params = try std.json.parseFromSlice(std.json.Value, allocator, "{\"ephemeral\":true}", .{});
+    defer source_params.deinit();
+    var source_cfg = try testAppServerConfig(allocator, "gpt-5.5");
+    defer source_cfg.deinit(allocator);
+    var source = try createLoadedThreadFromStartParams(allocator, source_cfg, source_params.value.object);
+    defer source.deinit(allocator);
+    try std.testing.expectEqualStrings("gpt-5.5", source.model);
+    try std.testing.expect(source.oss_provider == null);
+
+    var fork_params = try std.json.parseFromSlice(std.json.Value, allocator, "{\"config\":{\"oss\":true,\"oss_provider\":\"lmstudio\"}}", .{});
+    defer fork_params.deinit();
+    const request_config = try threadRequestConfigFromParams(fork_params.value.object);
+
+    var fork_cfg = try testAppServerConfig(allocator, "gpt-5.5");
+    defer fork_cfg.deinit(allocator);
+    try applyThreadRequestConfigOverrides(allocator, &fork_cfg, request_config, paramPresent(fork_params.value.object, "model"));
+    var forked = try createLoadedThreadFromForkParams(allocator, fork_cfg, fork_params.value.object, &source);
+    defer forked.deinit(allocator);
+
+    try std.testing.expectEqualStrings("lmstudio", forked.oss_provider.?);
+    try std.testing.expectEqualStrings("openai/gpt-oss-20b", forked.model);
+
+    var turn_cfg = try testAppServerConfig(allocator, "gpt-other");
+    defer turn_cfg.deinit(allocator);
+    var turn_params = try std.json.parseFromSlice(std.json.Value, allocator, "{}", .{});
+    defer turn_params.deinit();
+    try applyTurnStartRuntimeConfigOverrides(allocator, &turn_cfg, &forked, turn_params.value.object);
+    try std.testing.expectEqualStrings("lmstudio", turn_cfg.oss_provider.?);
+    try std.testing.expectEqualStrings("openai/gpt-oss-20b", turn_cfg.model);
+}
+
 fn applyLoadedThreadRuntimeToConfig(
     allocator: std.mem.Allocator,
     cfg: *config.Config,
@@ -31580,6 +31666,7 @@ fn applyLoadedThreadRuntimeToConfig(
     if (thread.collaboration_developer_instructions) |value| {
         try replaceConfigOptionalString(allocator, &cfg.developer_instructions, value);
     }
+    try applyLoadedThreadOssModeToConfig(allocator, cfg, thread);
 }
 
 fn applyReviewStartConstraints(allocator: std.mem.Allocator, cfg: *config.Config) !void {
@@ -31716,6 +31803,7 @@ fn applyTurnStartRuntimeConfigOverrides(
     } else if (thread.collaboration_developer_instructions) |value| {
         try replaceConfigOptionalString(allocator, &cfg.developer_instructions, value);
     }
+    try applyLoadedThreadOssModeToConfig(allocator, cfg, thread);
 }
 
 fn applyTurnStartRuntimeOverrides(
@@ -31913,6 +32001,7 @@ fn applyTurnStartRuntimeOverrides(
         if (cfg.developer_instructions) |existing| allocator.free(existing);
         cfg.developer_instructions = try allocator.dupe(u8, value);
     }
+    try applyLoadedThreadOssModeToConfig(allocator, cfg, thread);
 }
 
 fn turnContextProjectConfigCwd(
@@ -32623,7 +32712,7 @@ fn handleLoadedThreadCompactStart(
         else => return err,
     };
 
-    var credentials = auth_mod.loadForConfig(allocator, &cfg) catch |err| {
+    var credentials = loadCredentialsForLoadedThread(allocator, &cfg, thread) catch |err| {
         return renderJsonRpcErrorForFailure(allocator, id_value, "thread/compact/start failed to load auth", err);
     };
     defer credentials.deinit(allocator);
@@ -35140,6 +35229,10 @@ const ThreadRequestConfigOverrides = struct {
     profile: ?[]const u8 = null,
     web_search_mode_present: bool = false,
     web_search_mode: ?config.WebSearchMode = null,
+    oss_mode_present: bool = false,
+    oss_mode: bool = false,
+    oss_provider_present: bool = false,
+    oss_provider: ?[]const u8 = null,
 };
 
 fn validateThreadRequestConfigParam(object: std.json.ObjectMap) ?[]const u8 {
@@ -35152,6 +35245,14 @@ fn validateThreadRequestConfigParam(object: std.json.ObjectMap) ?[]const u8 {
     if (value.object.get("web_search")) |web_search| {
         if (!optionalEnumStringIsValid(web_search, &.{ "disabled", "cached", "live" })) {
             return "config.web_search must be disabled, cached, live, or null";
+        }
+    }
+    if (value.object.get("oss")) |oss_mode| {
+        if (oss_mode != .null and oss_mode != .bool) return "config.oss must be a boolean or null";
+    }
+    if (value.object.get("oss_provider")) |oss_provider| {
+        if (!optionalEnumStringIsValid(oss_provider, &.{ "lmstudio", "ollama" })) {
+            return "config.oss_provider must be lmstudio, ollama, or null";
         }
     }
     return null;
@@ -35180,6 +35281,25 @@ fn threadRequestConfigFromParams(params: ?std.json.ObjectMap) !ThreadRequestConf
             else => return error.InvalidThreadRequestConfig,
         };
     }
+    if (value.object.get("oss")) |oss_mode| {
+        result.oss_mode_present = true;
+        result.oss_mode = switch (oss_mode) {
+            .null => false,
+            .bool => |mode| mode,
+            else => return error.InvalidThreadRequestConfig,
+        };
+    }
+    if (value.object.get("oss_provider")) |oss_provider| {
+        result.oss_provider_present = true;
+        result.oss_provider = switch (oss_provider) {
+            .null => null,
+            .string => |provider| blk: {
+                const parsed = config.OssProvider.parse(provider) catch return error.InvalidThreadRequestConfig;
+                break :blk parsed.label();
+            },
+            else => return error.InvalidThreadRequestConfig,
+        };
+    }
     return result;
 }
 
@@ -35198,8 +35318,73 @@ fn loadConfigForLoadedThread(allocator: std.mem.Allocator, thread: *const Loaded
     return config.loadWithOptions(allocator, .{ .profile = thread.active_profile });
 }
 
-fn applyThreadRequestConfigOverrides(cfg: *config.Config, request_config: ThreadRequestConfigOverrides) void {
+fn applyThreadRequestConfigOverrides(
+    allocator: std.mem.Allocator,
+    cfg: *config.Config,
+    request_config: ThreadRequestConfigOverrides,
+    explicit_model: bool,
+) !void {
     if (request_config.web_search_mode_present) cfg.web_search_mode = request_config.web_search_mode;
+    if (request_config.oss_provider_present) {
+        if (request_config.oss_provider) |provider| {
+            try replaceConfigOptionalString(allocator, &cfg.oss_provider, provider);
+        } else {
+            clearOptionalOwnedString(allocator, &cfg.oss_provider);
+        }
+    }
+    if (request_config.oss_mode_present and request_config.oss_mode) {
+        try config.applyOssMode(cfg, allocator, null, explicit_model);
+    }
+}
+
+fn threadOssProviderForRequest(
+    allocator: std.mem.Allocator,
+    cfg: config.Config,
+    request_config: ThreadRequestConfigOverrides,
+) !?[]const u8 {
+    if (!request_config.oss_mode) return null;
+    const provider = cfg.oss_provider orelse return error.NoDefaultOssProviderConfigured;
+    const owned = try allocator.dupe(u8, provider);
+    return owned;
+}
+
+fn forkThreadOssProvider(
+    allocator: std.mem.Allocator,
+    cfg: config.Config,
+    request_config: ThreadRequestConfigOverrides,
+    use_request_profile: bool,
+    source: *const LoadedThread,
+) !?[]const u8 {
+    if (request_config.oss_mode_present) {
+        if (request_config.oss_mode) return threadOssProviderForRequest(allocator, cfg, request_config);
+        return null;
+    }
+    if (use_request_profile) return null;
+    if (source.oss_provider) |provider| {
+        const owned = try allocator.dupe(u8, provider);
+        return owned;
+    }
+    return null;
+}
+
+fn applyLoadedThreadOssModeToConfig(
+    allocator: std.mem.Allocator,
+    cfg: *config.Config,
+    thread: *const LoadedThread,
+) !void {
+    if (thread.oss_provider) |provider| {
+        try replaceConfigOptionalString(allocator, &cfg.oss_provider, provider);
+        try config.applyOssMode(cfg, allocator, null, true);
+    }
+}
+
+fn loadCredentialsForLoadedThread(
+    allocator: std.mem.Allocator,
+    cfg: *const config.Config,
+    thread: *const LoadedThread,
+) !auth_mod.Credentials {
+    if (thread.oss_provider != null) return auth_mod.localOssCredentials(allocator);
+    return auth_mod.loadForConfig(allocator, cfg);
 }
 
 fn handleThreadStart(
@@ -35224,7 +35409,9 @@ fn handleThreadStart(
     applyThreadStartProjectTrustAndConfig(allocator, &cfg, params) catch |err| {
         return renderJsonRpcErrorForFailure(allocator, id_value, "thread/start failed to load project config", err);
     };
-    applyThreadRequestConfigOverrides(&cfg, request_config);
+    applyThreadRequestConfigOverrides(allocator, &cfg, request_config, paramPresent(params, "model")) catch |err| {
+        return renderJsonRpcErrorForFailure(allocator, id_value, "thread/start failed to apply config override", err);
+    };
 
     var mcp_startup_check = runThreadStartMcpStartupCheck(allocator, state, &cfg) catch |err| {
         return renderJsonRpcErrorForFailure(allocator, id_value, "thread/start failed to initialize MCP servers", err);
@@ -35534,7 +35721,9 @@ fn handleThreadResume(
         return renderJsonRpcErrorForFailure(allocator, id_value, "thread/resume failed to load config", err);
     };
     defer cfg.deinit(allocator);
-    applyThreadRequestConfigOverrides(&cfg, request_config);
+    applyThreadRequestConfigOverrides(allocator, &cfg, request_config, paramPresent(object, "model")) catch |err| {
+        return renderJsonRpcErrorForFailure(allocator, id_value, "thread/resume failed to apply config override", err);
+    };
 
     if (object.get("history")) |history| {
         if (history != .null) {
@@ -35657,7 +35846,9 @@ fn handleThreadFork(
         return renderJsonRpcErrorForFailure(allocator, id_value, "thread/fork failed to load config", err);
     };
     defer cfg.deinit(allocator);
-    applyThreadRequestConfigOverrides(&cfg, request_config);
+    applyThreadRequestConfigOverrides(allocator, &cfg, request_config, paramPresent(object, "model")) catch |err| {
+        return renderJsonRpcErrorForFailure(allocator, id_value, "thread/fork failed to apply config override", err);
+    };
 
     if (optionalStringParam(object, "path")) |path| {
         var source = createLoadedThreadFromForkPath(allocator, cfg, object, path) catch |err| switch (err) {
@@ -36197,6 +36388,7 @@ fn threadResumeHasModelRuntimeOverride(params: std.json.ObjectMap) bool {
     if (optionalStringParam(params, "modelProvider") != null) return true;
     const config_value = params.get("config") orelse return false;
     if (config_value != .object) return false;
+    if (config_value.object.get("oss") != null) return true;
     return config_value.object.get("profile") != null or
         config_value.object.get("model") != null or
         config_value.object.get("model_provider") != null or
@@ -36212,6 +36404,18 @@ test "thread resume treats request profile as model runtime override" {
     var with_web_search = try std.json.parseFromSlice(std.json.Value, allocator, "{\"config\":{\"web_search\":\"live\"}}", .{});
     defer with_web_search.deinit();
     try std.testing.expect(!threadResumeHasModelRuntimeOverride(with_web_search.value.object));
+
+    var with_oss = try std.json.parseFromSlice(std.json.Value, allocator, "{\"config\":{\"oss\":true,\"oss_provider\":\"ollama\"}}", .{});
+    defer with_oss.deinit();
+    try std.testing.expect(threadResumeHasModelRuntimeOverride(with_oss.value.object));
+
+    var with_oss_clear = try std.json.parseFromSlice(std.json.Value, allocator, "{\"config\":{\"oss\":false}}", .{});
+    defer with_oss_clear.deinit();
+    try std.testing.expect(threadResumeHasModelRuntimeOverride(with_oss_clear.value.object));
+
+    var with_oss_null = try std.json.parseFromSlice(std.json.Value, allocator, "{\"config\":{\"oss\":null}}", .{});
+    defer with_oss_null.deinit();
+    try std.testing.expect(threadResumeHasModelRuntimeOverride(with_oss_null.value.object));
 }
 
 fn replaceStateMetadataGitInfo(allocator: std.mem.Allocator, slot: *?[]const u8, value: ?[]const u8) !void {
@@ -36239,6 +36443,7 @@ fn createLoadedThreadFromStartParams(
     errdefer allocator.free(cli_version);
     const turns_json = try allocator.dupe(u8, "[]");
     errdefer allocator.free(turns_json);
+    const request_config = try threadRequestConfigFromParams(params);
 
     const model = try allocator.dupe(u8, optionalStringParam(params, "model") orelse cfg.model);
     errdefer allocator.free(model);
@@ -36249,6 +36454,8 @@ fn createLoadedThreadFromStartParams(
     const configured_model_provider = cfg.model_provider_id;
     const model_provider = try allocator.dupe(u8, optionalStringParam(params, "modelProvider") orelse configured_model_provider orelse "openai");
     errdefer allocator.free(model_provider);
+    const oss_provider = try threadOssProviderForRequest(allocator, cfg, request_config);
+    errdefer if (oss_provider) |value| allocator.free(value);
 
     const service_tier = try threadStartServiceTier(allocator, cfg, params);
     errdefer if (service_tier) |value| allocator.free(value);
@@ -36322,6 +36529,7 @@ fn createLoadedThreadFromStartParams(
         .model_auto_compact_token_limit = cfg.model_auto_compact_token_limit,
         .model_verbosity = model_verbosity,
         .model_provider = model_provider,
+        .oss_provider = oss_provider,
         .service_tier = service_tier,
         .active_profile = active_profile,
         .cwd = cwd,
@@ -36397,6 +36605,7 @@ fn createLoadedThreadFromHistoryParams(
     errdefer allocator.free(cli_version);
     const turns_json = try renderTranscriptTurnsJson(allocator, &transcript, true);
     errdefer allocator.free(turns_json);
+    const request_config = try threadRequestConfigFromParams(params);
 
     const model = try allocator.dupe(u8, optionalStringParam(params, "model") orelse cfg.model);
     errdefer allocator.free(model);
@@ -36407,6 +36616,8 @@ fn createLoadedThreadFromHistoryParams(
     const configured_model_provider = cfg.model_provider_id;
     const model_provider = try allocator.dupe(u8, optionalStringParam(params, "modelProvider") orelse configured_model_provider orelse "openai");
     errdefer allocator.free(model_provider);
+    const oss_provider = try threadOssProviderForRequest(allocator, cfg, request_config);
+    errdefer if (oss_provider) |value| allocator.free(value);
 
     const service_tier = try threadStartServiceTier(allocator, cfg, params);
     errdefer if (service_tier) |value| allocator.free(value);
@@ -36467,6 +36678,7 @@ fn createLoadedThreadFromHistoryParams(
         .model_auto_compact_token_limit = cfg.model_auto_compact_token_limit,
         .model_verbosity = model_verbosity,
         .model_provider = model_provider,
+        .oss_provider = oss_provider,
         .service_tier = service_tier,
         .active_profile = active_profile,
         .cwd = cwd,
@@ -36587,6 +36799,8 @@ fn createLoadedThreadFromResumeParams(
         transcript.model_provider orelse configured_model_provider orelse "openai";
     const model_provider = try allocator.dupe(u8, optionalStringParam(params, "modelProvider") orelse default_model_provider);
     errdefer allocator.free(model_provider);
+    const oss_provider = try threadOssProviderForRequest(allocator, cfg, request_config);
+    errdefer if (oss_provider) |value| allocator.free(value);
 
     const service_tier = try threadStartServiceTier(allocator, cfg, params);
     errdefer if (service_tier) |value| allocator.free(value);
@@ -36638,6 +36852,7 @@ fn createLoadedThreadFromResumeParams(
         .model_auto_compact_token_limit = cfg.model_auto_compact_token_limit,
         .model_verbosity = model_verbosity,
         .model_provider = model_provider,
+        .oss_provider = oss_provider,
         .service_tier = service_tier,
         .active_profile = active_profile,
         .cwd = cwd,
@@ -36740,9 +36955,10 @@ fn createLoadedThreadFromForkParams(
 
     const request_config = try threadRequestConfigFromParams(params);
     const use_request_profile = request_config.profile_present;
+    const use_request_model_runtime = use_request_profile or request_config.oss_mode_present;
     const use_request_config_for_web_search = request_config.profile_present or request_config.web_search_mode_present;
 
-    const default_model = if (use_request_profile) cfg.model else source.model;
+    const default_model = if (use_request_model_runtime) cfg.model else source.model;
     const model = try allocator.dupe(u8, optionalStringParam(params, "model") orelse default_model);
     errdefer allocator.free(model);
 
@@ -36757,10 +36973,12 @@ fn createLoadedThreadFromForkParams(
         null;
     errdefer if (model_verbosity) |value| allocator.free(value);
 
-    const configured_model_provider = if (use_request_profile) cfg.model_provider_id else null;
-    const default_model_provider = if (use_request_profile) configured_model_provider orelse "openai" else source.model_provider;
+    const configured_model_provider = if (use_request_model_runtime) cfg.model_provider_id else null;
+    const default_model_provider = if (use_request_model_runtime) configured_model_provider orelse "openai" else source.model_provider;
     const model_provider = try allocator.dupe(u8, optionalStringParam(params, "modelProvider") orelse default_model_provider);
     errdefer allocator.free(model_provider);
+    const oss_provider = try forkThreadOssProvider(allocator, cfg, request_config, use_request_profile, source);
+    errdefer if (oss_provider) |value| allocator.free(value);
 
     const service_tier = try lifecycleServiceTier(allocator, if (use_request_profile) cfg.service_tier else source.service_tier, params);
     errdefer if (service_tier) |value| allocator.free(value);
@@ -36876,6 +37094,7 @@ fn createLoadedThreadFromForkParams(
         .model_auto_compact_token_limit = model_auto_compact_token_limit,
         .model_verbosity = model_verbosity,
         .model_provider = model_provider,
+        .oss_provider = oss_provider,
         .service_tier = service_tier,
         .active_profile = active_profile,
         .cwd = cwd,
@@ -50710,6 +50929,15 @@ fn reloadLoadedThreadRuntimeConfig(allocator: std.mem.Allocator, state: *AppServ
             else => continue,
         };
         defer cfg.deinit(allocator);
+        if (thread.oss_provider) |provider| {
+            replaceConfigOptionalString(allocator, &cfg.oss_provider, provider) catch |err| switch (err) {
+                error.OutOfMemory => return err,
+            };
+            config.applyOssMode(&cfg, allocator, null, thread.runtime_overrides.model) catch |err| switch (err) {
+                error.OutOfMemory => return err,
+                else => continue,
+            };
+        }
 
         const model_provider = cfg.model_provider_id orelse "openai";
 
@@ -59514,6 +59742,7 @@ test "app-server goal reads persist refreshed accounting" {
         .model_auto_compact_token_limit = null,
         .model_verbosity = null,
         .model_provider = "openai",
+        .oss_provider = null,
         .service_tier = null,
         .active_profile = null,
         .cwd = "/tmp",

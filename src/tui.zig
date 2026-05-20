@@ -675,9 +675,14 @@ const RemoteSlashAction = enum {
 const RemoteRequestConfigOverrides = struct {
     profile: ?[]const u8 = null,
     web_search_mode: ?config.WebSearchMode = null,
+    oss_mode: bool = false,
+    oss_provider: ?[]const u8 = null,
 
     fn isEmpty(self: RemoteRequestConfigOverrides) bool {
-        return self.profile == null and self.web_search_mode == null;
+        return self.profile == null and
+            self.web_search_mode == null and
+            !self.oss_mode and
+            self.oss_provider == null;
     }
 };
 
@@ -685,6 +690,8 @@ fn remoteRequestConfigOverrides(options: Options) RemoteRequestConfigOverrides {
     return .{
         .profile = options.profile,
         .web_search_mode = options.runtime_overrides.web_search_mode,
+        .oss_mode = options.oss,
+        .oss_provider = if (options.oss) options.oss_provider orelse options.runtime_overrides.oss_provider else null,
     };
 }
 
@@ -1523,13 +1530,9 @@ fn openRemoteLifecycleThread(
 }
 
 fn validateRemoteTuiSupportedOptions(options: Options) !void {
-    if (options.oss) return rejectUnsupportedRemoteTuiOption("--oss");
-    if (options.oss_provider != null) return rejectUnsupportedRemoteTuiOption("--local-provider");
-
     const overrides = options.runtime_overrides;
     if (overrides.openai_base_url != null) return rejectUnsupportedRemoteTuiOption("-c openai_base_url");
     if (overrides.chatgpt_base_url != null) return rejectUnsupportedRemoteTuiOption("-c chatgpt_base_url");
-    if (overrides.oss_provider != null) return rejectUnsupportedRemoteTuiOption("-c oss_provider");
     if (overrides.syntax_theme != null) return rejectUnsupportedRemoteTuiOption("-c syntax_theme");
 }
 
@@ -1668,6 +1671,12 @@ fn appendRemoteThreadRequestConfig(
     }
     if (request_config.web_search_mode) |mode| {
         try appendJsonStringField(allocator, out, &config_first, "web_search", mode.label());
+    }
+    if (request_config.oss_mode) {
+        try appendJsonBoolField(allocator, out, &config_first, "oss", true);
+    }
+    if (request_config.oss_provider) |provider| {
+        try appendJsonStringField(allocator, out, &config_first, "oss_provider", provider);
     }
     try out.append(allocator, '}');
 }
@@ -4336,17 +4345,21 @@ test "remote auth token transport is limited to secure or loopback URLs" {
     try std.testing.expect(!remoteUrlSupportsAuthToken(try validateRemoteUrl("ws://127.0.0.1.example:4500")));
 }
 
-test "remote TUI rejects unsupported local-only options" {
+test "remote TUI validates unsupported local-only options" {
     try validateRemoteTuiSupportedOptions(.{
         .profile = "work",
         .runtime_overrides = .{ .web_search_mode = .live },
     });
-    try std.testing.expectError(error.RemoteTuiUnsupportedOption, validateRemoteTuiSupportedOptions(.{
+    try validateRemoteTuiSupportedOptions(.{
         .oss = true,
-    }));
-    try std.testing.expectError(error.RemoteTuiUnsupportedOption, validateRemoteTuiSupportedOptions(.{
+    });
+    try validateRemoteTuiSupportedOptions(.{
         .oss_provider = "ollama",
-    }));
+    });
+    try validateRemoteTuiSupportedOptions(.{
+        .oss = true,
+        .runtime_overrides = .{ .oss_provider = "lmstudio" },
+    });
     try std.testing.expectError(error.RemoteTuiUnsupportedOption, validateRemoteTuiSupportedOptions(.{
         .runtime_overrides = .{ .openai_base_url = "http://127.0.0.1:11434/v1" },
     }));
@@ -4400,6 +4413,18 @@ test "remote TUI serializes supported runtime overrides" {
     const thread_config = thread_params.get("config").?.object;
     try std.testing.expectEqualStrings("work", thread_config.get("profile").?.string);
     try std.testing.expectEqualStrings("live", thread_config.get("web_search").?.string);
+
+    const oss_thread_start = try renderRemoteThreadStartRequest(allocator, "/tmp/work", .{}, false, .{
+        .oss_mode = true,
+        .oss_provider = "ollama",
+    });
+    defer allocator.free(oss_thread_start);
+
+    var parsed_oss_thread = try std.json.parseFromSlice(std.json.Value, allocator, oss_thread_start, .{});
+    defer parsed_oss_thread.deinit();
+    const oss_thread_config = parsed_oss_thread.value.object.get("params").?.object.get("config").?.object;
+    try std.testing.expect(oss_thread_config.get("oss").?.bool);
+    try std.testing.expectEqualStrings("ollama", oss_thread_config.get("oss_provider").?.string);
 
     const cleared_thread_start = try renderRemoteThreadStartRequest(allocator, "/tmp/work", .{}, true, .{});
     defer allocator.free(cleared_thread_start);
