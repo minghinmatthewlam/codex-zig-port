@@ -48,10 +48,11 @@ parity tracker; implementation parity remains tracked in `docs/parity.md`.
   high-confidence OpenAI, GitHub, AWS, Google, or Slack token patterns and no
   private-key blocks. A broad secret-word scan is expectedly noisy because this
   repository implements auth flows, so the actionable local check uses
-  high-confidence credential patterns plus GitHub's enabled secret scanning.
+  `scripts/oss_secret_scan.py` high-confidence credential patterns plus
+  GitHub's enabled secret scanning.
   `gitleaks`, `trufflehog`, and the local CodeQL CLI were not installed on the
-  local machine during the latest check, so the local scan used repository `rg`
-  patterns plus GitHub's enabled secret scanning and CodeQL runs.
+  local machine during the latest check, so the local scan used the repository
+  script plus GitHub's enabled secret scanning and CodeQL runs.
 - Package boundary: `build.zig.zon` lists only source, test, script, and public
   documentation paths so local ignored artifacts are not part of a Zig package.
 
