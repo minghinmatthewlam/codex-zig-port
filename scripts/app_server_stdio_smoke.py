@@ -26167,6 +26167,138 @@ def run_mcp_plugin_requirements_rpc_smoke(binary: Path) -> None:
         shutil.rmtree(codex_home, ignore_errors=True)
 
 
+def run_mcp_global_requirements_rpc_smoke(binary: Path) -> None:
+    codex_home = Path(tempfile.mkdtemp(prefix="codex-zig-app-server-mcp-global-reqs-", dir="/tmp"))
+    config_path = codex_home / "config.toml"
+    requirements_path = codex_home / "requirements.toml"
+    server_path = codex_home / "global_mcp_server.py"
+    try:
+        server_path.write_text(
+            "\n".join(
+                [
+                    "import json",
+                    "import sys",
+                    "",
+                    "def write(payload):",
+                    "    sys.stdout.write(json.dumps(payload, separators=(',', ':')) + '\\n')",
+                    "    sys.stdout.flush()",
+                    "",
+                    "for line in sys.stdin:",
+                    "    if not line.strip():",
+                    "        continue",
+                    "    request = json.loads(line)",
+                    "    method = request.get('method')",
+                    "    if method == 'notifications/initialized':",
+                    "        continue",
+                    "    request_id = request.get('id')",
+                    "    if method == 'initialize':",
+                    "        write({",
+                    "            'jsonrpc': '2.0',",
+                    "            'id': request_id,",
+                    "            'result': {",
+                    "                'protocolVersion': '2025-03-26',",
+                    "                'capabilities': {'tools': {}},",
+                    "                'serverInfo': {'name': 'global-req-smoke', 'version': '0.1.0'},",
+                    "            },",
+                    "        })",
+                    "    elif method == 'tools/list':",
+                    "        write({",
+                    "            'jsonrpc': '2.0',",
+                    "            'id': request_id,",
+                    "            'result': {",
+                    "                'tools': [",
+                    "                    {",
+                    "                        'name': 'allowed.global',",
+                    "                        'description': 'Allowed global requirement proof.',",
+                    "                        'inputSchema': {'type': 'object'},",
+                    "                    }",
+                    "                ],",
+                    "                'nextCursor': None,",
+                    "            },",
+                    "        })",
+                    "    else:",
+                    "        write({",
+                    "            'jsonrpc': '2.0',",
+                    "            'id': request_id,",
+                    "            'error': {'code': -32601, 'message': f'unknown method: {method}'},",
+                    "        })",
+                    "",
+                ]
+            ),
+            encoding="utf-8",
+        )
+        config_path.write_text(
+            "\n".join(
+                [
+                    "[mcp_servers.allowed_global_docs]",
+                    f"command = {json.dumps(sys.executable)}",
+                    f"args = [{json.dumps(str(server_path))}]",
+                    "",
+                    "[mcp_servers.blocked_global_docs]",
+                    f"command = {json.dumps(sys.executable)}",
+                    f"args = [{json.dumps(str(server_path))}]",
+                    "",
+                ]
+            ),
+            encoding="utf-8",
+        )
+        requirements_path.write_text(
+            "\n".join(
+                [
+                    "[mcp_servers.allowed_global_docs.identity]",
+                    f"command = {json.dumps(sys.executable)}",
+                    "",
+                ]
+            ),
+            encoding="utf-8",
+        )
+        env = os.environ.copy()
+        env["CODEX_HOME"] = str(codex_home)
+        env["CODEX_APP_SERVER_SYSTEM_REQUIREMENTS_PATH"] = str(requirements_path)
+
+        status = request_stdio_app_server(
+            binary,
+            {
+                "jsonrpc": "2.0",
+                "id": "mcp-global-requirements-status",
+                "method": "mcpServerStatus/list",
+                "params": {"detail": "toolsAndAuthOnly"},
+            },
+            env,
+        )
+        assert status["id"] == "mcp-global-requirements-status"
+        entries = status["result"]["data"]
+        assert [entry["name"] for entry in entries] == [
+            "allowed_global_docs",
+            "blocked_global_docs",
+        ]
+        assert list(entries[0]["tools"].keys()) == ["allowed.global"]
+        assert entries[1]["tools"] == {}
+        assert entries[1]["resources"] == []
+        assert entries[1]["resourceTemplates"] == []
+
+        blocked_read = request_stdio_app_server(
+            binary,
+            {
+                "jsonrpc": "2.0",
+                "id": "mcp-global-requirements-blocked-read",
+                "method": "mcpServer/resource/read",
+                "params": {
+                    "server": "blocked_global_docs",
+                    "uri": "file:///tmp/blocked.md",
+                },
+            },
+            env,
+        )
+        assert blocked_read["id"] == "mcp-global-requirements-blocked-read"
+        assert blocked_read["error"]["code"] == -32600
+        assert "MCP server 'blocked_global_docs' is unavailable." in (
+            blocked_read["error"]["message"]
+        )
+    finally:
+        shutil.rmtree(codex_home, ignore_errors=True)
+
+
 def run_mcp_resource_read_rpc_smoke(binary: Path) -> None:
     codex_home = Path(tempfile.mkdtemp(prefix="codex-zig-app-server-mcp-resource-", dir="/tmp"))
     config_path = codex_home / "config.toml"
@@ -50310,6 +50442,8 @@ def main() -> None:
     print("app-server-skills-list-rpc-e2e: ok")
     run_mcp_server_status_rpc_smoke(binary)
     print("app-server-mcp-server-status-rpc-e2e: ok")
+    run_mcp_global_requirements_rpc_smoke(binary)
+    print("app-server-mcp-global-requirements-rpc-e2e: ok")
     run_mcp_plugin_requirements_rpc_smoke(binary)
     print("app-server-mcp-plugin-requirements-rpc-e2e: ok")
     run_mcp_resource_read_rpc_smoke(binary)
