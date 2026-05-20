@@ -32144,7 +32144,7 @@ def run_config_read_rpc_smoke(binary: Path) -> None:
         assert project_config_body["service_tier"] == "priority"
         assert project_config_body["forced_chatgpt_workspace_id"] == "acct-project"
         assert project_config_body["forced_login_method"] == "api"
-        assert project_config_body["profiles"]["project_only"]["model"] == "gpt-project-profile"
+        assert "project_only" not in project_config_body["profiles"]
         assert project_config_body["profiles"]["system_only"]["model"] == "gpt-system-profile"
         assert project_config_body["tools"] == {
             "web_search": {
@@ -32244,10 +32244,10 @@ def run_config_read_rpc_smoke(binary: Path) -> None:
             "apps.app3.tools.deploy.enabled",
             "sandbox_workspace_write.writable_roots.0",
             "sandbox_workspace_write.network_access",
-            "profiles.project_only.model",
         ]:
             assert project_origins[key]["name"] == project_source
             assert project_origins[key]["version"].startswith("sha256:")
+        assert "profiles.project_only.model" not in project_origins
         for key in [
             "model_provider",
             "tools.web_search.allowed_domains.0",
@@ -32346,9 +32346,6 @@ def run_config_read_rpc_smoke(binary: Path) -> None:
                     },
                 },
             },
-            "profiles": {
-                "project_only": project_config_body["profiles"]["project_only"],
-            },
         }
         assert project_layers[1]["name"] == {"type": "user", "file": config_path}
         assert project_layers[2]["name"] == system_source
@@ -32374,7 +32371,7 @@ def run_config_read_rpc_smoke(binary: Path) -> None:
         assert nested_config_body["service_tier"] == "flex"
         assert nested_config_body["forced_chatgpt_workspace_id"] == "acct-project"
         assert nested_config_body["forced_login_method"] == "api"
-        assert nested_config_body["profiles"]["project_only"]["model"] == "gpt-project-profile"
+        assert "project_only" not in nested_config_body["profiles"]
         assert nested_config_body["profiles"]["system_only"]["model"] == "gpt-system-profile"
         assert nested_config_body["tools"] == {
             "web_search": {
@@ -32419,7 +32416,7 @@ def run_config_read_rpc_smoke(binary: Path) -> None:
         assert nested_origins["service_tier"]["name"] == child_project_source
         assert nested_origins["forced_chatgpt_workspace_id"]["name"] == project_source
         assert nested_origins["forced_login_method"]["name"] == project_source
-        assert nested_origins["profiles.project_only.model"]["name"] == project_source
+        assert "profiles.project_only.model" not in nested_origins
         assert nested_origins["profiles.system_only.model"]["name"] == system_source
         assert nested_origins["sandbox_workspace_write.writable_roots.0"]["name"] == project_source
         assert nested_origins["sandbox_workspace_write.network_access"]["name"] == project_source
@@ -32516,9 +32513,6 @@ def run_config_read_rpc_smoke(binary: Path) -> None:
                         },
                     },
                 },
-            },
-            "profiles": {
-                "project_only": nested_config_body["profiles"]["project_only"],
             },
         }
         assert nested_layers[2]["name"] == {"type": "user", "file": config_path}

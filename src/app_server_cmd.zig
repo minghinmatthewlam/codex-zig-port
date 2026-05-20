@@ -52705,6 +52705,10 @@ const ConfigReadProjectLayers = struct {
     fn hasToolsAllowedDomains(self: ConfigReadProjectLayers) bool {
         return configReadProjectSliceHasToolsAllowedDomains(self.items);
     }
+
+    fn hasProfileAllowedDomains(self: ConfigReadProjectLayers, profile_name: []const u8) bool {
+        return configReadProjectSliceHasProfileAllowedDomains(self.items, profile_name);
+    }
 };
 
 const ConfigReadUserLayer = struct {
@@ -55143,8 +55147,6 @@ fn loadConfigReadProjectLayer(
         if (forced_login_method != null) {
             try appendUniqueOriginKey(allocator, &origin_keys, "forced_login_method");
         }
-        profiles = try loadConfigReadProfiles(allocator, config_bytes);
-        try appendConfigReadProfilesOriginKeys(allocator, &origin_keys, profiles);
         tools = try loadConfigReadTools(allocator, config_bytes);
         try appendConfigReadToolsOriginKeys(allocator, &origin_keys, tools);
         apps = try loadConfigReadApps(allocator, config_bytes);
@@ -55329,6 +55331,9 @@ fn appendConfigReadOrigins(
             if (isConfigReadSandboxWorkspaceRootOriginKey(key)) {
                 if (if (managed_layer) |managed| managed.hasSandboxWorkspaceWriteRoot() else false) continue;
                 if (configReadProjectSliceHasSandboxWorkspaceWriteRoot(project_layers.items[0..index])) continue;
+            } else if (configReadProfileToolsAllowedDomainsOriginProfile(key)) |profile_name| {
+                if (if (managed_layer) |managed| configReadProfilesHasAllowedDomains(managed.profiles, profile_name) else false) continue;
+                if (configReadProjectSliceHasProfileAllowedDomains(project_layers.items[0..index], profile_name)) continue;
             } else if (isConfigReadToolsAllowedDomainsOriginKey(key)) {
                 if (if (managed_layer) |managed| managed.hasToolsAllowedDomains() else false) continue;
                 if (configReadProjectSliceHasToolsAllowedDomains(project_layers.items[0..index])) continue;
@@ -55342,8 +55347,13 @@ fn appendConfigReadOrigins(
     }
     if (user_layer) |layer| {
         for (layer.origin_keys) |key| {
-            if (if (managed_layer) |managed| managed.hasOriginKey(key) else false) continue;
-            if (project_layers.hasOriginKey(key)) continue;
+            if (configReadProfileToolsAllowedDomainsOriginProfile(key)) |profile_name| {
+                if (if (managed_layer) |managed| configReadProfilesHasAllowedDomains(managed.profiles, profile_name) else false) continue;
+                if (project_layers.hasProfileAllowedDomains(profile_name)) continue;
+            } else {
+                if (if (managed_layer) |managed| managed.hasOriginKey(key) else false) continue;
+                if (project_layers.hasOriginKey(key)) continue;
+            }
             try appendConfigReadUserOrigin(allocator, result, &first, layer, key);
         }
         try appendConfigReadUserToolsOrigins(allocator, result, &first, managed_layer, project_layers, layer);
@@ -55356,6 +55366,10 @@ fn appendConfigReadOrigins(
                 if (if (managed_layer) |managed| managed.hasSandboxWorkspaceWriteRoot() else false) continue;
                 if (project_layers.hasSandboxWorkspaceWriteRoot()) continue;
                 if (if (user_layer) |user| user.sandbox_workspace_write.writable_roots != null else false) continue;
+            } else if (configReadProfileToolsAllowedDomainsOriginProfile(key)) |profile_name| {
+                if (if (managed_layer) |managed| configReadProfilesHasAllowedDomains(managed.profiles, profile_name) else false) continue;
+                if (project_layers.hasProfileAllowedDomains(profile_name)) continue;
+                if (if (user_layer) |user| configReadProfilesHasAllowedDomains(user.profiles, profile_name) else false) continue;
             } else if (isConfigReadToolsAllowedDomainsOriginKey(key)) {
                 if (if (managed_layer) |managed| managed.hasToolsAllowedDomains() else false) continue;
                 if (project_layers.hasToolsAllowedDomains()) continue;
@@ -55972,6 +55986,15 @@ fn configReadToolsHasAllowedDomains(tools: ConfigReadTools) bool {
     return false;
 }
 
+fn configReadProfilesHasAllowedDomains(profiles: ConfigReadProfiles, profile_name: []const u8) bool {
+    const profile_index = findConfigReadProfileIndex(profiles.items, profile_name) orelse return false;
+    const profile = profiles.items[profile_index];
+    if (profile.tools.web_search) |web_search| {
+        return web_search.allowed_domains != null;
+    }
+    return false;
+}
+
 fn configReadProjectSliceHasSandboxWorkspaceWriteRoot(layers: []const ConfigReadProjectLayer) bool {
     for (layers) |layer| {
         if (layer.sandbox_workspace_write.writable_roots != null) return true;
@@ -55988,12 +56011,29 @@ fn configReadProjectSliceHasToolsAllowedDomains(layers: []const ConfigReadProjec
     return false;
 }
 
+fn configReadProjectSliceHasProfileAllowedDomains(layers: []const ConfigReadProjectLayer, profile_name: []const u8) bool {
+    for (layers) |layer| {
+        if (configReadProfilesHasAllowedDomains(layer.profiles, profile_name)) return true;
+    }
+    return false;
+}
+
 fn isConfigReadSandboxWorkspaceRootOriginKey(key: []const u8) bool {
     return std.mem.startsWith(u8, key, "sandbox_workspace_write.writable_roots.");
 }
 
 fn isConfigReadToolsAllowedDomainsOriginKey(key: []const u8) bool {
     return std.mem.startsWith(u8, key, "tools.web_search.allowed_domains.");
+}
+
+fn configReadProfileToolsAllowedDomainsOriginProfile(key: []const u8) ?[]const u8 {
+    const prefix = "profiles.";
+    const suffix = ".tools.web_search.allowed_domains.";
+    if (!std.mem.startsWith(u8, key, prefix)) return null;
+    const suffix_index = std.mem.lastIndexOf(u8, key, suffix) orelse return null;
+    if (suffix_index <= prefix.len) return null;
+    if (suffix_index + suffix.len >= key.len) return null;
+    return key[prefix.len..suffix_index];
 }
 
 fn appendConfigReadManagedOrigin(
@@ -61208,6 +61248,123 @@ test "config/read app path component rejects trailing quoted suffixes" {
     try std.testing.expectEqualStrings("drive", quoted);
 
     try std.testing.expect(try parseConfigReadAppPathComponent(allocator, "\"drive\".nested") == null);
+}
+
+test "config/read project layer ignores project-local profiles" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var dir = std.testing.tmpDir(.{});
+    defer dir.cleanup();
+
+    try dir.dir.createDirPath(io, "workspace/.codex");
+    try dir.dir.createDirPath(io, "codex-home");
+    try dir.dir.writeFile(io, .{
+        .sub_path = "workspace/.codex/config.toml",
+        .data =
+        \\model = "gpt-project"
+        \\
+        \\[profiles.project_only]
+        \\model = "gpt-project-profile"
+        \\
+        ,
+    });
+
+    const root = try dir.dir.realPathFileAlloc(io, ".", allocator);
+    defer allocator.free(root);
+    const workspace = try std.fs.path.join(allocator, &.{ root, "workspace" });
+    defer allocator.free(workspace);
+    const codex_home = try std.fs.path.join(allocator, &.{ root, "codex-home" });
+    defer allocator.free(codex_home);
+
+    var layer = (try loadConfigReadProjectLayer(allocator, workspace, codex_home)).?;
+    defer layer.deinit(allocator);
+
+    try std.testing.expectEqual(@as(usize, 0), layer.profiles.items.len);
+    for (layer.origin_keys) |key| {
+        try std.testing.expect(!std.mem.startsWith(u8, key, "profiles."));
+    }
+}
+
+test "config/read profile allowed domain origins hide lower-layer list entries" {
+    const allocator = std.testing.allocator;
+
+    var user_profiles = try loadConfigReadProfiles(allocator,
+        \\[profiles.work.tools.web_search]
+        \\allowed_domains = ["user.example"]
+        \\
+    );
+    defer user_profiles.deinit(allocator);
+    var user_origin_keys = std.ArrayList([]const u8).empty;
+    defer {
+        for (user_origin_keys.items) |key| allocator.free(key);
+        user_origin_keys.deinit(allocator);
+    }
+    try appendConfigReadProfilesOriginKeys(allocator, &user_origin_keys, user_profiles);
+
+    var system_profiles = try loadConfigReadProfiles(allocator,
+        \\[profiles.work.tools.web_search]
+        \\allowed_domains = ["system-a.example", "system-b.example"]
+        \\
+    );
+    defer system_profiles.deinit(allocator);
+    var system_origin_keys = std.ArrayList([]const u8).empty;
+    defer {
+        for (system_origin_keys.items) |key| allocator.free(key);
+        system_origin_keys.deinit(allocator);
+    }
+    try appendConfigReadProfilesOriginKeys(allocator, &system_origin_keys, system_profiles);
+
+    const user_layer = ConfigReadUserLayer{
+        .file_path = "/tmp/user-config.toml",
+        .version = "user-version",
+        .origin_keys = user_origin_keys.items,
+        .model_provider = null,
+        .profiles = user_profiles,
+        .analytics = .{},
+        .tools = .{},
+        .apps = ConfigReadApps.empty(),
+        .sandbox_workspace_write = .{},
+    };
+    const system_layer = ConfigReadSystemLayer{
+        .file_path = "/tmp/system-config.toml",
+        .version = "system-version",
+        .origin_keys = system_origin_keys.items,
+        .model = null,
+        .review_model = null,
+        .model_context_window = null,
+        .model_auto_compact_token_limit = null,
+        .model_provider = null,
+        .instructions = null,
+        .developer_instructions = null,
+        .compact_prompt = null,
+        .approval_policy = null,
+        .approvals_reviewer = null,
+        .sandbox_mode = null,
+        .web_search_mode = null,
+        .model_reasoning_effort = null,
+        .model_verbosity = null,
+        .service_tier = null,
+        .analytics = .{},
+        .forced_chatgpt_workspace_id = null,
+        .forced_login_method = null,
+        .profiles = system_profiles,
+        .tools = .{},
+        .apps = ConfigReadApps.empty(),
+    };
+
+    var origins = std.ArrayList(u8).empty;
+    defer origins.deinit(allocator);
+    try appendConfigReadOrigins(
+        allocator,
+        &origins,
+        null,
+        ConfigReadProjectLayers.empty(),
+        user_layer,
+        system_layer,
+    );
+
+    try std.testing.expect(std.mem.indexOf(u8, origins.items, "\"profiles.work.tools.web_search.allowed_domains.0\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, origins.items, "\"profiles.work.tools.web_search.allowed_domains.1\"") == null);
 }
 
 test "app-server config write path comparison normalizes Rust path aliases" {
