@@ -721,8 +721,8 @@ turn runtime overrides now apply the same scalar requirements to effective
 runtime state, with explicit disallowed lifecycle/turn approval, reviewer,
 sandbox, and web-search overrides rejected before they can become thread
 state. Origin/source fidelity, thread hot reload notifications, cloud
-requirements loading, and broader app/plugin requirement enforcement remain
-planned.
+requirements loading, plugin requirement enforcement, and app requirements
+outside the local app-list surface remain planned.
 
 `approvals_reviewer` is covered as a runtime config scalar, raw CLI config
 override, app-server `config/read`/write field, and loaded-thread reload value.
@@ -865,7 +865,9 @@ empty Rust-shaped `data` / `nextCursor` page when no local plugin app manifests
 are enabled, lists enabled local plugin `.app.json` manifests from plugin-cache
 roots, `$CODEX_HOME` marketplaces, and already-loaded thread cwd marketplaces as
 `AppInfo` rows, applies simple user `[apps._default]` / `[apps.NAME]` `enabled`
-flags, paginates with
+flags, applies local system `requirements.toml` `[apps.NAME] enabled = false`
+pins so requirements disable app rows without re-enabling user-disabled apps,
+paginates with
 Rust-shaped `nextCursor` values and invalid-cursor errors, and includes
 app-list request, response, app metadata, app summary, and `app/list/updated`
 notification artifacts in TypeScript and JSON schema generation. Enabling the
@@ -873,7 +875,8 @@ notification artifacts in TypeScript and JSON schema generation. Enabling the
 a Rust-shaped `app/list/updated` notification with the current local plugin app
 catalog after the response, honoring notification opt-out. Full ChatGPT
 connector directory loading, accessible-app merging, broader app cache
-refreshes, workspace-gated app availability, and full config layer fidelity
+refreshes, workspace-gated app availability, cloud app requirements, and full
+config layer fidelity
 remain planned.
 
 Additional app-server experimental-feature enablement coverage:
