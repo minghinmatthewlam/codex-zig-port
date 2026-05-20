@@ -32828,6 +32828,12 @@ def run_config_read_rpc_smoke(binary: Path) -> None:
         assert config_requirements_null["id"] == "config-requirements-read-null"
         assert config_requirements_null["result"] == {"requirements": None}
 
+        config_payload_before_requirements = (codex_home / "config.toml").read_text(encoding="utf-8")
+        (codex_home / "config.toml").write_text(
+            config_payload_before_requirements
+            + "\n\n[apps.connector_drive]\nenabled = true\n",
+            encoding="utf-8",
+        )
         system_requirements_path.write_text(
             "\n".join(
                 [
@@ -32841,6 +32847,11 @@ def run_config_read_rpc_smoke(binary: Path) -> None:
                     "goals = true",
                     "plugins = false",
                     'auto_review = false # legacy guardian approval alias',
+                    "",
+                    "[apps]",
+                    'connector_drive = { enabled = false }',
+                    'connector_calendar = { enabled = false }',
+                    'connector_docs = { enabled = true }',
                     "",
                     "[hooks]",
                     'managed_dir = "/tmp/codex-managed-hooks"',
@@ -32977,6 +32988,9 @@ def run_config_read_rpc_smoke(binary: Path) -> None:
         assert requirements_config["approvals_reviewer"] == "guardian_subagent"
         assert requirements_config["sandbox_mode"] == "danger-full-access"
         assert requirements_config["web_search"] == "cached"
+        assert requirements_config["apps"]["connector_drive"]["enabled"] is False
+        assert requirements_config["apps"]["connector_calendar"]["enabled"] is False
+        assert "connector_docs" not in requirements_config["apps"]
         assert requirements_enforced_read["result"]["layers"] is None
 
         requirements_payload = system_requirements_path.read_text(encoding="utf-8")
