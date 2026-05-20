@@ -52932,7 +52932,7 @@ fn renderConfigReadResponse(
     const web_search_mode = try configReadRequirementWebSearchMode(configured_web_search_mode, requirements);
     try appendJsonMaybeStringField(allocator, &result, &first, "web_search", if (web_search_mode) |mode| mode.label() else null);
     try appendConfigReadToolsField(allocator, &result, &first, effectiveConfigReadTools(managed_layer, project_layers, user_layer, system_layer));
-    var apps = try effectiveConfigReadApps(allocator, managed_layer, project_layers, user_layer, system_layer);
+    var apps = try effectiveConfigReadApps(allocator, managed_layer, project_layers, user_layer, system_layer, requirements.app_requirements);
     defer if (apps) |*value| value.deinit(allocator);
     try appendConfigReadAppsField(allocator, &result, &first, apps);
     const system_model_reasoning_effort = if (system_layer) |layer| layer.model_reasoning_effort else null;
@@ -54562,6 +54562,7 @@ fn effectiveConfigReadApps(
     project_layers: ConfigReadProjectLayers,
     user_layer: ?ConfigReadUserLayer,
     system_layer: ?ConfigReadSystemLayer,
+    app_requirements: ?plugin_list.AppRequirements,
 ) !?ConfigReadApps {
     var default_config: ?ConfigReadAppsDefault = null;
     var items = std.ArrayList(ConfigReadApp).empty;
@@ -54574,12 +54575,26 @@ fn effectiveConfigReadApps(
     for (project_layers.items) |layer| try mergeConfigReadApps(allocator, &default_config, &items, layer.apps);
     if (user_layer) |layer| try mergeConfigReadApps(allocator, &default_config, &items, layer.apps);
     if (system_layer) |layer| try mergeConfigReadApps(allocator, &default_config, &items, layer.apps);
+    try applyConfigReadAppRequirements(allocator, &items, app_requirements);
     if (default_config == null and items.items.len == 0) return null;
 
     return .{
         .default_config = default_config,
         .items = if (items.items.len == 0) &.{} else try items.toOwnedSlice(allocator),
     };
+}
+
+fn applyConfigReadAppRequirements(
+    allocator: std.mem.Allocator,
+    items: *std.ArrayList(ConfigReadApp),
+    app_requirements: ?plugin_list.AppRequirements,
+) !void {
+    const requirements = app_requirements orelse return;
+    for (requirements.disabled_ids) |app_id| {
+        const app = try ensureConfigReadApp(allocator, items, app_id);
+        app.enabled = false;
+        app.has_enabled = true;
+    }
 }
 
 fn mergeConfigReadApps(
@@ -61951,6 +61966,51 @@ test "config/read scalar requirements fall back to first allowed value" {
         error.ConfigReadRequirementsNoSupportedSandboxModes,
         configReadRequirementSandboxMode(.danger_full_access, unsupported_sandbox),
     );
+}
+
+test "config/read app requirements disable and materialize apps" {
+    const allocator = std.testing.allocator;
+    var requirements = (try plugin_list.parseAppRequirements(allocator,
+        \\[apps.connector_drive]
+        \\enabled = false
+        \\
+        \\[apps.connector_calendar]
+        \\enabled = false
+        \\
+        \\[apps.connector_docs]
+        \\enabled = true
+        \\
+    )).?;
+    defer requirements.deinit(allocator);
+
+    var items = std.ArrayList(ConfigReadApp).empty;
+    defer {
+        for (items.items) |*app| app.deinit(allocator);
+        items.deinit(allocator);
+    }
+
+    const drive = try ensureConfigReadApp(allocator, &items, "connector_drive");
+    drive.enabled = true;
+    drive.has_enabled = true;
+
+    const slack = try ensureConfigReadApp(allocator, &items, "connector_slack");
+    slack.enabled = false;
+    slack.has_enabled = true;
+
+    try applyConfigReadAppRequirements(allocator, &items, requirements);
+
+    const drive_index = findConfigReadAppIndex(items.items, "connector_drive").?;
+    try std.testing.expectEqual(false, items.items[drive_index].enabled);
+    try std.testing.expect(items.items[drive_index].has_enabled);
+
+    const slack_index = findConfigReadAppIndex(items.items, "connector_slack").?;
+    try std.testing.expectEqual(false, items.items[slack_index].enabled);
+    try std.testing.expect(items.items[slack_index].has_enabled);
+
+    const calendar_index = findConfigReadAppIndex(items.items, "connector_calendar").?;
+    try std.testing.expectEqual(false, items.items[calendar_index].enabled);
+    try std.testing.expect(items.items[calendar_index].has_enabled);
+    try std.testing.expect(findConfigReadAppIndex(items.items, "connector_docs") == null);
 }
 
 test "runtime scalar requirements constrain config and loaded thread state" {
