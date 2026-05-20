@@ -33206,6 +33206,226 @@ def run_config_read_empty_layers_rpc_smoke(binary: Path) -> None:
         shutil.rmtree(codex_home, ignore_errors=True)
 
 
+def run_thread_lifecycle_requirements_rpc_smoke(binary: Path) -> None:
+    codex_home = Path(tempfile.mkdtemp(prefix="codex-zig-app-server-lifecycle-reqs-", dir="/tmp"))
+    config_path = codex_home / "config.toml"
+    config_path.write_text(
+        "\n".join(
+            [
+                'model = "gpt-lifecycle-reqs"',
+                'approval_policy = "never"',
+                'approvals_reviewer = "user"',
+                'sandbox_mode = "workspace-write"',
+                'web_search = "live"',
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    system_requirements_path = codex_home / "requirements.toml"
+    system_requirements_path.write_text(
+        "\n".join(
+            [
+                'allowed_approval_policies = ["on-request"]',
+                'allowed_approvals_reviewers = ["guardian_subagent"]',
+                'allowed_sandbox_modes = ["read-only"]',
+                'allowed_web_search_modes = ["cached"]',
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    env = os.environ.copy()
+    env["CODEX_HOME"] = str(codex_home)
+    env["CODEX_APP_SERVER_SYSTEM_REQUIREMENTS_PATH"] = str(system_requirements_path)
+    proc = subprocess.Popen(
+        [str(binary), "app-server"],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        env=env,
+    )
+
+    def rpc(request_id: str, method: str, params: object) -> dict:
+        write_json_line(
+            proc,
+            {"jsonrpc": "2.0", "id": request_id, "method": method, "params": params},
+        )
+        return read_json_line(proc, 5)
+
+    def response_history(text: str) -> list[dict]:
+        return [
+            {
+                "type": "message",
+                "role": "user",
+                "content": [{"type": "input_text", "text": text}],
+            }
+        ]
+
+    def assert_runtime_requirements_applied(response: dict) -> None:
+        result = response["result"]
+        assert result["approvalPolicy"] == "on-request"
+        assert result["approvalsReviewer"] == "guardian_subagent"
+        assert result["sandbox"] == {"type": "readOnly", "networkAccess": False}
+
+    def assert_requirement_error(response: dict, message: str) -> None:
+        assert response["error"]["code"] == -32602, response
+        assert response["error"]["message"] == message, response
+
+    try:
+        initialize = rpc(
+            "lifecycle-reqs-initialize",
+            "initialize",
+            {
+                "clientInfo": {
+                    "name": "app-server-lifecycle-requirements-smoke",
+                    "version": "0",
+                },
+                "capabilities": EXPERIMENTAL_API_CAPABILITIES,
+            },
+        )
+        assert initialize["id"] == "lifecycle-reqs-initialize"
+
+        coerced_start = rpc(
+            "lifecycle-reqs-thread-start-coerced",
+            "thread/start",
+            {"ephemeral": True},
+        )
+        assert coerced_start["id"] == "lifecycle-reqs-thread-start-coerced"
+        assert_runtime_requirements_applied(coerced_start)
+        thread = coerced_start["result"]["thread"]
+        thread_id = thread["id"]
+        assert_thread_started_notification(read_json_line(proc, 5), thread)
+
+        disallowed_start_approval = rpc(
+            "lifecycle-reqs-thread-start-approval-rejected",
+            "thread/start",
+            {"approvalPolicy": "never", "ephemeral": True},
+        )
+        assert disallowed_start_approval["id"] == "lifecycle-reqs-thread-start-approval-rejected"
+        assert_requirement_error(
+            disallowed_start_approval,
+            "approvalPolicy is disallowed by requirements",
+        )
+
+        disallowed_start_sandbox = rpc(
+            "lifecycle-reqs-thread-start-sandbox-rejected",
+            "thread/start",
+            {"sandbox": "danger-full-access", "ephemeral": True},
+        )
+        assert disallowed_start_sandbox["id"] == "lifecycle-reqs-thread-start-sandbox-rejected"
+        assert_requirement_error(
+            disallowed_start_sandbox,
+            "sandbox is disallowed by requirements",
+        )
+
+        disallowed_start_web_search = rpc(
+            "lifecycle-reqs-thread-start-web-search-rejected",
+            "thread/start",
+            {"config": {"web_search": "live"}, "ephemeral": True},
+        )
+        assert disallowed_start_web_search["id"] == "lifecycle-reqs-thread-start-web-search-rejected"
+        assert_requirement_error(
+            disallowed_start_web_search,
+            "config.web_search is disallowed by requirements",
+        )
+
+        disallowed_resume_reviewer = rpc(
+            "lifecycle-reqs-thread-resume-reviewer-rejected",
+            "thread/resume",
+            {
+                "threadId": "history-thread",
+                "history": response_history("resume reviewer rejection"),
+                "approvalsReviewer": "user",
+            },
+        )
+        assert disallowed_resume_reviewer["id"] == "lifecycle-reqs-thread-resume-reviewer-rejected"
+        assert_requirement_error(
+            disallowed_resume_reviewer,
+            "approvalsReviewer is disallowed by requirements",
+        )
+
+        coerced_resume = rpc(
+            "lifecycle-reqs-thread-resume-coerced",
+            "thread/resume",
+            {
+                "threadId": "history-thread",
+                "history": response_history("resume requirements coercion"),
+                "excludeTurns": True,
+            },
+        )
+        assert coerced_resume["id"] == "lifecycle-reqs-thread-resume-coerced"
+        assert_runtime_requirements_applied(coerced_resume)
+
+        disallowed_fork_sandbox = rpc(
+            "lifecycle-reqs-thread-fork-sandbox-rejected",
+            "thread/fork",
+            {
+                "threadId": thread_id,
+                "sandbox": "danger-full-access",
+                "ephemeral": True,
+            },
+        )
+        assert disallowed_fork_sandbox["id"] == "lifecycle-reqs-thread-fork-sandbox-rejected"
+        assert_requirement_error(
+            disallowed_fork_sandbox,
+            "sandbox is disallowed by requirements",
+        )
+
+        coerced_fork = rpc(
+            "lifecycle-reqs-thread-fork-coerced",
+            "thread/fork",
+            {"threadId": thread_id, "ephemeral": True},
+        )
+        assert coerced_fork["id"] == "lifecycle-reqs-thread-fork-coerced"
+        assert_runtime_requirements_applied(coerced_fork)
+        assert_thread_started_notification(
+            read_json_line(proc, 5), coerced_fork["result"]["thread"]
+        )
+
+        disallowed_turn_approval = rpc(
+            "lifecycle-reqs-turn-start-approval-rejected",
+            "turn/start",
+            {
+                "threadId": thread_id,
+                "input": [{"type": "text", "text": "turn approval rejection"}],
+                "approvalPolicy": "never",
+            },
+        )
+        assert disallowed_turn_approval["id"] == "lifecycle-reqs-turn-start-approval-rejected"
+        assert_requirement_error(
+            disallowed_turn_approval,
+            "approvalPolicy is disallowed by requirements",
+        )
+
+        disallowed_turn_sandbox = rpc(
+            "lifecycle-reqs-turn-start-sandbox-rejected",
+            "turn/start",
+            {
+                "threadId": thread_id,
+                "input": [{"type": "text", "text": "turn sandbox rejection"}],
+                "sandbox": "danger-full-access",
+            },
+        )
+        assert disallowed_turn_sandbox["id"] == "lifecycle-reqs-turn-start-sandbox-rejected"
+        assert_requirement_error(
+            disallowed_turn_sandbox,
+            "sandbox is disallowed by requirements",
+        )
+    finally:
+        if proc.stdin is not None:
+            proc.stdin.close()
+        try:
+            proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.wait(timeout=5)
+        if proc.returncode != 0:
+            raise AssertionError(f"app-server exited {proc.returncode}: {proc.stderr.read()}")
+        shutil.rmtree(codex_home, ignore_errors=True)
+
+
 def run_config_value_write_rpc_smoke(binary: Path) -> None:
     codex_home = Path(tempfile.mkdtemp(prefix="codex-zig-app-server-config-write-", dir="/tmp"))
     config_path = codex_home / "config.toml"
@@ -33686,6 +33906,123 @@ def run_config_value_write_rpc_smoke(binary: Path) -> None:
             in readonly_path_write["error"]["message"]
         )
         assert not readonly_path.exists()
+    finally:
+        if proc.stdin is not None:
+            proc.stdin.close()
+        try:
+            proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.wait(timeout=5)
+        if proc.returncode != 0:
+            raise AssertionError(f"app-server exited {proc.returncode}: {proc.stderr.read()}")
+        shutil.rmtree(codex_home, ignore_errors=True)
+
+
+def run_config_runtime_requirements_rpc_smoke(binary: Path) -> None:
+    codex_home = Path(tempfile.mkdtemp(prefix="codex-zig-app-server-runtime-reload-req-", dir="/tmp"))
+    config_path = codex_home / "config.toml"
+    config_path.write_text(
+        "\n".join(
+            [
+                'model = "gpt-before-runtime-reload"',
+                'approval_policy = "never"',
+                'approvals_reviewer = "user"',
+                'sandbox_mode = "danger-full-access"',
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    managed_config_path = codex_home / "missing-managed.toml"
+    system_requirements_path = codex_home / "requirements.toml"
+    env = os.environ.copy()
+    env["CODEX_HOME"] = str(codex_home)
+    env["CODEX_APP_SERVER_MANAGED_CONFIG_PATH"] = str(managed_config_path)
+    env["CODEX_APP_SERVER_SYSTEM_REQUIREMENTS_PATH"] = str(system_requirements_path)
+    proc = subprocess.Popen(
+        [str(binary), "app-server"],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        env=env,
+    )
+
+    def reload_rpc(request_id: str, method: str, params: object) -> dict:
+        write_json_line(
+            proc,
+            {"jsonrpc": "2.0", "id": request_id, "method": method, "params": params},
+        )
+        return read_json_line(proc, 5)
+
+    try:
+        before_reload = reload_rpc("runtime-reload-before-requirements", "thread/start", {})
+        assert before_reload["id"] == "runtime-reload-before-requirements"
+        assert before_reload["result"]["approvalPolicy"] == "never"
+        assert before_reload["result"]["approvalsReviewer"] == "user"
+        assert before_reload["result"]["sandbox"] == {"type": "dangerFullAccess"}
+        before_reload_thread_id = before_reload["result"]["thread"]["id"]
+        assert_thread_started_notification(
+            read_json_line(proc, 5), before_reload["result"]["thread"]
+        )
+
+        system_requirements_path.write_text(
+            "\n".join(
+                [
+                    'allowed_approval_policies = ["on-request"]',
+                    'allowed_approvals_reviewers = ["guardian_subagent"]',
+                    'allowed_sandbox_modes = ["read-only"]',
+                    "",
+                ]
+            ),
+            encoding="utf-8",
+        )
+        reload_response = reload_rpc(
+            "runtime-reload-with-requirements",
+            "config/batchWrite",
+            {
+                "edits": [
+                    {
+                        "keyPath": "model",
+                        "value": "gpt-after-runtime-reload",
+                        "mergeStrategy": "replace",
+                    },
+                    {
+                        "keyPath": "approval_policy",
+                        "value": "on-request",
+                        "mergeStrategy": "replace",
+                    },
+                    {
+                        "keyPath": "approvals_reviewer",
+                        "value": "guardian_subagent",
+                        "mergeStrategy": "replace",
+                    },
+                    {
+                        "keyPath": "sandbox_mode",
+                        "value": "read-only",
+                        "mergeStrategy": "replace",
+                    },
+                ],
+                "reloadUserConfig": True,
+            },
+        )
+        assert reload_response["id"] == "runtime-reload-with-requirements"
+        assert reload_response["result"]["status"] == "ok"
+
+        after_reload = reload_rpc(
+            "runtime-reload-fork-after-requirements",
+            "thread/fork",
+            {"threadId": before_reload_thread_id, "ephemeral": True},
+        )
+        assert after_reload["id"] == "runtime-reload-fork-after-requirements"
+        assert after_reload["result"]["model"] == "gpt-after-runtime-reload"
+        assert after_reload["result"]["approvalPolicy"] == "on-request"
+        assert after_reload["result"]["approvalsReviewer"] == "guardian_subagent"
+        assert after_reload["result"]["sandbox"] == {"type": "readOnly", "networkAccess": False}
+        assert_thread_started_notification(
+            read_json_line(proc, 5), after_reload["result"]["thread"]
+        )
     finally:
         if proc.stdin is not None:
             proc.stdin.close()
@@ -49821,8 +50158,12 @@ def main() -> None:
     run_config_read_rpc_smoke(binary)
     run_config_read_empty_layers_rpc_smoke(binary)
     print("app-server-config-read-rpc-e2e: ok")
+    run_thread_lifecycle_requirements_rpc_smoke(binary)
+    print("app-server-thread-lifecycle-requirements-rpc-e2e: ok")
     run_config_value_write_rpc_smoke(binary)
     print("app-server-config-value-write-rpc-e2e: ok")
+    run_config_runtime_requirements_rpc_smoke(binary)
+    print("app-server-config-runtime-requirements-rpc-e2e: ok")
     run_config_first_write_path_alias_rpc_smoke(binary)
     print("app-server-config-first-write-path-alias-rpc-e2e: ok")
     run_config_write_overridden_metadata_rpc_smoke(binary)
