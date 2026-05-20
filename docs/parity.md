@@ -716,8 +716,13 @@ response. App-server config writes now reject user/profile `[features]` values
 that conflict with parsed feature requirements, and reject explicit top-level
 or profile-scoped `approval_policy`, `approvals_reviewer`, `sandbox_mode`, and
 `web_search` values outside parsed scalar allow-lists before mutating
-`config.toml`. Origin/source fidelity, thread hot reload, and full runtime
-managed/cloud requirements enforcement remain planned.
+`config.toml`. Thread lifecycle creation, loaded-thread runtime reload, and
+turn runtime overrides now apply the same scalar requirements to effective
+runtime state, with explicit disallowed lifecycle/turn approval, reviewer,
+sandbox, and web-search overrides rejected before they can become thread
+state. Origin/source fidelity, thread hot reload notifications, cloud
+requirements loading, and broader app/plugin requirement enforcement remain
+planned.
 
 `approvals_reviewer` is covered as a runtime config scalar, raw CLI config
 override, app-server `config/read`/write field, and loaded-thread reload value.
