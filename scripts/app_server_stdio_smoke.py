@@ -8649,10 +8649,7 @@ def run_review_start_rpc_smoke(binary: Path) -> None:
                         "name": "exec_command",
                         "arguments": json.dumps(
                             {
-                                "cmd": (
-                                    "! cat review-secret.txt "
-                                    "&& printf review-read-deny-ok"
-                                ),
+                                "cmd": "cat review-secret.txt",
                                 "workdir": cwd,
                             },
                             separators=(",", ":"),
@@ -8768,6 +8765,13 @@ def run_review_start_rpc_smoke(binary: Path) -> None:
                     ):
                         exited_started = candidate
                         break
+                    if candidate.get("method") == "item/commandExecution/outputDelta":
+                        assert candidate["params"]["threadId"] == thread_id
+                        assert candidate["params"]["turnId"] == review_turn_id
+                        assert (
+                            review_secret_value not in candidate["params"]["delta"]
+                        ), candidate["params"]["delta"]
+                        continue
                     assert candidate["method"] == "rawResponseItem/completed"
                     assert candidate["params"]["threadId"] == thread_id
                     assert candidate["params"]["turnId"] == review_turn_id
@@ -9268,7 +9272,13 @@ def run_review_start_rpc_smoke(binary: Path) -> None:
                     if item.get("type") == "function_call_output"
                     and item.get("call_id") == review_read_deny_call_id
                 )
-                assert "review-read-deny-ok" in review_read_deny_output["output"], (
+                assert "blocked by sandbox_mode=read-only" not in review_read_deny_output[
+                    "output"
+                ], review_read_deny_output["output"]
+                assert (
+                    "Operation not permitted" in review_read_deny_output["output"]
+                    or "Permission denied" in review_read_deny_output["output"]
+                ), (
                     review_read_deny_output["output"]
                 )
                 assert review_secret_value not in review_read_deny_output["output"], (
