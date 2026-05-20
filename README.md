@@ -19,7 +19,8 @@ Contributions should follow `CONTRIBUTING.md`, security reports should follow
 `SECURITY.md`, and conduct expectations are in `.github/CODE_OF_CONDUCT.md`.
 Do not include real credentials, `auth.json`, private prompts, or local session
 transcripts in public issues or pull requests.
-The current public-readiness audit is tracked in `docs/oss-readiness.md`.
+The current public-readiness audit is tracked in `docs/oss-readiness.md`; the
+manual release process is tracked in `docs/release.md`.
 
 ## First Milestone
 

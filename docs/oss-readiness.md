@@ -72,7 +72,9 @@ parity tracker; implementation parity remains tracked in `docs/parity.md`.
   to use those public surfaces.
 - Consider enabling non-provider secret scanning patterns and validity checks if
   the repository settings plan supports them.
-- A release process for tags, changelogs, and binary artifacts is not defined.
+- A manual release playbook now exists in `docs/release.md`; release
+  automation, code signing, notarization, and cross-platform binary publishing
+  are not implemented yet.
 - CI currently verifies macOS only because the first milestone targets macOS.
 - Exact CLI, TUI, app-server, MCP, and cloud-task parity remains incomplete; use
   `docs/parity.md` as the source of truth before making compatibility claims.
