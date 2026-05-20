@@ -30193,6 +30193,24 @@ args = ["provider-token"]
         assert len(ModelCatalogBackendHandler.requests) == 2
 
         (codex_home / "config.toml").write_text(
+            f'''model_provider = "custom"
+[model_providers.custom]
+base_url = "{model_catalog_base_url}"
+wire_api = "responses"
+[model_providers.custom.auth]
+command = "/bin/echo"
+args = ["provider-token-rotated"]
+''',
+            encoding="utf-8",
+        )
+        provider_rotated_models = rpc("model-list-provider-command-rotated-cache-miss", "model/list", {"limit": 10})
+        assert provider_rotated_models["id"] == "model-list-provider-command-rotated-cache-miss"
+        assert len(ModelCatalogBackendHandler.requests) == 3
+        provider_rotated_request = ModelCatalogBackendHandler.requests[2]
+        assert provider_rotated_request["path"] == "/models"
+        assert provider_rotated_request["authorization"] == "Bearer provider-token-rotated"
+
+        (codex_home / "config.toml").write_text(
             f'chatgpt_base_url = "{model_catalog_base_url}"\n',
             encoding="utf-8",
         )
@@ -30212,8 +30230,8 @@ args = ["provider-token"]
         assert "online-chatgpt-only" in [
             item["id"] for item in chatgpt_after_provider_models["result"]["data"]
         ]
-        assert len(ModelCatalogBackendHandler.requests) == 3
-        chatgpt_after_provider_request = ModelCatalogBackendHandler.requests[2]
+        assert len(ModelCatalogBackendHandler.requests) == 4
+        chatgpt_after_provider_request = ModelCatalogBackendHandler.requests[3]
         assert chatgpt_after_provider_request["path"] == "/models"
         assert chatgpt_after_provider_request["authorization"] == "Bearer remote-model-token"
     finally:

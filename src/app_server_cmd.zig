@@ -56346,12 +56346,14 @@ fn modelCatalogCacheScope(allocator: std.mem.Allocator, cfg: *const config.Confi
     try appendModelCatalogCacheKeyPart(allocator, &key, "chatgpt_base_url", cfg.chatgpt_base_url);
     try appendModelCatalogCacheKeyPart(allocator, &key, "wire_api", cfg.model_provider_wire_api.label());
     try appendModelCatalogCacheKeyPart(allocator, &key, "auth_source", modelCatalogAuthSource(cfg));
+    try appendModelCatalogCacheAuthKeyParts(allocator, &key, cfg);
     if (cfg.model_provider_query_params) |params| {
         for (params.entries) |entry| {
             try appendModelCatalogCacheKeyPart(allocator, &key, "query_key", entry.key);
             try appendModelCatalogCacheKeyPart(allocator, &key, "query_value", entry.value);
         }
     }
+    try appendModelCatalogCacheHeaderKeyParts(allocator, &key, cfg);
 
     return .{
         .key = try key.toOwnedSlice(allocator),
@@ -56375,6 +56377,84 @@ fn appendModelCatalogCacheKeyPart(
     try key.append(allocator, '\n');
 }
 
+fn appendModelCatalogCacheHashedKeyPart(
+    allocator: std.mem.Allocator,
+    key: *std.ArrayList(u8),
+    name: []const u8,
+    value: []const u8,
+) !void {
+    const digest = try configVersionAlloc(allocator, value);
+    defer allocator.free(digest);
+    try appendModelCatalogCacheKeyPart(allocator, key, name, digest);
+}
+
+fn appendModelCatalogCacheOptionalEnvValue(
+    allocator: std.mem.Allocator,
+    key: *std.ArrayList(u8),
+    name: []const u8,
+    env_key: []const u8,
+) !void {
+    const value = try env.getOwnedDynamic(allocator, env_key);
+    if (value) |owned| {
+        defer allocator.free(owned);
+        if (std.mem.trim(u8, owned, " \t\r\n").len == 0) {
+            try appendModelCatalogCacheKeyPart(allocator, key, name, "empty");
+        } else {
+            try appendModelCatalogCacheHashedKeyPart(allocator, key, name, owned);
+        }
+    } else {
+        try appendModelCatalogCacheKeyPart(allocator, key, name, "missing");
+    }
+}
+
+fn appendModelCatalogCacheAuthKeyParts(
+    allocator: std.mem.Allocator,
+    key: *std.ArrayList(u8),
+    cfg: *const config.Config,
+) !void {
+    if (cfg.model_provider_auth_command) |command| {
+        try appendModelCatalogCacheHashedKeyPart(allocator, key, "auth_command.command", command.command);
+        if (command.cwd) |cwd| {
+            try appendModelCatalogCacheHashedKeyPart(allocator, key, "auth_command.cwd", cwd);
+        } else {
+            try appendModelCatalogCacheKeyPart(allocator, key, "auth_command.cwd", "null");
+        }
+        for (command.args.items) |arg| {
+            try appendModelCatalogCacheHashedKeyPart(allocator, key, "auth_command.arg", arg);
+        }
+        const timeout_ms = try std.fmt.allocPrint(allocator, "{d}", .{command.timeout_ms});
+        defer allocator.free(timeout_ms);
+        try appendModelCatalogCacheKeyPart(allocator, key, "auth_command.timeout_ms", timeout_ms);
+    }
+    if (cfg.model_provider_env_key) |env_key| {
+        try appendModelCatalogCacheKeyPart(allocator, key, "auth_env_key", env_key);
+        try appendModelCatalogCacheOptionalEnvValue(allocator, key, "auth_env_value", env_key);
+    }
+    if (cfg.model_provider_bearer_token) |token| {
+        try appendModelCatalogCacheHashedKeyPart(allocator, key, "auth_bearer_token", token);
+    }
+}
+
+fn appendModelCatalogCacheHeaderKeyParts(
+    allocator: std.mem.Allocator,
+    key: *std.ArrayList(u8),
+    cfg: *const config.Config,
+) !void {
+    if (cfg.model_provider_http_headers) |headers| {
+        for (headers.entries) |entry| {
+            try appendModelCatalogCacheKeyPart(allocator, key, "http_header.key", entry.key);
+            try appendModelCatalogCacheHashedKeyPart(allocator, key, "http_header.value", entry.value);
+        }
+    }
+    if (cfg.model_provider_env_http_headers) |headers| {
+        for (headers.entries) |entry| {
+            try appendModelCatalogCacheKeyPart(allocator, key, "env_header.key", entry.key);
+            try appendModelCatalogCacheKeyPart(allocator, key, "env_header.env_key", entry.value);
+            try appendModelCatalogCacheOptionalEnvValue(allocator, key, "env_header.value", entry.value);
+        }
+    }
+}
+
 fn modelCatalogAuthSource(cfg: *const config.Config) []const u8 {
     if (cfg.model_provider_auth_command != null) return "command";
     if (cfg.model_provider_env_key != null) return "env";
@@ -56395,8 +56475,49 @@ fn modelCatalogAllowsUnscopedCache(cfg: *const config.Config) bool {
     if (cfg.model_provider_query_params) |params| {
         if (params.entries.len > 0) return false;
     }
+    if (cfg.model_provider_http_headers) |headers| {
+        if (headers.entries.len > 0) return false;
+    }
+    if (cfg.model_provider_env_http_headers) |headers| {
+        if (headers.entries.len > 0) return false;
+    }
     return std.mem.eql(u8, cfg.openai_base_url, "https://api.openai.com/v1") and
         std.mem.eql(u8, cfg.chatgpt_base_url, "https://chatgpt.com/backend-api/codex");
+}
+
+test "model catalog unscoped cache rejects provider headers" {
+    var cfg = testDefaultModelCatalogCacheConfig();
+    try std.testing.expect(modelCatalogAllowsUnscopedCache(&cfg));
+
+    var header_entries = [_]config.StringMapEntry{.{ .key = "X-Tenant", .value = "tenant-a" }};
+    cfg.model_provider_http_headers = .{ .entries = header_entries[0..] };
+    try std.testing.expect(!modelCatalogAllowsUnscopedCache(&cfg));
+
+    cfg.model_provider_http_headers = null;
+    cfg.model_provider_env_http_headers = .{ .entries = header_entries[0..] };
+    try std.testing.expect(!modelCatalogAllowsUnscopedCache(&cfg));
+}
+
+fn testDefaultModelCatalogCacheConfig() config.Config {
+    return .{
+        .codex_home = "/tmp/codex-test",
+        .active_profile = null,
+        .model = "gpt-5.5",
+        .openai_base_url = "https://api.openai.com/v1",
+        .chatgpt_base_url = "https://chatgpt.com/backend-api/codex",
+        .oss_provider = null,
+        .installation_id = "test-installation",
+        .approval_policy = .never,
+        .sandbox_mode = .read_only,
+        .web_search_mode = null,
+        .model_reasoning_effort = null,
+        .service_tier = null,
+        .syntax_theme = null,
+        .personality = null,
+        .tui_status_line = null,
+        .tui_terminal_title = null,
+        .tui_alternate_screen = .auto,
+    };
 }
 
 fn fetchRemoteModelCatalog(
