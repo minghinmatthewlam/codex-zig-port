@@ -33234,6 +33234,8 @@ def run_config_value_write_rpc_smoke(binary: Path) -> None:
     )
     env = os.environ.copy()
     env["CODEX_HOME"] = str(codex_home)
+    system_requirements_path = codex_home / "requirements.toml"
+    env["CODEX_APP_SERVER_SYSTEM_REQUIREMENTS_PATH"] = str(system_requirements_path)
     proc = subprocess.Popen(
         [str(binary), "app-server"],
         stdin=subprocess.PIPE,
@@ -33353,6 +33355,66 @@ def run_config_value_write_rpc_smoke(binary: Path) -> None:
         after_feature = rpc("config-read-after-feature-write", "config/read", {})
         assert after_feature["id"] == "config-read-after-feature-write"
         assert after_feature["result"]["config"]["features"]["goals"] is True
+
+        system_requirements_path.write_text(
+            "[features]\npersonality = true\n",
+            encoding="utf-8",
+        )
+        before_rejected_feature_write = config_path.read_text(encoding="utf-8")
+        rejected_feature = rpc(
+            "config-write-reject-feature-requirement",
+            "config/value/write",
+            {
+                "filePath": str(config_path),
+                "keyPath": "features.personality",
+                "value": False,
+                "mergeStrategy": "replace",
+                "expectedVersion": write_feature["result"]["version"],
+            },
+        )
+        assert rejected_feature["id"] == "config-write-reject-feature-requirement"
+        assert rejected_feature["error"]["code"] == -32602
+        assert "invalid value for `features`: `features.personality=false`" in rejected_feature["error"]["message"]
+        assert config_path.read_text(encoding="utf-8") == before_rejected_feature_write
+
+        rejected_profile_feature = rpc(
+            "config-write-reject-profile-feature-requirement",
+            "config/value/write",
+            {
+                "filePath": str(config_path),
+                "keyPath": "profiles.enterprise.features.personality",
+                "value": False,
+                "mergeStrategy": "replace",
+                "expectedVersion": write_feature["result"]["version"],
+            },
+        )
+        assert rejected_profile_feature["id"] == "config-write-reject-profile-feature-requirement"
+        assert rejected_profile_feature["error"]["code"] == -32602
+        assert (
+            "invalid value for `features`: `profiles.enterprise.features.personality=false`"
+            in rejected_profile_feature["error"]["message"]
+        )
+        assert config_path.read_text(encoding="utf-8") == before_rejected_feature_write
+
+        rejected_inline_profile_feature = rpc(
+            "config-write-reject-inline-profile-feature-requirement",
+            "config/value/write",
+            {
+                "filePath": str(config_path),
+                "keyPath": "profiles.inline.features",
+                "value": {"personality": False},
+                "mergeStrategy": "replace",
+                "expectedVersion": write_feature["result"]["version"],
+            },
+        )
+        assert rejected_inline_profile_feature["id"] == "config-write-reject-inline-profile-feature-requirement"
+        assert rejected_inline_profile_feature["error"]["code"] == -32602
+        assert (
+            "invalid value for `features`: `profiles.inline.features.personality=false`"
+            in rejected_inline_profile_feature["error"]["message"]
+        )
+        assert config_path.read_text(encoding="utf-8") == before_rejected_feature_write
+        system_requirements_path.unlink()
 
         canonical_config_path = config_path.resolve()
         canonical_write = rpc(
