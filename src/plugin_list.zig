@@ -184,8 +184,7 @@ pub fn parseAppRequirements(allocator: std.mem.Allocator, payload: []const u8) !
         disabled_ids.deinit(allocator);
     }
 
-    var current_app: ?[]const u8 = null;
-    defer if (current_app) |app_id| allocator.free(app_id);
+    var current_section: ?[]const u8 = null;
 
     var lines = std.mem.splitScalar(u8, payload, '\n');
     while (lines.next()) |raw_line| {
@@ -193,19 +192,11 @@ pub fn parseAppRequirements(allocator: std.mem.Allocator, payload: []const u8) !
         const line = std.mem.trim(u8, line_without_comment, " \t\r");
         if (line.len == 0) continue;
         if (line[0] == '[') {
-            if (current_app) |app_id| allocator.free(app_id);
-            current_app = null;
-            current_app = try appRequirementTableForLine(allocator, line);
+            current_section = appRequirementSectionForLine(line);
             continue;
         }
 
-        const app_id = current_app orelse continue;
-        const enabled = appConfigBoolValueForKey(line, "enabled") orelse continue;
-        if (!enabled and !containsString(disabled_ids.items, app_id)) {
-            const owned = try allocator.dupe(u8, app_id);
-            errdefer allocator.free(owned);
-            try disabled_ids.append(allocator, owned);
-        }
+        try appendDisabledAppRequirementsForLine(allocator, &disabled_ids, current_section, line);
     }
 
     if (disabled_ids.items.len == 0) {
@@ -1526,37 +1517,312 @@ fn appConfigTableForLine(line: []const u8, app_id: []const u8) AppConfigTable {
     return if (std.mem.eql(u8, suffix, app_id)) .target else .none;
 }
 
-fn appRequirementTableForLine(allocator: std.mem.Allocator, line: []const u8) !?[]const u8 {
+fn appRequirementSectionForLine(line: []const u8) ?[]const u8 {
     if (line.len < 3 or line[0] != '[' or line[line.len - 1] != ']') return null;
     if (line.len >= 4 and line[1] == '[') return null;
-    const inner = std.mem.trim(u8, line[1 .. line.len - 1], " \t\r");
-    const prefix = "apps.";
-    if (!std.mem.startsWith(u8, inner, prefix)) return null;
-    const suffix = inner[prefix.len..];
-    if (suffix.len == 0) return null;
-    if (suffix[0] == '"') {
-        if (!tomlQuotedKeyIsWholeSegment(suffix)) return null;
-        return try config.parseTomlString(allocator, suffix) orelse error.InvalidAppRequirement;
+    return std.mem.trim(u8, line[1 .. line.len - 1], " \t\r");
+}
+
+fn appendDisabledAppRequirementsForLine(
+    allocator: std.mem.Allocator,
+    disabled_ids: *std.ArrayList([]const u8),
+    current_section: ?[]const u8,
+    line: []const u8,
+) !void {
+    const eq = tomlAssignmentEqualsIndex(line) orelse return;
+    const lhs = std.mem.trim(u8, line[0..eq], " \t");
+    const rhs = std.mem.trim(u8, line[eq + 1 ..], " \t");
+
+    var path = try appRequirementAssignmentPath(allocator, current_section, lhs) orelse return;
+    defer path.deinit(allocator);
+    try appendDisabledAppsForRequirementPath(allocator, disabled_ids, path.items, rhs);
+}
+
+const TomlPath = struct {
+    items: []const []const u8,
+
+    fn deinit(self: *TomlPath, allocator: std.mem.Allocator) void {
+        for (self.items) |item| allocator.free(item);
+        allocator.free(self.items);
     }
-    if (std.mem.indexOfScalar(u8, suffix, '.') != null) return null;
-    return try allocator.dupe(u8, suffix);
+};
+
+fn appRequirementAssignmentPath(
+    allocator: std.mem.Allocator,
+    current_section: ?[]const u8,
+    lhs: []const u8,
+) !?TomlPath {
+    var lhs_path = try parseTomlDottedPath(allocator, lhs) orelse return null;
+    errdefer lhs_path.deinit(allocator);
+
+    const section = current_section orelse return lhs_path;
+    var section_path = try parseTomlDottedPath(allocator, section) orelse return lhs_path;
+    errdefer section_path.deinit(allocator);
+
+    const items = try allocator.alloc([]const u8, section_path.items.len + lhs_path.items.len);
+    @memcpy(items[0..section_path.items.len], section_path.items);
+    @memcpy(items[section_path.items.len..], lhs_path.items);
+    allocator.free(section_path.items);
+    allocator.free(lhs_path.items);
+    section_path.items = &.{};
+    lhs_path.items = &.{};
+    return .{ .items = items };
+}
+
+fn parseTomlDottedPath(allocator: std.mem.Allocator, raw: []const u8) !?TomlPath {
+    var items = std.ArrayList([]const u8).empty;
+    errdefer {
+        for (items.items) |item| allocator.free(item);
+        items.deinit(allocator);
+    }
+
+    var index: usize = 0;
+    while (index < raw.len) {
+        while (index < raw.len and (raw[index] == ' ' or raw[index] == '\t')) index += 1;
+        if (index >= raw.len) break;
+
+        const component_start = index;
+        if (raw[index] == '"' or raw[index] == '\'') {
+            const quote = raw[index];
+            index += 1;
+            var escaped = false;
+            var found_close = false;
+            while (index < raw.len) : (index += 1) {
+                const byte = raw[index];
+                if (quote == '"' and escaped) {
+                    escaped = false;
+                    continue;
+                }
+                if (quote == '"' and byte == '\\') {
+                    escaped = true;
+                    continue;
+                }
+                if (byte == quote) {
+                    index += 1;
+                    found_close = true;
+                    break;
+                }
+            }
+            if (!found_close) return error.InvalidAppRequirement;
+        } else {
+            while (index < raw.len and raw[index] != '.') index += 1;
+        }
+
+        const component_raw = std.mem.trim(u8, raw[component_start..index], " \t");
+        const component = try parseTomlPathComponent(allocator, component_raw) orelse return error.InvalidAppRequirement;
+        try items.append(allocator, component);
+
+        while (index < raw.len and (raw[index] == ' ' or raw[index] == '\t')) index += 1;
+        if (index >= raw.len) break;
+        if (raw[index] != '.') return error.InvalidAppRequirement;
+        index += 1;
+    }
+
+    if (items.items.len == 0) return null;
+    return .{ .items = try items.toOwnedSlice(allocator) };
+}
+
+fn parseTomlPathComponent(allocator: std.mem.Allocator, raw: []const u8) !?[]const u8 {
+    if (raw.len == 0) return null;
+    if (raw[0] == '"') {
+        if (!tomlQuotedKeyIsWholeSegment(raw)) return null;
+        return try config.parseTomlString(allocator, raw) orelse error.InvalidAppRequirement;
+    }
+    if (raw[0] == '\'') {
+        if (!tomlQuotedKeyIsWholeSegment(raw)) return null;
+        return try allocator.dupe(u8, raw[1 .. raw.len - 1]);
+    }
+    if (std.mem.indexOfScalar(u8, raw, '.') != null) return null;
+    return @as(?[]const u8, try allocator.dupe(u8, raw));
+}
+
+fn appendDisabledAppsForRequirementPath(
+    allocator: std.mem.Allocator,
+    disabled_ids: *std.ArrayList([]const u8),
+    path_items: []const []const u8,
+    rhs: []const u8,
+) !void {
+    if (path_items.len == 3 and
+        std.mem.eql(u8, path_items[0], "apps") and
+        std.mem.eql(u8, path_items[2], "enabled"))
+    {
+        if (parseTomlBoolLiteral(rhs) == false) {
+            try appendDisabledAppId(allocator, disabled_ids, path_items[1]);
+        }
+        return;
+    }
+
+    if (path_items.len == 2 and std.mem.eql(u8, path_items[0], "apps")) {
+        if (rhs.len > 0 and rhs[0] == '{') {
+            try appendDisabledAppInlineTable(allocator, disabled_ids, path_items[1], rhs);
+        }
+        return;
+    }
+
+    if (path_items.len == 1 and std.mem.eql(u8, path_items[0], "apps")) {
+        if (rhs.len > 0 and rhs[0] == '{') {
+            try appendDisabledAppsInlineTable(allocator, disabled_ids, rhs);
+        }
+        return;
+    }
+}
+
+fn appendDisabledAppsInlineTable(
+    allocator: std.mem.Allocator,
+    disabled_ids: *std.ArrayList([]const u8),
+    raw_table: []const u8,
+) !void {
+    const body = try tomlInlineTableBody(raw_table);
+    var field_start: usize = 0;
+    while (try nextTomlInlineTableField(body, &field_start)) |field_raw| {
+        const field = std.mem.trim(u8, field_raw, " \t\r\n");
+        if (field.len == 0) continue;
+        const eq = tomlAssignmentEqualsIndex(field) orelse return error.InvalidAppRequirement;
+        var path = try parseTomlDottedPath(allocator, field[0..eq]) orelse return error.InvalidAppRequirement;
+        defer path.deinit(allocator);
+        const rhs = std.mem.trim(u8, field[eq + 1 ..], " \t\r\n");
+
+        if (path.items.len == 1) {
+            if (rhs.len > 0 and rhs[0] == '{') {
+                try appendDisabledAppInlineTable(allocator, disabled_ids, path.items[0], rhs);
+            }
+        } else if (path.items.len == 2 and std.mem.eql(u8, path.items[1], "enabled")) {
+            if (parseTomlBoolLiteral(rhs) == false) {
+                try appendDisabledAppId(allocator, disabled_ids, path.items[0]);
+            }
+        }
+    }
+}
+
+fn appendDisabledAppInlineTable(
+    allocator: std.mem.Allocator,
+    disabled_ids: *std.ArrayList([]const u8),
+    app_id: []const u8,
+    raw_table: []const u8,
+) !void {
+    const body = try tomlInlineTableBody(raw_table);
+    var field_start: usize = 0;
+    while (try nextTomlInlineTableField(body, &field_start)) |field_raw| {
+        const field = std.mem.trim(u8, field_raw, " \t\r\n");
+        if (field.len == 0) continue;
+        const eq = tomlAssignmentEqualsIndex(field) orelse return error.InvalidAppRequirement;
+        var path = try parseTomlDottedPath(allocator, field[0..eq]) orelse return error.InvalidAppRequirement;
+        defer path.deinit(allocator);
+        if (path.items.len != 1 or !std.mem.eql(u8, path.items[0], "enabled")) continue;
+
+        const rhs = std.mem.trim(u8, field[eq + 1 ..], " \t\r\n");
+        if (parseTomlBoolLiteral(rhs) == false) {
+            try appendDisabledAppId(allocator, disabled_ids, app_id);
+        }
+    }
+}
+
+fn appendDisabledAppId(allocator: std.mem.Allocator, disabled_ids: *std.ArrayList([]const u8), app_id: []const u8) !void {
+    if (containsString(disabled_ids.items, app_id)) return;
+    const owned = try allocator.dupe(u8, app_id);
+    errdefer allocator.free(owned);
+    try disabled_ids.append(allocator, owned);
+}
+
+fn parseTomlBoolLiteral(raw: []const u8) ?bool {
+    if (std.mem.eql(u8, raw, "true")) return true;
+    if (std.mem.eql(u8, raw, "false")) return false;
+    return null;
+}
+
+fn tomlAssignmentEqualsIndex(line: []const u8) ?usize {
+    var quote: u8 = 0;
+    var escaped = false;
+    for (line, 0..) |byte, index| {
+        if (quote != 0) {
+            if (quote == '"' and escaped) {
+                escaped = false;
+            } else if (quote == '"' and byte == '\\') {
+                escaped = true;
+            } else if (byte == quote) {
+                quote = 0;
+            }
+            continue;
+        }
+        if (byte == '"' or byte == '\'') {
+            quote = byte;
+            continue;
+        }
+        if (byte == '=') return index;
+    }
+    return null;
+}
+
+fn tomlInlineTableBody(raw: []const u8) ![]const u8 {
+    const trimmed = std.mem.trim(u8, raw, " \t\r\n");
+    if (trimmed.len < 2 or trimmed[0] != '{') return error.InvalidAppRequirement;
+    if (trimmed[trimmed.len - 1] != '}') return error.InvalidAppRequirement;
+    return trimmed[1 .. trimmed.len - 1];
+}
+
+fn nextTomlInlineTableField(body: []const u8, start: *usize) !?[]const u8 {
+    while (start.* < body.len and (body[start.*] == ',' or body[start.*] == ' ' or body[start.*] == '\t' or body[start.*] == '\r' or body[start.*] == '\n')) {
+        start.* += 1;
+    }
+    if (start.* >= body.len) return null;
+
+    const field_start = start.*;
+    var index = start.*;
+    var string_quote: u8 = 0;
+    var escaped = false;
+    var bracket_depth: usize = 0;
+    var brace_depth: usize = 0;
+    while (index < body.len) : (index += 1) {
+        const byte = body[index];
+        if (string_quote != 0) {
+            if (string_quote == '"' and escaped) {
+                escaped = false;
+            } else if (string_quote == '"' and byte == '\\') {
+                escaped = true;
+            } else if (byte == string_quote) {
+                string_quote = 0;
+            }
+            continue;
+        }
+        if (byte == '"' or byte == '\'') {
+            string_quote = byte;
+        } else if (byte == '[') {
+            bracket_depth += 1;
+        } else if (byte == ']') {
+            if (bracket_depth == 0) return error.InvalidAppRequirement;
+            bracket_depth -= 1;
+        } else if (byte == '{') {
+            brace_depth += 1;
+        } else if (byte == '}') {
+            if (brace_depth == 0) return error.InvalidAppRequirement;
+            brace_depth -= 1;
+        } else if (byte == ',' and bracket_depth == 0 and brace_depth == 0) {
+            start.* = index + 1;
+            return body[field_start..index];
+        }
+    }
+    if (string_quote != 0 or escaped or bracket_depth != 0 or brace_depth != 0) return error.InvalidAppRequirement;
+
+    start.* = index;
+    return body[field_start..index];
 }
 
 fn tomlQuotedKeyIsWholeSegment(value: []const u8) bool {
-    if (value.len < 2 or value[0] != '"') return false;
+    if (value.len < 2 or (value[0] != '"' and value[0] != '\'')) return false;
+    const quote = value[0];
     var escaped = false;
     var index: usize = 1;
     while (index < value.len) : (index += 1) {
         const byte = value[index];
-        if (escaped) {
+        if (quote == '"' and escaped) {
             escaped = false;
             continue;
         }
-        if (byte == '\\') {
+        if (quote == '"' and byte == '\\') {
             escaped = true;
             continue;
         }
-        if (byte == '"') return index == value.len - 1;
+        if (byte == quote) return index == value.len - 1;
     }
     return false;
 }
@@ -2143,6 +2409,47 @@ test "app requirements parser collects disabled app ids only" {
     try std.testing.expect(requirements.disables("quoted.app"));
     try std.testing.expect(!requirements.disables("calendar"));
     try std.testing.expect(!requirements.disables("drive.docs"));
+}
+
+test "app requirements parser accepts dotted and inline app requirements" {
+    const allocator = std.testing.allocator;
+    var dotted = (try parseAppRequirements(allocator,
+        \\apps.slack.enabled = false
+        \\apps."quoted.app".enabled = false
+        \\apps.'literal.app'.enabled = false
+        \\apps.gmail.enabled = true
+    )) orelse return error.TestExpectedAppRequirements;
+    defer dotted.deinit(allocator);
+
+    try std.testing.expect(dotted.disables("slack"));
+    try std.testing.expect(dotted.disables("quoted.app"));
+    try std.testing.expect(dotted.disables("literal.app"));
+    try std.testing.expect(!dotted.disables("gmail"));
+
+    var inline_requirements = (try parseAppRequirements(allocator,
+        \\[apps]
+        \\calendar = { enabled = false }
+        \\meet.enabled = false
+        \\"linear.app" = { enabled = false, reason = "managed" }
+        \\'literal.linear' = { enabled = false }
+        \\gmail = { enabled = true }
+    )) orelse return error.TestExpectedAppRequirements;
+    defer inline_requirements.deinit(allocator);
+
+    try std.testing.expect(inline_requirements.disables("calendar"));
+    try std.testing.expect(inline_requirements.disables("meet"));
+    try std.testing.expect(inline_requirements.disables("linear.app"));
+    try std.testing.expect(inline_requirements.disables("literal.linear"));
+    try std.testing.expect(!inline_requirements.disables("gmail"));
+
+    var top_level_inline = (try parseAppRequirements(allocator,
+        \\apps = { slack = { enabled = false }, "drive.docs".enabled = false, gmail = { enabled = true } }
+    )) orelse return error.TestExpectedAppRequirements;
+    defer top_level_inline.deinit(allocator);
+
+    try std.testing.expect(top_level_inline.disables("slack"));
+    try std.testing.expect(top_level_inline.disables("drive.docs"));
+    try std.testing.expect(!top_level_inline.disables("gmail"));
 }
 
 test "plugin list renders local marketplaces with installed state and manifest metadata" {
