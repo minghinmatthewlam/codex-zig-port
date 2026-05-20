@@ -636,6 +636,7 @@ class MockResponsesHandler(BaseHTTPRequestHandler):
 
         self.server.request_count += 1
         self.server.request_bodies.append(request)
+        self.server.post_headers.append(dict(self.headers.items()))
         self.send_response(200)
         self.send_header("Content-Type", "text/event-stream")
         self.send_header("Content-Length", str(len(payload)))
@@ -2671,7 +2672,7 @@ def run_remote_flag_smoke(
             f"expected non-interactive remote rejection:\n{rejected_result.stderr}"
         )
 
-    unsupported_remote_override = subprocess.run(
+    supported_remote_oss_missing_socket = subprocess.run(
         [
             str(binary),
             "--remote",
@@ -2685,12 +2686,17 @@ def run_remote_flag_smoke(
         capture_output=True,
         check=False,
     )
-    if unsupported_remote_override.returncode == 0:
-        raise AssertionError("unsupported remote override unexpectedly succeeded")
-    if "remote app-server TUI does not support `--oss` yet" not in unsupported_remote_override.stderr:
+    if supported_remote_oss_missing_socket.returncode == 0:
+        raise AssertionError("remote OSS missing-socket smoke unexpectedly succeeded")
+    if "remote app-server TUI does not support `--oss` yet" in supported_remote_oss_missing_socket.stderr:
         raise AssertionError(
-            "expected unsupported remote override rejection before connecting:\n"
-            f"{unsupported_remote_override.stderr}"
+            "remote OSS should no longer be rejected before connecting:\n"
+            f"{supported_remote_oss_missing_socket.stderr}"
+        )
+    if "error:" not in supported_remote_oss_missing_socket.stderr:
+        raise AssertionError(
+            "expected remote OSS missing-socket connection failure:\n"
+            f"{supported_remote_oss_missing_socket.stderr}"
         )
 
 
@@ -2926,6 +2932,7 @@ def run_remote_websocket_tui_smoke(
     app_env = os.environ.copy()
     app_env["CODEX_HOME"] = str(remote_home)
     app_env["OPENAI_API_KEY"] = "remote-websocket-api-key"
+    app_env["CODEX_OSS_BASE_URL"] = f"http://127.0.0.1:{port}/v1"
     app_env.pop("CODEX_ACCESS_TOKEN", None)
     remote_home.joinpath("config.toml").write_text(
         f'openai_base_url = "http://127.0.0.1:{port}"\nmodel = "gpt-remote-websocket"\n',
@@ -2998,6 +3005,57 @@ def run_remote_websocket_tui_smoke(
         ):
             rendered = json.dumps(websocket_bodies, indent=2, sort_keys=True)
             raise AssertionError(f"remote websocket TUI did not send prompt through app-server:\n\n{rendered}")
+
+        oss_body_start = len(server.request_bodies)
+        oss_header_start = len(server.post_headers)
+        output = bytearray()
+        master_fd, slave_fd = pty.openpty()
+        client = subprocess.Popen(
+            [
+                str(binary),
+                "--remote",
+                f"ws://{host}:{ws_port}",
+                "--remote-auth-token-env",
+                "CODEX_REMOTE_AUTH_TOKEN",
+                "--no-alt-screen",
+                "--oss",
+                "--local-provider=ollama",
+                "side question from remote websocket oss",
+            ],
+            cwd=workspace,
+            env=client_env,
+            stdin=slave_fd,
+            stdout=slave_fd,
+            stderr=slave_fd,
+            close_fds=True,
+        )
+        os.close(slave_fd)
+        wait_for(master_fd, output, b"Codex Zig Remote", 5)
+        wait_for(master_fd, output, b"side answer", 8)
+        mark = len(output)
+        send_line(master_fd, "/quit")
+        wait_for(master_fd, output, b"bye", 5, mark)
+        exit_code = client.wait(timeout=5)
+        if exit_code != 0:
+            rendered = output.decode(errors="replace")
+            raise AssertionError(f"remote websocket OSS TUI smoke exited with {exit_code}\n\n{rendered}")
+        os.close(master_fd)
+        master_fd = -1
+
+        oss_bodies = server.request_bodies[oss_body_start:]
+        if not any(
+            "side question from remote websocket oss" in latest_user_text(body.get("input", []))
+            for body in oss_bodies
+        ):
+            rendered = json.dumps(oss_bodies, indent=2, sort_keys=True)
+            raise AssertionError(f"remote websocket OSS TUI did not send prompt:\n\n{rendered}")
+        if not any(body.get("model") == "gpt-oss:20b" for body in oss_bodies):
+            rendered = json.dumps(oss_bodies, indent=2, sort_keys=True)
+            raise AssertionError(f"remote websocket OSS TUI did not use ollama default model:\n\n{rendered}")
+        oss_headers = server.post_headers[oss_header_start:]
+        if any("Authorization" in headers for headers in oss_headers):
+            rendered = json.dumps(oss_headers, indent=2, sort_keys=True)
+            raise AssertionError(f"remote websocket OSS TUI sent an Authorization header:\n\n{rendered}")
     finally:
         if client is not None and client.poll() is None:
             client.terminate()
@@ -4174,10 +4232,12 @@ def run_session_command_option_smoke(
     )
     if resume_result.returncode == 0:
         raise AssertionError("resume option-placement smoke unexpectedly succeeded")
-    if "remote app-server TUI does not support `--oss` yet" not in resume_result.stderr:
+    if "remote app-server TUI does not support `--oss` yet" in resume_result.stderr:
         raise AssertionError(
-            f"expected resume remote unsupported-option message:\n{resume_result.stderr}"
+            f"resume --oss was still rejected as unsupported:\n{resume_result.stderr}"
         )
+    if "error:" not in resume_result.stderr:
+        raise AssertionError(f"expected resume remote connection failure:\n{resume_result.stderr}")
 
     fork_result = subprocess.run(
         [

@@ -716,15 +716,17 @@ self-signed TLS server and verifies remote `--add-dir` forwarding as
 absolute `turn/start.sandboxPolicy.workspaceWrite.writableRoots`, including
 relative roots resolved against the TUI cwd.
 
-Additional remote app-server TUI config coverage: remote TUI `--profile` and
-`--search` are accepted for start, resume, and fork flows and forwarded through
-thread lifecycle `params.config` as `profile` and `web_search`. App-server
-`thread/start`, `thread/resume`, and `thread/fork` honor those request config
-overrides when creating loaded threads, and later `turn/start`, compact, and
-review requests reload the loaded thread's active profile while preserving
-explicit request `web_search` overrides. Focused PTY/app-server smokes verify
-the remote TUI emits the config object and app-server turns use the profile
-model plus native web-search tool.
+Additional remote app-server TUI config coverage: remote TUI `--profile`,
+`--search`, `--oss`, and `--local-provider` are accepted for start, resume, and
+fork flows and forwarded through thread lifecycle `params.config` as `profile`,
+`web_search`, `oss`, and `oss_provider`. App-server `thread/start`,
+`thread/resume`, and `thread/fork` honor those request config overrides when
+creating loaded threads; later `turn/start`, compact, and review requests reload
+the loaded thread's active profile while preserving explicit request
+`web_search` overrides and active local-OSS provider state. Focused
+PTY/app-server smokes verify the remote TUI emits the config object, app-server
+turns use the profile model plus native web-search tool, and remote OSS turns
+use the provider default model without sending an Authorization header.
 
 Additional core approval-reviewer prompt coverage: model request construction
 now appends Rust-compatible `approvals_reviewer = "auto_review"` guidance when
