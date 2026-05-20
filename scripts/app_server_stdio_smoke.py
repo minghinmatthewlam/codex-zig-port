@@ -10899,6 +10899,13 @@ def run_turn_model_notification_smoke(binary: Path) -> None:
                 {
                     "fetched_at": stale_cache_timestamp,
                     "etag": "turn-model-etag",
+                    "cache_key": (
+                        "provider:6:openai\n"
+                        f"openai_base_url:{len(base_url)}:{base_url}\n"
+                        "chatgpt_base_url:37:https://chatgpt.com/backend-api/codex\n"
+                        "wire_api:9:responses\n"
+                        "auth_source:7:default\n"
+                    ),
                     "client_version": "0.0.1",
                     "models": [
                         {
@@ -30184,6 +30191,31 @@ args = ["provider-token"]
         assert "online-alpha" in provider_cached_ids
         assert "online-chatgpt-only" not in provider_cached_ids
         assert len(ModelCatalogBackendHandler.requests) == 2
+
+        (codex_home / "config.toml").write_text(
+            f'chatgpt_base_url = "{model_catalog_base_url}"\n',
+            encoding="utf-8",
+        )
+        (codex_home / "auth.json").write_text(
+            json.dumps(
+                {"auth_mode": "agentIdentity", "agent_identity": "remote-model-token"},
+                separators=(",", ":"),
+            ),
+            encoding="utf-8",
+        )
+        chatgpt_after_provider_models = rpc(
+            "model-list-chatgpt-after-provider-cache",
+            "model/list",
+            {"limit": 10},
+        )
+        assert chatgpt_after_provider_models["id"] == "model-list-chatgpt-after-provider-cache"
+        assert "online-chatgpt-only" in [
+            item["id"] for item in chatgpt_after_provider_models["result"]["data"]
+        ]
+        assert len(ModelCatalogBackendHandler.requests) == 3
+        chatgpt_after_provider_request = ModelCatalogBackendHandler.requests[2]
+        assert chatgpt_after_provider_request["path"] == "/models"
+        assert chatgpt_after_provider_request["authorization"] == "Bearer remote-model-token"
     finally:
         if model_catalog_server is not None:
             model_catalog_server.shutdown()

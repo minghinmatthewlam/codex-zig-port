@@ -29423,9 +29423,6 @@ fn handleTurnStart(
         return try renderJsonRpcErrorForFailure(allocator, id_value, "turn/start failed to load project config", err);
     };
 
-    const turn_id = try allocateNextTurnIdForThread(allocator, thread);
-    defer allocator.free(turn_id);
-
     applyTurnStartRuntimeOverrides(allocator, &cfg, thread, object) catch |err| switch (err) {
         error.InvalidTurnContextOverride => return try renderJsonRpcError(allocator, id_value, -32602, "invalid turn context override"),
         else => return err,
@@ -29435,6 +29432,9 @@ fn handleTurnStart(
         return try renderJsonRpcErrorForFailure(allocator, id_value, "turn/start failed to load auth", err);
     };
     defer credentials.deinit(allocator);
+
+    const turn_id = try allocateNextTurnIdForThread(allocator, thread);
+    defer allocator.free(turn_id);
 
     var local_images = try loadTurnLocalImages(allocator, input.local_image_paths);
     defer local_images.deinit(allocator);
@@ -56143,11 +56143,13 @@ const CachedModelCatalog = struct {
     parsed: std.json.Parsed(std.json.Value),
     models: []const std.json.Value,
     etag: ?[]const u8 = null,
+    cache_key: ?[]const u8 = null,
 
     fn deinit(self: *CachedModelCatalog, allocator: std.mem.Allocator) void {
         self.parsed.deinit();
         allocator.free(self.bytes);
         if (self.etag) |etag| allocator.free(etag);
+        if (self.cache_key) |cache_key| allocator.free(cache_key);
     }
 };
 
@@ -56170,11 +56172,24 @@ const ModelCatalogFetchContext = struct {
     err: ?anyerror = null,
 };
 
+const ModelCatalogCacheScope = struct {
+    key: []const u8,
+    allow_unscoped: bool,
+
+    fn deinit(self: *ModelCatalogCacheScope, allocator: std.mem.Allocator) void {
+        allocator.free(self.key);
+    }
+};
+
 fn loadFreshModelCatalogCache(allocator: std.mem.Allocator) !?CachedModelCatalog {
-    return loadModelCatalogCache(allocator, true);
+    var cfg = config.loadWithOptions(allocator, .{}) catch return null;
+    defer cfg.deinit(allocator);
+    var scope = try modelCatalogCacheScope(allocator, &cfg);
+    defer scope.deinit(allocator);
+    return loadModelCatalogCache(allocator, true, &scope);
 }
 
-fn loadModelCatalogCache(allocator: std.mem.Allocator, require_fresh: bool) !?CachedModelCatalog {
+fn loadModelCatalogCache(allocator: std.mem.Allocator, require_fresh: bool, scope: ?*const ModelCatalogCacheScope) !?CachedModelCatalog {
     const path = modelCatalogCachePath(allocator) catch return null;
     defer allocator.free(path);
 
@@ -56185,7 +56200,11 @@ fn loadModelCatalogCache(allocator: std.mem.Allocator, require_fresh: bool) !?Ca
         .limited(MODEL_CACHE_MAX_BYTES),
     ) catch return null;
 
-    return parseModelCatalogCacheBytes(allocator, bytes, .{ .require_fresh = require_fresh }) catch {
+    return parseModelCatalogCacheBytes(allocator, bytes, .{
+        .require_fresh = require_fresh,
+        .cache_key = if (scope) |value| value.key else null,
+        .allow_unscoped_cache = if (scope) |value| value.allow_unscoped else true,
+    }) catch {
         allocator.free(bytes);
         return null;
     };
@@ -56199,6 +56218,8 @@ fn modelCatalogCachePath(allocator: std.mem.Allocator) ![]const u8 {
 
 const ModelCatalogCacheParseOptions = struct {
     require_fresh: bool = true,
+    cache_key: ?[]const u8 = null,
+    allow_unscoped_cache: bool = false,
 };
 
 fn parseModelCatalogCacheBytes(allocator: std.mem.Allocator, bytes: []u8, options: ModelCatalogCacheParseOptions) !CachedModelCatalog {
@@ -56225,6 +56246,18 @@ fn parseModelCatalogCacheBytes(allocator: std.mem.Allocator, bytes: []u8, option
     else
         null;
     errdefer if (etag) |value| allocator.free(value);
+    const cache_key = if (cachedStringField(object, "cache_key")) |value|
+        try allocator.dupe(u8, value)
+    else
+        null;
+    errdefer if (cache_key) |value| allocator.free(value);
+    if (options.cache_key) |expected| {
+        if (cache_key) |actual| {
+            if (!std.mem.eql(u8, actual, expected)) return error.InvalidModelCatalogCache;
+        } else if (!options.allow_unscoped_cache) {
+            return error.InvalidModelCatalogCache;
+        }
+    }
 
     keep = true;
     return .{
@@ -56232,6 +56265,7 @@ fn parseModelCatalogCacheBytes(allocator: std.mem.Allocator, bytes: []u8, option
         .parsed = parsed,
         .models = models_value.array.items,
         .etag = etag,
+        .cache_key = cache_key,
     };
 }
 
@@ -56243,7 +56277,10 @@ fn renewModelCatalogCacheForModelsEtag(
 ) !void {
     if (etag.len == 0) return;
 
-    var cache = try loadModelCatalogCache(allocator, false) orelse {
+    var scope = try modelCatalogCacheScope(allocator, cfg);
+    defer scope.deinit(allocator);
+
+    var cache = try loadModelCatalogCache(allocator, false, &scope) orelse {
         var refreshed = try refreshModelCatalogCacheIfAllowedForConfig(allocator, cfg, credentials);
         defer if (refreshed) |*value| value.deinit(allocator);
         return;
@@ -56252,6 +56289,9 @@ fn renewModelCatalogCacheForModelsEtag(
 
     if (cache.etag) |cached_etag| {
         if (std.mem.eql(u8, cached_etag, etag)) {
+            if (cache.cache_key == null) {
+                cache.cache_key = try allocator.dupe(u8, scope.key);
+            }
             try persistModelCatalogCache(allocator, &cache);
             return;
         }
@@ -56277,8 +56317,11 @@ fn refreshModelCatalogCacheIfAllowedForConfig(
 ) !?RefreshedModelCatalog {
     if (!modelCatalogOnlineRefreshAllowed(cfg, credentials)) return null;
 
+    var scope = try modelCatalogCacheScope(allocator, cfg);
+    defer scope.deinit(allocator);
     var catalog = try fetchRemoteModelCatalog(allocator, cfg, credentials);
     errdefer catalog.deinit(allocator);
+    catalog.cache_key = try allocator.dupe(u8, scope.key);
     persistModelCatalogCache(allocator, &catalog) catch {};
     return .{
         .catalog = catalog,
@@ -56292,6 +56335,68 @@ fn modelCatalogOnlineRefreshAllowed(cfg: *const config.Config, credentials: auth
         .api_key => cfg.model_provider_auth_command != null,
         .local_oss => false,
     };
+}
+
+fn modelCatalogCacheScope(allocator: std.mem.Allocator, cfg: *const config.Config) !ModelCatalogCacheScope {
+    var key = std.ArrayList(u8).empty;
+    errdefer key.deinit(allocator);
+
+    try appendModelCatalogCacheKeyPart(allocator, &key, "provider", cfg.model_provider_id orelse "openai");
+    try appendModelCatalogCacheKeyPart(allocator, &key, "openai_base_url", cfg.openai_base_url);
+    try appendModelCatalogCacheKeyPart(allocator, &key, "chatgpt_base_url", cfg.chatgpt_base_url);
+    try appendModelCatalogCacheKeyPart(allocator, &key, "wire_api", cfg.model_provider_wire_api.label());
+    try appendModelCatalogCacheKeyPart(allocator, &key, "auth_source", modelCatalogAuthSource(cfg));
+    if (cfg.model_provider_query_params) |params| {
+        for (params.entries) |entry| {
+            try appendModelCatalogCacheKeyPart(allocator, &key, "query_key", entry.key);
+            try appendModelCatalogCacheKeyPart(allocator, &key, "query_value", entry.value);
+        }
+    }
+
+    return .{
+        .key = try key.toOwnedSlice(allocator),
+        .allow_unscoped = modelCatalogAllowsUnscopedCache(cfg),
+    };
+}
+
+fn appendModelCatalogCacheKeyPart(
+    allocator: std.mem.Allocator,
+    key: *std.ArrayList(u8),
+    name: []const u8,
+    value: []const u8,
+) !void {
+    const len_text = try std.fmt.allocPrint(allocator, "{d}", .{value.len});
+    defer allocator.free(len_text);
+    try key.appendSlice(allocator, name);
+    try key.append(allocator, ':');
+    try key.appendSlice(allocator, len_text);
+    try key.append(allocator, ':');
+    try key.appendSlice(allocator, value);
+    try key.append(allocator, '\n');
+}
+
+fn modelCatalogAuthSource(cfg: *const config.Config) []const u8 {
+    if (cfg.model_provider_auth_command != null) return "command";
+    if (cfg.model_provider_env_key != null) return "env";
+    if (cfg.model_provider_bearer_token != null) return "bearer";
+    return "default";
+}
+
+fn modelCatalogAllowsUnscopedCache(cfg: *const config.Config) bool {
+    if (cfg.model_provider_id) |provider| {
+        if (!std.mem.eql(u8, provider, "openai")) return false;
+    }
+    if (cfg.model_provider_auth_command != null or
+        cfg.model_provider_env_key != null or
+        cfg.model_provider_bearer_token != null)
+    {
+        return false;
+    }
+    if (cfg.model_provider_query_params) |params| {
+        if (params.entries.len > 0) return false;
+    }
+    return std.mem.eql(u8, cfg.openai_base_url, "https://api.openai.com/v1") and
+        std.mem.eql(u8, cfg.chatgpt_base_url, "https://chatgpt.com/backend-api/codex");
 }
 
 fn fetchRemoteModelCatalog(
@@ -56525,6 +56630,8 @@ fn persistModelCatalogCache(allocator: std.mem.Allocator, catalog: *const Cached
     try appendJsonString(allocator, &rendered, fetched_at);
     try rendered.appendSlice(allocator, ",\"etag\":");
     try appendOptionalJsonString(allocator, &rendered, catalog.etag);
+    try rendered.appendSlice(allocator, ",\"cache_key\":");
+    try appendOptionalJsonString(allocator, &rendered, catalog.cache_key);
     try rendered.appendSlice(allocator, ",\"client_version\":");
     try appendJsonString(allocator, &rendered, MODEL_CACHE_CLIENT_VERSION);
     try rendered.appendSlice(allocator, ",\"models\":[");
