@@ -5027,6 +5027,34 @@ def run_e2e(binary: Path) -> str:
             wait_for(master_fd, output, b"items: task-progress", 5, mark)
 
             mark = len(output)
+            send_line(
+                master_fd,
+                "/title context-remaining context-used used-tokens total-input-tokens total-output-tokens",
+            )
+            wait_for(
+                master_fd,
+                output,
+                b"\x1b]0;Context 91% left | Context 9% used | 20K used | 1.23K in | 5.68K out\x07",
+                5,
+                mark,
+            )
+            wait_for(master_fd, output, b"terminal title: on", 5, mark)
+            wait_for(
+                master_fd,
+                output,
+                b"items: context-remaining, context-used, used-tokens, total-input-tokens, total-output-tokens",
+                5,
+                mark,
+            )
+            wait_for(
+                master_fd,
+                output,
+                b"preview: Context 91% left | Context 9% used | 20K used | 1.23K in | 5.68K out",
+                5,
+                mark,
+            )
+
+            mark = len(output)
             send_line(master_fd, "/statusline model,fast-mode,raw-output")
             wait_for(master_fd, output, b"status line: model, fast-mode, raw-output", 5, mark)
 

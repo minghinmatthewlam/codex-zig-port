@@ -280,6 +280,41 @@ test "renders terminal title labels and preview" {
     try std.testing.expectEqualStrings("codex | Demo Thread | gpt-demo | fast", preview);
 }
 
+test "renders token and context terminal title values" {
+    const allocator = std.testing.allocator;
+    var transcript = session.Transcript{};
+    defer transcript.deinit(allocator);
+    transcript.token_usage = .{
+        .total = .{
+            .input_tokens = 1234,
+            .output_tokens = 5678,
+            .total_tokens = 20000,
+        },
+        .last = .{
+            .input_tokens = 1234,
+            .output_tokens = 5678,
+            .total_tokens = 20000,
+        },
+        .model_context_window = 100000,
+    };
+
+    var cfg = try config.loadWithOptions(allocator, .{ .ignore_user_config = true });
+    defer cfg.deinit(allocator);
+    try config.applyRuntimeOverrides(&cfg, allocator, .{ .model_context_window = 128000 });
+
+    const preview = try buildPreview(
+        allocator,
+        cfg,
+        &transcript,
+        "/tmp/rollout-123.jsonl",
+        "/tmp/codex-zig-port",
+        &.{ .context_remaining, .context_used, .used_tokens, .total_input_tokens, .total_output_tokens },
+        false,
+    );
+    defer allocator.free(preview);
+    try std.testing.expectEqualStrings("Context 91% left | Context 9% used | 20K used | 1.23K in | 5.68K out", preview);
+}
+
 test "truncates terminal title parts without splitting UTF-8" {
     const allocator = std.testing.allocator;
     const truncated = try truncateOwned(allocator, try allocator.dupe(u8, "alpha🚀beta"), 8);
