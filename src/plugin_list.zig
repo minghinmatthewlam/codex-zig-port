@@ -1,5 +1,6 @@
 const std = @import("std");
 
+const config = @import("config.zig");
 const marketplace_config = @import("marketplace_config.zig");
 const plugin_config = @import("plugin_config.zig");
 const skills_list = @import("skills_list.zig");
@@ -84,10 +85,25 @@ const AppListEntry = struct {
     }
 };
 
+pub const AppRequirements = struct {
+    disabled_ids: []const []const u8,
+
+    pub fn deinit(self: *AppRequirements, allocator: std.mem.Allocator) void {
+        for (self.disabled_ids) |app_id| allocator.free(app_id);
+        allocator.free(self.disabled_ids);
+        self.disabled_ids = &.{};
+    }
+
+    pub fn disables(self: AppRequirements, app_id: []const u8) bool {
+        return containsString(self.disabled_ids, app_id);
+    }
+};
+
 pub fn renderAppsListResponse(
     allocator: std.mem.Allocator,
     codex_home: []const u8,
     config_bytes: []const u8,
+    app_requirements: ?AppRequirements,
     cwds: []const []const u8,
     start: usize,
     limit: ?usize,
@@ -124,6 +140,10 @@ pub fn renderAppsListResponse(
         }
     }
 
+    if (app_requirements) |requirements| {
+        applyAppRequirements(&apps, requirements);
+    }
+
     std.mem.sort(AppListEntry, apps.items, {}, appListEntryLessThan);
     for (apps.items) |*app| {
         std.mem.sort([]const u8, app.plugin_display_names.items, {}, appListStringLessThan);
@@ -155,6 +175,47 @@ pub fn renderAppsListResponse(
     }
     try out.appendSlice(allocator, "}");
     return try out.toOwnedSlice(allocator);
+}
+
+pub fn parseAppRequirements(allocator: std.mem.Allocator, payload: []const u8) !?AppRequirements {
+    var disabled_ids = std.ArrayList([]const u8).empty;
+    errdefer {
+        for (disabled_ids.items) |app_id| allocator.free(app_id);
+        disabled_ids.deinit(allocator);
+    }
+
+    var current_app: ?[]const u8 = null;
+    defer if (current_app) |app_id| allocator.free(app_id);
+
+    var lines = std.mem.splitScalar(u8, payload, '\n');
+    while (lines.next()) |raw_line| {
+        const line_without_comment = stripTomlLineComment(raw_line);
+        const line = std.mem.trim(u8, line_without_comment, " \t\r");
+        if (line.len == 0) continue;
+        if (line[0] == '[') {
+            if (current_app) |app_id| allocator.free(app_id);
+            current_app = null;
+            current_app = try appRequirementTableForLine(allocator, line);
+            continue;
+        }
+
+        const app_id = current_app orelse continue;
+        const enabled = appConfigBoolValueForKey(line, "enabled") orelse continue;
+        if (!enabled and !containsString(disabled_ids.items, app_id)) {
+            const owned = try allocator.dupe(u8, app_id);
+            errdefer allocator.free(owned);
+            try disabled_ids.append(allocator, owned);
+        }
+    }
+
+    if (disabled_ids.items.len == 0) {
+        disabled_ids.deinit(allocator);
+        return null;
+    }
+
+    const items = try disabled_ids.toOwnedSlice(allocator);
+    std.mem.sort([]const u8, items, {}, appListStringLessThan);
+    return .{ .disabled_ids = items };
 }
 
 pub fn renderResponse(
@@ -1435,6 +1496,14 @@ fn appEnabledFromConfig(config_bytes: []const u8, app_id: []const u8) bool {
     return app_enabled orelse default_enabled orelse true;
 }
 
+fn applyAppRequirements(apps: *std.ArrayList(AppListEntry), requirements: AppRequirements) void {
+    for (apps.items) |*app| {
+        if (requirements.disables(app.id)) {
+            app.is_enabled = false;
+        }
+    }
+}
+
 const AppConfigTable = enum {
     none,
     default,
@@ -1457,6 +1526,41 @@ fn appConfigTableForLine(line: []const u8, app_id: []const u8) AppConfigTable {
     return if (std.mem.eql(u8, suffix, app_id)) .target else .none;
 }
 
+fn appRequirementTableForLine(allocator: std.mem.Allocator, line: []const u8) !?[]const u8 {
+    if (line.len < 3 or line[0] != '[' or line[line.len - 1] != ']') return null;
+    if (line.len >= 4 and line[1] == '[') return null;
+    const inner = std.mem.trim(u8, line[1 .. line.len - 1], " \t\r");
+    const prefix = "apps.";
+    if (!std.mem.startsWith(u8, inner, prefix)) return null;
+    const suffix = inner[prefix.len..];
+    if (suffix.len == 0) return null;
+    if (suffix[0] == '"') {
+        if (!tomlQuotedKeyIsWholeSegment(suffix)) return null;
+        return try config.parseTomlString(allocator, suffix) orelse error.InvalidAppRequirement;
+    }
+    if (std.mem.indexOfScalar(u8, suffix, '.') != null) return null;
+    return try allocator.dupe(u8, suffix);
+}
+
+fn tomlQuotedKeyIsWholeSegment(value: []const u8) bool {
+    if (value.len < 2 or value[0] != '"') return false;
+    var escaped = false;
+    var index: usize = 1;
+    while (index < value.len) : (index += 1) {
+        const byte = value[index];
+        if (escaped) {
+            escaped = false;
+            continue;
+        }
+        if (byte == '\\') {
+            escaped = true;
+            continue;
+        }
+        if (byte == '"') return index == value.len - 1;
+    }
+    return false;
+}
+
 fn appConfigBoolValueForKey(line: []const u8, key: []const u8) ?bool {
     const eq = std.mem.indexOfScalar(u8, line, '=') orelse return null;
     const lhs = std.mem.trim(u8, line[0..eq], " \t");
@@ -1465,6 +1569,28 @@ fn appConfigBoolValueForKey(line: []const u8, key: []const u8) ?bool {
     if (std.mem.eql(u8, rhs, "true")) return true;
     if (std.mem.eql(u8, rhs, "false")) return false;
     return null;
+}
+
+fn stripTomlLineComment(line: []const u8) []const u8 {
+    var quote: ?u8 = null;
+    var escaped = false;
+    for (line, 0..) |byte, index| {
+        if (quote == null) {
+            if (byte == '#') return line[0..index];
+            if (byte == '"' or byte == 39) quote = byte;
+            continue;
+        }
+        if (quote.? == '"' and escaped) {
+            escaped = false;
+            continue;
+        }
+        if (quote.? == '"' and byte == '\\') {
+            escaped = true;
+            continue;
+        }
+        if (byte == quote.?) quote = null;
+    }
+    return line;
 }
 
 fn appendAppListEntryJson(allocator: std.mem.Allocator, out: *std.ArrayList(u8), app: AppListEntry) !void {
@@ -1990,6 +2116,33 @@ fn jsonString(allocator: std.mem.Allocator, value: []const u8) ![]const u8 {
 fn optionalJsonString(allocator: std.mem.Allocator, value: ?[]const u8) ![]const u8 {
     if (value) |string| return jsonString(allocator, string);
     return allocator.dupe(u8, "null");
+}
+
+test "app requirements parser collects disabled app ids only" {
+    const allocator = std.testing.allocator;
+    var requirements = (try parseAppRequirements(allocator,
+        \\[apps.gmail]
+        \\enabled = true
+        \\
+        \\[apps.slack]
+        \\enabled = false
+        \\
+        \\[apps."quoted.app"]
+        \\enabled = false # comment
+        \\
+        \\[apps.calendar.tools.export]
+        \\enabled = false
+        \\
+        \\[apps."drive.docs".tools.export]
+        \\enabled = false
+    )) orelse return error.TestExpectedAppRequirements;
+    defer requirements.deinit(allocator);
+
+    try std.testing.expect(!requirements.disables("gmail"));
+    try std.testing.expect(requirements.disables("slack"));
+    try std.testing.expect(requirements.disables("quoted.app"));
+    try std.testing.expect(!requirements.disables("calendar"));
+    try std.testing.expect(!requirements.disables("drive.docs"));
 }
 
 test "plugin list renders local marketplaces with installed state and manifest metadata" {

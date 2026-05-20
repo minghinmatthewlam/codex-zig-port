@@ -28040,6 +28040,11 @@ fn handleAppsList(
     };
     defer if (config_bytes) |bytes| allocator.free(bytes);
 
+    var requirements = loadConfigRequirementsReadRequirements(allocator) catch |err| {
+        return renderJsonRpcErrorForFailure(allocator, id_value, "app/list failed", err);
+    };
+    defer requirements.deinit(allocator);
+
     var scoped_cwds_storage: [1][]const u8 = undefined;
     var scoped_cwds: []const []const u8 = &.{};
     if (scoped_thread) |thread| {
@@ -28048,7 +28053,7 @@ fn handleAppsList(
     }
 
     var total: usize = 0;
-    const result = plugin_list.renderAppsListResponse(allocator, codex_home, config_bytes orelse "", scoped_cwds, start, limit, &total) catch |err| {
+    const result = plugin_list.renderAppsListResponse(allocator, codex_home, config_bytes orelse "", requirements.app_requirements, scoped_cwds, start, limit, &total) catch |err| {
         return renderJsonRpcErrorForFailure(allocator, id_value, "app/list failed", err);
     };
     const result_json = result orelse {
@@ -28090,7 +28095,10 @@ fn renderCurrentAppListDataJson(allocator: std.mem.Allocator) ![]const u8 {
     defer if (config_bytes) |bytes| allocator.free(bytes);
 
     var total: usize = 0;
-    const response = (try plugin_list.renderAppsListResponse(allocator, codex_home, config_bytes orelse "", &.{}, 0, null, &total)) orelse return error.InvalidAppListRefreshCursor;
+    var requirements = try loadConfigRequirementsReadRequirements(allocator);
+    defer requirements.deinit(allocator);
+
+    const response = (try plugin_list.renderAppsListResponse(allocator, codex_home, config_bytes orelse "", requirements.app_requirements, &.{}, 0, null, &total)) orelse return error.InvalidAppListRefreshCursor;
     defer allocator.free(response);
 
     var parsed = try std.json.parseFromSlice(std.json.Value, allocator, response, .{});
@@ -50615,6 +50623,8 @@ const ConfigRequirementsReadRequirements = struct {
     hooks: ?config_requirements_hooks.ManagedHooksRequirements = null,
     enforce_residency: ?[]const u8 = null,
     network: ?NetworkRequirements = null,
+    // Internal app/list enforcement. The current configRequirements/read API does not expose apps.
+    app_requirements: ?plugin_list.AppRequirements = null,
 
     fn deinit(self: *ConfigRequirementsReadRequirements, allocator: std.mem.Allocator) void {
         if (self.allowed_approval_policies) |*value| value.deinit(allocator);
@@ -50625,6 +50635,7 @@ const ConfigRequirementsReadRequirements = struct {
         if (self.hooks) |*value| value.deinit(allocator);
         if (self.enforce_residency) |value| allocator.free(value);
         if (self.network) |*value| value.deinit(allocator);
+        if (self.app_requirements) |*value| value.deinit(allocator);
         self.* = .{};
     }
 
@@ -50671,6 +50682,10 @@ const ConfigRequirementsReadRequirements = struct {
         if (self.network == null) {
             self.network = other.network;
             other.network = null;
+        }
+        if (self.app_requirements == null) {
+            self.app_requirements = other.app_requirements;
+            other.app_requirements = null;
         }
     }
 };
@@ -50767,6 +50782,7 @@ fn loadSystemConfigRequirements(allocator: std.mem.Allocator) !ConfigRequirement
     requirements.hooks = try config_requirements_hooks.parse(allocator, payload);
     requirements.enforce_residency = try parseResidencyRequirement(allocator, payload);
     requirements.network = try parseNetworkRequirements(allocator, payload);
+    requirements.app_requirements = try plugin_list.parseAppRequirements(allocator, payload);
 
     return requirements;
 }
