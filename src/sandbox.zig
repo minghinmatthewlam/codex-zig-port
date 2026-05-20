@@ -111,7 +111,7 @@ pub fn wrapArgvWithPolicy(
     defer allocator.free(cwd);
 
     const resolved_roots = if (mode == .workspace_write)
-        try resolveAdditionalRoots(allocator, cwd, additional_writable_roots)
+        try resolveAdditionalRoots(allocator, additional_writable_roots)
     else
         try allocator.alloc([]const u8, 0);
     defer freeResolvedRoots(allocator, resolved_roots);
@@ -214,7 +214,7 @@ fn resolveProfileRootPath(allocator: std.mem.Allocator, base_cwd: []const u8, ro
     return std.fs.path.join(allocator, &.{ base_cwd, root });
 }
 
-fn resolveAdditionalRoots(allocator: std.mem.Allocator, base_cwd: []const u8, roots: []const []const u8) ![]const []const u8 {
+fn resolveAdditionalRoots(allocator: std.mem.Allocator, roots: []const []const u8) ![]const []const u8 {
     var resolved = try allocator.alloc([]const u8, roots.len);
     errdefer allocator.free(resolved);
 
@@ -224,9 +224,7 @@ fn resolveAdditionalRoots(allocator: std.mem.Allocator, base_cwd: []const u8, ro
     }
 
     for (roots) |root| {
-        const path = try resolveProfileRootPath(allocator, base_cwd, root);
-        defer allocator.free(path);
-        resolved[count] = try realPathAlloc(allocator, path);
+        resolved[count] = try realPathAlloc(allocator, root);
         count += 1;
     }
 
@@ -388,39 +386,61 @@ test "sandbox profile can deny read roots" {
     try std.testing.expect(std.mem.indexOf(u8, profile, "(deny file-write* (subpath \"/tmp/codex-workspace/secret\"))") != null);
 }
 
-test "relative profile roots resolve against cwd override" {
+test "relative read-denied roots resolve against cwd override" {
     const allocator = std.testing.allocator;
     var dir = std.testing.tmpDir(.{});
     defer dir.cleanup();
     var io_instance: std.Io.Threaded = .init(allocator, .{});
     defer io_instance.deinit();
 
-    try dir.dir.createDirPath(io_instance.io(), "workspace/extra");
     try dir.dir.createDirPath(io_instance.io(), "workspace/secret");
 
     const root = try dir.dir.realPathFileAlloc(std.Io.Threaded.global_single_threaded.io(), ".", allocator);
     defer allocator.free(root);
     const workspace = try std.fs.path.join(allocator, &.{ root, "workspace" });
     defer allocator.free(workspace);
-    const extra = try std.fs.path.join(allocator, &.{ workspace, "extra" });
-    defer allocator.free(extra);
     const secret = try std.fs.path.join(allocator, &.{ workspace, "secret" });
     defer allocator.free(secret);
 
     const argv = [_][]const u8{ "/bin/echo", "ok" };
-    var wrapped = try wrapArgvWithPolicy(allocator, .workspace_write, argv[0..], &.{"extra"}, .{
+    var wrapped = try wrapArgvWithPolicy(allocator, .workspace_write, argv[0..], &.{}, .{
         .cwd_override = workspace,
         .read_denied_roots = &.{"secret"},
     });
     defer wrapped.deinit(allocator);
 
-    const expected_extra = try std.fmt.allocPrint(allocator, "(allow file-write* (subpath \"{s}\"))", .{extra});
-    defer allocator.free(expected_extra);
     const expected_secret = try std.fmt.allocPrint(allocator, "(deny file-read* (subpath \"{s}\"))", .{secret});
     defer allocator.free(expected_secret);
 
-    try std.testing.expect(std.mem.indexOf(u8, wrapped.profile, expected_extra) != null);
     try std.testing.expect(std.mem.indexOf(u8, wrapped.profile, expected_secret) != null);
+}
+
+test "relative additional writable roots stay anchored to process cwd" {
+    const allocator = std.testing.allocator;
+    var dir = std.testing.tmpDir(.{});
+    defer dir.cleanup();
+    var io_instance: std.Io.Threaded = .init(allocator, .{});
+    defer io_instance.deinit();
+
+    try dir.dir.createDirPath(io_instance.io(), "workspace");
+
+    const root = try dir.dir.realPathFileAlloc(std.Io.Threaded.global_single_threaded.io(), ".", allocator);
+    defer allocator.free(root);
+    const workspace = try std.fs.path.join(allocator, &.{ root, "workspace" });
+    defer allocator.free(workspace);
+    const process_src = try realPathAlloc(allocator, "src");
+    defer allocator.free(process_src);
+
+    const argv = [_][]const u8{ "/bin/echo", "ok" };
+    var wrapped = try wrapArgvWithPolicy(allocator, .workspace_write, argv[0..], &.{"src"}, .{
+        .cwd_override = workspace,
+    });
+    defer wrapped.deinit(allocator);
+
+    const expected_src = try std.fmt.allocPrint(allocator, "(allow file-write* (subpath \"{s}\"))", .{process_src});
+    defer allocator.free(expected_src);
+
+    try std.testing.expect(std.mem.indexOf(u8, wrapped.profile, expected_src) != null);
 }
 
 test "missing read-denied roots canonicalize symlinked parents" {
