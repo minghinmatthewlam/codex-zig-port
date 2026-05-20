@@ -540,6 +540,17 @@ class MockResponsesHandler(BaseHTTPRequestHandler):
                     "type": "response.output_text.delta",
                     "delta": "plan tracked\n",
                 },
+                {
+                    "type": "response.completed",
+                    "response": {
+                        "usage": {
+                            "input_tokens": 1234,
+                            "output_tokens": 5678,
+                            "total_tokens": 20000,
+                        },
+                        "model_context_window": 100000,
+                    },
+                },
             )
         elif "track this checklist" in latest_prompt:
             payload = sse(
@@ -4988,6 +4999,26 @@ def run_e2e(binary: Path) -> str:
             send_line(master_fd, "/statusline task-progress")
             wait_for(master_fd, output, b"status line: task-progress", 5, mark)
             wait_for(master_fd, output, b"preview: Tasks 1/3", 5, mark)
+
+            mark = len(output)
+            send_line(
+                master_fd,
+                "/statusline context-window-size used-tokens context-remaining context-used total-input-tokens total-output-tokens",
+            )
+            wait_for(
+                master_fd,
+                output,
+                b"status line: context-window-size, used-tokens, context-remaining, context-used, total-input-tokens, total-output-tokens",
+                5,
+                mark,
+            )
+            wait_for(
+                master_fd,
+                output,
+                b"preview: 100K window | 20K used | Context 91% left | Context 9% used | 1.23K in | 5.68K out",
+                5,
+                mark,
+            )
 
             mark = len(output)
             send_line(master_fd, "/title task-progress")
