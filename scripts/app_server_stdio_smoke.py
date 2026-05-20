@@ -16217,6 +16217,40 @@ def run_thread_resume_rpc_smoke(binary: Path) -> None:
             ),
             encoding="utf-8",
         )
+        resume_cwd_override_thread_id = "12121212-1212-4212-8212-121212121212"
+        resume_cwd_override_fixtures = codex_home / "resume-fixtures"
+        resume_cwd_override_fixtures.mkdir()
+        resume_cwd_override_path = (
+            resume_cwd_override_fixtures
+            / f"rollout-{resume_cwd_override_thread_id}.jsonl"
+        )
+        resume_cwd_override_path.write_text(
+            "\n".join(
+                [
+                    json.dumps(
+                        {
+                            "type": "metadata",
+                            "title": "CWD Override Smoke",
+                            "cwd": "/",
+                        },
+                        separators=(",", ":"),
+                    ),
+                    json.dumps(
+                        {
+                            "type": "message",
+                            "role": "user",
+                            "content_type": "input_text",
+                            "text": "cwd override hello",
+                        },
+                        separators=(",", ":"),
+                    ),
+                    "",
+                ]
+            ),
+            encoding="utf-8",
+        )
+        resume_cwd_override_dir = codex_home / "resume-cwd-override"
+        resume_cwd_override_dir.mkdir()
         rust_thread_id = "22222222-2222-4222-8222-222222222222"
         rust_sessions_dir = codex_home / "sessions" / "2025" / "01" / "05"
         rust_sessions_dir.mkdir(parents=True)
@@ -19057,6 +19091,63 @@ def run_thread_resume_rpc_smoke(binary: Path) -> None:
             assert missing["id"] == "thread-resume-missing"
             assert missing["error"]["code"] == -32600
             assert "no rollout found for thread id missing-resume" in missing["error"]["message"]
+
+            write_json_line(
+                proc,
+                {
+                    "jsonrpc": "2.0",
+                    "id": "thread-resume-cwd-override",
+                    "method": "thread/resume",
+                    "params": {
+                        "threadId": resume_cwd_override_thread_id,
+                        "path": str(resume_cwd_override_path),
+                        "cwd": str(resume_cwd_override_dir),
+                    },
+                },
+            )
+            resume_cwd_override = read_json_line(proc, 5)
+            assert resume_cwd_override["id"] == "thread-resume-cwd-override"
+            assert resume_cwd_override["result"]["thread"]["cwd"] == os.path.realpath(
+                resume_cwd_override_dir
+            )
+
+            write_json_line(
+                proc,
+                {
+                    "jsonrpc": "2.0",
+                    "id": "thread-metadata-update-after-cwd-override",
+                    "method": "thread/metadata/update",
+                    "params": {
+                        "threadId": resume_cwd_override_thread_id,
+                        "gitInfo": {
+                            "sha": "cwd-override-sha",
+                            "branch": "cwd-override-branch",
+                            "originUrl": "https://example.test/cwd-override.git",
+                        },
+                    },
+                },
+            )
+            cwd_override_metadata_update = read_json_line(proc, 5)
+            assert (
+                cwd_override_metadata_update["id"]
+                == "thread-metadata-update-after-cwd-override"
+            )
+            assert cwd_override_metadata_update["result"]["thread"]["gitInfo"] == {
+                "sha": "cwd-override-sha",
+                "branch": "cwd-override-branch",
+                "originUrl": "https://example.test/cwd-override.git",
+            }
+            cwd_override_entries = [
+                json.loads(line)
+                for line in resume_cwd_override_path.read_text(
+                    encoding="utf-8"
+                ).splitlines()
+                if line.strip()
+            ]
+            assert cwd_override_entries[0]["type"] == "metadata"
+            assert cwd_override_entries[0]["cwd"] == os.path.realpath(
+                resume_cwd_override_dir
+            )
 
             assert proc.stdin is not None
             proc.stdin.close()

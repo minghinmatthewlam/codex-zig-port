@@ -37532,6 +37532,7 @@ fn createLoadedThreadFromResumeParams(
 
     const cwd = try threadResumeCwd(allocator, transcript, params);
     errdefer allocator.free(cwd);
+    try transcript_copy.setCwd(allocator, cwd);
 
     const approval_policy = try allocator.dupe(u8, optionalStringParam(params, "approvalPolicy") orelse cfg.approval_policy.label());
     errdefer allocator.free(approval_policy);
