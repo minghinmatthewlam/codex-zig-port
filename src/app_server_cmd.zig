@@ -46535,7 +46535,18 @@ fn commandExecResolveCwdSubpath(allocator: std.mem.Allocator, cwd: ?[]const u8, 
     const base = try realPathFileAllocPlain(allocator, cwd orelse ".");
     defer allocator.free(base);
     const child = subpath orelse return allocator.dupe(u8, base);
-    return std.fs.path.resolve(allocator, &.{ base, child });
+    if (std.fs.path.isAbsolute(child)) return error.InvalidCommandExecPermissionProfileEntry;
+    const resolved = try std.fs.path.resolve(allocator, &.{ base, child });
+    errdefer allocator.free(resolved);
+    if (!commandExecPathIsWithinBase(base, resolved)) return error.InvalidCommandExecPermissionProfileEntry;
+    return resolved;
+}
+
+fn commandExecPathIsWithinBase(base: []const u8, path: []const u8) bool {
+    if (std.mem.eql(u8, base, path)) return true;
+    if (std.mem.eql(u8, base, std.fs.path.sep_str)) return std.fs.path.isAbsolute(path);
+    if (!std.mem.startsWith(u8, path, base)) return false;
+    return path.len > base.len and path[base.len] == std.fs.path.sep;
 }
 
 fn commandExecPermissionPathIsTmpdir(value: std.json.Value) !bool {

@@ -28844,6 +28844,50 @@ def run_command_exec_rpc_smoke(binary: Path) -> None:
         assert project_roots_subpath_dir.joinpath("ok.txt").read_text(encoding="utf-8") == "subpath"
         assert not child_cwd.joinpath("child-subpath-denied.txt").exists()
 
+        for index, escaping_subpath in enumerate(("../escape", str(root))):
+            escaping_subpath_permission_profile = {
+                "type": "managed",
+                "fileSystem": {
+                    "type": "restricted",
+                    "entries": [
+                        {
+                            "path": {"type": "special", "value": {"kind": "root"}},
+                            "access": "read",
+                        },
+                        {
+                            "path": {
+                                "type": "special",
+                                "value": {
+                                    "kind": "current_working_directory",
+                                    "subpath": escaping_subpath,
+                                },
+                            },
+                            "access": "write",
+                        },
+                    ],
+                },
+                "network": {"enabled": False},
+            }
+            permission_profile_escape = request_stdio_app_server(
+                binary,
+                {
+                    "jsonrpc": "2.0",
+                    "id": f"command-exec-permission-profile-escape-subpath-{index}",
+                    "method": "command/exec",
+                    "params": {
+                        "command": ["/usr/bin/true"],
+                        "cwd": str(child_cwd),
+                        "permissionProfile": escaping_subpath_permission_profile,
+                    },
+                },
+                env,
+            )
+            assert (
+                permission_profile_escape["id"]
+                == f"command-exec-permission-profile-escape-subpath-{index}"
+            )
+            assert permission_profile_escape["error"]["code"] == -32602
+
         permission_profile_tmp_roots = {
             "type": "managed",
             "fileSystem": {
