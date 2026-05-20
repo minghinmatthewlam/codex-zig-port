@@ -865,9 +865,9 @@ empty Rust-shaped `data` / `nextCursor` page when no local plugin app manifests
 are enabled, lists enabled local plugin `.app.json` manifests from plugin-cache
 roots, `$CODEX_HOME` marketplaces, and already-loaded thread cwd marketplaces as
 `AppInfo` rows, applies simple user `[apps._default]` / `[apps.NAME]` `enabled`
-flags, applies local system `requirements.toml` `[apps.NAME] enabled = false`
-pins so requirements disable app rows without re-enabling user-disabled apps,
-paginates with
+flags, applies local system `requirements.toml` app disable pins from table,
+dotted-key, and inline-table TOML forms so requirements disable app rows
+without re-enabling user-disabled apps, paginates with
 Rust-shaped `nextCursor` values and invalid-cursor errors, and includes
 app-list request, response, app metadata, app summary, and `app/list/updated`
 notification artifacts in TypeScript and JSON schema generation. Enabling the
