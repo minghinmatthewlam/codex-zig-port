@@ -15648,6 +15648,11 @@ def run_thread_resume_rpc_smoke(binary: Path) -> None:
                                 "cli_version": "0.0.0",
                                 "source": "cli",
                                 "model_provider": "mock_provider",
+                                "git": {
+                                    "commit_hash": "archived-rollout-sha",
+                                    "branch": "archived-rollout-branch",
+                                    "repository_url": "https://example.test/archived-rollout.git",
+                                },
                             },
                         },
                         separators=(",", ":"),
@@ -16099,6 +16104,63 @@ def run_thread_resume_rpc_smoke(binary: Path) -> None:
             )
             assert state_db_read_turns[1]["items"][0]["type"] == "agentMessage"
             assert state_db_read_turns[1]["items"][0]["text"] == "state db only hi"
+
+            write_json_line(
+                proc,
+                {
+                    "jsonrpc": "2.0",
+                    "id": "conversation-summary-state-db-only-rollout",
+                    "method": "getConversationSummary",
+                    "params": {"conversationId": state_db_thread_id},
+                },
+            )
+            state_db_summary = read_json_line(proc, 5)
+            assert state_db_summary["id"] == "conversation-summary-state-db-only-rollout"
+            state_db_summary_body = state_db_summary["result"]["summary"]
+            assert state_db_summary_body["conversationId"] == state_db_thread_id
+            assert state_db_summary_body["path"] == os.path.realpath(
+                state_db_rollout_path
+            )
+            assert state_db_summary_body["preview"] == "state db metadata preview"
+            assert state_db_summary_body["timestamp"] == "2025-01-05T12:00:00.000Z"
+            assert state_db_summary_body["updatedAt"] == "2025-01-05T12:05:00.000Z"
+            assert state_db_summary_body["modelProvider"] == "state_provider"
+            assert state_db_summary_body["cwd"] == "/state-db-cwd"
+            assert state_db_summary_body["cliVersion"] == "state-db-cli"
+            assert state_db_summary_body["source"] == "cli"
+            assert state_db_summary_body["gitInfo"] == {
+                "sha": "state-db-column-sha",
+                "branch": "state-db-column-branch",
+                "origin_url": "https://example.test/state-column.git",
+            }
+
+            write_json_line(
+                proc,
+                {
+                    "jsonrpc": "2.0",
+                    "id": "conversation-summary-archived-state-db-clears-git",
+                    "method": "getConversationSummary",
+                    "params": {"conversationId": archived_state_db_thread_id},
+                },
+            )
+            archived_summary = read_json_line(proc, 5)
+            assert archived_summary["id"] == "conversation-summary-archived-state-db-clears-git"
+            archived_summary_body = archived_summary["result"]["summary"]
+            assert archived_summary_body["conversationId"] == archived_state_db_thread_id
+            assert archived_summary_body["path"] == os.path.realpath(
+                archived_state_db_rollout_path
+            )
+            assert (
+                archived_summary_body["preview"]
+                == "archived state db metadata preview"
+            )
+            assert archived_summary_body["timestamp"] == "2025-01-05T13:00:00.000Z"
+            assert archived_summary_body["updatedAt"] == "2025-01-05T13:05:00.000Z"
+            assert archived_summary_body["modelProvider"] == "archived_provider"
+            assert archived_summary_body["cwd"] == "/archived-state-db-cwd"
+            assert archived_summary_body["cliVersion"] == "archived-state-db-cli"
+            assert archived_summary_body["source"] == "cli"
+            assert archived_summary_body["gitInfo"] is None
 
             write_json_line(
                 proc,
@@ -17207,6 +17269,44 @@ def run_thread_resume_rpc_smoke(binary: Path) -> None:
                 "originUrl": "https://example.test/state.git",
             }
             assert state_db_resumed_thread["turns"] == []
+
+            write_json_line(
+                proc,
+                {
+                    "jsonrpc": "2.0",
+                    "id": "conversation-summary-loaded-state-db",
+                    "method": "getConversationSummary",
+                    "params": {"conversationId": state_db_thread_id},
+                },
+            )
+            loaded_state_db_summary = read_json_line(proc, 5)
+            assert loaded_state_db_summary["id"] == "conversation-summary-loaded-state-db"
+            loaded_state_db_summary_body = loaded_state_db_summary["result"]["summary"]
+            assert loaded_state_db_summary_body["conversationId"] == state_db_thread_id
+            assert loaded_state_db_summary_body["path"] == os.path.realpath(
+                state_db_rollout_path
+            )
+            assert (
+                loaded_state_db_summary_body["preview"]
+                == "state db metadata preview"
+            )
+            assert (
+                loaded_state_db_summary_body["timestamp"]
+                == "2025-01-05T12:00:00.000Z"
+            )
+            assert (
+                loaded_state_db_summary_body["updatedAt"]
+                == "2025-01-05T12:05:00.000Z"
+            )
+            assert loaded_state_db_summary_body["modelProvider"] == "state_provider"
+            assert loaded_state_db_summary_body["cwd"] == "/state-db-cwd"
+            assert loaded_state_db_summary_body["cliVersion"] == "state-db-cli"
+            assert loaded_state_db_summary_body["source"] == "cli"
+            assert loaded_state_db_summary_body["gitInfo"] == {
+                "sha": "state-db-sha",
+                "branch": "state-db-branch",
+                "origin_url": "https://example.test/state.git",
+            }
 
             write_json_line(
                 proc,

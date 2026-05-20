@@ -28109,7 +28109,7 @@ fn handleGetConversationSummary(
             try std.fs.path.join(allocator, &.{ cfg.codex_home, rollout_path_value.string });
         defer allocator.free(path_raw);
 
-        return renderConversationSummaryResponseFromPath(allocator, id_value, cfg, path_raw, "rollout path", rollout_path_value.string);
+        return renderConversationSummaryResponseFromPath(allocator, id_value, cfg, path_raw, null, "rollout path", rollout_path_value.string);
     }
 
     if (params.object.get("conversationId")) |conversation_id_value| {
@@ -28128,12 +28128,26 @@ fn handleGetConversationSummary(
         };
         defer cfg.deinit(allocator);
 
-        const path_raw = session_store.resolveResumePath(allocator, cfg.codex_home, conversation_id) catch |err| {
-            return renderJsonRpcErrorForFailure(allocator, id_value, "getConversationSummary failed to resolve thread path", err);
+        var state_metadata = thread_state.findThreadMetadataByThreadId(allocator, cfg.codex_home, conversation_id) catch |err| {
+            return renderJsonRpcErrorForFailure(allocator, id_value, "getConversationSummary failed to load state metadata", err);
         };
-        defer allocator.free(path_raw);
+        defer if (state_metadata) |*metadata| metadata.deinit(allocator);
 
-        return renderConversationSummaryResponseFromPath(allocator, id_value, cfg, path_raw, "thread id", conversation_id);
+        const state_path = thread_state.findRolloutPathByThreadId(allocator, cfg.codex_home, conversation_id) catch |err| {
+            return renderJsonRpcErrorForFailure(allocator, id_value, "getConversationSummary failed to resolve state thread path", err);
+        };
+        defer if (state_path) |path| allocator.free(path);
+
+        const path_raw = if (state_path) |path|
+            path
+        else
+            session_store.resolveResumePath(allocator, cfg.codex_home, conversation_id) catch |err| {
+                return renderJsonRpcErrorForFailure(allocator, id_value, "getConversationSummary failed to resolve thread path", err);
+            };
+        defer if (state_path == null) allocator.free(path_raw);
+
+        const metadata = if (state_metadata) |*value| value else null;
+        return renderConversationSummaryResponseFromPath(allocator, id_value, cfg, path_raw, metadata, "thread id", conversation_id);
     }
 
     return renderJsonRpcError(allocator, id_value, -32602, "getConversationSummary params must include conversationId or rolloutPath");
@@ -28144,6 +28158,7 @@ fn renderConversationSummaryResponseFromPath(
     id_value: std.json.Value,
     cfg: config.Config,
     path_raw: []const u8,
+    metadata: ?*const thread_state.ThreadMetadata,
     target_kind: []const u8,
     target_value: []const u8,
 ) ![]const u8 {
@@ -28171,7 +28186,7 @@ fn renderConversationSummaryResponseFromPath(
     defer if (configured_model_provider) |value| allocator.free(value);
     const fallback_model_provider = configured_model_provider orelse "openai";
 
-    const result = try renderConversationSummaryResponseFromTranscript(allocator, real_path, &transcript, fallback_model_provider);
+    const result = try renderConversationSummaryResponseFromTranscript(allocator, real_path, &transcript, fallback_model_provider, metadata);
     defer allocator.free(result);
     return renderJsonRpcResult(allocator, id_value, result);
 }
@@ -38328,6 +38343,8 @@ const ConversationSummaryView = struct {
     conversation_id: []const u8,
     path: []const u8,
     preview: []const u8,
+    timestamp: ?[]const u8,
+    updated_at: ?[]const u8,
     model_provider: []const u8,
     cwd: []const u8,
     cli_version: []const u8,
@@ -38338,10 +38355,17 @@ const ConversationSummaryView = struct {
 };
 
 fn renderConversationSummaryResponseFromLoadedThread(allocator: std.mem.Allocator, thread: *const LoadedThread) ![]const u8 {
+    const timestamp = try conversationSummaryTimestampSeconds(allocator, thread.created_at);
+    defer if (timestamp) |value| allocator.free(value);
+    const updated_at = try conversationSummaryTimestampSeconds(allocator, thread.updated_at);
+    defer if (updated_at) |value| allocator.free(value);
+
     return renderConversationSummaryResponse(allocator, .{
         .conversation_id = thread.id,
         .path = thread.path orelse "",
         .preview = thread.preview,
+        .timestamp = timestamp,
+        .updated_at = updated_at,
         .model_provider = thread.model_provider,
         .cwd = thread.cwd,
         .cli_version = thread.cli_version,
@@ -38357,6 +38381,7 @@ fn renderConversationSummaryResponseFromTranscript(
     path: []const u8,
     transcript: *const session_mod.Transcript,
     fallback_model_provider: []const u8,
+    metadata: ?*const thread_state.ThreadMetadata,
 ) ![]const u8 {
     const owned_id = if (transcript.id == null) try session_store.sessionIdFromPath(allocator, path) else null;
     defer if (owned_id) |value| allocator.free(value);
@@ -38364,18 +38389,77 @@ fn renderConversationSummaryResponseFromTranscript(
     const preview = try resumePreview(allocator, transcript);
     defer allocator.free(preview);
 
+    const timestamp = if (metadata) |value|
+        try conversationSummaryTimestamp(allocator, value.created_at_ms)
+    else
+        null;
+    defer if (timestamp) |value| allocator.free(value);
+    const updated_at = if (metadata) |value|
+        try conversationSummaryTimestamp(allocator, value.updated_at_ms)
+    else
+        null;
+    defer if (updated_at) |value| allocator.free(value);
+
     return renderConversationSummaryResponse(allocator, .{
         .conversation_id = transcript.id orelse owned_id.?,
         .path = path,
-        .preview = preview,
-        .model_provider = transcript.model_provider orelse fallback_model_provider,
-        .cwd = transcript.cwd orelse "",
-        .cli_version = transcript.cli_version orelse "0.0.1",
-        .source = transcript.source orelse "unknown",
-        .git_sha = transcript.git_sha,
-        .git_branch = transcript.git_branch,
-        .git_origin_url = transcript.git_origin_url,
+        .preview = conversationSummaryMetadataString(metadata, .first_user_message) orelse preview,
+        .timestamp = timestamp,
+        .updated_at = updated_at,
+        .model_provider = conversationSummaryMetadataString(metadata, .model_provider) orelse transcript.model_provider orelse fallback_model_provider,
+        .cwd = conversationSummaryMetadataString(metadata, .cwd) orelse transcript.cwd orelse "",
+        .cli_version = conversationSummaryMetadataString(metadata, .cli_version) orelse transcript.cli_version orelse "0.0.1",
+        .source = conversationSummaryMetadataString(metadata, .source) orelse transcript.source orelse "unknown",
+        .git_sha = conversationSummaryGitMetadataString(metadata, .git_sha, transcript.git_sha),
+        .git_branch = conversationSummaryGitMetadataString(metadata, .git_branch, transcript.git_branch),
+        .git_origin_url = conversationSummaryGitMetadataString(metadata, .git_origin_url, transcript.git_origin_url),
     });
+}
+
+const ConversationSummaryMetadataField = enum {
+    first_user_message,
+    model_provider,
+    cwd,
+    cli_version,
+    source,
+    git_sha,
+    git_branch,
+    git_origin_url,
+};
+
+fn conversationSummaryMetadataString(metadata: ?*const thread_state.ThreadMetadata, field: ConversationSummaryMetadataField) ?[]const u8 {
+    const value = metadata orelse return null;
+    return stateThreadString(switch (field) {
+        .first_user_message => value.first_user_message,
+        .model_provider => value.model_provider,
+        .cwd => value.cwd,
+        .cli_version => value.cli_version,
+        .source => value.source,
+        .git_sha => value.git_sha,
+        .git_branch => value.git_branch,
+        .git_origin_url => value.git_origin_url,
+    });
+}
+
+fn conversationSummaryGitMetadataString(
+    metadata: ?*const thread_state.ThreadMetadata,
+    field: ConversationSummaryMetadataField,
+    fallback: ?[]const u8,
+) ?[]const u8 {
+    if (metadata == null) return fallback;
+    return conversationSummaryMetadataString(metadata, field);
+}
+
+fn conversationSummaryTimestampSeconds(allocator: std.mem.Allocator, timestamp_seconds: i64) !?[]const u8 {
+    if (timestamp_seconds < 0 or timestamp_seconds > std.math.maxInt(i64) / 1000) return null;
+    return conversationSummaryTimestamp(allocator, timestamp_seconds * 1000);
+}
+
+fn conversationSummaryTimestamp(allocator: std.mem.Allocator, timestamp_ms: ?i64) !?[]const u8 {
+    const value = timestamp_ms orelse return null;
+    if (value < 0) return null;
+    const formatted = try formatThreadListCursorMilliseconds(allocator, value, true);
+    return formatted;
 }
 
 fn renderConversationSummaryResponse(allocator: std.mem.Allocator, summary: ConversationSummaryView) ![]const u8 {
@@ -38388,7 +38472,11 @@ fn renderConversationSummaryResponse(allocator: std.mem.Allocator, summary: Conv
     try appendJsonString(allocator, &result, summary.path);
     try result.appendSlice(allocator, ",\"preview\":");
     try appendJsonString(allocator, &result, summary.preview);
-    try result.appendSlice(allocator, ",\"timestamp\":null,\"updatedAt\":null,\"modelProvider\":");
+    try result.appendSlice(allocator, ",\"timestamp\":");
+    try appendOptionalJsonString(allocator, &result, summary.timestamp);
+    try result.appendSlice(allocator, ",\"updatedAt\":");
+    try appendOptionalJsonString(allocator, &result, summary.updated_at);
+    try result.appendSlice(allocator, ",\"modelProvider\":");
     try appendJsonString(allocator, &result, summary.model_provider);
     try result.appendSlice(allocator, ",\"cwd\":");
     try appendJsonString(allocator, &result, summary.cwd);
