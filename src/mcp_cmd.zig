@@ -2363,6 +2363,7 @@ fn parseGlobalMcpRequirements(allocator: std.mem.Allocator, payload: []const u8)
 
     var current_section: ?[]const u8 = null;
     defer if (current_section) |server_name| allocator.free(server_name);
+    var current_section_is_identity = false;
     var in_mcp_table = false;
 
     var lines = std.mem.splitScalar(u8, payload, '\n');
@@ -2374,8 +2375,13 @@ fn parseGlobalMcpRequirements(allocator: std.mem.Allocator, payload: []const u8)
         if (line[0] == '[') {
             if (current_section) |server_name| allocator.free(server_name);
             current_section = null;
+            current_section_is_identity = false;
             in_mcp_table = false;
             if (try parseGlobalMcpRequirementHeader(allocator, line)) |server_name| {
+                requirements.active = true;
+                current_section = server_name;
+                current_section_is_identity = true;
+            } else if (try parseGlobalMcpRequirementServerHeader(allocator, line)) |server_name| {
                 requirements.active = true;
                 current_section = server_name;
             } else if (try isGlobalMcpRequirementsTableHeader(allocator, line)) {
@@ -2412,8 +2418,10 @@ fn parseGlobalMcpRequirements(allocator: std.mem.Allocator, payload: []const u8)
         }
 
         if (current_section) |server_name| {
-            if (std.mem.eql(u8, lhs, "command") or std.mem.eql(u8, lhs, "url")) {
+            if (current_section_is_identity and (std.mem.eql(u8, lhs, "command") or std.mem.eql(u8, lhs, "url"))) {
                 try addGlobalMcpRequirementValue(allocator, &requirements, server_name, lhs, rhs);
+            } else if (!current_section_is_identity) {
+                _ = try addGlobalMcpRequirementFromServerTableAssignment(allocator, &requirements, server_name, lhs, rhs);
             }
         }
     }
@@ -2430,6 +2438,17 @@ fn parseGlobalMcpRequirementHeader(allocator: std.mem.Allocator, line: []const u
     if (path.items.len != 3) return null;
     if (!std.mem.eql(u8, path.items[0], "mcp_servers")) return null;
     if (!std.mem.eql(u8, path.items[2], "identity")) return null;
+    return try allocator.dupe(u8, path.items[1]);
+}
+
+fn parseGlobalMcpRequirementServerHeader(allocator: std.mem.Allocator, line: []const u8) !?[]const u8 {
+    if (line.len < 2 or line[0] != '[' or line[line.len - 1] != ']') return null;
+    if (line.len >= 4 and line[1] == '[') return null;
+    const inner = std.mem.trim(u8, line[1 .. line.len - 1], " \t\r");
+    var path = (try parseTomlDottedPath(allocator, inner)) orelse return null;
+    defer path.deinit(allocator);
+    if (path.items.len != 2) return null;
+    if (!std.mem.eql(u8, path.items[0], "mcp_servers")) return null;
     return try allocator.dupe(u8, path.items[1]);
 }
 
@@ -2471,6 +2490,28 @@ fn parseGlobalMcpRequirementAssignment(allocator: std.mem.Allocator, lhs: []cons
     allocator.free(path.items[2]);
     allocator.free(path.items);
     return result;
+}
+
+fn addGlobalMcpRequirementFromServerTableAssignment(
+    allocator: std.mem.Allocator,
+    requirements: *McpRequirements,
+    server_name: []const u8,
+    lhs: []const u8,
+    rhs: []const u8,
+) !bool {
+    if (std.mem.eql(u8, lhs, "identity")) {
+        try addGlobalMcpIdentityInlineTable(allocator, requirements, server_name, rhs);
+        return true;
+    }
+
+    var path = (try parseTomlDottedPath(allocator, lhs)) orelse return false;
+    defer path.deinit(allocator);
+    if (path.items.len != 2) return false;
+    if (!std.mem.eql(u8, path.items[0], "identity")) return false;
+    if (!std.mem.eql(u8, path.items[1], "command") and !std.mem.eql(u8, path.items[1], "url")) return false;
+
+    try addGlobalMcpRequirementValue(allocator, requirements, server_name, path.items[1], rhs);
+    return true;
 }
 
 fn addGlobalMcpRequirementValue(
@@ -3937,6 +3978,12 @@ test "mcp config parses section-relative and inline global mcp requirements" {
         \\[mcp_servers.inline_docs]
         \\command = "inline-mcp"
         \\
+        \\[mcp_servers.table_command_docs]
+        \\command = "table-command-mcp"
+        \\
+        \\[mcp_servers.table_inline_docs]
+        \\command = "table-inline-mcp"
+        \\
         \\[mcp_servers.blocked_docs]
         \\command = "blocked-mcp"
         \\
@@ -3945,6 +3992,12 @@ test "mcp config parses section-relative and inline global mcp requirements" {
         \\[mcp_servers]
         \\relative_docs.identity.command = "relative-mcp"
         \\inline_docs = { identity = { command = "inline-mcp" } }
+        \\
+        \\[mcp_servers.table_command_docs]
+        \\identity.command = "table-command-mcp"
+        \\
+        \\[mcp_servers.table_inline_docs]
+        \\identity = { command = "table-inline-mcp" }
         \\
     );
     defer requirements.deinit(allocator);
@@ -3955,6 +4008,8 @@ test "mcp config parses section-relative and inline global mcp requirements" {
 
     try std.testing.expect(servers.get("relative_docs").?.enabled);
     try std.testing.expect(servers.get("inline_docs").?.enabled);
+    try std.testing.expect(servers.get("table_command_docs").?.enabled);
+    try std.testing.expect(servers.get("table_inline_docs").?.enabled);
     try std.testing.expect(!servers.get("blocked_docs").?.enabled);
 }
 
