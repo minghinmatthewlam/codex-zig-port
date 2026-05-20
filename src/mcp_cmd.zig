@@ -168,6 +168,43 @@ const PluginMcpRequirements = struct {
     }
 };
 
+const McpRequirement = struct {
+    server_name: []const u8,
+    identity: PluginMcpIdentity,
+
+    fn deinit(self: *McpRequirement, allocator: std.mem.Allocator) void {
+        allocator.free(self.server_name);
+        self.identity.deinit(allocator);
+    }
+};
+
+const McpRequirements = struct {
+    active: bool = false,
+    items: std.ArrayList(McpRequirement) = .empty,
+
+    fn deinit(self: *McpRequirements, allocator: std.mem.Allocator) void {
+        for (self.items.items) |*item| item.deinit(allocator);
+        self.items.deinit(allocator);
+    }
+
+    fn find(self: McpRequirements, server_name: []const u8) ?PluginMcpIdentity {
+        for (self.items.items) |item| {
+            if (std.mem.eql(u8, item.server_name, server_name)) return item.identity;
+        }
+        return null;
+    }
+};
+
+const LoadedMcpRequirements = struct {
+    global: McpRequirements = .{},
+    plugin: PluginMcpRequirements = .{},
+
+    fn deinit(self: *LoadedMcpRequirements, allocator: std.mem.Allocator) void {
+        self.global.deinit(allocator);
+        self.plugin.deinit(allocator);
+    }
+};
+
 const PluginMcpRequirementPath = struct {
     plugin_id: []const u8,
     server_name: []const u8,
@@ -175,6 +212,16 @@ const PluginMcpRequirementPath = struct {
     fn deinit(self: *PluginMcpRequirementPath, allocator: std.mem.Allocator) void {
         allocator.free(self.plugin_id);
         allocator.free(self.server_name);
+    }
+};
+
+const McpRequirementAssignment = struct {
+    server_name: []const u8,
+    identity_key: []const u8,
+
+    fn deinit(self: *McpRequirementAssignment, allocator: std.mem.Allocator) void {
+        allocator.free(self.server_name);
+        allocator.free(self.identity_key);
     }
 };
 
@@ -230,20 +277,20 @@ fn runArgs(allocator: std.mem.Allocator, args: []const []const u8) !void {
 
     const subcommand = args[0];
     if (std.mem.eql(u8, subcommand, "list")) {
-        try appendPluginMcpServers(allocator, codex_home, config_bytes orelse "", &servers);
+        try loadEffectiveMcpServers(allocator, codex_home, config_bytes orelse "", &servers);
         try runList(allocator, codex_home, config_bytes orelse "", servers, args[1..]);
     } else if (std.mem.eql(u8, subcommand, "get")) {
-        try appendPluginMcpServers(allocator, codex_home, config_bytes orelse "", &servers);
+        try loadEffectiveMcpServers(allocator, codex_home, config_bytes orelse "", &servers);
         try runGet(allocator, servers, args[1..]);
     } else if (std.mem.eql(u8, subcommand, "add")) {
         try runAdd(allocator, codex_home, config_bytes orelse "", &servers, args[1..]);
     } else if (std.mem.eql(u8, subcommand, "remove")) {
         try runRemove(allocator, codex_home, config_bytes orelse "", &servers, args[1..]);
     } else if (std.mem.eql(u8, subcommand, "login")) {
-        try appendPluginMcpServers(allocator, codex_home, config_bytes orelse "", &servers);
+        try loadEffectiveMcpServers(allocator, codex_home, config_bytes orelse "", &servers);
         try runLogin(allocator, codex_home, config_bytes orelse "", servers, args[1..]);
     } else if (std.mem.eql(u8, subcommand, "logout")) {
-        try appendPluginMcpServers(allocator, codex_home, config_bytes orelse "", &servers);
+        try loadEffectiveMcpServers(allocator, codex_home, config_bytes orelse "", &servers);
         try runLogout(allocator, codex_home, config_bytes orelse "", servers, args[1..]);
     } else {
         return error.UnknownMcpSubcommand;
@@ -259,7 +306,7 @@ pub fn loadServers(allocator: std.mem.Allocator, codex_home: []const u8) !McpSer
 pub fn loadServersFromConfig(allocator: std.mem.Allocator, codex_home: []const u8, config_bytes: []const u8) !McpServers {
     var servers = try parseServers(allocator, config_bytes);
     errdefer servers.deinit(allocator);
-    try appendPluginMcpServers(allocator, codex_home, config_bytes, &servers);
+    try loadEffectiveMcpServers(allocator, codex_home, config_bytes, &servers);
     return servers;
 }
 
@@ -2140,15 +2187,27 @@ fn parseServers(allocator: std.mem.Allocator, bytes: []const u8) !McpServers {
     return servers;
 }
 
-fn appendPluginMcpServers(
+fn loadEffectiveMcpServers(
     allocator: std.mem.Allocator,
     codex_home: []const u8,
     config_bytes: []const u8,
     servers: *McpServers,
 ) !void {
-    var requirements = try loadPluginMcpRequirements(allocator, codex_home);
+    var requirements = try loadMcpRequirements(allocator, codex_home);
     defer requirements.deinit(allocator);
-    try appendPluginMcpServersWithRequirements(allocator, codex_home, config_bytes, requirements, servers);
+    applyGlobalMcpRequirements(servers, requirements.global);
+    try appendPluginMcpServersWithRequirements(allocator, codex_home, config_bytes, requirements.plugin, servers);
+}
+
+fn applyGlobalMcpRequirements(servers: *McpServers, requirements: McpRequirements) void {
+    if (!requirements.active) return;
+    for (servers.items.items) |*server| {
+        const identity = requirements.find(server.name) orelse {
+            server.enabled = false;
+            continue;
+        };
+        if (!identity.matches(server.*)) server.enabled = false;
+    }
 }
 
 fn appendPluginMcpServersWithRequirements(
@@ -2219,10 +2278,35 @@ fn applyPluginMcpRequirements(plugin_id: []const u8, server: *McpServer, require
     if (!identity.matches(server.*)) server.enabled = false;
 }
 
-fn loadPluginMcpRequirements(allocator: std.mem.Allocator, codex_home: []const u8) !PluginMcpRequirements {
+fn loadMcpRequirements(allocator: std.mem.Allocator, codex_home: []const u8) !LoadedMcpRequirements {
     const path = try systemRequirementsPath(allocator, codex_home);
     defer allocator.free(path);
-    return loadPluginMcpRequirementsFromPath(allocator, path);
+    return loadMcpRequirementsFromPath(allocator, path);
+}
+
+fn loadMcpRequirementsFromPath(allocator: std.mem.Allocator, path: []const u8) !LoadedMcpRequirements {
+    const bytes = std.Io.Dir.cwd().readFileAlloc(std.Io.Threaded.global_single_threaded.io(), path, allocator, .limited(1024 * 1024)) catch |err| switch (err) {
+        error.FileNotFound => return .{},
+        error.OutOfMemory => return err,
+        else => return err,
+    };
+    defer allocator.free(bytes);
+
+    var requirements = LoadedMcpRequirements{};
+    errdefer requirements.deinit(allocator);
+    requirements.global = try parseGlobalMcpRequirements(allocator, bytes);
+    requirements.plugin = try parsePluginMcpRequirements(allocator, bytes);
+    return requirements;
+}
+
+fn loadGlobalMcpRequirementsFromPath(allocator: std.mem.Allocator, path: []const u8) !McpRequirements {
+    const bytes = std.Io.Dir.cwd().readFileAlloc(std.Io.Threaded.global_single_threaded.io(), path, allocator, .limited(1024 * 1024)) catch |err| switch (err) {
+        error.FileNotFound => return .{},
+        error.OutOfMemory => return err,
+        else => return err,
+    };
+    defer allocator.free(bytes);
+    return parseGlobalMcpRequirements(allocator, bytes);
 }
 
 fn loadPluginMcpRequirementsFromPath(allocator: std.mem.Allocator, path: []const u8) !PluginMcpRequirements {
@@ -2236,13 +2320,20 @@ fn loadPluginMcpRequirementsFromPath(allocator: std.mem.Allocator, path: []const
 }
 
 fn systemRequirementsPath(allocator: std.mem.Allocator, codex_home: []const u8) ![]const u8 {
+    const default_path = try defaultSystemRequirementsPath(allocator, codex_home);
+    errdefer allocator.free(default_path);
+    if (try requirementsFileExists(default_path)) return default_path;
+
+    // Developer smoke tests can point at a temporary requirements file, but an
+    // installed system policy always wins when it exists.
     if (try env.getOwned(allocator, SYSTEM_REQUIREMENTS_PATH_ENV_VAR)) |path| {
         if (path.len > 0) {
+            allocator.free(default_path);
             return path;
         }
         allocator.free(path);
     }
-    return defaultSystemRequirementsPath(allocator, codex_home);
+    return default_path;
 }
 
 fn defaultSystemRequirementsPath(allocator: std.mem.Allocator, codex_home: []const u8) ![]const u8 {
@@ -2250,6 +2341,229 @@ fn defaultSystemRequirementsPath(allocator: std.mem.Allocator, codex_home: []con
         return std.fs.path.join(allocator, &.{ codex_home, "requirements.toml" });
     }
     return allocator.dupe(u8, UNIX_SYSTEM_REQUIREMENTS_PATH);
+}
+
+fn requirementsFileExists(path: []const u8) !bool {
+    std.Io.Dir.cwd().access(std.Io.Threaded.global_single_threaded.io(), path, .{}) catch |err| switch (err) {
+        error.FileNotFound => return false,
+        else => return err,
+    };
+    return true;
+}
+
+fn parseGlobalMcpRequirements(allocator: std.mem.Allocator, payload: []const u8) !McpRequirements {
+    var requirements = McpRequirements{};
+    errdefer requirements.deinit(allocator);
+
+    var current_section: ?[]const u8 = null;
+    defer if (current_section) |server_name| allocator.free(server_name);
+    var in_mcp_table = false;
+
+    var lines = std.mem.splitScalar(u8, payload, '\n');
+    while (lines.next()) |raw_line| {
+        const line_without_comment = stripTomlLineComment(raw_line);
+        const line = std.mem.trim(u8, line_without_comment, " \t\r");
+        if (line.len == 0 or line[0] == '#') continue;
+
+        if (line[0] == '[') {
+            if (current_section) |server_name| allocator.free(server_name);
+            current_section = null;
+            in_mcp_table = false;
+            if (try parseGlobalMcpRequirementHeader(allocator, line)) |server_name| {
+                requirements.active = true;
+                current_section = server_name;
+            } else if (try isGlobalMcpRequirementsTableHeader(allocator, line)) {
+                requirements.active = true;
+                in_mcp_table = true;
+            }
+            continue;
+        }
+
+        const eq = std.mem.indexOfScalar(u8, line, '=') orelse continue;
+        const lhs = std.mem.trim(u8, line[0..eq], " \t");
+        const rhs = std.mem.trim(u8, line[eq + 1 ..], " \t");
+
+        if (try parseGlobalMcpRequirementAssignment(allocator, lhs)) |assignment| {
+            var owned_assignment = assignment;
+            defer owned_assignment.deinit(allocator);
+            requirements.active = true;
+            try addGlobalMcpRequirementValue(allocator, &requirements, owned_assignment.server_name, owned_assignment.identity_key, rhs);
+            continue;
+        }
+
+        if (in_mcp_table) {
+            if (try parsePluginMcpTableAssignment(allocator, lhs)) |assignment| {
+                var owned_assignment = assignment;
+                defer owned_assignment.deinit(allocator);
+                try addGlobalMcpRequirementValue(allocator, &requirements, owned_assignment.server_name, owned_assignment.identity_key, rhs);
+                continue;
+            }
+            if (try parsePluginMcpTableInlineAssignment(allocator, lhs)) |server_name| {
+                defer allocator.free(server_name);
+                try addGlobalMcpRequirementInlineTable(allocator, &requirements, server_name, rhs);
+                continue;
+            }
+        }
+
+        if (current_section) |server_name| {
+            if (std.mem.eql(u8, lhs, "command") or std.mem.eql(u8, lhs, "url")) {
+                try addGlobalMcpRequirementValue(allocator, &requirements, server_name, lhs, rhs);
+            }
+        }
+    }
+
+    return requirements;
+}
+
+fn parseGlobalMcpRequirementHeader(allocator: std.mem.Allocator, line: []const u8) !?[]const u8 {
+    if (line.len < 2 or line[0] != '[' or line[line.len - 1] != ']') return null;
+    if (line.len >= 4 and line[1] == '[') return null;
+    const inner = std.mem.trim(u8, line[1 .. line.len - 1], " \t\r");
+    var path = (try parseTomlDottedPath(allocator, inner)) orelse return null;
+    defer path.deinit(allocator);
+    if (path.items.len != 3) return null;
+    if (!std.mem.eql(u8, path.items[0], "mcp_servers")) return null;
+    if (!std.mem.eql(u8, path.items[2], "identity")) return null;
+    return try allocator.dupe(u8, path.items[1]);
+}
+
+fn isGlobalMcpRequirementsTableHeader(allocator: std.mem.Allocator, line: []const u8) !bool {
+    if (line.len < 2 or line[0] != '[' or line[line.len - 1] != ']') return false;
+    if (line.len >= 4 and line[1] == '[') return false;
+    const inner = std.mem.trim(u8, line[1 .. line.len - 1], " \t\r");
+    var path = (try parseTomlDottedPath(allocator, inner)) orelse return false;
+    defer path.deinit(allocator);
+    return path.items.len == 1 and std.mem.eql(u8, path.items[0], "mcp_servers");
+}
+
+fn parseGlobalMcpRequirementAssignment(allocator: std.mem.Allocator, lhs: []const u8) !?McpRequirementAssignment {
+    var path = (try parseTomlDottedPath(allocator, lhs)) orelse return null;
+    errdefer path.deinit(allocator);
+    if (path.items.len != 4) {
+        path.deinit(allocator);
+        return null;
+    }
+    if (!std.mem.eql(u8, path.items[0], "mcp_servers") or
+        !std.mem.eql(u8, path.items[2], "identity"))
+    {
+        path.deinit(allocator);
+        return null;
+    }
+    if (!std.mem.eql(u8, path.items[3], "command") and !std.mem.eql(u8, path.items[3], "url")) {
+        path.deinit(allocator);
+        return null;
+    }
+
+    const server_name = try allocator.dupe(u8, path.items[1]);
+    errdefer allocator.free(server_name);
+    const result = McpRequirementAssignment{
+        .server_name = server_name,
+        .identity_key = path.items[3],
+    };
+    allocator.free(path.items[0]);
+    allocator.free(path.items[1]);
+    allocator.free(path.items[2]);
+    allocator.free(path.items);
+    return result;
+}
+
+fn addGlobalMcpRequirementValue(
+    allocator: std.mem.Allocator,
+    requirements: *McpRequirements,
+    server_name: []const u8,
+    identity_key: []const u8,
+    rhs: []const u8,
+) !void {
+    const value = (try parseTomlString(allocator, rhs)) orelse return;
+    const identity = if (std.mem.eql(u8, identity_key, "command"))
+        PluginMcpIdentity{ .command = value }
+    else if (std.mem.eql(u8, identity_key, "url"))
+        PluginMcpIdentity{ .url = value }
+    else {
+        allocator.free(value);
+        return;
+    };
+    try putGlobalMcpRequirement(allocator, requirements, server_name, identity);
+}
+
+fn addGlobalMcpRequirementInlineTable(
+    allocator: std.mem.Allocator,
+    requirements: *McpRequirements,
+    server_name: []const u8,
+    rhs: []const u8,
+) !void {
+    const contents = try parseInlineTableContents(allocator, rhs) orelse return;
+    defer allocator.free(contents);
+
+    var start: usize = 0;
+    while (start < contents.len) {
+        const end = findTopLevelComma(contents, start) orelse contents.len;
+        const next_start = if (end < contents.len) end + 1 else contents.len;
+        defer start = next_start;
+
+        const entry = std.mem.trim(u8, contents[start..end], " \t\r\n");
+        if (entry.len == 0) continue;
+        const eq = findTopLevelEquals(entry) orelse return error.InvalidTomlInlineTable;
+        const key = std.mem.trim(u8, entry[0..eq], " \t\r\n");
+        const value = std.mem.trim(u8, entry[eq + 1 ..], " \t\r\n");
+        var path = (try parseTomlDottedPath(allocator, key)) orelse return error.InvalidTomlInlineTable;
+        defer path.deinit(allocator);
+
+        if (path.items.len == 1 and std.mem.eql(u8, path.items[0], "identity")) {
+            try addGlobalMcpIdentityInlineTable(allocator, requirements, server_name, value);
+        } else if (path.items.len == 2 and std.mem.eql(u8, path.items[0], "identity")) {
+            try addGlobalMcpRequirementValue(allocator, requirements, server_name, path.items[1], value);
+        }
+    }
+}
+
+fn addGlobalMcpIdentityInlineTable(
+    allocator: std.mem.Allocator,
+    requirements: *McpRequirements,
+    server_name: []const u8,
+    rhs: []const u8,
+) !void {
+    const contents = try parseInlineTableContents(allocator, rhs) orelse return;
+    defer allocator.free(contents);
+
+    var start: usize = 0;
+    while (start < contents.len) {
+        const end = findTopLevelComma(contents, start) orelse contents.len;
+        const next_start = if (end < contents.len) end + 1 else contents.len;
+        defer start = next_start;
+
+        const entry = std.mem.trim(u8, contents[start..end], " \t\r\n");
+        if (entry.len == 0) continue;
+        const eq = findTopLevelEquals(entry) orelse return error.InvalidTomlInlineTable;
+        const key = std.mem.trim(u8, entry[0..eq], " \t\r\n");
+        const value = std.mem.trim(u8, entry[eq + 1 ..], " \t\r\n");
+        if (std.mem.eql(u8, key, "command") or std.mem.eql(u8, key, "url")) {
+            try addGlobalMcpRequirementValue(allocator, requirements, server_name, key, value);
+        }
+    }
+}
+
+fn putGlobalMcpRequirement(
+    allocator: std.mem.Allocator,
+    requirements: *McpRequirements,
+    server_name: []const u8,
+    identity: PluginMcpIdentity,
+) !void {
+    var owned_identity = identity;
+    errdefer owned_identity.deinit(allocator);
+    for (requirements.items.items) |*item| {
+        if (std.mem.eql(u8, item.server_name, server_name)) {
+            item.identity.deinit(allocator);
+            item.identity = owned_identity;
+            return;
+        }
+    }
+    const server_name_copy = try allocator.dupe(u8, server_name);
+    errdefer allocator.free(server_name_copy);
+    try requirements.items.append(allocator, .{
+        .server_name = server_name_copy,
+        .identity = owned_identity,
+    });
 }
 
 fn parsePluginMcpRequirements(allocator: std.mem.Allocator, payload: []const u8) !PluginMcpRequirements {
@@ -2278,8 +2592,6 @@ fn parsePluginMcpRequirements(allocator: std.mem.Allocator, payload: []const u8)
             } else if (try parsePluginMcpRequirementsTableHeader(allocator, line)) |table| {
                 requirements.active = true;
                 current_table = table;
-            } else if (try isPluginMcpRequirementsScopeHeader(allocator, line)) {
-                requirements.active = true;
             }
             continue;
         }
@@ -2340,20 +2652,6 @@ fn parsePluginMcpRequirementsTableHeader(allocator: std.mem.Allocator, line: []c
     if (!std.mem.eql(u8, path.items[0], "plugins")) return null;
     if (!std.mem.eql(u8, path.items[2], "mcp_servers")) return null;
     return .{ .plugin_id = try allocator.dupe(u8, path.items[1]) };
-}
-
-fn isPluginMcpRequirementsScopeHeader(allocator: std.mem.Allocator, line: []const u8) !bool {
-    if (line.len < 2 or line[0] != '[' or line[line.len - 1] != ']') return false;
-    if (line.len >= 4 and line[1] == '[') return false;
-    const inner = std.mem.trim(u8, line[1 .. line.len - 1], " \t\r");
-    var path = (try parseTomlDottedPath(allocator, inner)) orelse return false;
-    defer path.deinit(allocator);
-    if (path.items.len == 1) return std.mem.eql(u8, path.items[0], "plugins");
-    if (path.items.len == 2) return std.mem.eql(u8, path.items[0], "plugins");
-    if (path.items.len == 3) {
-        return std.mem.eql(u8, path.items[0], "plugins") and std.mem.eql(u8, path.items[2], "mcp_servers");
-    }
-    return false;
 }
 
 fn parsePluginMcpRequirementHeader(allocator: std.mem.Allocator, line: []const u8) !?PluginMcpRequirementPath {
@@ -3579,6 +3877,101 @@ test "mcp config loads enabled plugin mcp servers" {
     try std.testing.expectEqualStrings("PLUGIN_MCP_TOKEN", servers.get("plugin_remote").?.bearer_token_env_var.?);
 }
 
+test "mcp config applies global mcp requirements to configured servers" {
+    const allocator = std.testing.allocator;
+    const config_bytes =
+        \\[mcp_servers.allowed_docs]
+        \\command = "allowed-mcp"
+        \\
+        \\[mcp_servers.wrong_docs]
+        \\command = "wrong-mcp"
+        \\
+        \\[mcp_servers.unlisted_docs]
+        \\command = "unlisted-mcp"
+        \\
+        \\[mcp_servers.allowed_remote]
+        \\url = "https://allowed.example/mcp"
+        \\
+        \\[mcp_servers.wrong_remote]
+        \\url = "https://wrong.example/mcp"
+        \\
+    ;
+    var requirements = try parseGlobalMcpRequirements(allocator,
+        \\[mcp_servers.allowed_docs.identity]
+        \\command = "allowed-mcp"
+        \\
+        \\mcp_servers.wrong_docs.identity.command = "expected-mcp"
+        \\
+        \\[mcp_servers.allowed_remote.identity]
+        \\url = "https://allowed.example/mcp"
+        \\
+        \\[mcp_servers.wrong_remote.identity]
+        \\url = "https://expected.example/mcp"
+        \\
+    );
+    defer requirements.deinit(allocator);
+
+    var servers = try parseServers(allocator, config_bytes);
+    defer servers.deinit(allocator);
+    applyGlobalMcpRequirements(&servers, requirements);
+
+    try std.testing.expect(servers.get("allowed_docs").?.enabled);
+    try std.testing.expect(!servers.get("wrong_docs").?.enabled);
+    try std.testing.expect(!servers.get("unlisted_docs").?.enabled);
+    try std.testing.expect(servers.get("allowed_remote").?.enabled);
+    try std.testing.expect(!servers.get("wrong_remote").?.enabled);
+}
+
+test "mcp config parses section-relative and inline global mcp requirements" {
+    const allocator = std.testing.allocator;
+    const config_bytes =
+        \\[mcp_servers.relative_docs]
+        \\command = "relative-mcp"
+        \\
+        \\[mcp_servers.inline_docs]
+        \\command = "inline-mcp"
+        \\
+        \\[mcp_servers.blocked_docs]
+        \\command = "blocked-mcp"
+        \\
+    ;
+    var requirements = try parseGlobalMcpRequirements(allocator,
+        \\[mcp_servers]
+        \\relative_docs.identity.command = "relative-mcp"
+        \\inline_docs = { identity = { command = "inline-mcp" } }
+        \\
+    );
+    defer requirements.deinit(allocator);
+
+    var servers = try parseServers(allocator, config_bytes);
+    defer servers.deinit(allocator);
+    applyGlobalMcpRequirements(&servers, requirements);
+
+    try std.testing.expect(servers.get("relative_docs").?.enabled);
+    try std.testing.expect(servers.get("inline_docs").?.enabled);
+    try std.testing.expect(!servers.get("blocked_docs").?.enabled);
+}
+
+test "mcp config empty global mcp requirements disables configured servers" {
+    const allocator = std.testing.allocator;
+    var requirements = try parseGlobalMcpRequirements(allocator,
+        \\[mcp_servers]
+        \\
+    );
+    defer requirements.deinit(allocator);
+
+    var servers = try parseServers(allocator,
+        \\[mcp_servers.docs]
+        \\command = "docs-mcp"
+        \\
+    );
+    defer servers.deinit(allocator);
+    applyGlobalMcpRequirements(&servers, requirements);
+
+    try std.testing.expectEqual(@as(usize, 1), servers.items.items.len);
+    try std.testing.expect(!servers.get("docs").?.enabled);
+}
+
 test "mcp config applies plugin mcp requirements to plugin servers" {
     const allocator = std.testing.allocator;
     var dir = std.testing.tmpDir(.{});
@@ -3710,7 +4103,7 @@ test "mcp config empty plugin mcp requirements disables plugin servers" {
         \\
     ;
     var requirements = try parsePluginMcpRequirements(allocator,
-        \\[plugins]
+        \\[plugins."sample@test".mcp_servers]
         \\
     );
     defer requirements.deinit(allocator);
@@ -3723,6 +4116,46 @@ test "mcp config empty plugin mcp requirements disables plugin servers" {
     try std.testing.expect(!servers.get("plugin_docs").?.enabled);
 }
 
+test "mcp config ignores unrelated plugin requirement tables" {
+    const allocator = std.testing.allocator;
+    var dir = std.testing.tmpDir(.{});
+    defer dir.cleanup();
+    try dir.dir.createDirPath(std.Io.Threaded.global_single_threaded.io(), "plugins/cache/test/sample/local");
+    try dir.dir.writeFile(std.Io.Threaded.global_single_threaded.io(), .{
+        .sub_path = "plugins/cache/test/sample/local/.mcp.json",
+        .data =
+        \\{
+        \\  "mcpServers": {
+        \\    "plugin_docs": {"command": "plugin-mcp"}
+        \\  }
+        \\}
+        ,
+    });
+    const codex_home = try dir.dir.realPathFileAlloc(std.Io.Threaded.global_single_threaded.io(), ".", allocator);
+    defer allocator.free(codex_home);
+    const config_bytes =
+        \\[features]
+        \\plugins = true
+        \\
+        \\[plugins."sample@test"]
+        \\enabled = true
+        \\
+    ;
+    var requirements = try parsePluginMcpRequirements(allocator,
+        \\[plugins."sample@test"]
+        \\enabled = true
+        \\
+    );
+    defer requirements.deinit(allocator);
+
+    var servers = try parseServers(allocator, config_bytes);
+    defer servers.deinit(allocator);
+    try appendPluginMcpServersWithRequirements(allocator, codex_home, config_bytes, requirements, &servers);
+
+    try std.testing.expectEqual(@as(usize, 1), servers.items.items.len);
+    try std.testing.expect(servers.get("plugin_docs").?.enabled);
+}
+
 test "mcp plugin requirements fail closed on read errors" {
     const allocator = std.testing.allocator;
     var dir = std.testing.tmpDir(.{});
@@ -3731,6 +4164,22 @@ test "mcp plugin requirements fail closed on read errors" {
     defer allocator.free(directory_path);
 
     if (loadPluginMcpRequirementsFromPath(allocator, directory_path)) |requirements_value| {
+        var requirements = requirements_value;
+        defer requirements.deinit(allocator);
+        return error.ExpectedMcpRequirementsReadFailure;
+    } else |err| {
+        try std.testing.expect(err != error.FileNotFound);
+    }
+}
+
+test "mcp global requirements fail closed on read errors" {
+    const allocator = std.testing.allocator;
+    var dir = std.testing.tmpDir(.{});
+    defer dir.cleanup();
+    const directory_path = try dir.dir.realPathFileAlloc(std.Io.Threaded.global_single_threaded.io(), ".", allocator);
+    defer allocator.free(directory_path);
+
+    if (loadGlobalMcpRequirementsFromPath(allocator, directory_path)) |requirements_value| {
         var requirements = requirements_value;
         defer requirements.deinit(allocator);
         return error.ExpectedMcpRequirementsReadFailure;
