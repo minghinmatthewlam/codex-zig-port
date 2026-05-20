@@ -827,10 +827,22 @@ fn freeResolvedRoots(allocator: std.mem.Allocator, roots: []const []const u8) vo
 }
 
 fn pathIsAtOrUnderRoot(path: []const u8, root: []const u8) bool {
-    if (std.mem.eql(u8, path, root)) return true;
+    if (sandboxPathEqual(path, root)) return true;
     if (std.mem.eql(u8, root, std.fs.path.sep_str)) return std.fs.path.isAbsolute(path);
     if (path.len <= root.len) return false;
-    return std.mem.startsWith(u8, path, root) and path[root.len] == std.fs.path.sep;
+    return sandboxPathStartsWith(path, root) and path[root.len] == std.fs.path.sep;
+}
+
+fn sandboxPathEqual(path: []const u8, root: []const u8) bool {
+    if (std.mem.eql(u8, path, root)) return true;
+    if (builtin.os.tag == .macos) return std.ascii.eqlIgnoreCase(path, root);
+    return false;
+}
+
+fn sandboxPathStartsWith(path: []const u8, root: []const u8) bool {
+    if (std.mem.startsWith(u8, path, root)) return true;
+    if (builtin.os.tag == .macos and path.len >= root.len) return std.ascii.eqlIgnoreCase(path[0..root.len], root);
+    return false;
 }
 
 fn runArgv(
@@ -3099,6 +3111,52 @@ test "apply_patch blocks read-denied source paths" {
 
     try std.testing.expectEqualStrings("blocked by sandbox", result.summary);
     try std.testing.expect(std.mem.indexOf(u8, result.output, "secret.txt") != null);
+    const content = try dir.dir.readFileAlloc(std.Io.Threaded.global_single_threaded.io(), "secret.txt", allocator, .limited(1024));
+    defer allocator.free(content);
+    try std.testing.expectEqualStrings("secret\n", content);
+}
+
+test "apply_patch blocks case-only read-denied source aliases on macos" {
+    if (builtin.os.tag != .macos) return error.SkipZigTest;
+
+    const allocator = std.testing.allocator;
+    var dir = std.testing.tmpDir(.{});
+    defer dir.cleanup();
+
+    try dir.dir.writeFile(std.Io.Threaded.global_single_threaded.io(), .{
+        .sub_path = "secret.txt",
+        .data = "secret\n",
+    });
+    const cwd = try dir.dir.realPathFileAlloc(std.Io.Threaded.global_single_threaded.io(), ".", allocator);
+    defer allocator.free(cwd);
+
+    const patch =
+        \\*** Begin Patch
+        \\*** Update File: SECRET.TXT
+        \\@@
+        \\-secret
+        \\+changed
+        \\*** End Patch
+    ;
+    const args = try applyPatchArgumentsForTest(allocator, patch);
+    defer allocator.free(args);
+    const call = api.FunctionCall{
+        .call_id = "call-read-denied-case-patch",
+        .name = "apply_patch",
+        .arguments = args,
+    };
+
+    const result = try runFunctionCall(allocator, call, .{
+        .approval_policy = .never,
+        .sandbox_mode = .workspace_write,
+        .auto_approve = true,
+        .workdir = cwd,
+        .read_denied_roots = &.{"secret.txt"},
+    });
+    defer result.deinit(allocator);
+
+    try std.testing.expectEqualStrings("blocked by sandbox", result.summary);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "blocked by read-denied path") != null);
     const content = try dir.dir.readFileAlloc(std.Io.Threaded.global_single_threaded.io(), "secret.txt", allocator, .limited(1024));
     defer allocator.free(content);
     try std.testing.expectEqualStrings("secret\n", content);
