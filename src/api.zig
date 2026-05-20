@@ -54,6 +54,7 @@ pub const ParsedResponse = struct {
     raw_response_items: []const []const u8,
     reasoning_events: []const ReasoningEvent,
     server_model: ?[]const u8,
+    models_etag: ?[]const u8,
     model_verifications: []const ModelVerification,
     token_usage: ?ResponseTokenUsageInfo,
 
@@ -66,6 +67,7 @@ pub const ParsedResponse = struct {
         for (self.reasoning_events) |event| event.deinit(allocator);
         allocator.free(self.reasoning_events);
         if (self.server_model) |server_model| allocator.free(server_model);
+        if (self.models_etag) |models_etag| allocator.free(models_etag);
         allocator.free(self.model_verifications);
     }
 };
@@ -254,7 +256,7 @@ pub fn createTurnWithOptions(
                 std.debug.print("Responses API error status {d}: {s}\n", .{ @intFromEnum(retry_response.status), retry_response.body });
                 return error.ApiRequestFailed;
             }
-            return parseSseResponseWithHttpModel(allocator, retry_response.body, retry_response.server_model);
+            return parseSseResponseWithHttpMetadata(allocator, retry_response.body, retry_response.server_model, retry_response.models_etag);
         }
         if (credentials.mode == .chatgpt_auth_tokens) {
             if (options.external_auth_refresh_callback) |callback| {
@@ -271,7 +273,7 @@ pub fn createTurnWithOptions(
                     std.debug.print("Responses API error status {d}: {s}\n", .{ @intFromEnum(retry_response.status), retry_response.body });
                     return error.ApiRequestFailed;
                 }
-                return parseSseResponseWithHttpModel(allocator, retry_response.body, retry_response.server_model);
+                return parseSseResponseWithHttpMetadata(allocator, retry_response.body, retry_response.server_model, retry_response.models_etag);
             }
         }
     }
@@ -281,17 +283,19 @@ pub fn createTurnWithOptions(
         return error.ApiRequestFailed;
     }
 
-    return parseSseResponseWithHttpModel(allocator, response.body, response.server_model);
+    return parseSseResponseWithHttpMetadata(allocator, response.body, response.server_model, response.models_etag);
 }
 
 const ApiFetchResponse = struct {
     status: std.http.Status,
     body: []u8,
     server_model: ?[]const u8,
+    models_etag: ?[]const u8,
 
     fn deinit(self: ApiFetchResponse, allocator: std.mem.Allocator) void {
         allocator.free(self.body);
         if (self.server_model) |server_model| allocator.free(server_model);
+        if (self.models_etag) |models_etag| allocator.free(models_etag);
     }
 };
 
@@ -348,6 +352,8 @@ fn fetchTurn(
     var response = try request.receiveHead(&response_head_buffer);
     const server_model = try serverModelFromHttpHeaders(allocator, response.head);
     errdefer if (server_model) |model| allocator.free(model);
+    const models_etag = try modelsEtagFromHttpHeaders(allocator, response.head);
+    errdefer if (models_etag) |etag| allocator.free(etag);
 
     const decompress_buffer: []u8 = switch (response.head.content_encoding) {
         .identity => &.{},
@@ -375,17 +381,26 @@ fn fetchTurn(
         .status = response.head.status,
         .body = try response_body.toOwnedSlice(),
         .server_model = server_model,
+        .models_etag = models_etag,
     };
 }
 
 fn serverModelFromHttpHeaders(allocator: std.mem.Allocator, head: std.http.Client.Response.Head) !?[]const u8 {
+    return headerValueFromHttpHeaders(allocator, head, &.{ "openai-model", "x-openai-model" });
+}
+
+fn modelsEtagFromHttpHeaders(allocator: std.mem.Allocator, head: std.http.Client.Response.Head) !?[]const u8 {
+    return headerValueFromHttpHeaders(allocator, head, &.{"x-models-etag"});
+}
+
+fn headerValueFromHttpHeaders(
+    allocator: std.mem.Allocator,
+    head: std.http.Client.Response.Head,
+    names: []const []const u8,
+) !?[]const u8 {
     var iterator = head.iterateHeaders();
     while (iterator.next()) |header| {
-        if (!std.ascii.eqlIgnoreCase(header.name, "openai-model") and
-            !std.ascii.eqlIgnoreCase(header.name, "x-openai-model"))
-        {
-            continue;
-        }
+        if (!headerNameMatches(header.name, names)) continue;
         if (header.value.len == 0) continue;
         return try allocator.dupe(u8, header.value);
     }
@@ -915,6 +930,8 @@ pub fn parseSseResponse(allocator: std.mem.Allocator, bytes: []const u8) !Parsed
     }
     var server_model: ?[]const u8 = null;
     errdefer if (server_model) |model| allocator.free(model);
+    var models_etag: ?[]const u8 = null;
+    errdefer if (models_etag) |etag| allocator.free(etag);
     var model_verifications = std.ArrayList(ModelVerification).empty;
     errdefer model_verifications.deinit(allocator);
     var token_usage: ?ResponseTokenUsageInfo = null;
@@ -937,6 +954,9 @@ pub fn parseSseResponse(allocator: std.mem.Allocator, bytes: []const u8) !Parsed
 
         if (server_model == null) {
             server_model = try parseServerModel(allocator, object);
+        }
+        if (models_etag == null) {
+            models_etag = try parseModelsEtag(allocator, object);
         }
         if (std.mem.eql(u8, event_type.string, "response.metadata")) {
             try appendModelVerifications(&model_verifications, allocator, object);
@@ -984,21 +1004,28 @@ pub fn parseSseResponse(allocator: std.mem.Allocator, bytes: []const u8) !Parsed
         .raw_response_items = try raw_response_items.toOwnedSlice(allocator),
         .reasoning_events = try reasoning_events.toOwnedSlice(allocator),
         .server_model = server_model,
+        .models_etag = models_etag,
         .model_verifications = try model_verifications.toOwnedSlice(allocator),
         .token_usage = token_usage,
     };
 }
 
-fn parseSseResponseWithHttpModel(
+fn parseSseResponseWithHttpMetadata(
     allocator: std.mem.Allocator,
     bytes: []const u8,
     http_server_model: ?[]const u8,
+    http_models_etag: ?[]const u8,
 ) !ParsedResponse {
     var parsed = try parseSseResponse(allocator, bytes);
     errdefer parsed.deinit(allocator);
     if (parsed.server_model == null) {
         if (http_server_model) |server_model| {
             parsed.server_model = try allocator.dupe(u8, server_model);
+        }
+    }
+    if (parsed.models_etag == null) {
+        if (http_models_etag) |models_etag| {
+            parsed.models_etag = try allocator.dupe(u8, models_etag);
         }
     }
     return parsed;
@@ -1013,23 +1040,47 @@ fn parseServerModel(allocator: std.mem.Allocator, object: std.json.ObjectMap) !?
     return parseServerModelFromObject(allocator, object);
 }
 
+fn parseModelsEtag(allocator: std.mem.Allocator, object: std.json.ObjectMap) !?[]const u8 {
+    if (object.get("response")) |response| {
+        if (response == .object) {
+            if (try parseModelsEtagFromObject(allocator, response.object)) |etag| return etag;
+        }
+    }
+    return parseModelsEtagFromObject(allocator, object);
+}
+
+fn parseModelsEtagFromObject(allocator: std.mem.Allocator, object: std.json.ObjectMap) !?[]const u8 {
+    return parseHeaderValueFromObject(allocator, object, &.{"x-models-etag"});
+}
+
 fn parseServerModelFromObject(allocator: std.mem.Allocator, object: std.json.ObjectMap) !?[]const u8 {
+    return parseHeaderValueFromObject(allocator, object, &.{ "openai-model", "x-openai-model" });
+}
+
+fn parseHeaderValueFromObject(
+    allocator: std.mem.Allocator,
+    object: std.json.ObjectMap,
+    names: []const []const u8,
+) !?[]const u8 {
     const headers = object.get("headers") orelse return null;
     if (headers != .object) return null;
 
     var iterator = headers.object.iterator();
     while (iterator.next()) |entry| {
         const name = entry.key_ptr.*;
-        if (!std.ascii.eqlIgnoreCase(name, "openai-model") and
-            !std.ascii.eqlIgnoreCase(name, "x-openai-model"))
-        {
-            continue;
-        }
-        const model = jsonStringOrFirstArrayString(entry.value_ptr.*) orelse continue;
-        if (model.len == 0) continue;
-        return try allocator.dupe(u8, model);
+        if (!headerNameMatches(name, names)) continue;
+        const value = jsonStringOrFirstArrayString(entry.value_ptr.*) orelse continue;
+        if (value.len == 0) continue;
+        return try allocator.dupe(u8, value);
     }
     return null;
+}
+
+fn headerNameMatches(name: []const u8, candidates: []const []const u8) bool {
+    for (candidates) |candidate| {
+        if (std.ascii.eqlIgnoreCase(name, candidate)) return true;
+    }
+    return false;
 }
 
 fn parseResponseTokenUsageInfo(object: std.json.ObjectMap) ?ResponseTokenUsageInfo {
@@ -1498,13 +1549,14 @@ test "parses SSE reasoning events" {
 test "parses SSE model metadata" {
     const allocator = std.testing.allocator;
     const body =
-        "data: {\"type\":\"response.created\",\"response\":{\"headers\":{\"OpenAI-Model\":\"gpt-rerouted\"}}}\n" ++
+        "data: {\"type\":\"response.created\",\"response\":{\"headers\":{\"OpenAI-Model\":\"gpt-rerouted\",\"X-Models-Etag\":\"models-etag-1\"}}}\n" ++
         "data: {\"type\":\"response.metadata\",\"metadata\":{\"openai_verification_recommendation\":[\"trusted_access_for_cyber\",\"unknown\",\"trusted_access_for_cyber\"]}}\n" ++
         "data: [DONE]\n";
     var parsed = try parseSseResponse(allocator, body);
     defer parsed.deinit(allocator);
 
     try std.testing.expectEqualStrings("gpt-rerouted", parsed.server_model.?);
+    try std.testing.expectEqualStrings("models-etag-1", parsed.models_etag.?);
     try std.testing.expectEqual(@as(usize, 1), parsed.model_verifications.len);
     try std.testing.expectEqual(ModelVerification.trusted_access_for_cyber, parsed.model_verifications[0]);
 }

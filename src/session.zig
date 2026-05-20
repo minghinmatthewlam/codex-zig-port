@@ -348,6 +348,7 @@ pub const TurnOptions = struct {
     raw_response_item_callback: ?RawResponseItemCallback = null,
     reasoning_event_callback: ?ReasoningEventCallback = null,
     server_model_callback: ?ServerModelCallback = null,
+    models_etag_callback: ?ModelsEtagCallback = null,
     model_verification_callback: ?ModelVerificationCallback = null,
     mcp_tool_call_progress_callback: ?McpToolCallProgressCallback = null,
     mcp_startup_status_callback: ?mcp_runtime.StartupStatusCallback = null,
@@ -401,6 +402,11 @@ pub const ReasoningEventCallback = struct {
 pub const ServerModelCallback = struct {
     ctx: *anyopaque,
     on_server_model: *const fn (ctx: *anyopaque, model: []const u8) anyerror!void,
+};
+
+pub const ModelsEtagCallback = struct {
+    ctx: *anyopaque,
+    on_models_etag: *const fn (ctx: *anyopaque, etag: []const u8) anyerror!void,
 };
 
 pub const ModelVerificationCallback = struct {
@@ -691,6 +697,11 @@ pub fn runTurnWithOptions(
                     if (last_reported_server_model) |last| allocator.free(last);
                     last_reported_server_model = copy;
                 }
+            }
+        }
+        if (response.models_etag) |models_etag| {
+            if (options.models_etag_callback) |callback| {
+                try callback.on_models_etag(callback.ctx, models_etag);
             }
         }
         if (response.model_verifications.len > 0) {
