@@ -28888,6 +28888,53 @@ def run_command_exec_rpc_smoke(binary: Path) -> None:
             )
             assert permission_profile_escape["error"]["code"] == -32602
 
+        symlink_outside_root = non_tmp_root / "permission-profile-symlink-outside"
+        symlink_outside_root.mkdir()
+        symlink_inside_cwd = child_cwd / "writable-symlink"
+        symlink_inside_cwd.symlink_to(symlink_outside_root, target_is_directory=True)
+        symlink_subpath_permission_profile = {
+            "type": "managed",
+            "fileSystem": {
+                "type": "restricted",
+                "entries": [
+                    {
+                        "path": {"type": "special", "value": {"kind": "root"}},
+                        "access": "read",
+                    },
+                    {
+                        "path": {
+                            "type": "special",
+                            "value": {
+                                "kind": "current_working_directory",
+                                "subpath": "writable-symlink",
+                            },
+                        },
+                        "access": "write",
+                    },
+                ],
+            },
+            "network": {"enabled": False},
+        }
+        permission_profile_symlink_escape = request_stdio_app_server(
+            binary,
+            {
+                "jsonrpc": "2.0",
+                "id": "command-exec-permission-profile-symlink-subpath",
+                "method": "command/exec",
+                "params": {
+                    "command": ["/usr/bin/true"],
+                    "cwd": str(child_cwd),
+                    "permissionProfile": symlink_subpath_permission_profile,
+                },
+            },
+            env,
+        )
+        assert (
+            permission_profile_symlink_escape["id"]
+            == "command-exec-permission-profile-symlink-subpath"
+        )
+        assert permission_profile_symlink_escape["error"]["code"] == -32602
+
         permission_profile_tmp_roots = {
             "type": "managed",
             "fileSystem": {
