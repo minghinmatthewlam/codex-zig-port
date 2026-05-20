@@ -28120,14 +28120,12 @@ fn handleGetConversationSummary(
         }
         const conversation_id = conversation_id_value.string;
         if (findLoadedThread(state, conversation_id)) |thread| {
-            var cfg = config.load(allocator) catch |err| {
-                return renderJsonRpcErrorForFailure(allocator, id_value, "getConversationSummary failed to load config", err);
-            };
-            defer cfg.deinit(allocator);
-
-            var state_metadata = thread_state.findThreadMetadataByThreadId(allocator, cfg.codex_home, conversation_id) catch |err| {
-                return renderJsonRpcErrorForFailure(allocator, id_value, "getConversationSummary failed to load state metadata", err);
-            };
+            var state_metadata: ?thread_state.ThreadMetadata = null;
+            if (config.load(allocator)) |loaded_cfg| {
+                var cfg = loaded_cfg;
+                defer cfg.deinit(allocator);
+                state_metadata = thread_state.findThreadMetadataByThreadId(allocator, cfg.codex_home, conversation_id) catch null;
+            } else |_| {}
             defer if (state_metadata) |*metadata| metadata.deinit(allocator);
 
             const metadata = if (state_metadata) |*value| value else null;

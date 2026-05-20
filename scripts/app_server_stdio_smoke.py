@@ -15688,7 +15688,8 @@ def run_thread_resume_rpc_smoke(binary: Path) -> None:
     server, base_url = start_turn_responses_server()
     codex_home = Path(tempfile.mkdtemp(prefix="codex-zig-app-server-resume-", dir="/tmp"))
     try:
-        codex_home.joinpath("config.toml").write_text(
+        config_path = codex_home / "config.toml"
+        config_path.write_text(
             (
                 f'openai_base_url = "{base_url}"\n'
                 'model = "gpt-resume-smoke"\n'
@@ -17366,6 +17367,38 @@ def run_thread_resume_rpc_smoke(binary: Path) -> None:
             assert loaded_summary_body["cliVersion"] == "0.0.1"
             assert loaded_summary_body["source"] == "cli"
             assert loaded_summary_body["gitInfo"] is None
+
+            original_config = config_path.read_text(encoding="utf-8")
+            config_path.write_text('profile = "missing-profile"\n', encoding="utf-8")
+            try:
+                write_json_line(
+                    proc,
+                    {
+                        "jsonrpc": "2.0",
+                        "id": "conversation-summary-loaded-invalid-config",
+                        "method": "getConversationSummary",
+                        "params": {"conversationId": resume_thread_id},
+                    },
+                )
+                loaded_invalid_config_summary = read_json_line(proc, 5)
+                assert (
+                    loaded_invalid_config_summary["id"]
+                    == "conversation-summary-loaded-invalid-config"
+                )
+                loaded_invalid_config_body = loaded_invalid_config_summary["result"][
+                    "summary"
+                ]
+                assert loaded_invalid_config_body["conversationId"] == resume_thread_id
+                assert loaded_invalid_config_body["path"] == os.path.realpath(
+                    rollout_path
+                )
+                assert loaded_invalid_config_body["preview"] == "saved hello"
+                assert loaded_invalid_config_body["timestamp"] is None
+                assert loaded_invalid_config_body["updatedAt"] is None
+                assert loaded_invalid_config_body["modelProvider"] == "mock_provider"
+                assert loaded_invalid_config_body["cwd"] == os.path.realpath(".")
+            finally:
+                config_path.write_text(original_config, encoding="utf-8")
 
             write_json_line(
                 proc,
