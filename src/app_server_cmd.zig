@@ -573,6 +573,7 @@ const LoadedThread = struct {
     approvals_reviewer: []const u8,
     sandbox_mode: []const u8,
     sandbox_writable_roots: config.StringList,
+    sandbox_read_denied_roots: config.StringList,
     sandbox_include_cwd_write_root: bool,
     sandbox_network_enabled: bool,
     sandbox_exclude_tmpdir_env_var: bool,
@@ -626,6 +627,7 @@ const LoadedThread = struct {
         allocator.free(self.approvals_reviewer);
         allocator.free(self.sandbox_mode);
         self.sandbox_writable_roots.deinit(allocator);
+        self.sandbox_read_denied_roots.deinit(allocator);
         if (self.reasoning_effort) |value| allocator.free(value);
         if (self.reasoning_summary) |value| allocator.free(value);
         if (self.personality) |value| allocator.free(value);
@@ -30127,6 +30129,7 @@ fn handleTurnStart(
         .mcp_elicitation_callback = mcp_elicitation_callback,
         .external_auth_refresh_callback = external_auth_refresh_callback,
         .additional_writable_roots = effective_writable_roots.items,
+        .read_denied_roots = thread.sandbox_read_denied_roots.items,
         .include_cwd_write_root = thread.sandbox_include_cwd_write_root,
         .network_enabled = thread.sandbox_network_enabled,
         .output_schema = optionalJsonParam(object, "outputSchema"),
@@ -32355,19 +32358,26 @@ fn applyTurnStartRuntimeOverrides(
         var profile = parseTurnStartPermissionSelection(allocator, permissions_value.?) catch return error.InvalidTurnContextOverride;
         defer profile.deinit(allocator);
         cfg.sandbox_mode = profile.mode;
-        var roots = try profile.additional_writable_roots.clone(allocator);
-        errdefer roots.deinit(allocator);
+        var roots = try loadedThreadRootsFromProfile(allocator, thread.cwd, profile.additional_writable_roots.items);
+        var roots_moved = false;
+        errdefer if (!roots_moved) roots.deinit(allocator);
+        var read_denied_roots = try loadedThreadRootsFromProfile(allocator, thread.cwd, profile.read_denied_roots.items);
+        var read_denied_roots_moved = false;
+        errdefer if (!read_denied_roots_moved) read_denied_roots.deinit(allocator);
         try replaceLoadedThreadSandboxProfile(
             allocator,
             thread,
             profile.mode,
             roots,
+            read_denied_roots,
             profile.include_cwd_write_root,
             profile.network_enabled,
             profile.exclude_tmpdir_env_var,
             profile.exclude_slash_tmp,
             false,
         );
+        roots_moved = true;
+        read_denied_roots_moved = true;
     } else if (params.get("sandboxPolicy")) |sandbox_policy| {
         if (sandbox_policy != .null and params.get("sandbox") != null and params.get("sandbox").? != .null) return error.InvalidTurnContextOverride;
         if (sandbox_policy != .null) {
@@ -32377,11 +32387,15 @@ fn applyTurnStartRuntimeOverrides(
             var writable_roots = sandbox_selection.takeWritableRoots();
             var writable_roots_moved = false;
             errdefer if (!writable_roots_moved) writable_roots.deinit(allocator);
+            var read_denied_roots = try emptyStringList(allocator);
+            var read_denied_roots_moved = false;
+            errdefer if (!read_denied_roots_moved) read_denied_roots.deinit(allocator);
             try replaceLoadedThreadSandboxProfile(
                 allocator,
                 thread,
                 sandbox_selection.mode,
                 writable_roots,
+                read_denied_roots,
                 true,
                 sandbox_selection.network_enabled,
                 sandbox_selection.exclude_tmpdir_env_var,
@@ -32389,6 +32403,7 @@ fn applyTurnStartRuntimeOverrides(
                 sandbox_selection.external,
             );
             writable_roots_moved = true;
+            read_denied_roots_moved = true;
         } else {
             const sandbox_label = optionalStringParam(params, "sandbox") orelse thread.sandbox_mode;
             cfg.sandbox_mode = config.SandboxMode.parse(sandbox_label) catch return error.InvalidTurnContextOverride;
@@ -32649,6 +32664,34 @@ fn applyTurnStartPermissionModifications(
     }
 }
 
+fn loadedThreadRootsFromProfile(
+    allocator: std.mem.Allocator,
+    cwd: []const u8,
+    roots: []const []const u8,
+) !config.StringList {
+    var resolved = std.ArrayList([]const u8).empty;
+    var moved = false;
+    errdefer if (!moved) {
+        for (resolved.items) |root| allocator.free(root);
+        resolved.deinit(allocator);
+    };
+
+    for (roots) |root| {
+        const owned = if (std.fs.path.isAbsolute(root))
+            try std.fs.path.resolve(allocator, &.{root})
+        else
+            try std.fs.path.resolve(allocator, &.{ cwd, root });
+        resolved.append(allocator, owned) catch |err| {
+            allocator.free(owned);
+            return err;
+        };
+    }
+
+    const items = try resolved.toOwnedSlice(allocator);
+    moved = true;
+    return .{ .items = items };
+}
+
 fn expectTurnStartSandboxPolicyNetworkDisabled(object: std.json.ObjectMap) !void {
     const value = object.get("networkAccess") orelse return;
     if (value == .null) return;
@@ -32676,11 +32719,14 @@ fn resetLoadedThreadSandboxProfile(
 ) !void {
     var roots = try emptyStringList(allocator);
     errdefer roots.deinit(allocator);
+    var read_denied_roots = try emptyStringList(allocator);
+    errdefer read_denied_roots.deinit(allocator);
     try replaceLoadedThreadSandboxProfile(
         allocator,
         thread,
         mode,
         roots,
+        read_denied_roots,
         true,
         network_enabled,
         false,
@@ -32694,6 +32740,7 @@ fn replaceLoadedThreadSandboxProfile(
     thread: *LoadedThread,
     mode: config.SandboxMode,
     roots: config.StringList,
+    read_denied_roots: config.StringList,
     include_cwd_write_root: bool,
     network_enabled: bool,
     exclude_tmpdir_env_var: bool,
@@ -32703,6 +32750,8 @@ fn replaceLoadedThreadSandboxProfile(
     try replaceOwnedString(allocator, &thread.sandbox_mode, mode.label());
     thread.sandbox_writable_roots.deinit(allocator);
     thread.sandbox_writable_roots = roots;
+    thread.sandbox_read_denied_roots.deinit(allocator);
+    thread.sandbox_read_denied_roots = read_denied_roots;
     thread.sandbox_include_cwd_write_root = include_cwd_write_root;
     thread.sandbox_network_enabled = network_enabled;
     thread.sandbox_exclude_tmpdir_env_var = exclude_tmpdir_env_var;
@@ -33261,6 +33310,7 @@ fn handleLoadedThreadCompactStart(
     const answer = session_mod.runTurnWithOptions(allocator, cfg, &credentials, &thread.transcript, compact_prompt, .{
         .prompt_for_approval = false,
         .additional_writable_roots = effective_writable_roots.items,
+        .read_denied_roots = thread.sandbox_read_denied_roots.items,
         .include_cwd_write_root = thread.sandbox_include_cwd_write_root,
         .network_enabled = thread.sandbox_network_enabled,
         .include_tools = false,
@@ -37138,6 +37188,8 @@ fn createLoadedThreadFromStartParams(
     errdefer allocator.free(sandbox_mode);
     var sandbox_writable_roots = try emptyStringList(allocator);
     errdefer sandbox_writable_roots.deinit(allocator);
+    var sandbox_read_denied_roots = try emptyStringList(allocator);
+    errdefer sandbox_read_denied_roots.deinit(allocator);
 
     const reasoning_effort = if (cfg.model_reasoning_effort) |effort|
         try allocator.dupe(u8, effort.label())
@@ -37198,6 +37250,7 @@ fn createLoadedThreadFromStartParams(
         .approvals_reviewer = approvals_reviewer,
         .sandbox_mode = sandbox_mode,
         .sandbox_writable_roots = sandbox_writable_roots,
+        .sandbox_read_denied_roots = sandbox_read_denied_roots,
         .sandbox_include_cwd_write_root = true,
         .sandbox_network_enabled = defaultNetworkEnabledForSandboxModeLabel(sandbox_mode),
         .sandbox_exclude_tmpdir_env_var = false,
@@ -37302,6 +37355,8 @@ fn createLoadedThreadFromHistoryParams(
     errdefer allocator.free(sandbox_mode);
     var sandbox_writable_roots = try emptyStringList(allocator);
     errdefer sandbox_writable_roots.deinit(allocator);
+    var sandbox_read_denied_roots = try emptyStringList(allocator);
+    errdefer sandbox_read_denied_roots.deinit(allocator);
 
     const reasoning_effort = if (cfg.model_reasoning_effort) |effort|
         try allocator.dupe(u8, effort.label())
@@ -37349,6 +37404,7 @@ fn createLoadedThreadFromHistoryParams(
         .approvals_reviewer = approvals_reviewer,
         .sandbox_mode = sandbox_mode,
         .sandbox_writable_roots = sandbox_writable_roots,
+        .sandbox_read_denied_roots = sandbox_read_denied_roots,
         .sandbox_include_cwd_write_root = true,
         .sandbox_network_enabled = defaultNetworkEnabledForSandboxModeLabel(sandbox_mode),
         .sandbox_exclude_tmpdir_env_var = false,
@@ -37487,6 +37543,8 @@ fn createLoadedThreadFromResumeParams(
     errdefer allocator.free(sandbox_mode);
     var sandbox_writable_roots = try emptyStringList(allocator);
     errdefer sandbox_writable_roots.deinit(allocator);
+    var sandbox_read_denied_roots = try emptyStringList(allocator);
+    errdefer sandbox_read_denied_roots.deinit(allocator);
 
     const reasoning_effort = if (cfg.model_reasoning_effort) |effort|
         try allocator.dupe(u8, effort.label())
@@ -37525,6 +37583,7 @@ fn createLoadedThreadFromResumeParams(
         .approvals_reviewer = approvals_reviewer,
         .sandbox_mode = sandbox_mode,
         .sandbox_writable_roots = sandbox_writable_roots,
+        .sandbox_read_denied_roots = sandbox_read_denied_roots,
         .sandbox_include_cwd_write_root = true,
         .sandbox_network_enabled = defaultNetworkEnabledForSandboxModeLabel(sandbox_mode),
         .sandbox_exclude_tmpdir_env_var = false,
@@ -37683,6 +37742,11 @@ fn createLoadedThreadFromForkParams(
     else
         try source.sandbox_writable_roots.clone(allocator);
     errdefer sandbox_writable_roots.deinit(allocator);
+    var sandbox_read_denied_roots = if (reset_sandbox_profile)
+        try emptyStringList(allocator)
+    else
+        try source.sandbox_read_denied_roots.clone(allocator);
+    errdefer sandbox_read_denied_roots.deinit(allocator);
     const sandbox_include_cwd_write_root = if (reset_sandbox_profile) true else source.sandbox_include_cwd_write_root;
     const sandbox_network_enabled = if (reset_sandbox_profile) defaultNetworkEnabledForSandboxModeLabel(sandbox_mode) else source.sandbox_network_enabled;
     const sandbox_exclude_tmpdir_env_var = if (reset_sandbox_profile) false else source.sandbox_exclude_tmpdir_env_var;
@@ -37771,6 +37835,7 @@ fn createLoadedThreadFromForkParams(
         .approvals_reviewer = approvals_reviewer,
         .sandbox_mode = sandbox_mode,
         .sandbox_writable_roots = sandbox_writable_roots,
+        .sandbox_read_denied_roots = sandbox_read_denied_roots,
         .sandbox_include_cwd_write_root = sandbox_include_cwd_write_root,
         .sandbox_network_enabled = sandbox_network_enabled,
         .sandbox_exclude_tmpdir_env_var = sandbox_exclude_tmpdir_env_var,
@@ -40341,6 +40406,11 @@ fn appendThreadPermissionProfileJson(allocator: std.mem.Allocator, result: *std.
 fn appendThreadPermissionProfileFileSystemJson(allocator: std.mem.Allocator, result: *std.ArrayList(u8), thread: *const LoadedThread) !void {
     try result.appendSlice(allocator, "{\"type\":\"restricted\",\"entries\":[");
     try result.appendSlice(allocator, "{\"path\":{\"type\":\"special\",\"value\":{\"kind\":\"root\"}},\"access\":\"read\"}");
+    for (thread.sandbox_read_denied_roots.items) |root| {
+        try result.appendSlice(allocator, ",{\"path\":{\"type\":\"path\",\"path\":");
+        try appendJsonString(allocator, result, root);
+        try result.appendSlice(allocator, "},\"access\":\"none\"}");
+    }
     if (std.mem.eql(u8, thread.sandbox_mode, "workspace-write")) {
         if (thread.sandbox_include_cwd_write_root) {
             try result.appendSlice(allocator, ",{\"path\":{\"type\":\"special\",\"value\":{\"kind\":\"project_roots\"}},\"access\":\"write\"}");
@@ -52128,6 +52198,12 @@ fn reloadLoadedThreadRuntimeConfig(allocator: std.mem.Allocator, state: *AppServ
             thread.sandbox_writable_roots.deinit(allocator);
             thread.sandbox_writable_roots = roots;
             roots_moved = true;
+            var read_denied_roots = try emptyStringList(allocator);
+            var read_denied_roots_moved = false;
+            errdefer if (!read_denied_roots_moved) read_denied_roots.deinit(allocator);
+            thread.sandbox_read_denied_roots.deinit(allocator);
+            thread.sandbox_read_denied_roots = read_denied_roots;
+            read_denied_roots_moved = true;
             thread.sandbox_include_cwd_write_root = true;
             thread.sandbox_network_enabled = defaultNetworkEnabledForSandboxMode(cfg.sandbox_mode);
             thread.sandbox_exclude_tmpdir_env_var = false;
@@ -63437,6 +63513,7 @@ test "app-server goal reads persist refreshed accounting" {
         .approvals_reviewer = "codex",
         .sandbox_mode = "danger-full-access",
         .sandbox_writable_roots = .{ .items = &.{} },
+        .sandbox_read_denied_roots = .{ .items = &.{} },
         .sandbox_include_cwd_write_root = true,
         .sandbox_network_enabled = true,
         .sandbox_exclude_tmpdir_env_var = false,
