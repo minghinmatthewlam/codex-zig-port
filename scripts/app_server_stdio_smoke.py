@@ -32541,7 +32541,7 @@ def run_config_read_rpc_smoke(binary: Path) -> None:
             "\n".join(
                 [
                     'allowed_approval_policies = ["on-request"]',
-                    'allowed_sandbox_modes = ["danger-full-access"]',
+                    'allowed_sandbox_modes = ["external-sandbox", "danger-full-access"]',
                     'allowed_web_search_modes = ["cached"]',
                     'enforce_residency = "us"',
                     "",

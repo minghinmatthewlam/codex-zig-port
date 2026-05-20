@@ -50581,37 +50581,38 @@ fn parseAllowedRequirementList(
     var raw = try config.topLevelStringArrayValue(allocator, payload, key) orelse return null;
     defer raw.deinit(allocator);
 
+    var labels = std.ArrayList([]const u8).empty;
+    errdefer {
+        for (labels.items) |label| allocator.free(label);
+        labels.deinit(allocator);
+    }
+
     var disabled_present = false;
     for (raw.items) |value| {
-        if (std.mem.eql(u8, try requirementLabel(kind, value), config.WebSearchMode.disabled.label())) {
+        const label = try requirementLabel(kind, value) orelse continue;
+        if (std.mem.eql(u8, label, config.WebSearchMode.disabled.label())) {
             disabled_present = true;
         }
+        const owned_label = try allocator.dupe(u8, label);
+        errdefer allocator.free(owned_label);
+        try labels.append(allocator, owned_label);
     }
 
     const extra_disabled: usize = if (kind == .web_search_mode and !disabled_present) 1 else 0;
-    var labels = try allocator.alloc([]const u8, raw.items.len + extra_disabled);
-    var copied: usize = 0;
-    errdefer {
-        for (labels[0..copied]) |label| allocator.free(label);
-        allocator.free(labels);
+    if (extra_disabled == 1) {
+        const owned_label = try allocator.dupe(u8, config.WebSearchMode.disabled.label());
+        errdefer allocator.free(owned_label);
+        try labels.append(allocator, owned_label);
     }
 
-    for (raw.items, 0..) |value, index| {
-        labels[index] = try allocator.dupe(u8, try requirementLabel(kind, value));
-        copied += 1;
-    }
-    if (extra_disabled == 1) {
-        labels[raw.items.len] = try allocator.dupe(u8, config.WebSearchMode.disabled.label());
-        copied += 1;
-    }
-    return .{ .items = labels };
+    return .{ .items = try labels.toOwnedSlice(allocator) };
 }
 
-fn requirementLabel(kind: RequirementListKind, value: []const u8) ![]const u8 {
+fn requirementLabel(kind: RequirementListKind, value: []const u8) !?[]const u8 {
     return switch (kind) {
         .approval_policy => (try config.ApprovalPolicy.parse(value)).label(),
         .approvals_reviewer => (try config.ApprovalsReviewer.parse(value)).label(),
-        .sandbox_mode => (try config.SandboxMode.parse(value)).label(),
+        .sandbox_mode => if (std.mem.eql(u8, value, "external-sandbox")) null else (try config.SandboxMode.parse(value)).label(),
         .web_search_mode => (try config.WebSearchMode.parse(value)).label(),
     };
 }

@@ -818,6 +818,13 @@ single-value write behavior and treats `reloadUserConfig` as an unknown
 extension field rather than a reload flag. Full hot-reload notifications and
 full config-manager parity remain planned.
 
+Additional app-server config requirements coverage: `configRequirements/read`
+now accepts Rust-valid `allowed_sandbox_modes = ["external-sandbox", ...]`
+requirements and filters `external-sandbox` out of the returned
+`allowedSandboxModes` API list, matching the Rust app-server protocol mapping
+for sandbox requirements that are valid in config but not representable in the
+public sandbox-mode enum.
+
 Additional app-server thread-start coverage: `thread/start` now creates an in-memory loaded thread, returns a Rust-shaped `ThreadStartResponse` with a full thread object, supports ephemeral starts without materializing a rollout file, gives persistent starts an absolute rollout path, feeds the created ID into `thread/loaded/list`, lets `thread/read` return the loaded thread, returns `notSubscribed` for unsubscribing a loaded but unsubscribed thread, emits a Rust-shaped `thread/started` notification after the response unless the connection opted out, starts optional MCP server startup status reporting without delaying the response, rejects startup when a configured `required = true` MCP server fails to initialize, includes the experimental `permissionProfile` / `activePermissionProfile` response fields only for experimental clients, and persists trusted project state for explicit elevated `cwd` starts so the same request and later starts load supported trusted `.codex/config.toml` project fields, including TOML-escaped project paths. Nested Git cwd and linked-worktree starts trust the repository root, while read-only/default starts do not persist project trust. TypeScript and JSON schema generation include the current `thread/start` request/response shape plus `ThreadStartedNotification`. Loaded-thread hot reload and full thread schema parity remain planned.
 
 Additional app-server loaded-thread list coverage: `thread/loaded/list` now validates and canonicalizes cursors as UUIDs with Rust-shaped invalid-request errors, sorts loaded thread ids before pagination, treats missing-but-valid cursors as insertion points, clamps zero limits to one for non-empty results, and still returns an empty page before cursor validation when no threads are loaded.
