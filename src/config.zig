@@ -2696,7 +2696,7 @@ pub fn parseTomlString(allocator: std.mem.Allocator, rhs: []const u8) !?[]const 
     return error.InvalidTomlString;
 }
 
-fn parseTomlStringValue(allocator: std.mem.Allocator, rhs_raw: []const u8) !?[]const u8 {
+pub fn parseTomlStringValue(allocator: std.mem.Allocator, rhs_raw: []const u8) !?[]const u8 {
     const rhs = std.mem.trim(u8, rhs_raw, " \t");
     if (std.mem.startsWith(u8, rhs, "\"\"\"")) return try parseTomlMultilineBasicString(allocator, rhs);
     return parseTomlString(allocator, rhs);

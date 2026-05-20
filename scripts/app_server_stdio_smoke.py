@@ -31382,6 +31382,9 @@ def run_config_read_rpc_smoke(binary: Path) -> None:
                 "[apps.app3.tools.deploy]",
                 "enabled = true",
                 "",
+                "[profiles.project_only]",
+                'model = "gpt-project-profile"',
+                "",
             ]
         ),
         encoding="utf-8",
@@ -31417,7 +31420,11 @@ def run_config_read_rpc_smoke(binary: Path) -> None:
                 "model_auto_compact_token_limit = 96000",
                 'model_verbosity = "low"',
                 'profile = "work"',
-                'base_instructions = "user base instructions"',
+                'base_instructions = """',
+                "user base instructions",
+                "[profiles.fake]",
+                'model = "gpt-fake"',
+                '"""',
                 'developer_instructions = "user developer instructions"',
                 'compact_prompt = "user compact prompt"',
                 'approval_policy = "never"',
@@ -31425,8 +31432,21 @@ def run_config_read_rpc_smoke(binary: Path) -> None:
                 'sandbox_mode = "danger-full-access"',
                 'web_search = "live"',
                 'service_tier = "flex"',
+                "analytics = { enabled = true }",
                 'forced_chatgpt_workspace_id = "acct-user"',
                 'forced_login_method = "chatgpt"',
+                'profiles.inline = { model = "gpt-inline", tools = { view_image = true, web_search = { allowed_domains = ["inline.example"], location = { country = "CA" } } }, analytics = { enabled = true } }',
+                "profiles.bool_tool = { tools = { web_search = false } }",
+                'profiles.dotted.model = "gpt-dotted"',
+                'profiles.dotted.tools.web_search.context_size = "medium"',
+                'profiles.dotted.tools.web_search.location.country = "GB"',
+                "",
+                "[profiles]",
+                'section_dotted.model = "gpt-section-dotted"',
+                "section_dotted.analytics.enabled = true",
+                "section_dotted.tools.view_image = true",
+                'section_dotted.tools.web_search.context_size = "low"',
+                'section_dotted.tools.web_search.location.city = "Toronto"',
                 "",
                 "[sandbox_workspace_write]",
                 'writable_roots = ["/tmp/codex-zig-user-root"]',
@@ -31463,9 +31483,42 @@ def run_config_read_rpc_smoke(binary: Path) -> None:
                 "[profiles.work]",
                 'model_provider = "profile-provider"',
                 'model_verbosity = "high"',
+                'tools = { view_image = true, web_search = { context_size = "low", allowed_domains = ["work-inline.example"] } }',
+                "analytics = { enabled = false }",
+                'tools.web_search.location.region = "ON"',
+                "",
+                "[profiles.work.analytics]",
+                "enabled = false",
                 "",
                 "[profiles.work.features]",
                 "goals = true",
+                "",
+                "[profiles.other]",
+                'model = "gpt-other"',
+                'model_provider = "other-provider"',
+                'approval_policy = "on-request"',
+                'approvals_reviewer = "auto_review"',
+                'sandbox_mode = "workspace-write"',
+                'service_tier = "fast"',
+                'model_reasoning_effort = "low"',
+                'model_reasoning_summary = "concise"',
+                'model_verbosity = "medium"',
+                'web_search = "cached"',
+                'chatgpt_base_url = "https://other.example/backend-api"',
+                "",
+                "[profiles.other.tools]",
+                "view_image = true",
+                "",
+                "[profiles.other.tools.web_search]",
+                'context_size = "low"',
+                'allowed_domains = ["profiles.example"]',
+                'location = { country = "US", timezone = "UTC" }',
+                "",
+                "[profiles.other.tools.web_search.location]",
+                'region = "WA"',
+                "",
+                '[profiles."quoted.name"]',
+                'model = "gpt-quoted"',
                 "",
                 "[projects]",
                 f'[projects."{toml_quoted_key(str(workspace))}"]',
@@ -31554,6 +31607,9 @@ def run_config_read_rpc_smoke(binary: Path) -> None:
                 "[apps.app2.tools.export]",
                 'approval_mode = "prompt"',
                 "",
+                "[profiles.system_only]",
+                'model = "gpt-system-profile"',
+                "",
             ]
         ),
         encoding="utf-8",
@@ -31588,7 +31644,7 @@ def run_config_read_rpc_smoke(binary: Path) -> None:
         assert config_body["review_model"] == "gpt-user-review"
         assert config_body["model_context_window"] == 128000
         assert config_body["model_auto_compact_token_limit"] == 96000
-        assert config_body["instructions"] == "user base instructions"
+        assert config_body["instructions"] == 'user base instructions\n[profiles.fake]\nmodel = "gpt-fake"\n'
         assert config_body["developer_instructions"] == "user developer instructions"
         assert config_body["compact_prompt"] == "user compact prompt"
         assert config_body["approval_policy"] == "never"
@@ -31606,6 +31662,187 @@ def run_config_read_rpc_smoke(binary: Path) -> None:
         assert config_body["service_tier"] == "flex"
         assert config_body["forced_chatgpt_workspace_id"] == "acct-user"
         assert config_body["forced_login_method"] == "chatgpt"
+        assert config_body["profiles"] == {
+            "work": {
+                "model": None,
+                "model_provider": "profile-provider",
+                "approval_policy": None,
+                "approvals_reviewer": None,
+                "sandbox_mode": None,
+                "service_tier": None,
+                "model_reasoning_effort": None,
+                "model_reasoning_summary": None,
+                "model_verbosity": "high",
+                "web_search": None,
+                "tools": {
+                    "web_search": {
+                        "context_size": "low",
+                        "allowed_domains": ["work-inline.example"],
+                        "location": {
+                            "country": None,
+                            "region": "ON",
+                            "city": None,
+                            "timezone": None,
+                        },
+                    },
+                    "view_image": True,
+                },
+                "analytics": {"enabled": False},
+                "chatgpt_base_url": None,
+            },
+            "other": {
+                "model": "gpt-other",
+                "model_provider": "other-provider",
+                "approval_policy": "on-request",
+                "approvals_reviewer": "guardian_subagent",
+                "sandbox_mode": "workspace-write",
+                "service_tier": "priority",
+                "model_reasoning_effort": "low",
+                "model_reasoning_summary": "concise",
+                "model_verbosity": "medium",
+                "web_search": "cached",
+                "tools": {
+                    "web_search": {
+                        "context_size": "low",
+                        "allowed_domains": ["profiles.example"],
+                        "location": {
+                            "country": "US",
+                            "region": "WA",
+                            "city": None,
+                            "timezone": "UTC",
+                        },
+                    },
+                    "view_image": True,
+                },
+                "chatgpt_base_url": "https://other.example/backend-api",
+            },
+            "quoted.name": {
+                "model": "gpt-quoted",
+                "model_provider": None,
+                "approval_policy": None,
+                "approvals_reviewer": None,
+                "sandbox_mode": None,
+                "service_tier": None,
+                "model_reasoning_effort": None,
+                "model_reasoning_summary": None,
+                "model_verbosity": None,
+                "web_search": None,
+                "tools": None,
+                "chatgpt_base_url": None,
+            },
+            "inline": {
+                "model": "gpt-inline",
+                "model_provider": None,
+                "approval_policy": None,
+                "approvals_reviewer": None,
+                "sandbox_mode": None,
+                "service_tier": None,
+                "model_reasoning_effort": None,
+                "model_reasoning_summary": None,
+                "model_verbosity": None,
+                "web_search": None,
+                "tools": {
+                    "web_search": {
+                        "context_size": None,
+                        "allowed_domains": ["inline.example"],
+                        "location": {
+                            "country": "CA",
+                            "region": None,
+                            "city": None,
+                            "timezone": None,
+                        },
+                    },
+                    "view_image": True,
+                },
+                "analytics": {"enabled": True},
+                "chatgpt_base_url": None,
+            },
+            "bool_tool": {
+                "model": None,
+                "model_provider": None,
+                "approval_policy": None,
+                "approvals_reviewer": None,
+                "sandbox_mode": None,
+                "service_tier": None,
+                "model_reasoning_effort": None,
+                "model_reasoning_summary": None,
+                "model_verbosity": None,
+                "web_search": None,
+                "tools": {
+                    "web_search": None,
+                    "view_image": None,
+                },
+                "chatgpt_base_url": None,
+            },
+            "dotted": {
+                "model": "gpt-dotted",
+                "model_provider": None,
+                "approval_policy": None,
+                "approvals_reviewer": None,
+                "sandbox_mode": None,
+                "service_tier": None,
+                "model_reasoning_effort": None,
+                "model_reasoning_summary": None,
+                "model_verbosity": None,
+                "web_search": None,
+                "tools": {
+                    "web_search": {
+                        "context_size": "medium",
+                        "allowed_domains": None,
+                        "location": {
+                            "country": "GB",
+                            "region": None,
+                            "city": None,
+                            "timezone": None,
+                        },
+                    },
+                    "view_image": None,
+                },
+                "chatgpt_base_url": None,
+            },
+            "section_dotted": {
+                "model": "gpt-section-dotted",
+                "model_provider": None,
+                "approval_policy": None,
+                "approvals_reviewer": None,
+                "sandbox_mode": None,
+                "service_tier": None,
+                "model_reasoning_effort": None,
+                "model_reasoning_summary": None,
+                "model_verbosity": None,
+                "web_search": None,
+                "tools": {
+                    "web_search": {
+                        "context_size": "low",
+                        "allowed_domains": None,
+                        "location": {
+                            "country": None,
+                            "region": None,
+                            "city": "Toronto",
+                            "timezone": None,
+                        },
+                    },
+                    "view_image": True,
+                },
+                "analytics": {"enabled": True},
+                "chatgpt_base_url": None,
+            },
+            "system_only": {
+                "model": "gpt-system-profile",
+                "model_provider": None,
+                "approval_policy": None,
+                "approvals_reviewer": None,
+                "sandbox_mode": None,
+                "service_tier": None,
+                "model_reasoning_effort": None,
+                "model_reasoning_summary": None,
+                "model_verbosity": None,
+                "web_search": None,
+                "tools": None,
+                "chatgpt_base_url": None,
+            },
+        }
+        assert config_body["analytics"] == {"enabled": False}
         assert config_body["tools"] == {
             "web_search": {
                 "context_size": "high",
@@ -31699,6 +31936,25 @@ def run_config_read_rpc_smoke(binary: Path) -> None:
             "apps.app1.default_tools_enabled",
             "apps.app1.tools.search.enabled",
             "apps.app1.tools.search.approval_mode",
+            "analytics.enabled",
+            "profiles.work.model_provider",
+            "profiles.work.model_verbosity",
+            "profiles.work.analytics.enabled",
+            "profiles.work.tools.view_image",
+            "profiles.work.tools.web_search.context_size",
+            "profiles.work.tools.web_search.allowed_domains.0",
+            "profiles.work.tools.web_search.location.region",
+            "profiles.other.model",
+            "profiles.other.sandbox_mode",
+            "profiles.other.tools.web_search.allowed_domains.0",
+            "profiles.other.tools.web_search.location.region",
+            "profiles.quoted.name.model",
+            "profiles.inline.analytics.enabled",
+            "profiles.dotted.tools.web_search.location.country",
+            "profiles.section_dotted.model",
+            "profiles.section_dotted.analytics.enabled",
+            "profiles.section_dotted.tools.view_image",
+            "profiles.section_dotted.tools.web_search.location.city",
         ]:
             assert origins[key]["name"] == {"type": "user", "file": config_path}
             assert origins[key]["version"].startswith("sha256:")
@@ -31714,6 +31970,7 @@ def run_config_read_rpc_smoke(binary: Path) -> None:
             "apps.app2.enabled",
             "apps.app2.default_tools_approval_mode",
             "apps.app2.tools.export.approval_mode",
+            "profiles.system_only.model",
         ]:
             assert origins[key]["name"] == system_source
             assert origins[key]["version"].startswith("sha256:")
@@ -31729,7 +31986,7 @@ def run_config_read_rpc_smoke(binary: Path) -> None:
             "model_auto_compact_token_limit": 96000,
             "model_verbosity": "high",
             "profile": "work",
-            "instructions": "user base instructions",
+            "instructions": 'user base instructions\n[profiles.fake]\nmodel = "gpt-fake"\n',
             "developer_instructions": "user developer instructions",
             "compact_prompt": "user compact prompt",
             "approval_policy": "never",
@@ -31745,6 +32002,19 @@ def run_config_read_rpc_smoke(binary: Path) -> None:
             "service_tier": "flex",
             "forced_chatgpt_workspace_id": "acct-user",
             "forced_login_method": "chatgpt",
+            "analytics": {"enabled": True},
+            "profiles": {
+                name: config_body["profiles"][name]
+                for name in [
+                    "work",
+                    "other",
+                    "quoted.name",
+                    "inline",
+                    "bool_tool",
+                    "dotted",
+                    "section_dotted",
+                ]
+            },
             "tools": {
                 "web_search": {
                     "context_size": "high",
@@ -31848,6 +32118,9 @@ def run_config_read_rpc_smoke(binary: Path) -> None:
                     },
                 },
             },
+            "profiles": {
+                "system_only": config_body["profiles"]["system_only"],
+            },
         }
 
         project_config_read = rpc(
@@ -31871,6 +32144,8 @@ def run_config_read_rpc_smoke(binary: Path) -> None:
         assert project_config_body["service_tier"] == "priority"
         assert project_config_body["forced_chatgpt_workspace_id"] == "acct-project"
         assert project_config_body["forced_login_method"] == "api"
+        assert project_config_body["profiles"]["project_only"]["model"] == "gpt-project-profile"
+        assert project_config_body["profiles"]["system_only"]["model"] == "gpt-system-profile"
         assert project_config_body["tools"] == {
             "web_search": {
                 "context_size": "low",
@@ -31969,6 +32244,7 @@ def run_config_read_rpc_smoke(binary: Path) -> None:
             "apps.app3.tools.deploy.enabled",
             "sandbox_workspace_write.writable_roots.0",
             "sandbox_workspace_write.network_access",
+            "profiles.project_only.model",
         ]:
             assert project_origins[key]["name"] == project_source
             assert project_origins[key]["version"].startswith("sha256:")
@@ -32000,6 +32276,7 @@ def run_config_read_rpc_smoke(binary: Path) -> None:
             "apps.app2.enabled",
             "apps.app2.default_tools_approval_mode",
             "apps.app2.tools.export.approval_mode",
+            "profiles.system_only.model",
         ]:
             assert project_origins[key]["name"] == system_source
             assert project_origins[key]["version"].startswith("sha256:")
@@ -32069,6 +32346,9 @@ def run_config_read_rpc_smoke(binary: Path) -> None:
                     },
                 },
             },
+            "profiles": {
+                "project_only": project_config_body["profiles"]["project_only"],
+            },
         }
         assert project_layers[1]["name"] == {"type": "user", "file": config_path}
         assert project_layers[2]["name"] == system_source
@@ -32094,6 +32374,8 @@ def run_config_read_rpc_smoke(binary: Path) -> None:
         assert nested_config_body["service_tier"] == "flex"
         assert nested_config_body["forced_chatgpt_workspace_id"] == "acct-project"
         assert nested_config_body["forced_login_method"] == "api"
+        assert nested_config_body["profiles"]["project_only"]["model"] == "gpt-project-profile"
+        assert nested_config_body["profiles"]["system_only"]["model"] == "gpt-system-profile"
         assert nested_config_body["tools"] == {
             "web_search": {
                 "context_size": "low",
@@ -32137,6 +32419,8 @@ def run_config_read_rpc_smoke(binary: Path) -> None:
         assert nested_origins["service_tier"]["name"] == child_project_source
         assert nested_origins["forced_chatgpt_workspace_id"]["name"] == project_source
         assert nested_origins["forced_login_method"]["name"] == project_source
+        assert nested_origins["profiles.project_only.model"]["name"] == project_source
+        assert nested_origins["profiles.system_only.model"]["name"] == system_source
         assert nested_origins["sandbox_workspace_write.writable_roots.0"]["name"] == project_source
         assert nested_origins["sandbox_workspace_write.network_access"]["name"] == project_source
         assert nested_origins["sandbox_workspace_write.exclude_tmpdir_env_var"]["name"] == child_project_source
@@ -32233,6 +32517,9 @@ def run_config_read_rpc_smoke(binary: Path) -> None:
                     },
                 },
             },
+            "profiles": {
+                "project_only": nested_config_body["profiles"]["project_only"],
+            },
         }
         assert nested_layers[2]["name"] == {"type": "user", "file": config_path}
         assert nested_layers[3]["name"] == system_source
@@ -32282,6 +32569,9 @@ def run_config_read_rpc_smoke(binary: Path) -> None:
                     "[apps.app4.tools.deploy]",
                     "enabled = false",
                     "",
+                    "[profiles.managed_only]",
+                    'model = "gpt-managed-profile"',
+                    "",
                 ]
             ),
             encoding="utf-8",
@@ -32307,6 +32597,8 @@ def run_config_read_rpc_smoke(binary: Path) -> None:
         assert managed_config_body["service_tier"] == "priority"
         assert managed_config_body["forced_chatgpt_workspace_id"] == "acct-managed"
         assert managed_config_body["forced_login_method"] == "api"
+        assert managed_config_body["profiles"]["managed_only"]["model"] == "gpt-managed-profile"
+        assert managed_config_body["profiles"]["system_only"]["model"] == "gpt-system-profile"
         assert managed_config_body["sandbox_workspace_write"] == {
             "writable_roots": ["/tmp/codex-zig-managed-root"],
             "network_access": False,
@@ -32407,6 +32699,7 @@ def run_config_read_rpc_smoke(binary: Path) -> None:
             "apps.app1.tools.search.approval_mode",
             "apps.app4.destructive_enabled",
             "apps.app4.tools.deploy.enabled",
+            "profiles.managed_only.model",
         ]:
             assert managed_origins[key]["name"] == managed_source
             assert managed_origins[key]["version"].startswith("sha256:")
@@ -32433,6 +32726,7 @@ def run_config_read_rpc_smoke(binary: Path) -> None:
             "apps.app2.enabled",
             "apps.app2.default_tools_approval_mode",
             "apps.app2.tools.export.approval_mode",
+            "profiles.system_only.model",
         ]:
             assert managed_origins[key]["name"] == system_source
             assert managed_origins[key]["version"].startswith("sha256:")
@@ -32505,6 +32799,9 @@ def run_config_read_rpc_smoke(binary: Path) -> None:
                         },
                     },
                 },
+            },
+            "profiles": {
+                "managed_only": managed_config_body["profiles"]["managed_only"],
             },
         }
         assert managed_layers[1]["name"] == {"type": "user", "file": config_path}

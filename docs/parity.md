@@ -82,6 +82,13 @@ Current app-server `config/read` scalar coverage also includes
 origins, and user/project/system/legacy-managed layers, matching the account
 login validation surface.
 
+Current app-server `config/read` profile coverage includes the required
+Rust-shaped `profiles` map for user `config.toml` profile entries, including
+supported profile scalar fields such as `sandbox_mode`, inline and table-form
+profile definitions, and nested profile tool config. It also emits the required
+nullable `analytics` field and reads supported `[analytics]` `enabled` values
+through the effective config, layer, and origin responses.
+
 Current app-server `config/read` scalar coverage also includes top-level
 `model_context_window`, top-level `model_auto_compact_token_limit`,
 profile-over-top-level `model_provider`, and profile-over-top-level

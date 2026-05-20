@@ -3603,8 +3603,10 @@ const PROFILE_V2_TS =
     \\import type { Verbosity } from "../Verbosity";
     \\import type { WebSearchMode } from "../WebSearchMode";
     \\import type { JsonValue } from "../serde_json/JsonValue";
+    \\import type { AnalyticsConfig } from "./AnalyticsConfig";
     \\import type { ApprovalsReviewer } from "./ApprovalsReviewer";
     \\import type { AskForApproval } from "./AskForApproval";
+    \\import type { SandboxMode } from "./SandboxMode";
     \\import type { ToolsV2 } from "./ToolsV2";
     \\
     \\export type ProfileV2 = {
@@ -3612,12 +3614,14 @@ const PROFILE_V2_TS =
     \\  model_provider: string | null;
     \\  approval_policy: AskForApproval | null;
     \\  approvals_reviewer: ApprovalsReviewer | null;
+    \\  sandbox_mode: SandboxMode | null;
     \\  service_tier: string | null;
     \\  model_reasoning_effort: ReasoningEffort | null;
     \\  model_reasoning_summary: ReasoningSummary | null;
     \\  model_verbosity: Verbosity | null;
     \\  web_search: WebSearchMode | null;
     \\  tools: ToolsV2 | null;
+    \\  analytics?: AnalyticsConfig;
     \\  chatgpt_base_url: string | null;
     \\} & ({ [key: string]: JsonValue | undefined });
     \\
@@ -52210,6 +52214,8 @@ fn renderConfigReadResponse(
     const model_provider = managed_model_provider orelse configReadUserOrSystemMaybeString(cfg.model_provider_id, user_layer, "model_provider", system_model_provider);
     try appendJsonMaybeStringField(allocator, &result, &first, "model_provider", model_provider);
     try appendJsonMaybeStringField(allocator, &result, &first, "profile", cfg.active_profile);
+    try appendJsonFieldName(allocator, &result, &first, "profiles");
+    try appendEffectiveConfigReadProfilesObject(allocator, &result, managed_layer, project_layers, user_layer, system_layer);
     const system_instructions = if (system_layer) |layer| layer.instructions else null;
     const managed_instructions = if (managed_layer) |layer| layer.instructions else null;
     const instructions = managed_instructions orelse project_layers.instructions() orelse configReadUserOrSystemMaybeString(cfg.base_instructions, user_layer, "instructions", system_instructions);
@@ -52260,6 +52266,7 @@ fn renderConfigReadResponse(
     const managed_service_tier = if (managed_layer) |layer| layer.service_tier else null;
     const service_tier = managed_service_tier orelse project_layers.serviceTier() orelse configReadUserOrSystemMaybeString(cfg.service_tier, user_layer, "service_tier", system_service_tier);
     try appendJsonMaybeStringField(allocator, &result, &first, "service_tier", service_tier);
+    try appendConfigReadAnalyticsField(allocator, &result, &first, effectiveConfigReadAnalytics(managed_layer, project_layers, user_layer, system_layer, cfg.active_profile));
     try appendJsonMaybeStringField(allocator, &result, &first, "oss_provider", cfg.oss_provider);
     try appendJsonStringField(allocator, &result, &first, "openai_base_url", cfg.openai_base_url);
     try appendJsonStringField(allocator, &result, &first, "chatgpt_base_url", cfg.chatgpt_base_url);
@@ -52292,8 +52299,10 @@ const ConfigReadManagedLayer = struct {
     model_reasoning_effort: ?config.ReasoningEffort = null,
     model_verbosity: ?config.Verbosity = null,
     service_tier: ?[]const u8 = null,
+    analytics: ConfigReadAnalytics = .{},
     forced_chatgpt_workspace_id: ?[]const u8 = null,
     forced_login_method: ?config.ForcedLoginMethod = null,
+    profiles: ConfigReadProfiles = ConfigReadProfiles.empty(),
     tools: ConfigReadTools = .{},
     apps: ConfigReadApps = ConfigReadApps.empty(),
     sandbox_workspace_write: ConfigReadSandboxWorkspaceWrite = .{},
@@ -52311,6 +52320,7 @@ const ConfigReadManagedLayer = struct {
         if (self.forced_chatgpt_workspace_id) |value| allocator.free(value);
         for (self.origin_keys) |key| allocator.free(key);
         if (self.origin_keys.len > 0) allocator.free(self.origin_keys);
+        self.profiles.deinit(allocator);
         self.tools.deinit(allocator);
         self.apps.deinit(allocator);
         self.sandbox_workspace_write.deinit(allocator);
@@ -52350,8 +52360,10 @@ const ConfigReadProjectLayer = struct {
     model_reasoning_effort: ?config.ReasoningEffort,
     model_verbosity: ?config.Verbosity,
     service_tier: ?[]const u8,
+    analytics: ConfigReadAnalytics,
     forced_chatgpt_workspace_id: ?[]const u8,
     forced_login_method: ?config.ForcedLoginMethod,
+    profiles: ConfigReadProfiles,
     tools: ConfigReadTools,
     apps: ConfigReadApps,
     sandbox_workspace_write: ConfigReadSandboxWorkspaceWrite = .{},
@@ -52368,6 +52380,7 @@ const ConfigReadProjectLayer = struct {
         if (self.forced_chatgpt_workspace_id) |value| allocator.free(value);
         for (self.origin_keys) |key| allocator.free(key);
         if (self.origin_keys.len > 0) allocator.free(self.origin_keys);
+        self.profiles.deinit(allocator);
         self.tools.deinit(allocator);
         self.apps.deinit(allocator);
         self.sandbox_workspace_write.deinit(allocator);
@@ -52393,8 +52406,10 @@ const ConfigReadSystemLayer = struct {
     model_reasoning_effort: ?config.ReasoningEffort,
     model_verbosity: ?config.Verbosity,
     service_tier: ?[]const u8,
+    analytics: ConfigReadAnalytics,
     forced_chatgpt_workspace_id: ?[]const u8,
     forced_login_method: ?config.ForcedLoginMethod,
+    profiles: ConfigReadProfiles,
     tools: ConfigReadTools,
     apps: ConfigReadApps,
     sandbox_workspace_write: ConfigReadSandboxWorkspaceWrite = .{},
@@ -52412,6 +52427,7 @@ const ConfigReadSystemLayer = struct {
         if (self.forced_chatgpt_workspace_id) |value| allocator.free(value);
         for (self.origin_keys) |key| allocator.free(key);
         if (self.origin_keys.len > 0) allocator.free(self.origin_keys);
+        self.profiles.deinit(allocator);
         self.tools.deinit(allocator);
         self.apps.deinit(allocator);
         self.sandbox_workspace_write.deinit(allocator);
@@ -52621,6 +52637,14 @@ const ConfigReadProjectLayers = struct {
         return null;
     }
 
+    fn analytics(self: ConfigReadProjectLayers) ConfigReadAnalytics {
+        var merged = ConfigReadAnalytics{};
+        for (self.items) |layer| {
+            mergeConfigReadAnalytics(&merged, layer.analytics);
+        }
+        return merged;
+    }
+
     fn forcedChatGptWorkspaceId(self: ConfigReadProjectLayers) ?[]const u8 {
         for (self.items) |layer| {
             if (layer.forced_chatgpt_workspace_id) |value| return value;
@@ -52688,6 +52712,8 @@ const ConfigReadUserLayer = struct {
     version: []const u8,
     origin_keys: []const []const u8,
     model_provider: ?[]const u8,
+    profiles: ConfigReadProfiles,
+    analytics: ConfigReadAnalytics,
     tools: ConfigReadTools,
     apps: ConfigReadApps,
     sandbox_workspace_write: ConfigReadSandboxWorkspaceWrite,
@@ -52697,6 +52723,7 @@ const ConfigReadUserLayer = struct {
         if (self.model_provider) |value| allocator.free(value);
         for (self.origin_keys) |key| allocator.free(key);
         allocator.free(self.origin_keys);
+        self.profiles.deinit(allocator);
         self.tools.deinit(allocator);
         self.apps.deinit(allocator);
         self.sandbox_workspace_write.deinit(allocator);
@@ -52709,10 +52736,10 @@ fn loadConfigReadUserLayer(
     bytes: []const u8,
     active_profile: ?[]const u8,
 ) !ConfigReadUserLayer {
-    const origin_keys = try collectConfigReadUserOriginKeys(allocator, bytes, active_profile);
+    var origin_keys = std.ArrayList([]const u8).fromOwnedSlice(try collectConfigReadUserOriginKeys(allocator, bytes, active_profile));
     errdefer {
-        for (origin_keys) |key| allocator.free(key);
-        allocator.free(origin_keys);
+        for (origin_keys.items) |key| allocator.free(key);
+        origin_keys.deinit(allocator);
     }
     var tools = try loadConfigReadTools(allocator, bytes);
     errdefer tools.deinit(allocator);
@@ -52720,19 +52747,931 @@ fn loadConfigReadUserLayer(
     errdefer apps.deinit(allocator);
     const model_provider = try config.scopedStringValue(allocator, bytes, active_profile, "model_provider");
     errdefer if (model_provider) |value| allocator.free(value);
+    var profiles = try loadConfigReadProfiles(allocator, bytes);
+    errdefer profiles.deinit(allocator);
+    try appendConfigReadProfilesOriginKeys(allocator, &origin_keys, profiles);
+    const analytics = try loadConfigReadAnalytics(allocator, bytes);
     var sandbox_workspace_write = try loadConfigReadSandboxWorkspaceWrite(allocator, bytes);
     errdefer sandbox_workspace_write.deinit(allocator);
     const version = try configVersionAlloc(allocator, bytes);
     errdefer allocator.free(version);
+    const owned_origin_keys = try origin_keys.toOwnedSlice(allocator);
     return .{
         .file_path = config_path,
         .version = version,
-        .origin_keys = origin_keys,
+        .origin_keys = owned_origin_keys,
         .model_provider = model_provider,
+        .profiles = profiles,
+        .analytics = analytics,
         .tools = tools,
         .apps = apps,
         .sandbox_workspace_write = sandbox_workspace_write,
     };
+}
+
+const ConfigReadProfiles = struct {
+    items: []ConfigReadProfile,
+
+    fn empty() ConfigReadProfiles {
+        return .{ .items = &.{} };
+    }
+
+    fn deinit(self: *ConfigReadProfiles, allocator: std.mem.Allocator) void {
+        for (self.items) |*profile| profile.deinit(allocator);
+        if (self.items.len > 0) allocator.free(self.items);
+        self.items = &.{};
+    }
+};
+
+const ConfigReadProfile = struct {
+    name: []const u8,
+    model: ?[]const u8 = null,
+    model_provider: ?[]const u8 = null,
+    approval_policy: ?config.ApprovalPolicy = null,
+    approvals_reviewer: ?config.ApprovalsReviewer = null,
+    sandbox_mode: ?config.SandboxMode = null,
+    service_tier: ?[]const u8 = null,
+    model_reasoning_effort: ?config.ReasoningEffort = null,
+    model_reasoning_summary: ?config.ReasoningSummary = null,
+    model_verbosity: ?config.Verbosity = null,
+    web_search_mode: ?config.WebSearchMode = null,
+    tools: ConfigReadTools = .{},
+    analytics: ConfigReadAnalytics = .{},
+    chatgpt_base_url: ?[]const u8 = null,
+
+    fn deinit(self: *ConfigReadProfile, allocator: std.mem.Allocator) void {
+        allocator.free(self.name);
+        if (self.model) |value| allocator.free(value);
+        if (self.model_provider) |value| allocator.free(value);
+        if (self.service_tier) |value| allocator.free(value);
+        if (self.chatgpt_base_url) |value| allocator.free(value);
+        self.tools.deinit(allocator);
+    }
+};
+
+fn mergeConfigReadProfile(target: *ConfigReadProfile, source: ConfigReadProfile) void {
+    if (target.model == null) target.model = source.model;
+    if (target.model_provider == null) target.model_provider = source.model_provider;
+    if (target.approval_policy == null) target.approval_policy = source.approval_policy;
+    if (target.approvals_reviewer == null) target.approvals_reviewer = source.approvals_reviewer;
+    if (target.sandbox_mode == null) target.sandbox_mode = source.sandbox_mode;
+    if (target.service_tier == null) target.service_tier = source.service_tier;
+    if (target.model_reasoning_effort == null) target.model_reasoning_effort = source.model_reasoning_effort;
+    if (target.model_reasoning_summary == null) target.model_reasoning_summary = source.model_reasoning_summary;
+    if (target.model_verbosity == null) target.model_verbosity = source.model_verbosity;
+    if (target.web_search_mode == null) target.web_search_mode = source.web_search_mode;
+    mergeConfigReadTools(&target.tools, source.tools);
+    mergeConfigReadAnalytics(&target.analytics, source.analytics);
+    if (target.chatgpt_base_url == null) target.chatgpt_base_url = source.chatgpt_base_url;
+}
+
+fn configReadProfilesFind(profiles: ConfigReadProfiles, name: []const u8) ?ConfigReadProfile {
+    if (findConfigReadProfileIndex(profiles.items, name)) |index| return profiles.items[index];
+    return null;
+}
+
+fn effectiveConfigReadProfile(
+    name: []const u8,
+    managed_layer: ?ConfigReadManagedLayer,
+    project_layers: ConfigReadProjectLayers,
+    user_layer: ?ConfigReadUserLayer,
+    system_layer: ?ConfigReadSystemLayer,
+) ConfigReadProfile {
+    var profile = ConfigReadProfile{ .name = name };
+    if (managed_layer) |layer| {
+        if (configReadProfilesFind(layer.profiles, name)) |source| mergeConfigReadProfile(&profile, source);
+    }
+    for (project_layers.items) |layer| {
+        if (configReadProfilesFind(layer.profiles, name)) |source| mergeConfigReadProfile(&profile, source);
+    }
+    if (user_layer) |layer| {
+        if (configReadProfilesFind(layer.profiles, name)) |source| mergeConfigReadProfile(&profile, source);
+    }
+    if (system_layer) |layer| {
+        if (configReadProfilesFind(layer.profiles, name)) |source| mergeConfigReadProfile(&profile, source);
+    }
+    return profile;
+}
+
+fn appendEffectiveConfigReadProfilesObject(
+    allocator: std.mem.Allocator,
+    result: *std.ArrayList(u8),
+    managed_layer: ?ConfigReadManagedLayer,
+    project_layers: ConfigReadProjectLayers,
+    user_layer: ?ConfigReadUserLayer,
+    system_layer: ?ConfigReadSystemLayer,
+) !void {
+    var seen = std.ArrayList([]const u8).empty;
+    defer seen.deinit(allocator);
+
+    try result.append(allocator, '{');
+    var first = true;
+    if (managed_layer) |layer| {
+        try appendEffectiveConfigReadProfilesFromLayer(allocator, result, &first, &seen, layer.profiles, managed_layer, project_layers, user_layer, system_layer);
+    }
+    for (project_layers.items) |layer| {
+        try appendEffectiveConfigReadProfilesFromLayer(allocator, result, &first, &seen, layer.profiles, managed_layer, project_layers, user_layer, system_layer);
+    }
+    if (user_layer) |layer| {
+        try appendEffectiveConfigReadProfilesFromLayer(allocator, result, &first, &seen, layer.profiles, managed_layer, project_layers, user_layer, system_layer);
+    }
+    if (system_layer) |layer| {
+        try appendEffectiveConfigReadProfilesFromLayer(allocator, result, &first, &seen, layer.profiles, managed_layer, project_layers, user_layer, system_layer);
+    }
+    try result.append(allocator, '}');
+}
+
+fn appendEffectiveConfigReadProfilesFromLayer(
+    allocator: std.mem.Allocator,
+    result: *std.ArrayList(u8),
+    first: *bool,
+    seen: *std.ArrayList([]const u8),
+    profiles: ConfigReadProfiles,
+    managed_layer: ?ConfigReadManagedLayer,
+    project_layers: ConfigReadProjectLayers,
+    user_layer: ?ConfigReadUserLayer,
+    system_layer: ?ConfigReadSystemLayer,
+) !void {
+    for (profiles.items) |profile| {
+        if (configReadProfileNameSeen(seen.items, profile.name)) continue;
+        try seen.append(allocator, profile.name);
+        try appendJsonFieldName(allocator, result, first, profile.name);
+        try appendConfigReadProfileObject(allocator, result, effectiveConfigReadProfile(profile.name, managed_layer, project_layers, user_layer, system_layer));
+    }
+}
+
+fn configReadProfileNameSeen(names: []const []const u8, name: []const u8) bool {
+    for (names) |existing| {
+        if (std.mem.eql(u8, existing, name)) return true;
+    }
+    return false;
+}
+
+const ConfigReadAnalytics = struct {
+    present: bool = false,
+    enabled: ?bool = null,
+};
+
+const TomlMultilineStringKind = enum {
+    basic,
+    literal,
+
+    fn delimiter(self: TomlMultilineStringKind) []const u8 {
+        return switch (self) {
+            .basic => "\"\"\"",
+            .literal => "'''",
+        };
+    }
+};
+
+const TomlMultilineStringOpen = struct {
+    kind: TomlMultilineStringKind,
+    index: usize,
+};
+
+fn tomlMultilineStringOpen(line: []const u8) ?TomlMultilineStringOpen {
+    const basic_index = std.mem.indexOf(u8, line, "\"\"\"");
+    const literal_index = std.mem.indexOf(u8, line, "'''");
+    if (basic_index) |basic| {
+        if (literal_index) |literal| {
+            return if (basic < literal)
+                .{ .kind = .basic, .index = basic }
+            else
+                .{ .kind = .literal, .index = literal };
+        }
+        return .{ .kind = .basic, .index = basic };
+    }
+    if (literal_index) |literal| return .{ .kind = .literal, .index = literal };
+    return null;
+}
+
+fn tomlLineIsMultilineStringBody(active: *?TomlMultilineStringKind, line: []const u8) bool {
+    if (active.*) |kind| {
+        if (std.mem.indexOf(u8, line, kind.delimiter()) != null) active.* = null;
+        return true;
+    }
+
+    return false;
+}
+
+fn observeTomlMultilineStringOpen(active: *?TomlMultilineStringKind, line: []const u8) void {
+    if (active.* != null) return;
+    const open = tomlMultilineStringOpen(line) orelse return;
+    const delimiter = open.kind.delimiter();
+    if (std.mem.indexOfPos(u8, line, open.index + delimiter.len, delimiter) == null) {
+        active.* = open.kind;
+    }
+}
+
+const ConfigReadProfileSectionKind = enum {
+    profile,
+    tools,
+    web_search_tool,
+    web_search_location,
+    analytics,
+};
+
+const ConfigReadProfileSection = struct {
+    name: []const u8,
+    kind: ConfigReadProfileSectionKind,
+
+    fn deinit(self: *ConfigReadProfileSection, allocator: std.mem.Allocator) void {
+        allocator.free(self.name);
+    }
+};
+
+fn loadConfigReadProfiles(allocator: std.mem.Allocator, bytes: []const u8) !ConfigReadProfiles {
+    var profiles = std.ArrayList(ConfigReadProfile).empty;
+    errdefer {
+        for (profiles.items) |*profile| profile.deinit(allocator);
+        profiles.deinit(allocator);
+    }
+
+    var current_profile_index: ?usize = null;
+    var in_profiles_table = false;
+    var current_kind: ConfigReadProfileSectionKind = .profile;
+    var multiline_string: ?TomlMultilineStringKind = null;
+    var iter = std.mem.splitScalar(u8, bytes, '\n');
+    while (iter.next()) |line_raw| {
+        if (tomlLineIsMultilineStringBody(&multiline_string, line_raw)) continue;
+        const line_without_comment = stripTomlLineComment(line_raw);
+        const line = std.mem.trim(u8, line_without_comment, " \t\r");
+        if (line.len == 0 or line[0] == '#') continue;
+        if (line[0] == '[') {
+            current_profile_index = null;
+            in_profiles_table = false;
+            if (isExactTomlSection(line, "profiles")) {
+                in_profiles_table = true;
+                continue;
+            }
+            if (try parseConfigReadProfileSection(allocator, line)) |section_value| {
+                var section = section_value;
+                defer section.deinit(allocator);
+                current_profile_index = try ensureConfigReadProfileIndex(allocator, &profiles, section.name);
+                current_kind = section.kind;
+            }
+            continue;
+        }
+        defer observeTomlMultilineStringOpen(&multiline_string, line_without_comment);
+
+        if (try applyConfigReadProfileDottedAssignment(allocator, &profiles, line)) continue;
+        if (in_profiles_table) {
+            try applyConfigReadProfilesTableLine(allocator, &profiles, line);
+            continue;
+        }
+
+        const profile_index = current_profile_index orelse continue;
+        if (try applyConfigReadProfileRelativeDottedAssignment(allocator, &profiles.items[profile_index], current_kind, line)) continue;
+        switch (current_kind) {
+            .profile => try applyConfigReadProfileLine(allocator, &profiles.items[profile_index], line),
+            .tools => try applyConfigReadProfileToolsLine(allocator, &profiles.items[profile_index], line),
+            .web_search_tool => try applyConfigReadProfileWebSearchToolLine(allocator, &profiles.items[profile_index], line),
+            .web_search_location => try applyConfigReadProfileWebSearchLocationLine(allocator, &profiles.items[profile_index], line),
+            .analytics => try applyConfigReadProfileAnalyticsLine(&profiles.items[profile_index], line),
+        }
+    }
+
+    if (profiles.items.len == 0) return ConfigReadProfiles.empty();
+    return .{ .items = try profiles.toOwnedSlice(allocator) };
+}
+
+fn applyConfigReadProfilesTableLine(
+    allocator: std.mem.Allocator,
+    profiles: *std.ArrayList(ConfigReadProfile),
+    line: []const u8,
+) !void {
+    const eq = std.mem.indexOfScalar(u8, line, '=') orelse return;
+    const lhs = std.mem.trim(u8, line[0..eq], " \t");
+    const rhs = std.mem.trim(u8, line[eq + 1 ..], " \t");
+    var path = (try parseConfigReadTomlDottedPath(allocator, lhs)) orelse return;
+    defer path.deinit(allocator);
+    try applyConfigReadProfilePathAssignment(allocator, profiles, path.items, rhs);
+}
+
+fn ensureConfigReadProfileIndex(
+    allocator: std.mem.Allocator,
+    profiles: *std.ArrayList(ConfigReadProfile),
+    name: []const u8,
+) !usize {
+    if (findConfigReadProfileIndex(profiles.items, name)) |index| return index;
+    const owned_name = try allocator.dupe(u8, name);
+    errdefer allocator.free(owned_name);
+    try profiles.append(allocator, .{ .name = owned_name });
+    return profiles.items.len - 1;
+}
+
+fn findConfigReadProfileIndex(profiles: []const ConfigReadProfile, name: []const u8) ?usize {
+    for (profiles, 0..) |profile, index| {
+        if (std.mem.eql(u8, profile.name, name)) return index;
+    }
+    return null;
+}
+
+fn parseConfigReadProfileSection(allocator: std.mem.Allocator, line: []const u8) !?ConfigReadProfileSection {
+    if (line.len < "[]".len or line[0] != '[' or line[line.len - 1] != ']') return null;
+    const section = std.mem.trim(u8, line[1 .. line.len - 1], " \t");
+    const prefix = "profiles.";
+    if (!std.mem.startsWith(u8, section, prefix)) return null;
+    const remainder = section[prefix.len..];
+    if (remainder.len == 0) return null;
+
+    const name_end = profileSectionNameEnd(remainder) orelse return null;
+    const name = (try parseConfigReadAppPathComponent(allocator, remainder[0..name_end])) orelse return null;
+    errdefer allocator.free(name);
+
+    const suffix = remainder[name_end..];
+    const kind: ConfigReadProfileSectionKind = if (suffix.len == 0)
+        .profile
+    else if (std.mem.eql(u8, suffix, ".tools"))
+        .tools
+    else if (std.mem.eql(u8, suffix, ".tools.web_search"))
+        .web_search_tool
+    else if (std.mem.eql(u8, suffix, ".tools.web_search.location"))
+        .web_search_location
+    else if (std.mem.eql(u8, suffix, ".analytics"))
+        .analytics
+    else {
+        allocator.free(name);
+        return null;
+    };
+
+    return .{ .name = name, .kind = kind };
+}
+
+fn profileSectionNameEnd(remainder: []const u8) ?usize {
+    if (remainder.len == 0) return null;
+    if (remainder[0] != '"') {
+        return std.mem.indexOfScalar(u8, remainder, '.') orelse remainder.len;
+    }
+
+    var index: usize = 1;
+    var escaped = false;
+    while (index < remainder.len) : (index += 1) {
+        const byte = remainder[index];
+        if (escaped) {
+            escaped = false;
+            continue;
+        }
+        if (byte == '\\') {
+            escaped = true;
+            continue;
+        }
+        if (byte == '"') return index + 1;
+    }
+    return null;
+}
+
+const ConfigReadTomlPath = struct {
+    items: []const []const u8,
+
+    fn deinit(self: *ConfigReadTomlPath, allocator: std.mem.Allocator) void {
+        for (self.items) |item| allocator.free(item);
+        allocator.free(self.items);
+    }
+};
+
+fn applyConfigReadProfileDottedAssignment(
+    allocator: std.mem.Allocator,
+    profiles: *std.ArrayList(ConfigReadProfile),
+    line: []const u8,
+) !bool {
+    const eq = std.mem.indexOfScalar(u8, line, '=') orelse return false;
+    const lhs = std.mem.trim(u8, line[0..eq], " \t");
+    const rhs = std.mem.trim(u8, line[eq + 1 ..], " \t");
+    if (!std.mem.startsWith(u8, lhs, "profiles") and !std.mem.startsWith(u8, lhs, "\"profiles\"")) return false;
+    var path = (try parseConfigReadTomlDottedPath(allocator, lhs)) orelse return false;
+    defer path.deinit(allocator);
+
+    if (path.items.len == 0 or !std.mem.eql(u8, path.items[0], "profiles")) return false;
+    if (path.items.len == 1) {
+        try applyConfigReadProfilesInlineTable(allocator, profiles, rhs);
+        return true;
+    }
+
+    try applyConfigReadProfilePathAssignment(allocator, profiles, path.items[1..], rhs);
+    return true;
+}
+
+fn applyConfigReadProfilePathAssignment(
+    allocator: std.mem.Allocator,
+    profiles: *std.ArrayList(ConfigReadProfile),
+    path_items: []const []const u8,
+    rhs: []const u8,
+) !void {
+    if (path_items.len == 0) return;
+    const profile_index = try ensureConfigReadProfileIndex(allocator, profiles, path_items[0]);
+    try applyConfigReadProfileFieldPath(allocator, &profiles.items[profile_index], path_items[1..], rhs);
+}
+
+fn applyConfigReadProfileFieldPath(
+    allocator: std.mem.Allocator,
+    profile: *ConfigReadProfile,
+    path_items: []const []const u8,
+    rhs: []const u8,
+) !void {
+    if (path_items.len == 0) {
+        try applyConfigReadProfileInlineTable(allocator, profile, rhs);
+    } else if (path_items.len == 1) {
+        try applyConfigReadProfileFieldValue(allocator, profile, path_items[0], rhs);
+    } else if (std.mem.eql(u8, path_items[0], "tools")) {
+        try applyConfigReadProfileToolsPath(allocator, profile, path_items[1..], rhs);
+    } else if (std.mem.eql(u8, path_items[0], "analytics")) {
+        try applyConfigReadProfileAnalyticsPath(&profile.analytics, path_items[1..], rhs);
+    }
+}
+
+fn applyConfigReadProfileRelativeDottedAssignment(
+    allocator: std.mem.Allocator,
+    profile: *ConfigReadProfile,
+    section_kind: ConfigReadProfileSectionKind,
+    line: []const u8,
+) !bool {
+    const eq = std.mem.indexOfScalar(u8, line, '=') orelse return false;
+    const lhs = std.mem.trim(u8, line[0..eq], " \t");
+    if (std.mem.indexOfScalar(u8, lhs, '.') == null) return false;
+    const rhs = std.mem.trim(u8, line[eq + 1 ..], " \t");
+    var path = (try parseConfigReadTomlDottedPath(allocator, lhs)) orelse return false;
+    defer path.deinit(allocator);
+
+    switch (section_kind) {
+        .profile => try applyConfigReadProfileFieldPath(allocator, profile, path.items, rhs),
+        .tools => try applyConfigReadProfileToolsPath(allocator, profile, path.items, rhs),
+        .web_search_tool => try applyConfigReadProfileWebSearchPath(allocator, profile, path.items, rhs),
+        .web_search_location => try applyConfigReadProfileWebSearchLocationPath(allocator, profile, path.items, rhs),
+        .analytics => try applyConfigReadProfileAnalyticsPath(&profile.analytics, path.items, rhs),
+    }
+    return true;
+}
+
+fn parseConfigReadTomlDottedPath(allocator: std.mem.Allocator, raw: []const u8) !?ConfigReadTomlPath {
+    var items = std.ArrayList([]const u8).empty;
+    errdefer {
+        for (items.items) |item| allocator.free(item);
+        items.deinit(allocator);
+    }
+
+    var index: usize = 0;
+    while (index < raw.len) {
+        while (index < raw.len and (raw[index] == ' ' or raw[index] == '\t')) index += 1;
+        if (index >= raw.len) break;
+
+        const component_start = index;
+        if (raw[index] == '"') {
+            index += 1;
+            var escaped = false;
+            var found_close = false;
+            while (index < raw.len) : (index += 1) {
+                const byte = raw[index];
+                if (escaped) {
+                    escaped = false;
+                    continue;
+                }
+                if (byte == '\\') {
+                    escaped = true;
+                    continue;
+                }
+                if (byte == '"') {
+                    index += 1;
+                    found_close = true;
+                    break;
+                }
+            }
+            if (!found_close) return error.InvalidConfigReadProfileDottedKey;
+        } else {
+            while (index < raw.len and raw[index] != '.') index += 1;
+        }
+
+        const component_raw = std.mem.trim(u8, raw[component_start..index], " \t");
+        const component = (try parseConfigReadAppPathComponent(allocator, component_raw)) orelse return error.InvalidConfigReadProfileDottedKey;
+        try items.append(allocator, component);
+
+        while (index < raw.len and (raw[index] == ' ' or raw[index] == '\t')) index += 1;
+        if (index >= raw.len) break;
+        if (raw[index] != '.') return error.InvalidConfigReadProfileDottedKey;
+        index += 1;
+    }
+
+    if (items.items.len == 0) return null;
+    return .{ .items = try items.toOwnedSlice(allocator) };
+}
+
+fn applyConfigReadProfilesInlineTable(
+    allocator: std.mem.Allocator,
+    profiles: *std.ArrayList(ConfigReadProfile),
+    raw: []const u8,
+) !void {
+    const body = try configReadInlineTableBody(raw);
+    var field_start: usize = 0;
+    while (try nextConfigReadInlineTableField(body, &field_start)) |field_raw| {
+        const field = std.mem.trim(u8, field_raw, " \t\r\n");
+        if (field.len == 0) continue;
+        const eq = std.mem.indexOfScalar(u8, field, '=') orelse return error.InvalidConfigReadInlineTable;
+        const key = (try parseConfigReadInlineFieldKey(allocator, field[0..eq])) orelse return error.InvalidConfigReadInlineTable;
+        defer allocator.free(key);
+        const profile_index = try ensureConfigReadProfileIndex(allocator, profiles, key);
+        try applyConfigReadProfileInlineTable(allocator, &profiles.items[profile_index], field[eq + 1 ..]);
+    }
+}
+
+fn applyConfigReadProfileInlineTable(allocator: std.mem.Allocator, profile: *ConfigReadProfile, raw: []const u8) !void {
+    const body = try configReadInlineTableBody(raw);
+    var field_start: usize = 0;
+    while (try nextConfigReadInlineTableField(body, &field_start)) |field_raw| {
+        const field = std.mem.trim(u8, field_raw, " \t\r\n");
+        if (field.len == 0) continue;
+        const eq = std.mem.indexOfScalar(u8, field, '=') orelse return error.InvalidConfigReadInlineTable;
+        const key = (try parseConfigReadInlineFieldKey(allocator, field[0..eq])) orelse return error.InvalidConfigReadInlineTable;
+        defer allocator.free(key);
+        const rhs = std.mem.trim(u8, field[eq + 1 ..], " \t\r\n");
+        if (std.mem.eql(u8, key, "tools")) {
+            try applyConfigReadProfileToolsInlineTable(allocator, profile, rhs);
+        } else if (std.mem.eql(u8, key, "analytics")) {
+            try applyConfigReadProfileAnalyticsInlineTable(profile, rhs);
+        } else {
+            try applyConfigReadProfileFieldValue(allocator, profile, key, rhs);
+        }
+    }
+}
+
+fn applyConfigReadProfileToolsInlineTable(allocator: std.mem.Allocator, profile: *ConfigReadProfile, raw: []const u8) !void {
+    const body = try configReadInlineTableBody(raw);
+    var field_start: usize = 0;
+    while (try nextConfigReadInlineTableField(body, &field_start)) |field_raw| {
+        const field = std.mem.trim(u8, field_raw, " \t\r\n");
+        if (field.len == 0) continue;
+        const eq = std.mem.indexOfScalar(u8, field, '=') orelse return error.InvalidConfigReadInlineTable;
+        const key = (try parseConfigReadInlineFieldKey(allocator, field[0..eq])) orelse return error.InvalidConfigReadInlineTable;
+        defer allocator.free(key);
+        const rhs = std.mem.trim(u8, field[eq + 1 ..], " \t\r\n");
+        try applyConfigReadProfileToolsField(allocator, profile, key, rhs);
+    }
+}
+
+fn applyConfigReadProfileWebSearchInlineTable(allocator: std.mem.Allocator, profile: *ConfigReadProfile, raw: []const u8) !void {
+    const body = try configReadInlineTableBody(raw);
+    var field_start: usize = 0;
+    while (try nextConfigReadInlineTableField(body, &field_start)) |field_raw| {
+        const field = std.mem.trim(u8, field_raw, " \t\r\n");
+        if (field.len == 0) continue;
+        const eq = std.mem.indexOfScalar(u8, field, '=') orelse return error.InvalidConfigReadInlineTable;
+        const key = (try parseConfigReadInlineFieldKey(allocator, field[0..eq])) orelse return error.InvalidConfigReadInlineTable;
+        defer allocator.free(key);
+        try applyConfigReadProfileWebSearchToolField(allocator, profile, key, field[eq + 1 ..]);
+    }
+}
+
+fn applyConfigReadProfileAnalyticsInlineTable(profile: *ConfigReadProfile, raw: []const u8) !void {
+    try applyConfigReadAnalyticsInlineTable(&profile.analytics, raw);
+}
+
+fn applyConfigReadAnalyticsInlineTable(analytics: *ConfigReadAnalytics, raw: []const u8) !void {
+    const body = try configReadInlineTableBody(raw);
+    analytics.present = true;
+    var field_start: usize = 0;
+    while (try nextConfigReadInlineTableField(body, &field_start)) |field_raw| {
+        const field = std.mem.trim(u8, field_raw, " \t\r\n");
+        if (field.len == 0) continue;
+        const eq = std.mem.indexOfScalar(u8, field, '=') orelse return error.InvalidConfigReadInlineTable;
+        const key = std.mem.trim(u8, field[0..eq], " \t\r\n");
+        try applyConfigReadProfileAnalyticsField(analytics, key, field[eq + 1 ..]);
+    }
+}
+
+fn configReadInlineTableBody(raw: []const u8) ![]const u8 {
+    const trimmed = std.mem.trim(u8, raw, " \t\r\n");
+    if (trimmed.len < 2 or trimmed[0] != '{') return error.InvalidConfigReadInlineTable;
+    const close_index = std.mem.lastIndexOfScalar(u8, trimmed, '}') orelse return error.InvalidConfigReadInlineTable;
+    return trimmed[1..close_index];
+}
+
+fn parseConfigReadInlineFieldKey(allocator: std.mem.Allocator, raw_key: []const u8) !?[]const u8 {
+    return parseConfigReadAppPathComponent(allocator, std.mem.trim(u8, raw_key, " \t\r\n"));
+}
+
+fn applyConfigReadProfileLine(allocator: std.mem.Allocator, profile: *ConfigReadProfile, line: []const u8) !void {
+    const eq = std.mem.indexOfScalar(u8, line, '=') orelse return;
+    const key = std.mem.trim(u8, line[0..eq], " \t");
+    const rhs = std.mem.trim(u8, line[eq + 1 ..], " \t");
+    try applyConfigReadProfileFieldValue(allocator, profile, key, rhs);
+}
+
+fn applyConfigReadProfileFieldValue(
+    allocator: std.mem.Allocator,
+    profile: *ConfigReadProfile,
+    key: []const u8,
+    rhs: []const u8,
+) !void {
+    if (std.mem.eql(u8, key, "tools")) {
+        try applyConfigReadProfileToolsInlineTable(allocator, profile, rhs);
+    } else if (std.mem.eql(u8, key, "analytics")) {
+        try applyConfigReadProfileAnalyticsInlineTable(profile, rhs);
+    } else if (std.mem.eql(u8, key, "model")) {
+        const value = try configReadStringValue(allocator, rhs);
+        defer allocator.free(value);
+        try replaceConfigOptionalString(allocator, &profile.model, value);
+    } else if (std.mem.eql(u8, key, "model_provider")) {
+        const value = try configReadStringValue(allocator, rhs);
+        defer allocator.free(value);
+        try replaceConfigOptionalString(allocator, &profile.model_provider, value);
+    } else if (std.mem.eql(u8, key, "approval_policy")) {
+        const value = try configReadStringValue(allocator, rhs);
+        defer allocator.free(value);
+        profile.approval_policy = try config.ApprovalPolicy.parse(value);
+    } else if (std.mem.eql(u8, key, "approvals_reviewer")) {
+        const value = try configReadStringValue(allocator, rhs);
+        defer allocator.free(value);
+        profile.approvals_reviewer = try config.ApprovalsReviewer.parse(value);
+    } else if (std.mem.eql(u8, key, "sandbox_mode")) {
+        const value = try configReadStringValue(allocator, rhs);
+        defer allocator.free(value);
+        profile.sandbox_mode = try config.SandboxMode.parse(value);
+    } else if (std.mem.eql(u8, key, "service_tier")) {
+        const value = try configReadStringValue(allocator, rhs);
+        defer allocator.free(value);
+        const normalized = try config.normalizeServiceTier(allocator, value);
+        if (profile.service_tier) |existing| allocator.free(existing);
+        profile.service_tier = normalized;
+    } else if (std.mem.eql(u8, key, "model_reasoning_effort")) {
+        const value = try configReadStringValue(allocator, rhs);
+        defer allocator.free(value);
+        profile.model_reasoning_effort = try config.ReasoningEffort.parse(value);
+    } else if (std.mem.eql(u8, key, "model_reasoning_summary")) {
+        const value = try configReadStringValue(allocator, rhs);
+        defer allocator.free(value);
+        profile.model_reasoning_summary = try config.ReasoningSummary.parse(value);
+    } else if (std.mem.eql(u8, key, "model_verbosity")) {
+        const value = try configReadStringValue(allocator, rhs);
+        defer allocator.free(value);
+        profile.model_verbosity = try config.Verbosity.parse(value);
+    } else if (std.mem.eql(u8, key, "web_search")) {
+        const value = try configReadStringValue(allocator, rhs);
+        defer allocator.free(value);
+        profile.web_search_mode = try config.WebSearchMode.parse(value);
+    } else if (std.mem.eql(u8, key, "chatgpt_base_url")) {
+        const value = try configReadStringValue(allocator, rhs);
+        defer allocator.free(value);
+        try replaceConfigOptionalString(allocator, &profile.chatgpt_base_url, value);
+    }
+}
+
+fn applyConfigReadProfileToolsLine(allocator: std.mem.Allocator, profile: *ConfigReadProfile, line: []const u8) !void {
+    const eq = std.mem.indexOfScalar(u8, line, '=') orelse return;
+    const key = std.mem.trim(u8, line[0..eq], " \t");
+    const rhs = std.mem.trim(u8, line[eq + 1 ..], " \t");
+    try applyConfigReadProfileToolsField(allocator, profile, key, rhs);
+}
+
+fn applyConfigReadProfileToolsField(allocator: std.mem.Allocator, profile: *ConfigReadProfile, key: []const u8, rhs: []const u8) !void {
+    if (std.mem.eql(u8, key, "view_image")) {
+        profile.tools.present = true;
+        profile.tools.view_image = try parseConfigReadBool(rhs);
+    } else if (std.mem.eql(u8, key, "web_search")) {
+        if (std.mem.eql(u8, rhs, "true") or std.mem.eql(u8, rhs, "false")) {
+            profile.tools.present = true;
+            return;
+        }
+        try applyConfigReadProfileWebSearchInlineTable(allocator, profile, rhs);
+    }
+}
+
+fn applyConfigReadProfileToolsPath(
+    allocator: std.mem.Allocator,
+    profile: *ConfigReadProfile,
+    path_items: []const []const u8,
+    rhs: []const u8,
+) !void {
+    if (path_items.len == 1) {
+        try applyConfigReadProfileToolsField(allocator, profile, path_items[0], rhs);
+    } else if (path_items.len > 1 and std.mem.eql(u8, path_items[0], "web_search")) {
+        try applyConfigReadProfileWebSearchPath(allocator, profile, path_items[1..], rhs);
+    }
+}
+
+fn applyConfigReadProfileWebSearchToolLine(allocator: std.mem.Allocator, profile: *ConfigReadProfile, line: []const u8) !void {
+    profile.tools.present = true;
+    const eq = std.mem.indexOfScalar(u8, line, '=') orelse return;
+    const key = std.mem.trim(u8, line[0..eq], " \t");
+    const rhs = std.mem.trim(u8, line[eq + 1 ..], " \t");
+    try applyConfigReadProfileWebSearchToolField(allocator, profile, key, rhs);
+}
+
+fn applyConfigReadProfileWebSearchToolField(
+    allocator: std.mem.Allocator,
+    profile: *ConfigReadProfile,
+    key: []const u8,
+    rhs_raw: []const u8,
+) !void {
+    profile.tools.present = true;
+    if (profile.tools.web_search == null) profile.tools.web_search = ConfigReadWebSearchTool{};
+    const rhs = std.mem.trim(u8, rhs_raw, " \t\r\n");
+    if (std.mem.eql(u8, key, "context_size")) {
+        const value = try configReadStringValue(allocator, rhs);
+        defer allocator.free(value);
+        if (!isConfigReadWebSearchContextSize(value)) return error.InvalidConfigReadWebSearchContextSize;
+        try replaceConfigOptionalString(allocator, &profile.tools.web_search.?.context_size, value);
+    } else if (std.mem.eql(u8, key, "allowed_domains")) {
+        const domains = try config.parseTomlStringArray(allocator, rhs) orelse return error.InvalidConfigReadStringArray;
+        if (profile.tools.web_search.?.allowed_domains) |*existing| existing.deinit(allocator);
+        profile.tools.web_search.?.allowed_domains = domains;
+    } else if (std.mem.eql(u8, key, "location")) {
+        const location = try parseConfigReadWebSearchLocation(allocator, rhs);
+        if (profile.tools.web_search.?.location) |*existing| existing.deinit(allocator);
+        profile.tools.web_search.?.location = location;
+    }
+}
+
+fn applyConfigReadProfileWebSearchPath(
+    allocator: std.mem.Allocator,
+    profile: *ConfigReadProfile,
+    path_items: []const []const u8,
+    rhs: []const u8,
+) !void {
+    if (path_items.len == 1) {
+        try applyConfigReadProfileWebSearchToolField(allocator, profile, path_items[0], rhs);
+    } else if (path_items.len > 1 and std.mem.eql(u8, path_items[0], "location")) {
+        try applyConfigReadProfileWebSearchLocationPath(allocator, profile, path_items[1..], rhs);
+    }
+}
+
+fn applyConfigReadProfileWebSearchLocationField(
+    allocator: std.mem.Allocator,
+    profile: *ConfigReadProfile,
+    key: []const u8,
+    rhs: []const u8,
+) !void {
+    if (!configReadWebSearchLocationKeySupported(key)) return;
+    profile.tools.present = true;
+    if (profile.tools.web_search == null) profile.tools.web_search = ConfigReadWebSearchTool{};
+    if (profile.tools.web_search.?.location == null) profile.tools.web_search.?.location = ConfigReadWebSearchLocation{};
+    const value = try configReadStringValue(allocator, rhs);
+    defer allocator.free(value);
+    if (profile.tools.web_search.?.location) |*location| {
+        if (std.mem.eql(u8, key, "country")) {
+            try replaceConfigOptionalString(allocator, &location.country, value);
+        } else if (std.mem.eql(u8, key, "region")) {
+            try replaceConfigOptionalString(allocator, &location.region, value);
+        } else if (std.mem.eql(u8, key, "city")) {
+            try replaceConfigOptionalString(allocator, &location.city, value);
+        } else if (std.mem.eql(u8, key, "timezone")) {
+            try replaceConfigOptionalString(allocator, &location.timezone, value);
+        }
+    }
+}
+
+fn applyConfigReadProfileWebSearchLocationPath(
+    allocator: std.mem.Allocator,
+    profile: *ConfigReadProfile,
+    path_items: []const []const u8,
+    rhs: []const u8,
+) !void {
+    if (path_items.len == 1) {
+        try applyConfigReadProfileWebSearchLocationField(allocator, profile, path_items[0], rhs);
+    }
+}
+
+fn applyConfigReadProfileWebSearchLocationLine(allocator: std.mem.Allocator, profile: *ConfigReadProfile, line: []const u8) !void {
+    const eq = std.mem.indexOfScalar(u8, line, '=') orelse return;
+    const key = std.mem.trim(u8, line[0..eq], " \t");
+    const rhs = std.mem.trim(u8, line[eq + 1 ..], " \t");
+    try applyConfigReadProfileWebSearchLocationField(allocator, profile, key, rhs);
+}
+
+fn applyConfigReadProfileAnalyticsLine(profile: *ConfigReadProfile, line: []const u8) !void {
+    const eq = std.mem.indexOfScalar(u8, line, '=') orelse return;
+    const key = std.mem.trim(u8, line[0..eq], " \t");
+    const rhs = std.mem.trim(u8, line[eq + 1 ..], " \t");
+    try applyConfigReadProfileAnalyticsField(&profile.analytics, key, rhs);
+}
+
+fn applyConfigReadProfileAnalyticsField(analytics: *ConfigReadAnalytics, key: []const u8, rhs_raw: []const u8) !void {
+    if (std.mem.eql(u8, key, "enabled")) {
+        const rhs = std.mem.trim(u8, rhs_raw, " \t\r\n");
+        analytics.enabled = try parseConfigReadBool(rhs);
+        analytics.present = true;
+    }
+}
+
+fn applyConfigReadProfileAnalyticsPath(analytics: *ConfigReadAnalytics, path_items: []const []const u8, rhs: []const u8) !void {
+    if (path_items.len == 1) {
+        try applyConfigReadProfileAnalyticsField(analytics, path_items[0], rhs);
+    }
+}
+
+fn configReadStringValue(allocator: std.mem.Allocator, rhs: []const u8) ![]const u8 {
+    return try config.parseTomlStringValue(allocator, rhs) orelse error.InvalidConfigReadString;
+}
+
+fn configReadStringLineValue(allocator: std.mem.Allocator, line: []const u8, key: []const u8) !?[]const u8 {
+    const rhs = tomlValueForKey(line, key) orelse return null;
+    return try config.parseTomlStringValue(allocator, rhs) orelse error.InvalidConfigReadString;
+}
+
+fn configReadStringArrayLineValue(allocator: std.mem.Allocator, line: []const u8, key: []const u8) !?config.StringList {
+    const rhs = tomlValueForKey(line, key) orelse return null;
+    return try config.parseTomlStringArray(allocator, rhs) orelse error.InvalidConfigReadStringArray;
+}
+
+fn loadConfigReadAnalytics(allocator: std.mem.Allocator, bytes: []const u8) !ConfigReadAnalytics {
+    var analytics = ConfigReadAnalytics{};
+    var in_section = false;
+    var top_level = true;
+    var multiline_string: ?TomlMultilineStringKind = null;
+    var iter = std.mem.splitScalar(u8, bytes, '\n');
+    while (iter.next()) |line_raw| {
+        if (tomlLineIsMultilineStringBody(&multiline_string, line_raw)) continue;
+        const line_without_comment = stripTomlLineComment(line_raw);
+        const line = std.mem.trim(u8, line_without_comment, " \t\r");
+        if (line.len == 0 or line[0] == '#') continue;
+        if (line[0] == '[') {
+            top_level = false;
+            in_section = isExactTomlSection(line, "analytics");
+            if (in_section) analytics.present = true;
+            continue;
+        }
+        defer observeTomlMultilineStringOpen(&multiline_string, line_without_comment);
+        if (top_level and try applyConfigReadAnalyticsTopLevelAssignment(allocator, &analytics, line)) continue;
+        if (!in_section) continue;
+        if (tomlValueForKey(line, "enabled")) |rhs| {
+            analytics.enabled = try parseConfigReadBool(rhs);
+            analytics.present = true;
+        }
+    }
+    return analytics;
+}
+
+fn applyConfigReadAnalyticsTopLevelAssignment(
+    allocator: std.mem.Allocator,
+    analytics: *ConfigReadAnalytics,
+    line: []const u8,
+) !bool {
+    const eq = std.mem.indexOfScalar(u8, line, '=') orelse return false;
+    const lhs = std.mem.trim(u8, line[0..eq], " \t");
+    const rhs = std.mem.trim(u8, line[eq + 1 ..], " \t");
+    var path = (try parseConfigReadTomlDottedPath(allocator, lhs)) orelse return false;
+    defer path.deinit(allocator);
+
+    if (path.items.len == 2 and
+        std.mem.eql(u8, path.items[0], "analytics") and
+        std.mem.eql(u8, path.items[1], "enabled"))
+    {
+        try applyConfigReadProfileAnalyticsField(analytics, "enabled", rhs);
+        return true;
+    }
+    if (path.items.len == 1 and std.mem.eql(u8, path.items[0], "analytics")) {
+        try applyConfigReadAnalyticsInlineTable(analytics, rhs);
+        return true;
+    }
+    return false;
+}
+
+fn mergeConfigReadAnalytics(target: *ConfigReadAnalytics, source: ConfigReadAnalytics) void {
+    if (source.present) target.present = true;
+    if (target.enabled == null and source.enabled != null) target.enabled = source.enabled;
+}
+
+fn effectiveConfigReadAnalytics(
+    managed_layer: ?ConfigReadManagedLayer,
+    project_layers: ConfigReadProjectLayers,
+    user_layer: ?ConfigReadUserLayer,
+    system_layer: ?ConfigReadSystemLayer,
+    active_profile: ?[]const u8,
+) ?ConfigReadAnalytics {
+    var analytics = ConfigReadAnalytics{};
+    if (managed_layer) |layer| {
+        mergeConfigReadLayerAnalytics(&analytics, layer.profiles, layer.analytics, active_profile);
+    }
+    for (project_layers.items) |layer| {
+        mergeConfigReadLayerAnalytics(&analytics, layer.profiles, layer.analytics, active_profile);
+    }
+    if (user_layer) |layer| {
+        mergeConfigReadLayerAnalytics(&analytics, layer.profiles, layer.analytics, active_profile);
+    }
+    if (system_layer) |layer| {
+        mergeConfigReadLayerAnalytics(&analytics, layer.profiles, layer.analytics, active_profile);
+    }
+    return if (analytics.present) analytics else null;
+}
+
+fn mergeConfigReadLayerAnalytics(
+    target: *ConfigReadAnalytics,
+    profiles: ConfigReadProfiles,
+    analytics: ConfigReadAnalytics,
+    active_profile: ?[]const u8,
+) void {
+    if (active_profile) |profile_name| {
+        if (configReadProfileAnalytics(profiles, profile_name)) |profile_analytics| {
+            mergeConfigReadAnalytics(target, profile_analytics);
+        }
+    }
+    mergeConfigReadAnalytics(target, analytics);
+}
+
+fn configReadProfileAnalytics(profiles: ConfigReadProfiles, profile_name: []const u8) ?ConfigReadAnalytics {
+    if (findConfigReadProfileIndex(profiles.items, profile_name)) |index| {
+        const analytics = profiles.items[index].analytics;
+        return if (analytics.present) analytics else null;
+    }
+    return null;
 }
 
 const ConfigReadTools = struct {
@@ -53154,6 +54093,7 @@ fn nextConfigReadInlineTableField(body: []const u8, start: *usize) !?[]const u8 
     var in_string = false;
     var escaped = false;
     var bracket_depth: usize = 0;
+    var brace_depth: usize = 0;
     while (index < body.len) : (index += 1) {
         const byte = body[index];
         if (in_string) {
@@ -53173,12 +54113,17 @@ fn nextConfigReadInlineTableField(body: []const u8, start: *usize) !?[]const u8 
         } else if (byte == ']') {
             if (bracket_depth == 0) return error.InvalidConfigReadInlineTable;
             bracket_depth -= 1;
-        } else if (byte == ',' and bracket_depth == 0) {
+        } else if (byte == '{') {
+            brace_depth += 1;
+        } else if (byte == '}') {
+            if (brace_depth == 0) return error.InvalidConfigReadInlineTable;
+            brace_depth -= 1;
+        } else if (byte == ',' and bracket_depth == 0 and brace_depth == 0) {
             start.* = index + 1;
             return body[field_start..index];
         }
     }
-    if (in_string or escaped or bracket_depth != 0) return error.InvalidConfigReadInlineTable;
+    if (in_string or escaped or bracket_depth != 0 or brace_depth != 0) return error.InvalidConfigReadInlineTable;
 
     start.* = index;
     return body[field_start..index];
@@ -53361,10 +54306,13 @@ fn parseConfigReadAppToolSection(allocator: std.mem.Allocator, line: []const u8)
 }
 
 fn parseConfigReadAppPathComponent(allocator: std.mem.Allocator, raw_name: []const u8) !?[]const u8 {
-    if (raw_name.len == 0 or std.mem.indexOfScalar(u8, raw_name, '.') != null) return null;
+    if (raw_name.len == 0) return null;
     if (raw_name[0] == '"') {
+        const name_end = profileSectionNameEnd(raw_name) orelse return error.InvalidConfigReadAppSection;
+        if (name_end != raw_name.len) return null;
         return try config.parseTomlString(allocator, raw_name) orelse error.InvalidConfigReadAppSection;
     }
+    if (std.mem.indexOfScalar(u8, raw_name, '.') != null) return null;
     return @as(?[]const u8, try allocator.dupe(u8, raw_name));
 }
 
@@ -53580,6 +54528,10 @@ fn loadConfigReadManagedLayer(allocator: std.mem.Allocator) !?ConfigReadManagedL
         service_tier = try config.normalizeServiceTier(allocator, value);
         try appendUniqueOriginKey(allocator, &origin_keys, "service_tier");
     }
+    const analytics = try loadConfigReadAnalytics(allocator, payload);
+    if (analytics.enabled != null) {
+        try appendUniqueOriginKey(allocator, &origin_keys, "analytics.enabled");
+    }
     forced_chatgpt_workspace_id = try loadConfigReadForcedChatGptWorkspaceId(allocator, payload);
     if (forced_chatgpt_workspace_id != null) {
         try appendUniqueOriginKey(allocator, &origin_keys, "forced_chatgpt_workspace_id");
@@ -53588,6 +54540,9 @@ fn loadConfigReadManagedLayer(allocator: std.mem.Allocator) !?ConfigReadManagedL
     if (forced_login_method != null) {
         try appendUniqueOriginKey(allocator, &origin_keys, "forced_login_method");
     }
+    var profiles = try loadConfigReadProfiles(allocator, payload);
+    errdefer profiles.deinit(allocator);
+    try appendConfigReadProfilesOriginKeys(allocator, &origin_keys, profiles);
     tools = try loadConfigReadTools(allocator, payload);
     try appendConfigReadToolsOriginKeys(allocator, &origin_keys, tools);
     apps = try loadConfigReadApps(allocator, payload);
@@ -53620,8 +54575,10 @@ fn loadConfigReadManagedLayer(allocator: std.mem.Allocator) !?ConfigReadManagedL
         .model_reasoning_effort = model_reasoning_effort,
         .model_verbosity = model_verbosity,
         .service_tier = service_tier,
+        .analytics = analytics,
         .forced_chatgpt_workspace_id = forced_chatgpt_workspace_id,
         .forced_login_method = forced_login_method,
+        .profiles = profiles,
         .tools = tools,
         .apps = apps,
         .sandbox_workspace_write = sandbox_workspace_write,
@@ -53738,6 +54695,10 @@ fn loadConfigReadSystemLayer(allocator: std.mem.Allocator) !ConfigReadSystemLaye
         service_tier = try config.normalizeServiceTier(allocator, value);
         try appendUniqueOriginKey(allocator, &origin_keys, "service_tier");
     }
+    const analytics = try loadConfigReadAnalytics(allocator, payload);
+    if (analytics.enabled != null) {
+        try appendUniqueOriginKey(allocator, &origin_keys, "analytics.enabled");
+    }
     forced_chatgpt_workspace_id = try loadConfigReadForcedChatGptWorkspaceId(allocator, payload);
     if (forced_chatgpt_workspace_id != null) {
         try appendUniqueOriginKey(allocator, &origin_keys, "forced_chatgpt_workspace_id");
@@ -53746,6 +54707,9 @@ fn loadConfigReadSystemLayer(allocator: std.mem.Allocator) !ConfigReadSystemLaye
     if (forced_login_method != null) {
         try appendUniqueOriginKey(allocator, &origin_keys, "forced_login_method");
     }
+    var profiles = try loadConfigReadProfiles(allocator, payload);
+    errdefer profiles.deinit(allocator);
+    try appendConfigReadProfilesOriginKeys(allocator, &origin_keys, profiles);
     tools = try loadConfigReadTools(allocator, payload);
     try appendConfigReadToolsOriginKeys(allocator, &origin_keys, tools);
     apps = try loadConfigReadApps(allocator, payload);
@@ -53778,8 +54742,10 @@ fn loadConfigReadSystemLayer(allocator: std.mem.Allocator) !ConfigReadSystemLaye
         .model_reasoning_effort = model_reasoning_effort,
         .model_verbosity = model_verbosity,
         .service_tier = service_tier,
+        .analytics = analytics,
         .forced_chatgpt_workspace_id = forced_chatgpt_workspace_id,
         .forced_login_method = forced_login_method,
+        .profiles = profiles,
         .tools = tools,
         .apps = apps,
         .sandbox_workspace_write = sandbox_workspace_write,
@@ -53900,6 +54866,8 @@ fn configReadTopLevelInstructionsValue(allocator: std.mem.Allocator, bytes: []co
 const ConfigReadSection = enum {
     top_level,
     active_profile,
+    active_profile_analytics,
+    analytics,
     other,
 };
 
@@ -53907,7 +54875,7 @@ fn collectConfigReadUserOriginKeys(
     allocator: std.mem.Allocator,
     bytes: []const u8,
     active_profile: ?[]const u8,
-) ![]const []const u8 {
+) ![][]const u8 {
     var keys = std.ArrayList([]const u8).empty;
     errdefer {
         for (keys.items) |key| allocator.free(key);
@@ -53915,29 +54883,75 @@ fn collectConfigReadUserOriginKeys(
     }
 
     var section: ConfigReadSection = .top_level;
+    var multiline_string: ?TomlMultilineStringKind = null;
     var start: usize = 0;
     while (start < bytes.len) {
         const end = std.mem.indexOfScalarPos(u8, bytes, start, '\n') orelse bytes.len;
         const line_raw = bytes[start..end];
         start = if (end < bytes.len) end + 1 else bytes.len;
 
-        const line_without_comment = if (std.mem.indexOfScalar(u8, line_raw, '#')) |index| line_raw[0..index] else line_raw;
+        if (multiline_string) |kind| {
+            if (std.mem.indexOf(u8, line_raw, kind.delimiter()) != null) multiline_string = null;
+            continue;
+        }
+        const line_without_comment = stripTomlLineComment(line_raw);
         const line = std.mem.trim(u8, line_without_comment, " \t\r");
         if (line.len == 0) continue;
         if (line[0] == '[') {
             section = configReadSectionForLine(line, active_profile);
             continue;
         }
-        if (section != .top_level and section != .active_profile) continue;
 
         const eq = std.mem.indexOfScalar(u8, line, '=') orelse continue;
         const key = std.mem.trim(u8, line[0..eq], " \t");
+        defer {
+            if (tomlMultilineStringOpen(line_without_comment)) |open| {
+                const delimiter = open.kind.delimiter();
+                if (std.mem.indexOfPos(u8, line_without_comment, open.index + delimiter.len, delimiter) == null) {
+                    multiline_string = open.kind;
+                }
+            }
+        }
+        if (section == .analytics or section == .active_profile_analytics) {
+            if (std.mem.eql(u8, key, "enabled")) try appendUniqueOriginKey(allocator, &keys, "analytics.enabled");
+            continue;
+        }
+        if (section != .top_level and section != .active_profile) continue;
+        if ((section == .top_level or section == .active_profile) and try configReadProfileLineSetsAnalyticsEnabled(allocator, line)) {
+            try appendUniqueOriginKey(allocator, &keys, "analytics.enabled");
+        }
         const origin_key = configReadPublicOriginKey(key) orelse continue;
         if (section == .active_profile and std.mem.eql(u8, origin_key, "profile")) continue;
         try appendUniqueOriginKey(allocator, &keys, origin_key);
     }
 
     return keys.toOwnedSlice(allocator);
+}
+
+fn configReadProfileLineSetsAnalyticsEnabled(allocator: std.mem.Allocator, line: []const u8) !bool {
+    const eq = std.mem.indexOfScalar(u8, line, '=') orelse return false;
+    const lhs = std.mem.trim(u8, line[0..eq], " \t");
+    var path = (try parseConfigReadTomlDottedPath(allocator, lhs)) orelse return false;
+    defer path.deinit(allocator);
+
+    if (path.items.len == 2 and
+        std.mem.eql(u8, path.items[0], "analytics") and
+        std.mem.eql(u8, path.items[1], "enabled"))
+    {
+        return true;
+    }
+    if (path.items.len != 1 or !std.mem.eql(u8, path.items[0], "analytics")) return false;
+
+    const rhs = std.mem.trim(u8, line[eq + 1 ..], " \t");
+    const body = configReadInlineTableBody(rhs) catch return false;
+    var field_start: usize = 0;
+    while (try nextConfigReadInlineTableField(body, &field_start)) |field_raw| {
+        const field = std.mem.trim(u8, field_raw, " \t\r\n");
+        const field_eq = std.mem.indexOfScalar(u8, field, '=') orelse continue;
+        const key = std.mem.trim(u8, field[0..field_eq], " \t\r\n");
+        if (std.mem.eql(u8, key, "enabled")) return true;
+    }
+    return false;
 }
 
 fn loadConfigReadProjectLayers(
@@ -54048,8 +55062,11 @@ fn loadConfigReadProjectLayer(
     errdefer tools.deinit(allocator);
     var apps = ConfigReadApps.empty();
     errdefer apps.deinit(allocator);
+    var profiles = ConfigReadProfiles.empty();
+    errdefer profiles.deinit(allocator);
     var sandbox_workspace_write = ConfigReadSandboxWorkspaceWrite{};
     errdefer sandbox_workspace_write.deinit(allocator);
+    var analytics = ConfigReadAnalytics{};
     if (project_config_bytes) |config_bytes| {
         if (try config.topLevelStringValue(allocator, config_bytes, "model")) |value| {
             model = value;
@@ -54114,6 +55131,10 @@ fn loadConfigReadProjectLayer(
             service_tier = try config.normalizeServiceTier(allocator, value);
             try appendUniqueOriginKey(allocator, &origin_keys, "service_tier");
         }
+        analytics = try loadConfigReadAnalytics(allocator, config_bytes);
+        if (analytics.enabled != null) {
+            try appendUniqueOriginKey(allocator, &origin_keys, "analytics.enabled");
+        }
         forced_chatgpt_workspace_id = try loadConfigReadForcedChatGptWorkspaceId(allocator, config_bytes);
         if (forced_chatgpt_workspace_id != null) {
             try appendUniqueOriginKey(allocator, &origin_keys, "forced_chatgpt_workspace_id");
@@ -54122,6 +55143,8 @@ fn loadConfigReadProjectLayer(
         if (forced_login_method != null) {
             try appendUniqueOriginKey(allocator, &origin_keys, "forced_login_method");
         }
+        profiles = try loadConfigReadProfiles(allocator, config_bytes);
+        try appendConfigReadProfilesOriginKeys(allocator, &origin_keys, profiles);
         tools = try loadConfigReadTools(allocator, config_bytes);
         try appendConfigReadToolsOriginKeys(allocator, &origin_keys, tools);
         apps = try loadConfigReadApps(allocator, config_bytes);
@@ -54151,8 +55174,10 @@ fn loadConfigReadProjectLayer(
         .model_reasoning_effort = model_reasoning_effort,
         .model_verbosity = model_verbosity,
         .service_tier = service_tier,
+        .analytics = analytics,
         .forced_chatgpt_workspace_id = forced_chatgpt_workspace_id,
         .forced_login_method = forced_login_method,
+        .profiles = profiles,
         .tools = tools,
         .apps = apps,
         .sandbox_workspace_write = sandbox_workspace_write,
@@ -54167,13 +55192,20 @@ fn configReadProjectTrusted(allocator: std.mem.Allocator, user_config_bytes: []c
 
 fn configReadSectionForLine(line: []const u8, active_profile: ?[]const u8) ConfigReadSection {
     if (line.len < 2 or line[0] != '[' or line[line.len - 1] != ']') return .other;
+    if (isExactTomlSection(line, "analytics")) return .analytics;
     const section = std.mem.trim(u8, line[1 .. line.len - 1], " \t");
     if (std.mem.indexOfScalar(u8, section, '.') == null) return .other;
     if (active_profile) |profile| {
         const prefix = "profiles.";
         if (std.mem.startsWith(u8, section, prefix)) {
-            const profile_name = section[prefix.len..];
-            if (profileSectionNameMatches(profile_name, profile)) return .active_profile;
+            const remainder = section[prefix.len..];
+            const name_end = profileSectionNameEnd(remainder) orelse return .other;
+            const profile_name = remainder[0..name_end];
+            if (profileSectionNameMatches(profile_name, profile)) {
+                const suffix = remainder[name_end..];
+                if (suffix.len == 0) return .active_profile;
+                if (std.mem.eql(u8, suffix, ".analytics")) return .active_profile_analytics;
+            }
         }
     }
     return .other;
@@ -54225,6 +55257,55 @@ fn appendUniqueOriginKey(
         if (std.mem.eql(u8, existing, key)) return;
     }
     try keys.append(allocator, try allocator.dupe(u8, key));
+}
+
+fn appendConfigReadProfilesOriginKeys(
+    allocator: std.mem.Allocator,
+    origin_keys: *std.ArrayList([]const u8),
+    profiles: ConfigReadProfiles,
+) !void {
+    for (profiles.items) |profile| {
+        if (profile.model != null) try appendConfigReadProfileOriginKey(allocator, origin_keys, profile.name, "model");
+        if (profile.model_provider != null) try appendConfigReadProfileOriginKey(allocator, origin_keys, profile.name, "model_provider");
+        if (profile.approval_policy != null) try appendConfigReadProfileOriginKey(allocator, origin_keys, profile.name, "approval_policy");
+        if (profile.approvals_reviewer != null) try appendConfigReadProfileOriginKey(allocator, origin_keys, profile.name, "approvals_reviewer");
+        if (profile.sandbox_mode != null) try appendConfigReadProfileOriginKey(allocator, origin_keys, profile.name, "sandbox_mode");
+        if (profile.service_tier != null) try appendConfigReadProfileOriginKey(allocator, origin_keys, profile.name, "service_tier");
+        if (profile.model_reasoning_effort != null) try appendConfigReadProfileOriginKey(allocator, origin_keys, profile.name, "model_reasoning_effort");
+        if (profile.model_reasoning_summary != null) try appendConfigReadProfileOriginKey(allocator, origin_keys, profile.name, "model_reasoning_summary");
+        if (profile.model_verbosity != null) try appendConfigReadProfileOriginKey(allocator, origin_keys, profile.name, "model_verbosity");
+        if (profile.web_search_mode != null) try appendConfigReadProfileOriginKey(allocator, origin_keys, profile.name, "web_search");
+        if (profile.chatgpt_base_url != null) try appendConfigReadProfileOriginKey(allocator, origin_keys, profile.name, "chatgpt_base_url");
+        if (profile.analytics.enabled != null) try appendConfigReadProfileOriginKey(allocator, origin_keys, profile.name, "analytics.enabled");
+        if (profile.tools.web_search) |web_search| {
+            if (web_search.context_size != null) try appendConfigReadProfileOriginKey(allocator, origin_keys, profile.name, "tools.web_search.context_size");
+            if (web_search.allowed_domains) |domains| {
+                for (domains.items, 0..) |_, index| {
+                    const field = try std.fmt.allocPrint(allocator, "tools.web_search.allowed_domains.{d}", .{index});
+                    defer allocator.free(field);
+                    try appendConfigReadProfileOriginKey(allocator, origin_keys, profile.name, field);
+                }
+            }
+            if (web_search.location) |location| {
+                if (location.country != null) try appendConfigReadProfileOriginKey(allocator, origin_keys, profile.name, "tools.web_search.location.country");
+                if (location.region != null) try appendConfigReadProfileOriginKey(allocator, origin_keys, profile.name, "tools.web_search.location.region");
+                if (location.city != null) try appendConfigReadProfileOriginKey(allocator, origin_keys, profile.name, "tools.web_search.location.city");
+                if (location.timezone != null) try appendConfigReadProfileOriginKey(allocator, origin_keys, profile.name, "tools.web_search.location.timezone");
+            }
+        }
+        if (profile.tools.view_image != null) try appendConfigReadProfileOriginKey(allocator, origin_keys, profile.name, "tools.view_image");
+    }
+}
+
+fn appendConfigReadProfileOriginKey(
+    allocator: std.mem.Allocator,
+    origin_keys: *std.ArrayList([]const u8),
+    profile_name: []const u8,
+    field: []const u8,
+) !void {
+    const key = try std.fmt.allocPrint(allocator, "profiles.{s}.{s}", .{ profile_name, field });
+    defer allocator.free(key);
+    try appendUniqueOriginKey(allocator, origin_keys, key);
 }
 
 fn appendConfigReadOrigins(
@@ -54461,6 +55542,59 @@ fn appendConfigReadUserAppsOrigins(
             }
         }
     }
+}
+
+fn appendConfigReadUserProfileOrigins(
+    allocator: std.mem.Allocator,
+    result: *std.ArrayList(u8),
+    first: *bool,
+    layer: ConfigReadUserLayer,
+) !void {
+    for (layer.profiles.items) |profile| {
+        if (profile.model != null) try appendConfigReadUserProfileOrigin(allocator, result, first, layer, profile.name, "model");
+        if (profile.model_provider != null) try appendConfigReadUserProfileOrigin(allocator, result, first, layer, profile.name, "model_provider");
+        if (profile.approval_policy != null) try appendConfigReadUserProfileOrigin(allocator, result, first, layer, profile.name, "approval_policy");
+        if (profile.approvals_reviewer != null) try appendConfigReadUserProfileOrigin(allocator, result, first, layer, profile.name, "approvals_reviewer");
+        if (profile.sandbox_mode != null) try appendConfigReadUserProfileOrigin(allocator, result, first, layer, profile.name, "sandbox_mode");
+        if (profile.service_tier != null) try appendConfigReadUserProfileOrigin(allocator, result, first, layer, profile.name, "service_tier");
+        if (profile.model_reasoning_effort != null) try appendConfigReadUserProfileOrigin(allocator, result, first, layer, profile.name, "model_reasoning_effort");
+        if (profile.model_reasoning_summary != null) try appendConfigReadUserProfileOrigin(allocator, result, first, layer, profile.name, "model_reasoning_summary");
+        if (profile.model_verbosity != null) try appendConfigReadUserProfileOrigin(allocator, result, first, layer, profile.name, "model_verbosity");
+        if (profile.web_search_mode != null) try appendConfigReadUserProfileOrigin(allocator, result, first, layer, profile.name, "web_search");
+        if (profile.chatgpt_base_url != null) try appendConfigReadUserProfileOrigin(allocator, result, first, layer, profile.name, "chatgpt_base_url");
+        if (profile.analytics.enabled != null) try appendConfigReadUserProfileOrigin(allocator, result, first, layer, profile.name, "analytics.enabled");
+
+        if (profile.tools.web_search) |web_search| {
+            if (web_search.context_size != null) try appendConfigReadUserProfileOrigin(allocator, result, first, layer, profile.name, "tools.web_search.context_size");
+            if (web_search.allowed_domains) |domains| {
+                for (domains.items, 0..) |_, index| {
+                    const field = try std.fmt.allocPrint(allocator, "tools.web_search.allowed_domains.{d}", .{index});
+                    defer allocator.free(field);
+                    try appendConfigReadUserProfileOrigin(allocator, result, first, layer, profile.name, field);
+                }
+            }
+            if (web_search.location) |location| {
+                if (location.country != null) try appendConfigReadUserProfileOrigin(allocator, result, first, layer, profile.name, "tools.web_search.location.country");
+                if (location.region != null) try appendConfigReadUserProfileOrigin(allocator, result, first, layer, profile.name, "tools.web_search.location.region");
+                if (location.city != null) try appendConfigReadUserProfileOrigin(allocator, result, first, layer, profile.name, "tools.web_search.location.city");
+                if (location.timezone != null) try appendConfigReadUserProfileOrigin(allocator, result, first, layer, profile.name, "tools.web_search.location.timezone");
+            }
+        }
+        if (profile.tools.view_image != null) try appendConfigReadUserProfileOrigin(allocator, result, first, layer, profile.name, "tools.view_image");
+    }
+}
+
+fn appendConfigReadUserProfileOrigin(
+    allocator: std.mem.Allocator,
+    result: *std.ArrayList(u8),
+    first: *bool,
+    layer: ConfigReadUserLayer,
+    profile_name: []const u8,
+    field: []const u8,
+) !void {
+    const key = try std.fmt.allocPrint(allocator, "profiles.{s}.{s}", .{ profile_name, field });
+    defer allocator.free(key);
+    try appendConfigReadUserOrigin(allocator, result, first, layer, key);
 }
 
 fn appendConfigReadProjectAppsOrigins(
@@ -55155,6 +56289,14 @@ fn appendConfigReadProjectLayerConfig(
         try appendJsonFieldName(allocator, result, &first, "apps");
         try appendConfigReadAppsObject(allocator, result, layer.apps);
     }
+    if (layer.analytics.present) {
+        try appendJsonFieldName(allocator, result, &first, "analytics");
+        try appendConfigReadAnalyticsObject(allocator, result, layer.analytics);
+    }
+    if (layer.profiles.items.len > 0) {
+        try appendJsonFieldName(allocator, result, &first, "profiles");
+        try appendConfigReadProfilesObject(allocator, result, layer.profiles);
+    }
     try result.append(allocator, '}');
 }
 
@@ -55193,6 +56335,14 @@ fn appendConfigReadManagedLayerConfig(
     if (!layer.apps.isEmpty()) {
         try appendJsonFieldName(allocator, result, &first, "apps");
         try appendConfigReadAppsObject(allocator, result, layer.apps);
+    }
+    if (layer.analytics.present) {
+        try appendJsonFieldName(allocator, result, &first, "analytics");
+        try appendConfigReadAnalyticsObject(allocator, result, layer.analytics);
+    }
+    if (layer.profiles.items.len > 0) {
+        try appendJsonFieldName(allocator, result, &first, "profiles");
+        try appendConfigReadProfilesObject(allocator, result, layer.profiles);
     }
     try result.append(allocator, '}');
 }
@@ -55252,6 +56402,14 @@ fn appendConfigReadSystemLayerConfig(
     if (!layer.apps.isEmpty()) {
         try appendJsonFieldName(allocator, result, &first, "apps");
         try appendConfigReadAppsObject(allocator, result, layer.apps);
+    }
+    if (layer.analytics.present) {
+        try appendJsonFieldName(allocator, result, &first, "analytics");
+        try appendConfigReadAnalyticsObject(allocator, result, layer.analytics);
+    }
+    if (layer.profiles.items.len > 0) {
+        try appendJsonFieldName(allocator, result, &first, "profiles");
+        try appendConfigReadProfilesObject(allocator, result, layer.profiles);
     }
     try result.append(allocator, '}');
 }
@@ -55317,10 +56475,63 @@ fn appendConfigReadUserLayerConfig(
         try appendJsonFieldName(allocator, result, &first, "apps");
         try appendConfigReadAppsObject(allocator, result, layer.apps);
     }
+    if (layer.analytics.present) {
+        try appendJsonFieldName(allocator, result, &first, "analytics");
+        try appendConfigReadAnalyticsObject(allocator, result, layer.analytics);
+    }
+    if (layer.profiles.items.len > 0) {
+        try appendJsonFieldName(allocator, result, &first, "profiles");
+        try appendConfigReadProfilesObject(allocator, result, layer.profiles);
+    }
     if (layer.sandbox_workspace_write.present) {
         try appendJsonFieldName(allocator, result, &first, "sandbox_workspace_write");
         try appendConfigReadSandboxWorkspaceWriteObject(allocator, result, layer.sandbox_workspace_write);
     }
+    try result.append(allocator, '}');
+}
+
+fn appendConfigReadProfilesObject(
+    allocator: std.mem.Allocator,
+    result: *std.ArrayList(u8),
+    profiles: ConfigReadProfiles,
+) !void {
+    try result.append(allocator, '{');
+    var first = true;
+    for (profiles.items) |profile| {
+        try appendJsonFieldName(allocator, result, &first, profile.name);
+        try appendConfigReadProfileObject(allocator, result, profile);
+    }
+    try result.append(allocator, '}');
+}
+
+fn appendConfigReadProfileObject(
+    allocator: std.mem.Allocator,
+    result: *std.ArrayList(u8),
+    profile: ConfigReadProfile,
+) !void {
+    try result.append(allocator, '{');
+    var first = true;
+    try appendJsonMaybeStringField(allocator, result, &first, "model", profile.model);
+    try appendJsonMaybeStringField(allocator, result, &first, "model_provider", profile.model_provider);
+    try appendJsonMaybeStringField(allocator, result, &first, "approval_policy", if (profile.approval_policy) |policy| policy.label() else null);
+    try appendJsonMaybeStringField(allocator, result, &first, "approvals_reviewer", if (profile.approvals_reviewer) |reviewer| reviewer.label() else null);
+    try appendJsonMaybeStringField(allocator, result, &first, "sandbox_mode", if (profile.sandbox_mode) |mode| mode.label() else null);
+    try appendJsonMaybeStringField(allocator, result, &first, "service_tier", profile.service_tier);
+    try appendJsonMaybeStringField(allocator, result, &first, "model_reasoning_effort", if (profile.model_reasoning_effort) |effort| effort.label() else null);
+    try appendJsonMaybeStringField(allocator, result, &first, "model_reasoning_summary", if (profile.model_reasoning_summary) |summary| summary.label() else null);
+    try appendJsonMaybeStringField(allocator, result, &first, "model_verbosity", if (profile.model_verbosity) |verbosity| verbosity.label() else null);
+    try appendJsonMaybeStringField(allocator, result, &first, "web_search", if (profile.web_search_mode) |mode| mode.label() else null);
+    try appendJsonFieldName(allocator, result, &first, "tools");
+    if (profile.tools.present) {
+        try appendConfigReadToolsObject(allocator, result, profile.tools);
+    } else {
+        try result.appendSlice(allocator, "null");
+    }
+    if (profile.analytics.present) {
+        try appendJsonFieldName(allocator, result, &first, "analytics");
+        try appendConfigReadAnalyticsObject(allocator, result, profile.analytics);
+    }
+    try appendJsonMaybeStringField(allocator, result, &first, "chatgpt_base_url", profile.chatgpt_base_url);
     try result.append(allocator, '}');
 }
 
@@ -55376,6 +56587,31 @@ fn appendJsonBoolField(
 ) !void {
     try appendJsonFieldName(allocator, result, first, name);
     try result.appendSlice(allocator, if (value) "true" else "false");
+}
+
+fn appendConfigReadAnalyticsField(
+    allocator: std.mem.Allocator,
+    result: *std.ArrayList(u8),
+    first: *bool,
+    analytics: ?ConfigReadAnalytics,
+) !void {
+    try appendJsonFieldName(allocator, result, first, "analytics");
+    if (analytics) |value| {
+        try appendConfigReadAnalyticsObject(allocator, result, value);
+    } else {
+        try result.appendSlice(allocator, "null");
+    }
+}
+
+fn appendConfigReadAnalyticsObject(
+    allocator: std.mem.Allocator,
+    result: *std.ArrayList(u8),
+    analytics: ConfigReadAnalytics,
+) !void {
+    try result.append(allocator, '{');
+    var first = true;
+    try appendJsonMaybeBoolField(allocator, result, &first, "enabled", analytics.enabled);
+    try result.append(allocator, '}');
 }
 
 fn appendConfigReadToolsField(
@@ -59754,6 +60990,224 @@ test "feature requirements normalize aliases for effective feature values" {
     try std.testing.expectEqual(false, featureRequirementValue(requirements, "apps").?);
     try std.testing.expectEqual(false, featureRequirementValue(requirements, "guardian_approval").?);
     try std.testing.expect(featureRequirementValue(requirements, "unknown#feature") == null);
+}
+
+test "config requirements filter external sandbox mode from API list" {
+    const allocator = std.testing.allocator;
+    var mixed = (try parseAllowedRequirementList(allocator,
+        \\allowed_sandbox_modes = ["external-sandbox", "workspace-write", "read-only"]
+        \\
+    , "allowed_sandbox_modes", .sandbox_mode)).?;
+    defer mixed.deinit(allocator);
+
+    try std.testing.expectEqual(@as(usize, 2), mixed.items.len);
+    try std.testing.expectEqualStrings("workspace-write", mixed.items[0]);
+    try std.testing.expectEqualStrings("read-only", mixed.items[1]);
+
+    var external_only = (try parseAllowedRequirementList(allocator,
+        \\allowed_sandbox_modes = ["external-sandbox"]
+        \\
+    , "allowed_sandbox_modes", .sandbox_mode)).?;
+    defer external_only.deinit(allocator);
+
+    try std.testing.expectEqual(@as(usize, 0), external_only.items.len);
+}
+
+test "config/read profiles parse inline tables and sandbox mode" {
+    const allocator = std.testing.allocator;
+    var profiles = try loadConfigReadProfiles(allocator,
+        \\profiles = { inline = { model = "gpt-inline", sandbox_mode = "read-only", tools = { view_image = true }, analytics = { enabled = false } } }
+        \\
+        \\[profiles]
+        \\section_inline = { model_provider = "provider", sandbox_mode = "workspace-write" }
+        \\dotted.model = "gpt-dotted"
+        \\dotted.analytics.enabled = true
+        \\dotted.tools.view_image = true
+        \\dotted.tools.web_search.context_size = "low"
+        \\dotted.tools.web_search.location.city = "New York"
+        \\
+        \\[profiles.table_form]
+        \\model = "gpt-table"
+        \\tools = { view_image = true, web_search = { context_size = "medium", allowed_domains = ["example.com"] } }
+        \\analytics = { enabled = true }
+        \\
+    );
+    defer profiles.deinit(allocator);
+
+    try std.testing.expectEqual(@as(usize, 4), profiles.items.len);
+    const inline_index = findConfigReadProfileIndex(profiles.items, "inline").?;
+    const inline_profile = profiles.items[inline_index];
+    try std.testing.expectEqualStrings("gpt-inline", inline_profile.model.?);
+    try std.testing.expectEqual(config.SandboxMode.read_only, inline_profile.sandbox_mode.?);
+    try std.testing.expectEqual(true, inline_profile.tools.view_image.?);
+    try std.testing.expectEqual(false, inline_profile.analytics.enabled.?);
+
+    const section_index = findConfigReadProfileIndex(profiles.items, "section_inline").?;
+    const section_inline = profiles.items[section_index];
+    try std.testing.expectEqualStrings("provider", section_inline.model_provider.?);
+    try std.testing.expectEqual(config.SandboxMode.workspace_write, section_inline.sandbox_mode.?);
+
+    const dotted_index = findConfigReadProfileIndex(profiles.items, "dotted").?;
+    const dotted = profiles.items[dotted_index];
+    try std.testing.expectEqualStrings("gpt-dotted", dotted.model.?);
+    try std.testing.expectEqual(true, dotted.analytics.enabled.?);
+    try std.testing.expectEqual(true, dotted.tools.view_image.?);
+    try std.testing.expectEqualStrings("low", dotted.tools.web_search.?.context_size.?);
+    try std.testing.expectEqualStrings("New York", dotted.tools.web_search.?.location.?.city.?);
+
+    const table_form_index = findConfigReadProfileIndex(profiles.items, "table_form").?;
+    const table_form = profiles.items[table_form_index];
+    try std.testing.expectEqualStrings("gpt-table", table_form.model.?);
+    try std.testing.expectEqual(true, table_form.tools.view_image.?);
+    try std.testing.expectEqualStrings("medium", table_form.tools.web_search.?.context_size.?);
+    try std.testing.expectEqualStrings("example.com", table_form.tools.web_search.?.allowed_domains.?.items[0]);
+    try std.testing.expectEqual(true, table_form.analytics.enabled.?);
+}
+
+test "config/read profiles accept boolean web search tool compatibility values" {
+    const allocator = std.testing.allocator;
+    var profiles = try loadConfigReadProfiles(allocator,
+        \\profiles.inline_false = { tools = { web_search = false } }
+        \\profiles.dotted_true.tools.web_search = true
+        \\
+        \\[profiles.section_true.tools]
+        \\web_search = true
+        \\
+    );
+    defer profiles.deinit(allocator);
+
+    try std.testing.expectEqual(@as(usize, 3), profiles.items.len);
+    const inline_false = profiles.items[findConfigReadProfileIndex(profiles.items, "inline_false").?];
+    try std.testing.expect(inline_false.tools.present);
+    try std.testing.expect(inline_false.tools.web_search == null);
+
+    const dotted_true = profiles.items[findConfigReadProfileIndex(profiles.items, "dotted_true").?];
+    try std.testing.expect(dotted_true.tools.present);
+    try std.testing.expect(dotted_true.tools.web_search == null);
+
+    const section_true = profiles.items[findConfigReadProfileIndex(profiles.items, "section_true").?];
+    try std.testing.expect(section_true.tools.present);
+    try std.testing.expect(section_true.tools.web_search == null);
+}
+
+test "config/read profiles preserve multiline strings and nested web search location tables" {
+    const allocator = std.testing.allocator;
+    var profiles = try loadConfigReadProfiles(allocator,
+        \\base_instructions = """
+        \\[profiles.fake]
+        \\model = "gpt-fake"
+        \\"""
+        \\
+        \\# """ profile examples in comments must not suppress later tables
+        \\commented_example = "ok" # """
+        \\
+        \\[profiles.work]
+        \\model = """gpt-5"""
+        \\analytics.enabled = false
+        \\tools.view_image = true
+        \\tools.web_search.location.region = "WA"
+        \\
+        \\[profiles.work.tools.web_search]
+        \\context_size = "medium"
+        \\
+        \\[profiles.work.tools.web_search.location]
+        \\country = "US"
+        \\timezone = "UTC"
+        \\
+    );
+    defer profiles.deinit(allocator);
+
+    try std.testing.expectEqual(@as(usize, 1), profiles.items.len);
+    const work_index = findConfigReadProfileIndex(profiles.items, "work").?;
+    const work = profiles.items[work_index];
+    try std.testing.expectEqualStrings("gpt-5", work.model.?);
+    try std.testing.expectEqual(false, work.analytics.enabled.?);
+    try std.testing.expectEqual(true, work.tools.view_image.?);
+    try std.testing.expectEqualStrings("medium", work.tools.web_search.?.context_size.?);
+    try std.testing.expectEqualStrings("US", work.tools.web_search.?.location.?.country.?);
+    try std.testing.expectEqualStrings("WA", work.tools.web_search.?.location.?.region.?);
+    try std.testing.expectEqualStrings("UTC", work.tools.web_search.?.location.?.timezone.?);
+    try std.testing.expect(findConfigReadProfileIndex(profiles.items, "fake") == null);
+}
+
+test "config/read analytics ignores commented multiline delimiters" {
+    const allocator = std.testing.allocator;
+    const analytics = try loadConfigReadAnalytics(allocator,
+        \\# """ analytics examples in comments must not suppress the section
+        \\commented_example = "ok" # """
+        \\
+        \\[analytics]
+        \\enabled = true
+        \\
+    );
+
+    try std.testing.expect(analytics.present);
+    try std.testing.expectEqual(true, analytics.enabled.?);
+}
+
+test "config/read analytics parses top-level dotted and inline tables" {
+    const allocator = std.testing.allocator;
+    const dotted = try loadConfigReadAnalytics(allocator,
+        \\analytics.enabled = false
+        \\
+    );
+    try std.testing.expect(dotted.present);
+    try std.testing.expectEqual(false, dotted.enabled.?);
+
+    const inline_table = try loadConfigReadAnalytics(allocator,
+        \\analytics = { enabled = true }
+        \\
+    );
+    try std.testing.expect(inline_table.present);
+    try std.testing.expectEqual(true, inline_table.enabled.?);
+}
+
+test "config/read active profile inline analytics contributes effective origin" {
+    const allocator = std.testing.allocator;
+    const keys = try collectConfigReadUserOriginKeys(allocator,
+        \\model = "base-model"
+        \\commented_example = "ok" # """
+        \\profile = "work"
+        \\
+        \\[profiles.work]
+        \\analytics = { enabled = false }
+        \\
+    , "work");
+    defer {
+        for (keys) |key| allocator.free(key);
+        allocator.free(keys);
+    }
+
+    try std.testing.expectEqual(@as(usize, 3), keys.len);
+    try std.testing.expectEqualStrings("model", keys[0]);
+    try std.testing.expectEqualStrings("profile", keys[1]);
+    try std.testing.expectEqualStrings("analytics.enabled", keys[2]);
+}
+
+test "config/read top-level inline analytics contributes origin" {
+    const allocator = std.testing.allocator;
+    const keys = try collectConfigReadUserOriginKeys(allocator,
+        \\model = "base-model"
+        \\analytics = { enabled = false }
+        \\
+    , null);
+    defer {
+        for (keys) |key| allocator.free(key);
+        allocator.free(keys);
+    }
+
+    try std.testing.expectEqual(@as(usize, 2), keys.len);
+    try std.testing.expectEqualStrings("model", keys[0]);
+    try std.testing.expectEqualStrings("analytics.enabled", keys[1]);
+}
+
+test "config/read app path component rejects trailing quoted suffixes" {
+    const allocator = std.testing.allocator;
+    const quoted = (try parseConfigReadAppPathComponent(allocator, "\"drive\"")).?;
+    defer allocator.free(quoted);
+    try std.testing.expectEqualStrings("drive", quoted);
+
+    try std.testing.expect(try parseConfigReadAppPathComponent(allocator, "\"drive\".nested") == null);
 }
 
 test "app-server config write path comparison normalizes Rust path aliases" {
