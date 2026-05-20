@@ -6,6 +6,12 @@ Status values:
 - `partial`: implemented enough for a demo or narrow flow
 - `covered`: implemented and verified against the affected product surface
 
+Current TUI status-line item coverage includes Rust-shaped `branch-changes`
+previews backed by committed Git diff stats against the repository default
+branch merge base. Failed git probes, non-git directories, and unavailable
+default branches leave the optional item omitted instead of surfacing a UI
+error.
+
 Current app-server `hooks/list` coverage: user `$CODEX_HOME/config.toml`,
 `$CODEX_HOME/hooks.json`, per-cwd `.codex/config.toml`, and per-cwd
 `.codex/hooks.json` command hooks, Rust-shaped `cwds` params and JSON fields,

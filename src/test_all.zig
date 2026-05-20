@@ -9,6 +9,7 @@ const modules = .{
     @import("app_server_cmd.zig"),
     @import("api.zig"),
     @import("auth.zig"),
+    @import("branch_summary.zig"),
     @import("cli_utils.zig"),
     @import("cloud_cmd.zig"),
     @import("completion_cmd.zig"),

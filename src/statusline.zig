@@ -1,5 +1,6 @@
 const std = @import("std");
 
+const branch_summary = @import("branch_summary.zig");
 const config = @import("config.zig");
 const session = @import("session.zig");
 
@@ -118,9 +119,9 @@ pub fn value(
         .model_with_reasoning => try std.fmt.allocPrint(allocator, "{s} medium", .{cfg.model}),
         .current_dir => try allocator.dupe(u8, cwd),
         .project_root => try allocator.dupe(u8, std.fs.path.basename(cwd)),
-        .git_branch => try currentGitBranch(allocator, cwd),
+        .git_branch => try branch_summary.currentBranchName(allocator, cwd),
         .pull_request_number => null,
-        .branch_changes => null,
+        .branch_changes => try branch_summary.branchChangesLabel(allocator, cwd),
         .run_state => try allocator.dupe(u8, "Ready"),
         .context_remaining => try std.fmt.allocPrint(allocator, "Context {d}% left", .{contextRemainingPercent(cfg, transcript)}),
         .context_used => try std.fmt.allocPrint(allocator, "Context {d}% used", .{contextUsedPercent(cfg, transcript)}),
@@ -143,32 +144,6 @@ pub fn value(
         .thread_title => if (transcript.title) |title| try allocator.dupe(u8, title) else null,
         .task_progress => try transcript.plan.progressLabel(allocator),
     };
-}
-
-fn currentGitBranch(allocator: std.mem.Allocator, cwd: []const u8) !?[]const u8 {
-    var io_instance: std.Io.Threaded = .init(allocator, .{});
-    defer io_instance.deinit();
-
-    const result = std.process.run(allocator, io_instance.io(), .{
-        .argv = &.{ "git", "branch", "--show-current" },
-        .cwd = .{ .path = cwd },
-        .stdout_limit = .limited(4096),
-        .stderr_limit = .limited(4096),
-        .timeout = .{ .duration = .{
-            .raw = std.Io.Duration.fromMilliseconds(1000),
-            .clock = .awake,
-        } },
-    }) catch return null;
-    defer allocator.free(result.stdout);
-    defer allocator.free(result.stderr);
-    const success = switch (result.term) {
-        .exited => |code| code == 0,
-        else => false,
-    };
-    if (!success) return null;
-    const branch = std.mem.trim(u8, result.stdout, " \t\r\n");
-    if (branch.len == 0) return null;
-    return try allocator.dupe(u8, branch);
 }
 
 fn sessionIdFromPath(allocator: std.mem.Allocator, session_path: []const u8) ![]const u8 {
