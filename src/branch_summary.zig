@@ -220,10 +220,10 @@ fn runGitCommand(allocator: std.mem.Allocator, cwd: []const u8, args: []const []
         .argv = argv,
         .cwd = .{ .path = cwd },
         .environ_map = &child_env,
-        .stdout_limit = .limited(128 * 1024),
-        .stderr_limit = .limited(128 * 1024),
+        .stdout_limit = .limited(64 * 1024),
+        .stderr_limit = .limited(64 * 1024),
         .timeout = .{ .duration = .{
-            .raw = std.Io.Duration.fromMilliseconds(1000),
+            .raw = std.Io.Duration.fromMilliseconds(5000),
             .clock = .awake,
         } },
     });
