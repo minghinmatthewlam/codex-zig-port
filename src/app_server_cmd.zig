@@ -3748,6 +3748,29 @@ const CONFIG_REQUIREMENTS_TS =
     \\
     ;
 
+const CONFIG_REQUIREMENTS_EXPERIMENTAL_TS =
+    GENERATED_TS_HEADER ++
+    \\import type { WebSearchMode } from "../WebSearchMode";
+    \\import type { AskForApproval } from "./AskForApproval";
+    \\import type { ApprovalsReviewer } from "./ApprovalsReviewer";
+    \\import type { ManagedHooksRequirements } from "./ManagedHooksRequirements";
+    \\import type { NetworkRequirements } from "./NetworkRequirements";
+    \\import type { ResidencyRequirement } from "./ResidencyRequirement";
+    \\import type { SandboxMode } from "./SandboxMode";
+    \\
+    \\export interface ConfigRequirements {
+    \\  allowedApprovalPolicies: AskForApproval[] | null;
+    \\  allowedApprovalsReviewers: ApprovalsReviewer[] | null;
+    \\  allowedSandboxModes: SandboxMode[] | null;
+    \\  allowedWebSearchModes: WebSearchMode[] | null;
+    \\  featureRequirements: Record<string, boolean | undefined> | null;
+    \\  hooks: ManagedHooksRequirements | null;
+    \\  enforceResidency: ResidencyRequirement | null;
+    \\  network: NetworkRequirements | null;
+    \\}
+    \\
+    ;
+
 const CONFIG_REQUIREMENTS_READ_RESPONSE_TS =
     GENERATED_TS_HEADER ++
     \\import type { ConfigRequirements } from "./ConfigRequirements";
@@ -14128,13 +14151,6 @@ const CONFIG_REQUIREMENTS_READ_RESPONSE_JSON_SCHEMA =
     \\    },
     \\    "ConfigRequirements": {
     \\      "type": "object",
-    \\      "required": [
-    \\        "allowedApprovalPolicies",
-    \\        "allowedSandboxModes",
-    \\        "allowedWebSearchModes",
-    \\        "featureRequirements",
-    \\        "enforceResidency"
-    \\      ],
     \\      "properties": {
     \\        "allowedApprovalPolicies": {
     \\          "anyOf": [
@@ -14178,8 +14194,307 @@ const CONFIG_REQUIREMENTS_READ_RESPONSE_JSON_SCHEMA =
     \\            { "type": "null" }
     \\          ]
     \\        }
+    \\      }
+    \\    }
+    \\  },
+    \\  "additionalProperties": false
+    \\}
+    \\
+;
+
+const CONFIG_REQUIREMENTS_READ_RESPONSE_EXPERIMENTAL_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "ConfigRequirementsReadResponse",
+    \\  "type": "object",
+    \\  "required": ["requirements"],
+    \\  "properties": {
+    \\    "requirements": {
+    \\      "anyOf": [
+    \\        { "$ref": "#/$defs/ConfigRequirements" },
+    \\        { "type": "null" }
+    \\      ]
+    \\    }
+    \\  },
+    \\  "$defs": {
+    \\    "ApprovalsReviewer": {
+    \\      "enum": ["user", "auto_review", "guardian_subagent"]
+    \\    },
+    \\    "AskForApproval": {
+    \\      "oneOf": [
+    \\        { "enum": ["untrusted", "on-failure", "on-request", "never"] },
+    \\        {
+    \\          "type": "object",
+    \\          "required": ["granular"],
+    \\          "properties": {
+    \\            "granular": {
+    \\              "type": "object",
+    \\              "required": [
+    \\                "sandbox_approval",
+    \\                "rules",
+    \\                "skill_approval",
+    \\                "request_permissions",
+    \\                "mcp_elicitations"
+    \\              ],
+    \\              "properties": {
+    \\                "sandbox_approval": { "type": "boolean" },
+    \\                "rules": { "type": "boolean" },
+    \\                "skill_approval": { "type": "boolean" },
+    \\                "request_permissions": { "type": "boolean" },
+    \\                "mcp_elicitations": { "type": "boolean" }
+    \\              },
+    \\              "additionalProperties": false
+    \\            }
+    \\          },
+    \\          "additionalProperties": true
+    \\        }
+    \\      ]
+    \\    },
+    \\    "SandboxMode": {
+    \\      "enum": ["read-only", "workspace-write", "danger-full-access"]
+    \\    },
+    \\    "WebSearchMode": {
+    \\      "enum": ["disabled", "cached", "live"]
+    \\    },
+    \\    "ResidencyRequirement": {
+    \\      "enum": ["us"]
+    \\    },
+    \\    "ConfiguredHookHandler": {
+    \\      "oneOf": [
+    \\        {
+    \\          "type": "object",
+    \\          "required": ["type", "command", "async"],
+    \\          "properties": {
+    \\            "type": { "const": "command" },
+    \\            "command": { "type": "string" },
+    \\            "timeoutSec": {
+    \\              "anyOf": [
+    \\                { "type": "integer", "minimum": 0 },
+    \\                { "type": "null" }
+    \\              ]
+    \\            },
+    \\            "async": { "type": "boolean" },
+    \\            "statusMessage": { "type": ["string", "null"] }
+    \\          },
+    \\          "additionalProperties": false
+    \\        },
+    \\        {
+    \\          "type": "object",
+    \\          "required": ["type"],
+    \\          "properties": { "type": { "const": "prompt" } },
+    \\          "additionalProperties": false
+    \\        },
+    \\        {
+    \\          "type": "object",
+    \\          "required": ["type"],
+    \\          "properties": { "type": { "const": "agent" } },
+    \\          "additionalProperties": false
+    \\        }
+    \\      ]
+    \\    },
+    \\    "ConfiguredHookMatcherGroup": {
+    \\      "type": "object",
+    \\      "required": ["hooks"],
+    \\      "properties": {
+    \\        "matcher": { "type": ["string", "null"] },
+    \\        "hooks": {
+    \\          "type": "array",
+    \\          "items": { "$ref": "#/$defs/ConfiguredHookHandler" }
+    \\        }
     \\      },
     \\      "additionalProperties": false
+    \\    },
+    \\    "ManagedHooksRequirements": {
+    \\      "type": "object",
+    \\      "required": [
+    \\        "PreToolUse",
+    \\        "PermissionRequest",
+    \\        "PostToolUse",
+    \\        "PreCompact",
+    \\        "PostCompact",
+    \\        "SessionStart",
+    \\        "UserPromptSubmit",
+    \\        "Stop"
+    \\      ],
+    \\      "properties": {
+    \\        "managedDir": { "type": ["string", "null"] },
+    \\        "windowsManagedDir": { "type": ["string", "null"] },
+    \\        "PreToolUse": {
+    \\          "type": "array",
+    \\          "items": { "$ref": "#/$defs/ConfiguredHookMatcherGroup" }
+    \\        },
+    \\        "PermissionRequest": {
+    \\          "type": "array",
+    \\          "items": { "$ref": "#/$defs/ConfiguredHookMatcherGroup" }
+    \\        },
+    \\        "PostToolUse": {
+    \\          "type": "array",
+    \\          "items": { "$ref": "#/$defs/ConfiguredHookMatcherGroup" }
+    \\        },
+    \\        "PreCompact": {
+    \\          "type": "array",
+    \\          "items": { "$ref": "#/$defs/ConfiguredHookMatcherGroup" }
+    \\        },
+    \\        "PostCompact": {
+    \\          "type": "array",
+    \\          "items": { "$ref": "#/$defs/ConfiguredHookMatcherGroup" }
+    \\        },
+    \\        "SessionStart": {
+    \\          "type": "array",
+    \\          "items": { "$ref": "#/$defs/ConfiguredHookMatcherGroup" }
+    \\        },
+    \\        "UserPromptSubmit": {
+    \\          "type": "array",
+    \\          "items": { "$ref": "#/$defs/ConfiguredHookMatcherGroup" }
+    \\        },
+    \\        "Stop": {
+    \\          "type": "array",
+    \\          "items": { "$ref": "#/$defs/ConfiguredHookMatcherGroup" }
+    \\        }
+    \\      },
+    \\      "additionalProperties": false
+    \\    },
+    \\    "NetworkDomainPermission": {
+    \\      "enum": ["allow", "deny"]
+    \\    },
+    \\    "NetworkUnixSocketPermission": {
+    \\      "enum": ["allow", "none"]
+    \\    },
+    \\    "NetworkRequirements": {
+    \\      "type": "object",
+    \\      "properties": {
+    \\        "enabled": { "type": ["boolean", "null"] },
+    \\        "httpPort": {
+    \\          "anyOf": [
+    \\            { "type": "integer", "minimum": 0, "maximum": 65535 },
+    \\            { "type": "null" }
+    \\          ]
+    \\        },
+    \\        "socksPort": {
+    \\          "anyOf": [
+    \\            { "type": "integer", "minimum": 0, "maximum": 65535 },
+    \\            { "type": "null" }
+    \\          ]
+    \\        },
+    \\        "allowUpstreamProxy": { "type": ["boolean", "null"] },
+    \\        "dangerouslyAllowNonLoopbackProxy": { "type": ["boolean", "null"] },
+    \\        "dangerouslyAllowAllUnixSockets": { "type": ["boolean", "null"] },
+    \\        "domains": {
+    \\          "anyOf": [
+    \\            {
+    \\              "type": "object",
+    \\              "additionalProperties": { "$ref": "#/$defs/NetworkDomainPermission" }
+    \\            },
+    \\            { "type": "null" }
+    \\          ]
+    \\        },
+    \\        "managedAllowedDomainsOnly": { "type": ["boolean", "null"] },
+    \\        "allowedDomains": {
+    \\          "anyOf": [
+    \\            {
+    \\              "type": "array",
+    \\              "items": { "type": "string" }
+    \\            },
+    \\            { "type": "null" }
+    \\          ]
+    \\        },
+    \\        "deniedDomains": {
+    \\          "anyOf": [
+    \\            {
+    \\              "type": "array",
+    \\              "items": { "type": "string" }
+    \\            },
+    \\            { "type": "null" }
+    \\          ]
+    \\        },
+    \\        "unixSockets": {
+    \\          "anyOf": [
+    \\            {
+    \\              "type": "object",
+    \\              "additionalProperties": { "$ref": "#/$defs/NetworkUnixSocketPermission" }
+    \\            },
+    \\            { "type": "null" }
+    \\          ]
+    \\        },
+    \\        "allowUnixSockets": {
+    \\          "anyOf": [
+    \\            {
+    \\              "type": "array",
+    \\              "items": { "type": "string" }
+    \\            },
+    \\            { "type": "null" }
+    \\          ]
+    \\        },
+    \\        "allowLocalBinding": { "type": ["boolean", "null"] }
+    \\      }
+    \\    },
+    \\    "ConfigRequirements": {
+    \\      "type": "object",
+    \\      "properties": {
+    \\        "allowedApprovalPolicies": {
+    \\          "anyOf": [
+    \\            {
+    \\              "type": "array",
+    \\              "items": { "$ref": "#/$defs/AskForApproval" }
+    \\            },
+    \\            { "type": "null" }
+    \\          ]
+    \\        },
+    \\        "allowedApprovalsReviewers": {
+    \\          "anyOf": [
+    \\            {
+    \\              "type": "array",
+    \\              "items": { "$ref": "#/$defs/ApprovalsReviewer" }
+    \\            },
+    \\            { "type": "null" }
+    \\          ]
+    \\        },
+    \\        "allowedSandboxModes": {
+    \\          "anyOf": [
+    \\            {
+    \\              "type": "array",
+    \\              "items": { "$ref": "#/$defs/SandboxMode" }
+    \\            },
+    \\            { "type": "null" }
+    \\          ]
+    \\        },
+    \\        "allowedWebSearchModes": {
+    \\          "anyOf": [
+    \\            {
+    \\              "type": "array",
+    \\              "items": { "$ref": "#/$defs/WebSearchMode" }
+    \\            },
+    \\            { "type": "null" }
+    \\          ]
+    \\        },
+    \\        "featureRequirements": {
+    \\          "anyOf": [
+    \\            {
+    \\              "type": "object",
+    \\              "additionalProperties": { "type": "boolean" }
+    \\            },
+    \\            { "type": "null" }
+    \\          ]
+    \\        },
+    \\        "hooks": {
+    \\          "anyOf": [
+    \\            { "$ref": "#/$defs/ManagedHooksRequirements" },
+    \\            { "type": "null" }
+    \\          ]
+    \\        },
+    \\        "enforceResidency": {
+    \\          "anyOf": [
+    \\            { "$ref": "#/$defs/ResidencyRequirement" },
+    \\            { "type": "null" }
+    \\          ]
+    \\        },
+    \\        "network": {
+    \\          "anyOf": [
+    \\            { "$ref": "#/$defs/NetworkRequirements" },
+    \\            { "type": "null" }
+    \\          ]
+    \\        }
+    \\      }
     \\    }
     \\  },
     \\  "additionalProperties": false
@@ -25033,7 +25348,6 @@ const APP_SERVER_TS_FILES = [_]SchemaFile{
 
 fn writeAppServerTs(allocator: std.mem.Allocator, out_dir: []const u8, prettier: ?[]const u8, experimental: bool) !void {
     _ = prettier;
-    _ = experimental;
     const io = std.Io.Threaded.global_single_threaded.io();
     const v2_out_dir = try std.fs.path.join(allocator, &.{ out_dir, "v2" });
     defer allocator.free(v2_out_dir);
@@ -25041,12 +25355,11 @@ fn writeAppServerTs(allocator: std.mem.Allocator, out_dir: []const u8, prettier:
     const serde_json_out_dir = try std.fs.path.join(allocator, &.{ out_dir, "serde_json" });
     defer allocator.free(serde_json_out_dir);
     try std.Io.Dir.cwd().createDirPath(io, serde_json_out_dir);
-    try writeSchemaFiles(allocator, out_dir, &APP_SERVER_TS_FILES);
+    try writeSchemaFilesForMode(allocator, out_dir, &APP_SERVER_TS_FILES, experimental);
 }
 
 fn writeAppServerJsonSchemas(allocator: std.mem.Allocator, out_dir: []const u8, experimental: bool) !void {
-    _ = experimental;
-    try writeSchemaFiles(allocator, out_dir, &APP_SERVER_JSON_SCHEMA_FILES);
+    try writeSchemaFilesForMode(allocator, out_dir, &APP_SERVER_JSON_SCHEMA_FILES, experimental);
     try writeVersionedJsonSchemaAliases(allocator, out_dir);
 }
 
@@ -25056,6 +25369,10 @@ fn writeRolloutLineJsonSchema(allocator: std.mem.Allocator, out_dir: []const u8)
 }
 
 fn writeSchemaFiles(allocator: std.mem.Allocator, out_dir: []const u8, files: []const SchemaFile) !void {
+    try writeSchemaFilesForMode(allocator, out_dir, files, false);
+}
+
+fn writeSchemaFilesForMode(allocator: std.mem.Allocator, out_dir: []const u8, files: []const SchemaFile, experimental: bool) !void {
     const io = std.Io.Threaded.global_single_threaded.io();
     try std.Io.Dir.cwd().createDirPath(io, out_dir);
     for (files) |file| {
@@ -25064,8 +25381,14 @@ fn writeSchemaFiles(allocator: std.mem.Allocator, out_dir: []const u8, files: []
         if (std.fs.path.dirname(schema_path)) |parent_dir| {
             try std.Io.Dir.cwd().createDirPath(io, parent_dir);
         }
-        try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = schema_path, .data = file.contents });
+        try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = schema_path, .data = schemaFileContentsForMode(file, experimental) });
     }
+}
+
+fn schemaFileContentsForMode(file: SchemaFile, experimental: bool) []const u8 {
+    if (experimental and std.mem.eql(u8, file.name, "v2/ConfigRequirements.ts")) return CONFIG_REQUIREMENTS_EXPERIMENTAL_TS;
+    if (experimental and std.mem.eql(u8, file.name, "v2/ConfigRequirementsReadResponse.json")) return CONFIG_REQUIREMENTS_READ_RESPONSE_EXPERIMENTAL_JSON_SCHEMA;
+    return file.contents;
 }
 
 fn writeVersionedJsonSchemaAliases(allocator: std.mem.Allocator, out_dir: []const u8) !void {
