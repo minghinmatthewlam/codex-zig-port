@@ -27539,6 +27539,11 @@ def run_command_exec_rpc_smoke(binary: Path) -> None:
             "type": "external",
             "network": {"enabled": True},
         }
+        managed_unrestricted_network_restricted_permission_profile = {
+            "type": "managed",
+            "fileSystem": {"type": "unrestricted"},
+            "network": {"enabled": False},
+        }
         project_roots_write_permission_profile = {
             "type": "managed",
             "fileSystem": {
@@ -27649,6 +27654,32 @@ def run_command_exec_rpc_smoke(binary: Path) -> None:
             "stderr": "",
         }
 
+        unrestricted_write_target = root / "unrestricted-write.txt"
+        permission_profile_unrestricted_write = request_stdio_app_server(
+            binary,
+            {
+                "jsonrpc": "2.0",
+                "id": "command-exec-permission-profile-unrestricted-write",
+                "method": "command/exec",
+                "params": {
+                    "command": [
+                        "/bin/sh",
+                        "-c",
+                        f"printf unrestricted > {unrestricted_write_target} && printf unrestricted-write",
+                    ],
+                    "permissionProfile": managed_unrestricted_network_restricted_permission_profile,
+                },
+            },
+            env,
+        )
+        assert permission_profile_unrestricted_write["id"] == "command-exec-permission-profile-unrestricted-write"
+        assert permission_profile_unrestricted_write["result"] == {
+            "exitCode": 0,
+            "stdout": "unrestricted-write",
+            "stderr": "",
+        }
+        assert unrestricted_write_target.read_text(encoding="utf-8") == "unrestricted"
+
         read_only_target = root / "readonly-blocked.txt"
         permission_profile_read_only = request_stdio_app_server(
             binary,
@@ -27754,6 +27785,27 @@ def run_command_exec_rpc_smoke(binary: Path) -> None:
         assert permission_profile_network_restricted["id"] == "command-exec-permission-profile-network-restricted"
         assert permission_profile_network_restricted["result"]["exitCode"] != 0
         assert permission_profile_network_restricted["result"]["stdout"] == ""
+        assert CommandExecNetworkHandler.requests == ["/", "/"]
+
+        permission_profile_unrestricted_network_restricted = request_stdio_app_server(
+            binary,
+            {
+                "jsonrpc": "2.0",
+                "id": "command-exec-permission-profile-unrestricted-network-restricted",
+                "method": "command/exec",
+                "params": {
+                    "command": [sys.executable, "-c", network_probe, network_url],
+                    "permissionProfile": managed_unrestricted_network_restricted_permission_profile,
+                },
+            },
+            env,
+        )
+        assert (
+            permission_profile_unrestricted_network_restricted["id"]
+            == "command-exec-permission-profile-unrestricted-network-restricted"
+        )
+        assert permission_profile_unrestricted_network_restricted["result"]["exitCode"] != 0
+        assert permission_profile_unrestricted_network_restricted["result"]["stdout"] == ""
         assert CommandExecNetworkHandler.requests == ["/", "/"]
 
         permission_profile_with_sandbox_policy = request_stdio_app_server(

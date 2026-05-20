@@ -45339,7 +45339,7 @@ fn parseCommandExecPermissionProfile(
 
     if (std.mem.eql(u8, file_system_type.string, "unrestricted")) {
         try validateCommandExecPermissionProfileGlobScanMaxDepth(file_system_value.object);
-        return .{ .mode = .danger_full_access, .writable_roots = try allocator.alloc([]const u8, 0) };
+        return try commandExecFullFilesystemSandbox(allocator, network_enabled);
     }
     if (!std.mem.eql(u8, file_system_type.string, "restricted")) {
         return error.InvalidCommandExecPermissionProfileFileSystemType;
@@ -45358,7 +45358,7 @@ fn parseCommandExecPermissionProfile(
     if (summary.unsupported or (summary.non_root_read and !summary.root_read)) return error.UnsupportedCommandExecPermissionProfile;
     if (summary.root_write) {
         if (!summary.root_read) return error.UnsupportedCommandExecPermissionProfile;
-        return .{ .mode = .danger_full_access, .writable_roots = try allocator.alloc([]const u8, 0) };
+        return try commandExecFullFilesystemSandbox(allocator, network_enabled);
     }
     if (summary.project_roots_write or summary.path_writable_roots.items.len > 0) {
         if (!summary.root_read) return error.UnsupportedCommandExecPermissionProfile;
@@ -45370,6 +45370,21 @@ fn parseCommandExecPermissionProfile(
         return .{ .mode = .read_only, .writable_roots = try allocator.alloc([]const u8, 0), .network_enabled = network_enabled };
     }
     return error.UnsupportedCommandExecPermissionProfile;
+}
+
+fn commandExecFullFilesystemSandbox(allocator: std.mem.Allocator, network_enabled: bool) !CommandExecSandbox {
+    if (network_enabled) {
+        return .{ .mode = .danger_full_access, .writable_roots = try allocator.alloc([]const u8, 0) };
+    }
+
+    const roots = try allocator.alloc([]const u8, 1);
+    roots[0] = "/";
+    return .{
+        .mode = .workspace_write,
+        .writable_roots = roots,
+        .include_cwd_write_root = false,
+        .network_enabled = false,
+    };
 }
 
 fn parseCommandExecPermissionNetwork(value: ?std.json.Value) !bool {

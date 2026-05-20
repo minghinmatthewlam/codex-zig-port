@@ -590,9 +590,9 @@ requirements, terminal size rows and columns, and
 `command/exec/write|terminate|resize` follow-up params. Buffered execution also
 accepts supported Rust-shaped `permissionProfile` payloads using
 `fileSystem`, `network.enabled`, and `globScanMaxDepth` for disabled,
-root-read-only, managed-unrestricted, project-roots workspace-write, absolute
-writable-root, and external profiles, with command-cwd sandbox rooting for
-project roots.
+root-read-only, managed-unrestricted including restricted-network lowering,
+project-roots workspace-write, absolute writable-root, and external profiles,
+with command-cwd sandbox rooting for project roots.
 Supported `externalSandbox` policies also run through the explicit unsandboxed
 external-sandbox path. Unsupported
 profile entries return explicit not-implemented errors rather than weakening
