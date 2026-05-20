@@ -51499,6 +51499,19 @@ fn handleConfigWriteEdits(
         updated = next;
     }
 
+    var requirements = loadSystemConfigRequirements(allocator) catch |err| {
+        const message = try std.fmt.allocPrint(allocator, "{s} failed to load config requirements", .{method_name});
+        defer allocator.free(message);
+        return .{ .response = try renderJsonRpcErrorForFailure(allocator, id_value, message, err), .wrote = false };
+    };
+    defer requirements.deinit(allocator);
+    if (try configWriteFeatureRequirementConflictMessage(allocator, updated, requirements.feature_requirements)) |message| {
+        defer allocator.free(message);
+        const full_message = try std.fmt.allocPrint(allocator, "Invalid configuration: {s}", .{message});
+        defer allocator.free(full_message);
+        return .{ .response = try renderJsonRpcError(allocator, id_value, -32602, full_message), .wrote = false };
+    }
+
     var managed_layer = loadConfigReadManagedLayer(allocator) catch |err| {
         const message = try std.fmt.allocPrint(allocator, "{s} failed to read managed config", .{method_name});
         defer allocator.free(message);
@@ -51539,6 +51552,179 @@ fn handleConfigWriteEdits(
     const result = try renderConfigWriteResponse(allocator, config_path, version, overridden_metadata);
     defer allocator.free(result);
     return .{ .response = try renderJsonRpcResult(allocator, id_value, result), .wrote = true };
+}
+
+fn configWriteFeatureRequirementConflictMessage(
+    allocator: std.mem.Allocator,
+    bytes: []const u8,
+    feature_requirements: ?FeatureRequirementList,
+) !?[]const u8 {
+    const requirements = feature_requirements orelse return null;
+    var current_scope: ConfigWriteTomlScope = .top_level;
+    var multiline_string: ?TomlMultilineStringKind = null;
+
+    var start: usize = 0;
+    while (start < bytes.len) {
+        const end = std.mem.indexOfScalarPos(u8, bytes, start, '\n') orelse bytes.len;
+        const line_raw = bytes[start..end];
+        start = if (end < bytes.len) end + 1 else bytes.len;
+
+        if (tomlLineIsMultilineStringBody(&multiline_string, line_raw)) continue;
+        const line_without_comment = stripTomlLineComment(line_raw);
+        const line = std.mem.trim(u8, line_without_comment, " \t\r");
+        if (line.len == 0) continue;
+        if (line[0] == '[') {
+            current_scope = if (configWriteTomlSectionPath(line)) |section|
+                ConfigWriteTomlScope{ .table = section }
+            else
+                .ignored;
+            continue;
+        }
+        defer observeTomlMultilineStringOpen(&multiline_string, line_without_comment);
+
+        const eq = std.mem.indexOfScalar(u8, line, '=') orelse continue;
+        const lhs = std.mem.trim(u8, line[0..eq], " \t");
+        const rhs = std.mem.trim(u8, line[eq + 1 ..], " \t");
+        const current_section: ?[]const u8 = switch (current_scope) {
+            .top_level => null,
+            .table => current_scope.table,
+            .ignored => continue,
+        };
+
+        var path = (configWriteAssignmentPath(allocator, current_section, lhs) catch |err| switch (err) {
+            error.InvalidConfigReadProfileDottedKey, error.InvalidConfigReadAppSection, error.InvalidTomlString => continue,
+            else => return err,
+        }) orelse continue;
+        defer path.deinit(allocator);
+        if (parseTomlBoolLiteral(rhs)) |enabled| {
+            if (try configWriteFeatureRequirementConflictForPathItems(allocator, requirements, path.items, enabled)) |message| return message;
+        } else if (rhs.len > 0 and rhs[0] == '{' and configWritePathMayContainFeatureRequirement(path.items)) {
+            var path_stack = std.ArrayList([]const u8).empty;
+            defer path_stack.deinit(allocator);
+            try path_stack.appendSlice(allocator, path.items);
+            if (try configWriteInlineTableFeatureRequirementConflictMessage(allocator, requirements, &path_stack, rhs)) |message| return message;
+        }
+    }
+    return null;
+}
+
+const ConfigWriteTomlScope = union(enum) {
+    top_level,
+    table: []const u8,
+    ignored,
+};
+
+fn configWriteTomlSectionPath(line: []const u8) ?[]const u8 {
+    if (line.len < "[]".len or line[0] != '[' or line[line.len - 1] != ']') return null;
+    if (line.len >= "[[]]".len and line[1] == '[') return null;
+    return std.mem.trim(u8, line[1 .. line.len - 1], " \t");
+}
+
+fn parseTomlBoolLiteral(raw: []const u8) ?bool {
+    if (std.mem.eql(u8, raw, "true")) return true;
+    if (std.mem.eql(u8, raw, "false")) return false;
+    return null;
+}
+
+fn configWriteAssignmentPath(
+    allocator: std.mem.Allocator,
+    current_section: ?[]const u8,
+    lhs: []const u8,
+) !?ConfigReadTomlPath {
+    var lhs_path = (try parseConfigReadTomlDottedPath(allocator, lhs)) orelse return null;
+    errdefer lhs_path.deinit(allocator);
+
+    const section = current_section orelse return lhs_path;
+    var section_path = (try parseConfigReadTomlDottedPath(allocator, section)) orelse return lhs_path;
+    errdefer section_path.deinit(allocator);
+
+    const items = try allocator.alloc([]const u8, section_path.items.len + lhs_path.items.len);
+    @memcpy(items[0..section_path.items.len], section_path.items);
+    @memcpy(items[section_path.items.len..], lhs_path.items);
+    allocator.free(section_path.items);
+    allocator.free(lhs_path.items);
+    section_path.items = &.{};
+    lhs_path.items = &.{};
+    return .{ .items = items };
+}
+
+fn configWriteInlineTableFeatureRequirementConflictMessage(
+    allocator: std.mem.Allocator,
+    requirements: FeatureRequirementList,
+    path_stack: *std.ArrayList([]const u8),
+    raw_table: []const u8,
+) !?[]const u8 {
+    const body = configReadInlineTableBody(raw_table) catch |err| switch (err) {
+        error.InvalidConfigReadInlineTable => return null,
+    };
+    var field_start: usize = 0;
+    while (nextConfigReadInlineTableField(body, &field_start) catch |err| switch (err) {
+        error.InvalidConfigReadInlineTable => return null,
+    }) |field_raw| {
+        const field = std.mem.trim(u8, field_raw, " \t\r\n");
+        if (field.len == 0) continue;
+        const eq = std.mem.indexOfScalar(u8, field, '=') orelse continue;
+        const key = (parseConfigReadInlineFieldKey(allocator, field[0..eq]) catch |err| switch (err) {
+            error.InvalidConfigReadAppSection, error.InvalidTomlString => continue,
+            else => return err,
+        }) orelse continue;
+        defer allocator.free(key);
+        try path_stack.append(allocator, key);
+        defer _ = path_stack.pop();
+
+        const rhs = std.mem.trim(u8, field[eq + 1 ..], " \t\r\n");
+        if (parseTomlBoolLiteral(rhs)) |enabled| {
+            if (try configWriteFeatureRequirementConflictForPathItems(allocator, requirements, path_stack.items, enabled)) |message| return message;
+        } else if (rhs.len > 0 and rhs[0] == '{' and configWritePathMayContainFeatureRequirement(path_stack.items)) {
+            if (try configWriteInlineTableFeatureRequirementConflictMessage(allocator, requirements, path_stack, rhs)) |message| return message;
+        }
+    }
+    return null;
+}
+
+fn configWritePathMayContainFeatureRequirement(path_items: []const []const u8) bool {
+    if (path_items.len == 0) return false;
+    if (std.mem.eql(u8, path_items[0], "features")) return path_items.len == 1;
+    if (!std.mem.eql(u8, path_items[0], "profiles")) return false;
+    if (path_items.len <= 2) return true;
+    return path_items.len == 3 and std.mem.eql(u8, path_items[2], "features");
+}
+
+fn configWriteFeatureRequirementConflictForPathItems(
+    allocator: std.mem.Allocator,
+    requirements: FeatureRequirementList,
+    path_items: []const []const u8,
+    enabled: bool,
+) !?[]const u8 {
+    const feature_key = if (path_items.len == 2 and std.mem.eql(u8, path_items[0], "features"))
+        path_items[1]
+    else if (path_items.len == 4 and std.mem.eql(u8, path_items[0], "profiles") and std.mem.eql(u8, path_items[2], "features"))
+        path_items[3]
+    else
+        return null;
+
+    const canonical_key = canonicalFeatureRequirementKey(feature_key) orelse return null;
+    const required = featureRequirementValue(requirements, canonical_key) orelse return null;
+    if (required == enabled) return null;
+
+    const key_path = try configWriteJoinPath(allocator, path_items);
+    defer allocator.free(key_path);
+    const message = try std.fmt.allocPrint(
+        allocator,
+        "invalid value for `features`: `{s}={s}` is disallowed by requirements",
+        .{ key_path, if (enabled) "true" else "false" },
+    );
+    return @as(?[]const u8, message);
+}
+
+fn configWriteJoinPath(allocator: std.mem.Allocator, path_items: []const []const u8) ![]const u8 {
+    var result = std.ArrayList(u8).empty;
+    errdefer result.deinit(allocator);
+    for (path_items, 0..) |item, index| {
+        if (index > 0) try result.append(allocator, '.');
+        try result.appendSlice(allocator, item);
+    }
+    return result.toOwnedSlice(allocator);
 }
 
 fn applyConfigWriteEdit(allocator: std.mem.Allocator, bytes: []const u8, edit: ConfigRawEdit) ![]const u8 {
@@ -54151,24 +54337,24 @@ fn nextConfigReadInlineTableField(body: []const u8, start: *usize) !?[]const u8 
 
     const field_start = start.*;
     var index = start.*;
-    var in_string = false;
+    var string_quote: u8 = 0;
     var escaped = false;
     var bracket_depth: usize = 0;
     var brace_depth: usize = 0;
     while (index < body.len) : (index += 1) {
         const byte = body[index];
-        if (in_string) {
-            if (escaped) {
+        if (string_quote != 0) {
+            if (string_quote == '"' and escaped) {
                 escaped = false;
-            } else if (byte == '\\') {
+            } else if (string_quote == '"' and byte == '\\') {
                 escaped = true;
-            } else if (byte == '"') {
-                in_string = false;
+            } else if (byte == string_quote) {
+                string_quote = 0;
             }
             continue;
         }
-        if (byte == '"') {
-            in_string = true;
+        if (byte == '"' or byte == '\'') {
+            string_quote = byte;
         } else if (byte == '[') {
             bracket_depth += 1;
         } else if (byte == ']') {
@@ -54184,7 +54370,7 @@ fn nextConfigReadInlineTableField(body: []const u8, start: *usize) !?[]const u8 
             return body[field_start..index];
         }
     }
-    if (in_string or escaped or bracket_depth != 0 or brace_depth != 0) return error.InvalidConfigReadInlineTable;
+    if (string_quote != 0 or escaped or bracket_depth != 0 or brace_depth != 0) return error.InvalidConfigReadInlineTable;
 
     start.* = index;
     return body[field_start..index];
@@ -61087,6 +61273,119 @@ test "feature requirements normalize aliases for effective feature values" {
     try std.testing.expectEqual(false, featureRequirementValue(requirements, "apps").?);
     try std.testing.expectEqual(false, featureRequirementValue(requirements, "guardian_approval").?);
     try std.testing.expect(featureRequirementValue(requirements, "unknown#feature") == null);
+}
+
+test "config write feature requirements reject conflicting user and profile values" {
+    const allocator = std.testing.allocator;
+    var requirements = (try parseFeatureRequirements(allocator,
+        \\[features]
+        \\personality = true
+        \\connectors = false
+        \\
+    )).?;
+    defer requirements.deinit(allocator);
+
+    const user_conflict = try configWriteFeatureRequirementConflictMessage(allocator,
+        \\[features]
+        \\personality = false
+        \\apps = false
+        \\
+    , requirements);
+    try std.testing.expect(user_conflict != null);
+    defer allocator.free(user_conflict.?);
+    try std.testing.expect(std.mem.indexOf(u8, user_conflict.?, "features.personality=false") != null);
+
+    const profile_conflict = try configWriteFeatureRequirementConflictMessage(allocator,
+        \\[profiles.enterprise.features]
+        \\personality = false
+        \\
+    , requirements);
+    try std.testing.expect(profile_conflict != null);
+    defer allocator.free(profile_conflict.?);
+    try std.testing.expect(std.mem.indexOf(u8, profile_conflict.?, "profiles.enterprise.features.personality=false") != null);
+
+    const dotted_conflict = try configWriteFeatureRequirementConflictMessage(allocator,
+        \\profiles.enterprise.features.personality = false
+        \\
+    , requirements);
+    try std.testing.expect(dotted_conflict != null);
+    defer allocator.free(dotted_conflict.?);
+    try std.testing.expect(std.mem.indexOf(u8, dotted_conflict.?, "profiles.enterprise.features.personality=false") != null);
+
+    const inline_conflict = try configWriteFeatureRequirementConflictMessage(allocator,
+        \\features = { "personality" = false }
+        \\
+    , requirements);
+    try std.testing.expect(inline_conflict != null);
+    defer allocator.free(inline_conflict.?);
+    try std.testing.expect(std.mem.indexOf(u8, inline_conflict.?, "features.personality=false") != null);
+
+    const profile_inline_conflict = try configWriteFeatureRequirementConflictMessage(allocator,
+        \\[profiles.enterprise]
+        \\features = { "personality" = false }
+        \\
+    , requirements);
+    try std.testing.expect(profile_inline_conflict != null);
+    defer allocator.free(profile_inline_conflict.?);
+    try std.testing.expect(std.mem.indexOf(u8, profile_inline_conflict.?, "profiles.enterprise.features.personality=false") != null);
+
+    const nested_inline_conflict = try configWriteFeatureRequirementConflictMessage(allocator,
+        \\profiles = { enterprise = { features = { "personality" = false } } }
+        \\
+    , requirements);
+    try std.testing.expect(nested_inline_conflict != null);
+    defer allocator.free(nested_inline_conflict.?);
+    try std.testing.expect(std.mem.indexOf(u8, nested_inline_conflict.?, "profiles.enterprise.features.personality=false") != null);
+
+    const unrelated_inline = try configWriteFeatureRequirementConflictMessage(allocator,
+        \\bar = { baz = ']' }
+        \\
+    , requirements);
+    try std.testing.expect(unrelated_inline == null);
+
+    const unrelated_profile_inline = try configWriteFeatureRequirementConflictMessage(allocator,
+        \\[profiles.enterprise]
+        \\tools = { default = { note = '}' } }
+        \\
+    , requirements);
+    try std.testing.expect(unrelated_profile_inline == null);
+
+    const unrelated_nested_profile_inline = try configWriteFeatureRequirementConflictMessage(allocator,
+        \\profiles = { enterprise = { tools = { default = { note = '}' } } } }
+        \\
+    , requirements);
+    try std.testing.expect(unrelated_nested_profile_inline == null);
+
+    const array_table_local_features = try configWriteFeatureRequirementConflictMessage(allocator,
+        \\[[skills.config]]
+        \\name = "local"
+        \\features = { "personality" = false }
+        \\
+    , requirements);
+    try std.testing.expect(array_table_local_features == null);
+
+    const allowed = try configWriteFeatureRequirementConflictMessage(allocator,
+        \\[features]
+        \\personality = true
+        \\apps = false
+        \\
+        \\[profiles.enterprise.features]
+        \\personality = true
+        \\
+    , requirements);
+    try std.testing.expect(allowed == null);
+
+    const multiline_allowed = try configWriteFeatureRequirementConflictMessage(allocator,
+        \\instructions = """
+        \\[features]
+        \\personality = false
+        \\"""
+        \\
+        \\[features]
+        \\personality = true
+        \\
+    , requirements);
+    try std.testing.expect(multiline_allowed == null);
 }
 
 test "config requirements filter external sandbox mode from API list" {
