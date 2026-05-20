@@ -147,6 +147,7 @@ pub const Policy = struct {
     approval_policy: config.ApprovalPolicy = .on_request,
     sandbox_mode: config.SandboxMode = .workspace_write,
     additional_writable_roots: []const []const u8 = &.{},
+    read_denied_roots: []const []const u8 = &.{},
     include_cwd_write_root: bool = true,
     network_enabled: bool = true,
     auto_approve: bool = false,
@@ -306,6 +307,14 @@ fn approvalScopeKey(allocator: std.mem.Allocator, policy: Policy) ![]const u8 {
         try out.appendSlice(allocator, root_json);
     }
     try out.append(allocator, ']');
+    try out.appendSlice(allocator, ";read-denied=[");
+    for (policy.read_denied_roots, 0..) |root, index| {
+        if (index > 0) try out.append(allocator, ',');
+        const root_json = try std.json.Stringify.valueAlloc(allocator, root, .{});
+        defer allocator.free(root_json);
+        try out.appendSlice(allocator, root_json);
+    }
+    try out.append(allocator, ']');
     return out.toOwnedSlice(allocator);
 }
 
@@ -364,6 +373,7 @@ fn runExecCommand(
         return runExecCommandSession(allocator, call_id, argv[0..], .{
             .sandbox_mode = policy.sandbox_mode,
             .additional_writable_roots = policy.additional_writable_roots,
+            .read_denied_roots = policy.read_denied_roots,
             .include_cwd_write_root = policy.include_cwd_write_root,
             .network_enabled = policy.network_enabled,
             .workdir = args.workdir orelse policy.workdir,
@@ -376,6 +386,7 @@ fn runExecCommand(
     return runArgvWithOptions(allocator, call_id, argv[0..], .{
         .sandbox_mode = policy.sandbox_mode,
         .additional_writable_roots = policy.additional_writable_roots,
+        .read_denied_roots = policy.read_denied_roots,
         .include_cwd_write_root = policy.include_cwd_write_root,
         .network_enabled = policy.network_enabled,
         .workdir = args.workdir orelse policy.workdir,
@@ -387,6 +398,7 @@ fn runExecCommand(
 const ExecSessionOptions = struct {
     sandbox_mode: config.SandboxMode,
     additional_writable_roots: []const []const u8 = &.{},
+    read_denied_roots: []const []const u8 = &.{},
     include_cwd_write_root: bool = true,
     network_enabled: bool = true,
     workdir: ?[]const u8 = null,
@@ -494,14 +506,17 @@ fn startExecSession(argv: []const []const u8, options: ExecSessionOptions) !usiz
     var sandboxed_argv: ?sandbox.SandboxedArgv = null;
     defer if (sandboxed_argv) |*wrapped| wrapped.deinit(session_allocator);
     const effective_argv = if (sandbox.shouldSandbox(options.sandbox_mode)) blk: {
-        sandboxed_argv = try sandbox.wrapArgvWithCwdOptions(
+        sandboxed_argv = try sandbox.wrapArgvWithPolicy(
             session_allocator,
             options.sandbox_mode,
             argv,
             options.additional_writable_roots,
-            options.workdir,
-            options.include_cwd_write_root,
-            options.network_enabled,
+            .{
+                .cwd_override = options.workdir,
+                .include_cwd_write_root = options.include_cwd_write_root,
+                .network_enabled = options.network_enabled,
+                .read_denied_roots = options.read_denied_roots,
+            },
         );
         break :blk sandboxed_argv.?.argv;
     } else argv;
@@ -627,6 +642,7 @@ fn runArgv(
     return runArgvWithOptions(allocator, call_id, argv, .{
         .sandbox_mode = policy.sandbox_mode,
         .additional_writable_roots = policy.additional_writable_roots,
+        .read_denied_roots = policy.read_denied_roots,
         .include_cwd_write_root = policy.include_cwd_write_root,
         .network_enabled = policy.network_enabled,
         .workdir = policy.workdir,
@@ -636,6 +652,7 @@ fn runArgv(
 const RunArgvOptions = struct {
     sandbox_mode: config.SandboxMode,
     additional_writable_roots: []const []const u8 = &.{},
+    read_denied_roots: []const []const u8 = &.{},
     include_cwd_write_root: bool = true,
     network_enabled: bool = true,
     workdir: ?[]const u8 = null,
@@ -655,14 +672,17 @@ fn runArgvWithOptions(
     var sandboxed_argv: ?sandbox.SandboxedArgv = null;
     defer if (sandboxed_argv) |*wrapped| wrapped.deinit(allocator);
     const effective_argv = if (sandbox.shouldSandbox(options.sandbox_mode)) blk: {
-        sandboxed_argv = try sandbox.wrapArgvWithCwdOptions(
+        sandboxed_argv = try sandbox.wrapArgvWithPolicy(
             allocator,
             options.sandbox_mode,
             argv,
             options.additional_writable_roots,
-            options.workdir,
-            options.include_cwd_write_root,
-            options.network_enabled,
+            .{
+                .cwd_override = options.workdir,
+                .include_cwd_write_root = options.include_cwd_write_root,
+                .network_enabled = options.network_enabled,
+                .read_denied_roots = options.read_denied_roots,
+            },
         );
         break :blk sandboxed_argv.?.argv;
     } else argv;
@@ -1660,6 +1680,89 @@ test "exec_command honors workdir" {
     const result = try runFunctionCall(allocator, call, .{ .auto_approve = true });
     defer result.deinit(allocator);
     try std.testing.expect(std.mem.indexOf(u8, result.output, cwd) != null);
+}
+
+test "exec_command applies read-denied roots" {
+    const allocator = std.testing.allocator;
+    var dir = std.testing.tmpDir(.{});
+    defer dir.cleanup();
+    var io_instance: std.Io.Threaded = .init(allocator, .{});
+    defer io_instance.deinit();
+
+    try dir.dir.writeFile(io_instance.io(), .{ .sub_path = "secret.txt", .data = "secret" });
+    try dir.dir.writeFile(io_instance.io(), .{ .sub_path = "public.txt", .data = "public" });
+    const cwd = try dir.dir.realPathFileAlloc(std.Io.Threaded.global_single_threaded.io(), ".", allocator);
+    defer allocator.free(cwd);
+
+    const cwd_json = try std.json.Stringify.valueAlloc(allocator, cwd, .{});
+    defer allocator.free(cwd_json);
+    const args = try std.fmt.allocPrint(
+        allocator,
+        "{{\"cmd\":\"! cat secret.txt && cat public.txt && printf ok > allowed.txt && printf read-deny-ok\",\"workdir\":{s}}}",
+        .{cwd_json},
+    );
+    defer allocator.free(args);
+
+    const call = api.FunctionCall{
+        .call_id = "exec-read-deny",
+        .name = "exec_command",
+        .arguments = args,
+    };
+    const result = try runFunctionCall(allocator, call, .{
+        .auto_approve = true,
+        .sandbox_mode = .workspace_write,
+        .read_denied_roots = &.{"secret.txt"},
+        .workdir = cwd,
+    });
+    defer result.deinit(allocator);
+
+    try std.testing.expectEqualStrings("exit 0", result.summary);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "public") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "read-deny-ok") != null);
+    const secret = try dir.dir.readFileAlloc(io_instance.io(), "secret.txt", allocator, .limited(1024));
+    defer allocator.free(secret);
+    try std.testing.expectEqualStrings("secret", secret);
+    try dir.dir.access(io_instance.io(), "allowed.txt", .{});
+}
+
+test "exec_command applies absolute read-denied roots from command workdir" {
+    const allocator = std.testing.allocator;
+    var dir = std.testing.tmpDir(.{});
+    defer dir.cleanup();
+    var io_instance: std.Io.Threaded = .init(allocator, .{});
+    defer io_instance.deinit();
+
+    try dir.dir.writeFile(io_instance.io(), .{ .sub_path = "secret.txt", .data = "secret" });
+    try dir.dir.writeFile(io_instance.io(), .{ .sub_path = "public.txt", .data = "public" });
+    const cwd = try dir.dir.realPathFileAlloc(std.Io.Threaded.global_single_threaded.io(), ".", allocator);
+    defer allocator.free(cwd);
+    const secret_path = try std.fs.path.join(allocator, &.{ cwd, "secret.txt" });
+    defer allocator.free(secret_path);
+
+    const cwd_json = try std.json.Stringify.valueAlloc(allocator, cwd, .{});
+    defer allocator.free(cwd_json);
+    const args = try std.fmt.allocPrint(
+        allocator,
+        "{{\"cmd\":\"! cat secret.txt && cat public.txt && printf absolute-read-deny-ok\",\"workdir\":{s}}}",
+        .{cwd_json},
+    );
+    defer allocator.free(args);
+
+    const call = api.FunctionCall{
+        .call_id = "exec-absolute-read-deny",
+        .name = "exec_command",
+        .arguments = args,
+    };
+    const result = try runFunctionCall(allocator, call, .{
+        .auto_approve = true,
+        .sandbox_mode = .workspace_write,
+        .read_denied_roots = &.{secret_path},
+    });
+    defer result.deinit(allocator);
+
+    try std.testing.expectEqualStrings("exit 0", result.summary);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "public") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "absolute-read-deny-ok") != null);
 }
 
 test "exec_command tty session accepts write_stdin" {

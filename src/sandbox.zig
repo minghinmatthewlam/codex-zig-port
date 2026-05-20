@@ -72,21 +72,19 @@ pub fn wrapArgvWithPolicy(
     options: WrapOptions,
 ) !SandboxedArgv {
     const cwd = if (options.cwd_override) |cwd|
-        try allocator.dupe(u8, cwd)
+        try realPathAlloc(allocator, cwd)
     else blk: {
-        const real_path = try std.Io.Dir.cwd().realPathFileAlloc(std.Io.Threaded.global_single_threaded.io(), ".", allocator);
-        defer allocator.free(real_path);
-        break :blk try allocator.dupe(u8, real_path);
+        break :blk try realPathAlloc(allocator, ".");
     };
     defer allocator.free(cwd);
 
     const resolved_roots = if (mode == .workspace_write)
-        try resolveAdditionalRoots(allocator, additional_writable_roots)
+        try resolveAdditionalRoots(allocator, cwd, additional_writable_roots)
     else
         try allocator.alloc([]const u8, 0);
     defer freeResolvedRoots(allocator, resolved_roots);
 
-    const resolved_read_denied_roots = try resolveReadDeniedRoots(allocator, options.read_denied_roots);
+    const resolved_read_denied_roots = try resolveReadDeniedRoots(allocator, cwd, options.read_denied_roots);
     defer freeResolvedRoots(allocator, resolved_read_denied_roots);
 
     const profile = try buildProfileWithOptions(
@@ -173,7 +171,18 @@ fn appendNetworkPolicy(
     try profile.appendSlice(allocator, deniedNetworkPolicy);
 }
 
-fn resolveAdditionalRoots(allocator: std.mem.Allocator, roots: []const []const u8) ![]const []const u8 {
+fn realPathAlloc(allocator: std.mem.Allocator, path: []const u8) ![]const u8 {
+    const real_path = try std.Io.Dir.cwd().realPathFileAlloc(std.Io.Threaded.global_single_threaded.io(), path, allocator);
+    defer allocator.free(real_path);
+    return allocator.dupe(u8, real_path);
+}
+
+fn resolveProfileRootPath(allocator: std.mem.Allocator, base_cwd: []const u8, root: []const u8) ![]const u8 {
+    if (std.fs.path.isAbsolute(root)) return allocator.dupe(u8, root);
+    return std.fs.path.join(allocator, &.{ base_cwd, root });
+}
+
+fn resolveAdditionalRoots(allocator: std.mem.Allocator, base_cwd: []const u8, roots: []const []const u8) ![]const []const u8 {
     var resolved = try allocator.alloc([]const u8, roots.len);
     errdefer allocator.free(resolved);
 
@@ -183,16 +192,16 @@ fn resolveAdditionalRoots(allocator: std.mem.Allocator, roots: []const []const u
     }
 
     for (roots) |root| {
-        const real_path = try std.Io.Dir.cwd().realPathFileAlloc(std.Io.Threaded.global_single_threaded.io(), root, allocator);
-        defer allocator.free(real_path);
-        resolved[count] = try allocator.dupe(u8, real_path);
+        const path = try resolveProfileRootPath(allocator, base_cwd, root);
+        defer allocator.free(path);
+        resolved[count] = try realPathAlloc(allocator, path);
         count += 1;
     }
 
     return resolved;
 }
 
-fn resolveReadDeniedRoots(allocator: std.mem.Allocator, roots: []const []const u8) ![]const []const u8 {
+fn resolveReadDeniedRoots(allocator: std.mem.Allocator, base_cwd: []const u8, roots: []const []const u8) ![]const []const u8 {
     var resolved = try allocator.alloc([]const u8, roots.len);
     errdefer allocator.free(resolved);
 
@@ -202,8 +211,10 @@ fn resolveReadDeniedRoots(allocator: std.mem.Allocator, roots: []const []const u
     }
 
     for (roots) |root| {
-        resolved[count] = std.Io.Dir.cwd().realPathFileAlloc(std.Io.Threaded.global_single_threaded.io(), root, allocator) catch |err| switch (err) {
-            error.FileNotFound, error.NotDir, error.AccessDenied => try allocator.dupe(u8, root),
+        const path = try resolveProfileRootPath(allocator, base_cwd, root);
+        defer allocator.free(path);
+        resolved[count] = realPathAlloc(allocator, path) catch |err| switch (err) {
+            error.FileNotFound, error.NotDir, error.AccessDenied => try allocator.dupe(u8, path),
             else => return err,
         };
         count += 1;
@@ -307,6 +318,41 @@ test "sandbox profile can deny read roots" {
 
     try std.testing.expect(std.mem.indexOf(u8, profile, "(deny file-read* (literal \"/tmp/codex-workspace/secret\"))") != null);
     try std.testing.expect(std.mem.indexOf(u8, profile, "(deny file-write* (subpath \"/tmp/codex-workspace/secret\"))") != null);
+}
+
+test "relative profile roots resolve against cwd override" {
+    const allocator = std.testing.allocator;
+    var dir = std.testing.tmpDir(.{});
+    defer dir.cleanup();
+    var io_instance: std.Io.Threaded = .init(allocator, .{});
+    defer io_instance.deinit();
+
+    try dir.dir.createDirPath(io_instance.io(), "workspace/extra");
+    try dir.dir.createDirPath(io_instance.io(), "workspace/secret");
+
+    const root = try dir.dir.realPathFileAlloc(std.Io.Threaded.global_single_threaded.io(), ".", allocator);
+    defer allocator.free(root);
+    const workspace = try std.fs.path.join(allocator, &.{ root, "workspace" });
+    defer allocator.free(workspace);
+    const extra = try std.fs.path.join(allocator, &.{ workspace, "extra" });
+    defer allocator.free(extra);
+    const secret = try std.fs.path.join(allocator, &.{ workspace, "secret" });
+    defer allocator.free(secret);
+
+    const argv = [_][]const u8{ "/bin/echo", "ok" };
+    var wrapped = try wrapArgvWithPolicy(allocator, .workspace_write, argv[0..], &.{"extra"}, .{
+        .cwd_override = workspace,
+        .read_denied_roots = &.{"secret"},
+    });
+    defer wrapped.deinit(allocator);
+
+    const expected_extra = try std.fmt.allocPrint(allocator, "(allow file-write* (subpath \"{s}\"))", .{extra});
+    defer allocator.free(expected_extra);
+    const expected_secret = try std.fmt.allocPrint(allocator, "(deny file-read* (subpath \"{s}\"))", .{secret});
+    defer allocator.free(expected_secret);
+
+    try std.testing.expect(std.mem.indexOf(u8, wrapped.profile, expected_extra) != null);
+    try std.testing.expect(std.mem.indexOf(u8, wrapped.profile, expected_secret) != null);
 }
 
 test "read-only sandbox denies file writes" {

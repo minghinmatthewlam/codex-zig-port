@@ -333,6 +333,7 @@ pub const TurnOptions = struct {
     json_events: bool = false,
     stream_text: bool = false,
     additional_writable_roots: []const []const u8 = &.{},
+    read_denied_roots: []const []const u8 = &.{},
     include_cwd_write_root: bool = true,
     network_enabled: bool = true,
     output_schema: ?std.json.Value = null,
@@ -786,6 +787,7 @@ pub fn runTurnWithOptions(
                     transcript,
                     options,
                     turn_writable_roots.items,
+                    options.read_denied_roots,
                     turn_network_enabled,
                 );
             defer tool_result.deinit(allocator);
@@ -862,6 +864,7 @@ fn runToolCall(
     transcript: *Transcript,
     options: TurnOptions,
     additional_writable_roots: []const []const u8,
+    read_denied_roots: []const []const u8,
     network_enabled: bool,
 ) !tools.ToolResult {
     if (std.mem.eql(u8, call.name, "update_plan")) {
@@ -940,6 +943,7 @@ fn runToolCall(
         .approval_policy = cfg.approval_policy,
         .sandbox_mode = cfg.sandbox_mode,
         .additional_writable_roots = additional_writable_roots,
+        .read_denied_roots = read_denied_roots,
         .include_cwd_write_root = options.include_cwd_write_root,
         .network_enabled = network_enabled,
         .auto_approve = options.auto_approve,
@@ -969,6 +973,75 @@ fn runToolCall(
     }
 
     return tool_result;
+}
+
+test "runToolCall applies read-denied roots" {
+    const allocator = std.testing.allocator;
+    var dir = std.testing.tmpDir(.{});
+    defer dir.cleanup();
+    var io_instance: std.Io.Threaded = .init(allocator, .{});
+    defer io_instance.deinit();
+
+    try dir.dir.writeFile(io_instance.io(), .{ .sub_path = "secret.txt", .data = "secret" });
+    try dir.dir.writeFile(io_instance.io(), .{ .sub_path = "public.txt", .data = "public" });
+    const cwd = try dir.dir.realPathFileAlloc(std.Io.Threaded.global_single_threaded.io(), ".", allocator);
+    defer allocator.free(cwd);
+    const secret_path = try std.fs.path.join(allocator, &.{ cwd, "secret.txt" });
+    defer allocator.free(secret_path);
+
+    var cfg = config.Config{
+        .codex_home = try allocator.dupe(u8, cwd),
+        .active_profile = null,
+        .model = try allocator.dupe(u8, "gpt-test"),
+        .openai_base_url = try allocator.dupe(u8, "http://127.0.0.1"),
+        .chatgpt_base_url = try allocator.dupe(u8, "http://127.0.0.1"),
+        .oss_provider = null,
+        .installation_id = try allocator.dupe(u8, "install"),
+        .approval_policy = .never,
+        .sandbox_mode = .workspace_write,
+        .web_search_mode = null,
+        .model_reasoning_effort = null,
+        .service_tier = null,
+        .syntax_theme = null,
+        .personality = null,
+        .tui_status_line = null,
+        .tui_terminal_title = null,
+        .tui_alternate_screen = .auto,
+    };
+    defer cfg.deinit(allocator);
+
+    const cwd_json = try std.json.Stringify.valueAlloc(allocator, cwd, .{});
+    defer allocator.free(cwd_json);
+    const args = try std.fmt.allocPrint(
+        allocator,
+        "{{\"cmd\":\"! cat secret.txt && cat public.txt && printf session-read-deny-ok\",\"workdir\":{s}}}",
+        .{cwd_json},
+    );
+    defer allocator.free(args);
+
+    var transcript = Transcript{};
+    defer transcript.deinit(allocator);
+    const call = api.FunctionCall{
+        .call_id = "session-read-deny",
+        .name = "exec_command",
+        .arguments = args,
+    };
+    var result = try runToolCall(
+        allocator,
+        cfg,
+        .{ .tools = &.{} },
+        call,
+        &transcript,
+        .{ .workdir = cwd },
+        &.{},
+        &.{secret_path},
+        true,
+    );
+    defer result.deinit(allocator);
+
+    try std.testing.expectEqualStrings("exit 0", result.summary);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "public") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "session-read-deny-ok") != null);
 }
 
 fn disabledToolResult(allocator: std.mem.Allocator, call: api.FunctionCall) !tools.ToolResult {

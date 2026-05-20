@@ -225,6 +225,7 @@ pub fn mergeRuntimeOverrides(base: RuntimeOverrides, overrides: RuntimeOverrides
 pub const SandboxPermissionProfile = struct {
     mode: SandboxMode,
     additional_writable_roots: StringList,
+    read_denied_roots: StringList,
     include_cwd_write_root: bool = true,
     network_enabled: bool = true,
     exclude_tmpdir_env_var: bool = true,
@@ -232,6 +233,7 @@ pub const SandboxPermissionProfile = struct {
 
     pub fn deinit(self: *SandboxPermissionProfile, allocator: std.mem.Allocator) void {
         self.additional_writable_roots.deinit(allocator);
+        self.read_denied_roots.deinit(allocator);
     }
 };
 
@@ -475,9 +477,15 @@ fn resolveBuiltInSandboxPermissionProfile(allocator: std.mem.Allocator, profile:
     else
         return null;
 
+    const additional_writable_roots = try allocator.alloc([]const u8, 0);
+    errdefer allocator.free(additional_writable_roots);
+    const read_denied_roots = try allocator.alloc([]const u8, 0);
+    errdefer allocator.free(read_denied_roots);
+
     return .{
         .mode = mode,
-        .additional_writable_roots = .{ .items = try allocator.alloc([]const u8, 0) },
+        .additional_writable_roots = .{ .items = additional_writable_roots },
+        .read_denied_roots = .{ .items = read_denied_roots },
         .network_enabled = mode == .danger_full_access,
         .exclude_tmpdir_env_var = mode != .workspace_write,
         .exclude_slash_tmp = mode != .workspace_write,
@@ -2240,10 +2248,13 @@ const CustomSandboxPermissionProfileState = struct {
     project_roots_write: bool = false,
     unsupported: bool = false,
     additional_writable_roots: std.ArrayList([]const u8) = .empty,
+    read_denied_roots: std.ArrayList([]const u8) = .empty,
 
     fn deinit(self: *CustomSandboxPermissionProfileState, allocator: std.mem.Allocator) void {
         for (self.additional_writable_roots.items) |root| allocator.free(root);
         self.additional_writable_roots.deinit(allocator);
+        for (self.read_denied_roots.items) |root| allocator.free(root);
+        self.read_denied_roots.deinit(allocator);
     }
 
     fn toSandboxPermissionProfile(
@@ -2257,14 +2268,25 @@ const CustomSandboxPermissionProfileState = struct {
             .workspace_write
         else
             .read_only;
+        const additional_writable_roots = try self.additional_writable_roots.toOwnedSlice(allocator);
+        errdefer freeStringSliceItems(allocator, additional_writable_roots);
+        const read_denied_roots = try self.read_denied_roots.toOwnedSlice(allocator);
+        errdefer freeStringSliceItems(allocator, read_denied_roots);
+
         return .{
             .mode = mode,
-            .additional_writable_roots = .{ .items = try self.additional_writable_roots.toOwnedSlice(allocator) },
+            .additional_writable_roots = .{ .items = additional_writable_roots },
+            .read_denied_roots = .{ .items = read_denied_roots },
             .include_cwd_write_root = self.project_roots_write,
             .network_enabled = network_enabled,
         };
     }
 };
+
+fn freeStringSliceItems(allocator: std.mem.Allocator, items: []const []const u8) void {
+    for (items) |item| allocator.free(item);
+    allocator.free(items);
+}
 
 fn recordSandboxFilesystemLine(
     allocator: std.mem.Allocator,
@@ -2317,7 +2339,7 @@ fn recordSandboxFilesystemAccess(
 ) !void {
     switch (access) {
         .none => {
-            state.unsupported = true;
+            try recordSandboxReadDenyRoot(allocator, state, path, subpath);
         },
         .read => {
             if (subpath == null and std.mem.eql(u8, path, ":root")) {
@@ -2370,6 +2392,20 @@ fn recordScopedSandboxWrite(
     state.unsupported = true;
 }
 
+fn recordSandboxReadDenyRoot(
+    allocator: std.mem.Allocator,
+    state: *CustomSandboxPermissionProfileState,
+    path: []const u8,
+    subpath: ?[]const u8,
+) !void {
+    const root = try sandboxPermissionProfileRootPath(allocator, path, subpath) orelse {
+        state.unsupported = true;
+        return;
+    };
+    errdefer allocator.free(root);
+    try state.read_denied_roots.append(allocator, root);
+}
+
 fn appendWritableRoot(
     allocator: std.mem.Allocator,
     state: *CustomSandboxPermissionProfileState,
@@ -2378,6 +2414,34 @@ fn appendWritableRoot(
     const owned = try allocator.dupe(u8, root);
     errdefer allocator.free(owned);
     try state.additional_writable_roots.append(allocator, owned);
+}
+
+fn sandboxPermissionProfileRootPath(
+    allocator: std.mem.Allocator,
+    path: []const u8,
+    subpath: ?[]const u8,
+) !?[]const u8 {
+    if (subpath) |child| {
+        if (!isSafeRelativeTomlSubpath(child)) return null;
+        if (std.mem.eql(u8, path, ":project_roots")) {
+            return try allocator.dupe(u8, child);
+        }
+        if (std.fs.path.isAbsolute(path)) {
+            return if (std.mem.eql(u8, child, "."))
+                try allocator.dupe(u8, path)
+            else
+                try std.fs.path.join(allocator, &.{ path, child });
+        }
+        return null;
+    }
+
+    if (std.mem.eql(u8, path, ":project_roots")) {
+        return try allocator.dupe(u8, ".");
+    }
+    if (std.fs.path.isAbsolute(path)) {
+        return try allocator.dupe(u8, path);
+    }
+    return null;
 }
 
 fn parseSandboxFilesystemAccess(value: []const u8) ?SandboxFilesystemAccess {
@@ -2983,6 +3047,30 @@ test "sandbox permission profile supports disabled network" {
     try std.testing.expectEqual(SandboxMode.workspace_write, profile.mode);
     try std.testing.expect(profile.include_cwd_write_root);
     try std.testing.expect(!profile.network_enabled);
+}
+
+test "sandbox permission profile preserves concrete read deny roots" {
+    const allocator = std.testing.allocator;
+    const view = ConfigView{
+        .bytes =
+        \\[permissions.demo.filesystem]
+        \\":root" = "read"
+        \\":project_roots" = { "secret" = "none" }
+        \\"/tmp/codex-private" = "none"
+        \\
+        \\[permissions.demo.network]
+        \\enabled = true
+        \\
+        ,
+    };
+
+    var profile = try view.resolveCustomSandboxPermissionProfile(allocator, "demo");
+    defer profile.deinit(allocator);
+
+    try std.testing.expectEqual(SandboxMode.read_only, profile.mode);
+    try std.testing.expectEqual(@as(usize, 2), profile.read_denied_roots.items.len);
+    try std.testing.expectEqualStrings("secret", profile.read_denied_roots.items[0]);
+    try std.testing.expectEqualStrings("/tmp/codex-private", profile.read_denied_roots.items[1]);
 }
 
 test "sandbox permission profile decodes quoted profile section escapes" {
