@@ -18,8 +18,8 @@ parity tracker; implementation parity remains tracked in `docs/parity.md`.
   push protection, and Dependabot security updates enabled. GitHub reports
   non-provider pattern scanning and secret validity checks as disabled.
   `SECURITY.md` is exposed through the repository security-policy URL. CodeQL
-  Python code scanning is configured; checked CodeQL run `26141468686` passed
-  on pushed head `ed87f85f27eddd5d2763c6446b67eb621778d398`.
+  Python code scanning is configured; checked CodeQL run `26148237786` passed
+  on pushed head `da304da4b863321a65f7e4fe1ae972a690ba2994`.
   Open-alert queries for
   CodeQL, Dependabot, and secret scanning returned empty arrays after the
   token-shaped smoke-fixture cleanup. Historical CodeQL alerts remain visible
@@ -30,11 +30,11 @@ parity tracker; implementation parity remains tracked in `docs/parity.md`.
   tests, and product-surface smoke tests on macOS with a direct Zig 0.16.0
   install from `ziglang.org` rather than a deprecated Node-based setup action.
   It also runs the repository OSS secret-scan script. Checked push run
-  `26141468684` passed on pushed head
-  `ed87f85f27eddd5d2763c6446b67eb621778d398`.
+  `26148237589` passed on pushed head
+  `da304da4b863321a65f7e4fe1ae972a690ba2994`.
 - Fresh public clone proof: a clean HTTPS clone from
   `https://github.com/minghinmatthewlam/codex-zig-port` at pushed head
-  `ed87f85f27eddd5d2763c6446b67eb621778d398` passed `python3 -m py_compile`
+  `da304da4b863321a65f7e4fe1ae972a690ba2994` passed `python3 -m py_compile`
   for the app-server, CLI, OSS secret-scan, and TUI smoke scripts,
   `python3 scripts/oss_secret_scan.py`, `zig build --summary all`, `zig build
   test --summary all`, and `zig build e2e --summary all`.
