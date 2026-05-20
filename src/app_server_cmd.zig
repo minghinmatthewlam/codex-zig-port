@@ -56007,6 +56007,15 @@ fn handleModelList(allocator: std.mem.Allocator, id_value: std.json.Value, param
         return handleCachedModelList(allocator, id_value, start, limit, include_hidden, cache);
     }
 
+    var refreshed_models = refreshModelCatalogCacheIfAllowed(allocator) catch |err| switch (err) {
+        error.OutOfMemory => return err,
+        else => null,
+    };
+    defer if (refreshed_models) |*cache| cache.deinit(allocator);
+    if (refreshed_models) |*cache| {
+        return handleCachedModelList(allocator, id_value, start, limit, include_hidden, cache);
+    }
+
     const total = bundledModelListTotal(include_hidden);
     if (start > total) {
         const message = try std.fmt.allocPrint(allocator, "cursor {d} exceeds total models {d}", .{ start, total });
@@ -56093,6 +56102,7 @@ const MODEL_CACHE_RUST_SOURCE_CLIENT_VERSION = "0.0.0";
 const MODEL_CACHE_MIN_RUST_RELEASE_CLIENT_VERSION = Semver{ .major = 0, .minor = 98, .patch = 0 };
 const MODEL_CACHE_TTL_MS: i64 = 300_000;
 const MODEL_CACHE_MAX_BYTES: usize = 4 * 1024 * 1024;
+const MODEL_CATALOG_REFRESH_TIMEOUT_MS: u64 = 5_000;
 const MODEL_PERSONALITY_PLACEHOLDER = "{{ personality }}";
 const DEFAULT_MODEL_INPUT_MODALITIES = [_][]const u8{ "text", "image" };
 
@@ -56106,17 +56116,27 @@ const CachedModelCatalog = struct {
     bytes: []u8,
     parsed: std.json.Parsed(std.json.Value),
     models: []const std.json.Value,
+    etag: ?[]const u8 = null,
 
     fn deinit(self: *CachedModelCatalog, allocator: std.mem.Allocator) void {
         self.parsed.deinit();
         allocator.free(self.bytes);
+        if (self.etag) |etag| allocator.free(etag);
     }
 };
 
+const ModelCatalogFetchContext = struct {
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    cfg: *const config.Config,
+    credentials: auth_mod.Credentials,
+    done: std.Io.Event = .unset,
+    result: ?CachedModelCatalog = null,
+    err: ?anyerror = null,
+};
+
 fn loadFreshModelCatalogCache(allocator: std.mem.Allocator) !?CachedModelCatalog {
-    const codex_home = resolveCodexHome(allocator) catch return null;
-    defer allocator.free(codex_home);
-    const path = try std.fs.path.join(allocator, &.{ codex_home, MODEL_CACHE_FILE_NAME });
+    const path = modelCatalogCachePath(allocator) catch return null;
     defer allocator.free(path);
 
     const bytes = std.Io.Dir.cwd().readFileAlloc(
@@ -56126,27 +56146,36 @@ fn loadFreshModelCatalogCache(allocator: std.mem.Allocator) !?CachedModelCatalog
         .limited(MODEL_CACHE_MAX_BYTES),
     ) catch return null;
 
-    var parsed = std.json.parseFromSlice(std.json.Value, allocator, bytes, .{}) catch {
+    return parseModelCatalogCacheBytes(allocator, bytes) catch {
         allocator.free(bytes);
         return null;
     };
+}
+
+fn modelCatalogCachePath(allocator: std.mem.Allocator) ![]const u8 {
+    const codex_home = try resolveCodexHome(allocator);
+    defer allocator.free(codex_home);
+    return std.fs.path.join(allocator, &.{ codex_home, MODEL_CACHE_FILE_NAME });
+}
+
+fn parseModelCatalogCacheBytes(allocator: std.mem.Allocator, bytes: []u8) !CachedModelCatalog {
+    var parsed = try std.json.parseFromSlice(std.json.Value, allocator, bytes, .{});
     var keep = false;
     defer if (!keep) {
         parsed.deinit();
-        allocator.free(bytes);
     };
 
-    if (parsed.value != .object) return null;
+    if (parsed.value != .object) return error.InvalidModelCatalogCache;
     const object = parsed.value.object;
-    const client_version = cachedStringField(object, "client_version") orelse return null;
-    if (!modelCacheClientVersionIsCompatible(client_version)) return null;
-    const fetched_at = cachedStringField(object, "fetched_at") orelse return null;
-    const fetched_at_ms = parseThreadListRfc3339Milliseconds(fetched_at) orelse return null;
-    if (!modelCacheTimestampIsFresh(fetched_at_ms)) return null;
-    const models_value = object.get("models") orelse return null;
-    if (models_value != .array) return null;
+    const client_version = cachedStringField(object, "client_version") orelse return error.InvalidModelCatalogCache;
+    if (!modelCacheClientVersionIsCompatible(client_version)) return error.InvalidModelCatalogCache;
+    const fetched_at = cachedStringField(object, "fetched_at") orelse return error.InvalidModelCatalogCache;
+    const fetched_at_ms = parseThreadListRfc3339Milliseconds(fetched_at) orelse return error.InvalidModelCatalogCache;
+    if (!modelCacheTimestampIsFresh(fetched_at_ms)) return error.InvalidModelCatalogCache;
+    const models_value = object.get("models") orelse return error.InvalidModelCatalogCache;
+    if (models_value != .array) return error.InvalidModelCatalogCache;
     for (models_value.array.items) |model| {
-        if (!cachedModelIsUsable(model)) return null;
+        if (!cachedModelIsUsable(model)) return error.InvalidModelCatalogCache;
     }
 
     keep = true;
@@ -56155,6 +56184,275 @@ fn loadFreshModelCatalogCache(allocator: std.mem.Allocator) !?CachedModelCatalog
         .parsed = parsed,
         .models = models_value.array.items,
     };
+}
+
+fn refreshModelCatalogCacheIfAllowed(allocator: std.mem.Allocator) !?CachedModelCatalog {
+    var cfg = config.loadWithOptions(allocator, .{}) catch return null;
+    defer cfg.deinit(allocator);
+
+    var credentials = auth_mod.loadForConfig(allocator, &cfg) catch return null;
+    defer credentials.deinit(allocator);
+    if (!modelCatalogOnlineRefreshAllowed(&cfg, credentials)) return null;
+
+    var catalog = try fetchRemoteModelCatalog(allocator, &cfg, credentials);
+    errdefer catalog.deinit(allocator);
+    persistModelCatalogCache(allocator, &catalog) catch {};
+    return catalog;
+}
+
+fn modelCatalogOnlineRefreshAllowed(cfg: *const config.Config, credentials: auth_mod.Credentials) bool {
+    return switch (credentials.mode) {
+        .chatgpt, .chatgpt_auth_tokens, .agent_identity => true,
+        .api_key => cfg.model_provider_auth_command != null,
+        .local_oss => false,
+    };
+}
+
+fn fetchRemoteModelCatalog(
+    allocator: std.mem.Allocator,
+    cfg: *const config.Config,
+    credentials: auth_mod.Credentials,
+) !CachedModelCatalog {
+    var io_instance: std.Io.Threaded = .init(allocator, .{ .async_limit = .limited(1) });
+    defer io_instance.deinit();
+    const io = io_instance.io();
+    var context = ModelCatalogFetchContext{
+        .allocator = allocator,
+        .io = io,
+        .cfg = cfg,
+        .credentials = credentials,
+    };
+    var future = try io.concurrent(fetchRemoteModelCatalogTimeoutWorker, .{&context});
+    const deadline = modelCatalogRequestDeadline(io, MODEL_CATALOG_REFRESH_TIMEOUT_MS);
+    while (true) {
+        context.done.waitTimeout(io, .{ .deadline = deadline }) catch |err| switch (err) {
+            error.Timeout => {
+                if (context.done.isSet()) break;
+                const now = std.Io.Clock.Timestamp.now(io, .awake);
+                if (std.Io.Clock.Timestamp.compare(now, .lt, deadline)) continue;
+                _ = future.cancel(io);
+                if (context.result) |*catalog| catalog.deinit(allocator);
+                return error.Timeout;
+            },
+            else => |e| {
+                _ = future.cancel(io);
+                if (context.result) |*catalog| catalog.deinit(allocator);
+                return e;
+            },
+        };
+        break;
+    }
+    _ = future.await(io);
+    if (context.result) |catalog| return catalog;
+    return context.err orelse error.Canceled;
+}
+
+fn fetchRemoteModelCatalogTimeoutWorker(context: *ModelCatalogFetchContext) void {
+    defer context.done.set(context.io);
+    context.result = fetchRemoteModelCatalogWithIo(context.allocator, context.io, context.cfg, context.credentials) catch |err| {
+        context.err = err;
+        return;
+    };
+}
+
+fn modelCatalogRequestDeadline(io: std.Io, timeout_ms: u64) std.Io.Clock.Timestamp {
+    const timeout_ms_i64 = std.math.cast(i64, timeout_ms) orelse std.math.maxInt(i64);
+    return std.Io.Clock.Timestamp.fromNow(io, .{
+        .raw = std.Io.Duration.fromMilliseconds(timeout_ms_i64),
+        .clock = .awake,
+    });
+}
+
+fn fetchRemoteModelCatalogWithIo(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    cfg: *const config.Config,
+    credentials: auth_mod.Credentials,
+) !CachedModelCatalog {
+    const url = try modelCatalogRefreshUrl(allocator, cfg, credentials);
+    defer allocator.free(url);
+
+    var headers = std.ArrayList(std.http.Header).empty;
+    defer headers.deinit(allocator);
+    const auth_header = try auth_mod.authorizationHeader(allocator, credentials);
+    defer allocator.free(auth_header);
+    try headers.append(allocator, .{ .name = "Authorization", .value = auth_header });
+    try headers.append(allocator, .{ .name = "Accept", .value = "application/json" });
+    try headers.append(allocator, .{ .name = "User-Agent", .value = "codex-zig-port/0.0.1" });
+    var provider_env_header_values = std.ArrayList([]const u8).empty;
+    defer {
+        for (provider_env_header_values.items) |value| allocator.free(value);
+        provider_env_header_values.deinit(allocator);
+    }
+    try appendModelCatalogProviderHeaders(allocator, &headers, &provider_env_header_values, cfg);
+    if (credentials.account_id) |account_id| {
+        try headers.append(allocator, .{ .name = "ChatGPT-Account-ID", .value = account_id });
+    }
+    if (credentials.fedramp) {
+        try headers.append(allocator, .{ .name = "X-OpenAI-Fedramp", .value = "true" });
+    }
+
+    var client = std.http.Client{ .allocator = allocator, .io = io };
+    defer client.deinit();
+
+    const uri = try std.Uri.parse(url);
+    var request = try client.request(.GET, uri, .{
+        .redirect_behavior = .unhandled,
+        .extra_headers = headers.items,
+    });
+    defer request.deinit();
+    try request.sendBodiless();
+
+    var response_head_buffer: [8192]u8 = undefined;
+    var response = try request.receiveHead(&response_head_buffer);
+    const status: u16 = @intFromEnum(response.head.status);
+    if (status < 200 or status >= 300) return error.ModelCatalogHttpStatus;
+
+    const etag = try modelCatalogEtagFromHttpHeaders(allocator, response.head);
+    errdefer if (etag) |value| allocator.free(value);
+
+    const decompress_buffer: []u8 = switch (response.head.content_encoding) {
+        .identity => &.{},
+        .zstd => try allocator.alloc(u8, std.compress.zstd.default_window_len),
+        .deflate, .gzip => try allocator.alloc(u8, std.compress.flate.max_window_len),
+        .compress => return error.UnsupportedCompressionMethod,
+    };
+    defer if (response.head.content_encoding != .identity) allocator.free(decompress_buffer);
+
+    const response_storage = try allocator.alloc(u8, MODEL_CACHE_MAX_BYTES);
+    defer allocator.free(response_storage);
+    var response_body = std.Io.Writer.fixed(response_storage);
+    var transfer_buffer: [8192]u8 = undefined;
+    var decompress: std.http.Decompress = undefined;
+    const reader = response.readerDecompressing(&transfer_buffer, &decompress, decompress_buffer);
+    _ = reader.streamRemaining(&response_body) catch |err| switch (err) {
+        error.ReadFailed => return response.bodyErr().?,
+        error.WriteFailed => return error.ModelCatalogResponseTooLarge,
+        else => |e| return e,
+    };
+
+    const bytes = try allocator.dupe(u8, response_body.buffered());
+    errdefer allocator.free(bytes);
+    var parsed = try std.json.parseFromSlice(std.json.Value, allocator, bytes, .{});
+    var keep = false;
+    defer if (!keep) parsed.deinit();
+
+    if (parsed.value != .object) return error.InvalidModelCatalogResponse;
+    const models_value = parsed.value.object.get("models") orelse return error.InvalidModelCatalogResponse;
+    if (models_value != .array) return error.InvalidModelCatalogResponse;
+    for (models_value.array.items) |model| {
+        if (!cachedModelIsUsable(model)) return error.InvalidModelCatalogResponse;
+    }
+
+    keep = true;
+    return .{
+        .bytes = bytes,
+        .parsed = parsed,
+        .models = models_value.array.items,
+        .etag = etag,
+    };
+}
+
+fn modelCatalogRefreshUrl(
+    allocator: std.mem.Allocator,
+    cfg: *const config.Config,
+    credentials: auth_mod.Credentials,
+) ![]const u8 {
+    const base_url = switch (credentials.mode) {
+        .chatgpt, .chatgpt_auth_tokens, .agent_identity => cfg.chatgpt_base_url,
+        .api_key => cfg.openai_base_url,
+        .local_oss => return error.ModelCatalogRefreshUnavailable,
+    };
+
+    var url = std.ArrayList(u8).empty;
+    errdefer url.deinit(allocator);
+    try url.appendSlice(allocator, std.mem.trimEnd(u8, base_url, "/"));
+    try url.appendSlice(allocator, "/models");
+    var has_query = false;
+    if (cfg.model_provider_query_params) |params| {
+        if (params.entries.len > 0) {
+            try url.append(allocator, '?');
+            for (params.entries, 0..) |entry, index| {
+                if (index > 0) try url.append(allocator, '&');
+                try url.appendSlice(allocator, entry.key);
+                try url.append(allocator, '=');
+                try url.appendSlice(allocator, entry.value);
+            }
+            has_query = true;
+        }
+    }
+    try url.append(allocator, if (has_query) '&' else '?');
+    try url.appendSlice(allocator, "client_version=");
+    try url.appendSlice(allocator, MODEL_CACHE_CLIENT_VERSION);
+    return url.toOwnedSlice(allocator);
+}
+
+fn appendModelCatalogProviderHeaders(
+    allocator: std.mem.Allocator,
+    headers: *std.ArrayList(std.http.Header),
+    owned_env_values: *std.ArrayList([]const u8),
+    cfg: *const config.Config,
+) !void {
+    if (cfg.model_provider_http_headers) |header_map| {
+        for (header_map.entries) |entry| {
+            try headers.append(allocator, .{ .name = entry.key, .value = entry.value });
+        }
+    }
+    if (cfg.model_provider_env_http_headers) |header_map| {
+        for (header_map.entries) |entry| {
+            const value = try env.getOwnedDynamic(allocator, entry.value);
+            if (value) |owned| {
+                if (std.mem.trim(u8, owned, " \t\r\n").len == 0) {
+                    allocator.free(owned);
+                    continue;
+                }
+                owned_env_values.append(allocator, owned) catch |err| {
+                    allocator.free(owned);
+                    return err;
+                };
+                try headers.append(allocator, .{ .name = entry.key, .value = owned });
+            }
+        }
+    }
+}
+
+fn modelCatalogEtagFromHttpHeaders(allocator: std.mem.Allocator, head: std.http.Client.Response.Head) !?[]const u8 {
+    var iterator = head.iterateHeaders();
+    while (iterator.next()) |header| {
+        if (!std.ascii.eqlIgnoreCase(header.name, "etag")) continue;
+        if (header.value.len == 0) continue;
+        return try allocator.dupe(u8, header.value);
+    }
+    return null;
+}
+
+fn persistModelCatalogCache(allocator: std.mem.Allocator, catalog: *const CachedModelCatalog) !void {
+    const path = try modelCatalogCachePath(allocator);
+    defer allocator.free(path);
+
+    const fetched_at = try formatThreadListCursorMilliseconds(allocator, currentUnixMilliseconds(), false);
+    defer allocator.free(fetched_at);
+
+    var rendered = std.ArrayList(u8).empty;
+    defer rendered.deinit(allocator);
+    try rendered.appendSlice(allocator, "{\"fetched_at\":");
+    try appendJsonString(allocator, &rendered, fetched_at);
+    try rendered.appendSlice(allocator, ",\"etag\":");
+    try appendOptionalJsonString(allocator, &rendered, catalog.etag);
+    try rendered.appendSlice(allocator, ",\"client_version\":");
+    try appendJsonString(allocator, &rendered, MODEL_CACHE_CLIENT_VERSION);
+    try rendered.appendSlice(allocator, ",\"models\":[");
+    for (catalog.models, 0..) |model, index| {
+        if (index > 0) try rendered.append(allocator, ',');
+        const model_json = try std.json.Stringify.valueAlloc(allocator, model, .{});
+        defer allocator.free(model_json);
+        try rendered.appendSlice(allocator, model_json);
+    }
+    try rendered.appendSlice(allocator, "]}");
+
+    const io = std.Io.Threaded.global_single_threaded.io();
+    try ensureParentDir(io, path);
+    try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = path, .data = rendered.items });
 }
 
 fn modelCacheClientVersionIsCompatible(client_version: []const u8) bool {
