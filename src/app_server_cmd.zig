@@ -29423,7 +29423,7 @@ fn handleTurnStart(
         return try renderJsonRpcErrorForFailure(allocator, id_value, "turn/start failed to load project config", err);
     };
 
-    applyTurnStartRuntimeOverrides(allocator, &cfg, thread, object) catch |err| switch (err) {
+    applyTurnStartRuntimeConfigOverrides(allocator, &cfg, thread, object) catch |err| switch (err) {
         error.InvalidTurnContextOverride => return try renderJsonRpcError(allocator, id_value, -32602, "invalid turn context override"),
         else => return err,
     };
@@ -29432,6 +29432,11 @@ fn handleTurnStart(
         return try renderJsonRpcErrorForFailure(allocator, id_value, "turn/start failed to load auth", err);
     };
     defer credentials.deinit(allocator);
+
+    applyTurnStartRuntimeOverrides(allocator, &cfg, thread, object) catch |err| switch (err) {
+        error.InvalidTurnContextOverride => return try renderJsonRpcError(allocator, id_value, -32602, "invalid turn context override"),
+        else => return err,
+    };
 
     const turn_id = try allocateNextTurnIdForThread(allocator, thread);
     defer allocator.free(turn_id);
@@ -31598,6 +31603,119 @@ fn applyReviewStartFeatureOverrides(
     try overrides.put(allocator, "request_user_input_tool", false);
     try overrides.put(allocator, "default_mode_request_user_input", false);
     try overrides.put(allocator, "goal_tools", false);
+}
+
+fn applyTurnStartRuntimeConfigOverrides(
+    allocator: std.mem.Allocator,
+    cfg: *config.Config,
+    thread: *const LoadedThread,
+    params: std.json.ObjectMap,
+) !void {
+    const collaboration_mode = try parseTurnStartCollaborationMode(params);
+
+    const effective_model = if (collaboration_mode) |collaboration|
+        collaboration.model
+    else
+        optionalStringParam(params, "model") orelse thread.model;
+    try replaceOwnedString(allocator, &cfg.model, effective_model);
+
+    cfg.model_context_window = thread.model_context_window;
+    cfg.model_auto_compact_token_limit = thread.model_auto_compact_token_limit;
+    if (thread.model_verbosity) |value| {
+        cfg.model_verbosity = config.Verbosity.parse(value) catch return error.InvalidTurnContextOverride;
+    } else {
+        cfg.model_verbosity = null;
+    }
+    cfg.web_search_mode = thread.web_search_mode;
+
+    const approval_policy_label = optionalStringParam(params, "approvalPolicy") orelse thread.approval_policy;
+    cfg.approval_policy = config.ApprovalPolicy.parse(approval_policy_label) catch return error.InvalidTurnContextOverride;
+
+    const requested_reviewer = optionalApprovalsReviewerParam(params, "approvalsReviewer") catch return error.InvalidTurnContextOverride;
+    cfg.approvals_reviewer = config.ApprovalsReviewer.parse(requested_reviewer orelse thread.approvals_reviewer) catch return error.InvalidTurnContextOverride;
+
+    const permissions_value = params.get("permissions");
+    const has_permissions = permissions_value != null and permissions_value.? != .null;
+    if (has_permissions) {
+        if (params.get("sandboxPolicy")) |sandbox_policy| {
+            if (sandbox_policy != .null) return error.InvalidTurnContextOverride;
+        }
+        if (params.get("sandbox")) |sandbox| {
+            if (sandbox != .null) return error.InvalidTurnContextOverride;
+        }
+        var profile = parseTurnStartPermissionSelection(allocator, permissions_value.?) catch return error.InvalidTurnContextOverride;
+        defer profile.deinit(allocator);
+        cfg.sandbox_mode = profile.mode;
+    } else if (params.get("sandboxPolicy")) |sandbox_policy| {
+        if (sandbox_policy != .null and params.get("sandbox") != null and params.get("sandbox").? != .null) return error.InvalidTurnContextOverride;
+        if (sandbox_policy != .null) {
+            var sandbox_selection = parseTurnStartSandboxPolicy(allocator, sandbox_policy) catch return error.InvalidTurnContextOverride;
+            defer sandbox_selection.deinit(allocator);
+            cfg.sandbox_mode = sandbox_selection.mode;
+        } else {
+            const sandbox_label = optionalStringParam(params, "sandbox") orelse thread.sandbox_mode;
+            cfg.sandbox_mode = config.SandboxMode.parse(sandbox_label) catch return error.InvalidTurnContextOverride;
+        }
+    } else {
+        const sandbox_label = optionalStringParam(params, "sandbox") orelse thread.sandbox_mode;
+        cfg.sandbox_mode = config.SandboxMode.parse(sandbox_label) catch return error.InvalidTurnContextOverride;
+    }
+
+    try replaceConfigOptionalString(
+        allocator,
+        &cfg.model_provider_id,
+        optionalStringParam(params, "modelProvider") orelse thread.model_provider,
+    );
+
+    if (params.get("serviceTier")) |service_tier_value| {
+        if (service_tier_value != .null and service_tier_value != .string) return error.InvalidTurnContextOverride;
+        clearOptionalOwnedString(allocator, &cfg.service_tier);
+        cfg.service_tier = if (service_tier_value == .string)
+            try allocator.dupe(u8, service_tier_value.string)
+        else
+            null;
+    } else {
+        clearOptionalOwnedString(allocator, &cfg.service_tier);
+        cfg.service_tier = if (thread.service_tier) |value| try allocator.dupe(u8, value) else null;
+    }
+
+    const requested_effort = if (collaboration_mode) |collaboration|
+        collaboration.reasoning_effort
+    else
+        optionalReasoningEffortParam(params, "effort") catch return error.InvalidTurnContextOverride;
+    if (requested_effort) |effort| {
+        cfg.model_reasoning_effort = effort;
+    } else if (collaboration_mode != null) {
+        cfg.model_reasoning_effort = null;
+    } else if (thread.reasoning_effort) |value| {
+        cfg.model_reasoning_effort = config.ReasoningEffort.parse(value) catch return error.InvalidTurnContextOverride;
+    } else {
+        cfg.model_reasoning_effort = null;
+    }
+
+    const requested_summary = optionalReasoningSummaryParam(params, "summary") catch return error.InvalidTurnContextOverride;
+    if (requested_summary) |summary| {
+        cfg.model_reasoning_summary = summary;
+    } else if (thread.reasoning_summary) |value| {
+        cfg.model_reasoning_summary = config.ReasoningSummary.parse(value) catch return error.InvalidTurnContextOverride;
+    } else {
+        cfg.model_reasoning_summary = null;
+    }
+
+    const requested_personality = optionalPersonalityParam(params, "personality") catch return error.InvalidTurnContextOverride;
+    if (requested_personality) |personality| {
+        cfg.personality = personality;
+    } else if (thread.personality) |value| {
+        cfg.personality = config.Personality.parse(value) catch return error.InvalidTurnContextOverride;
+    } else {
+        cfg.personality = null;
+    }
+
+    if (collaboration_mode) |collaboration| {
+        try replaceConfigOptionalString(allocator, &cfg.developer_instructions, collaboration.developer_instructions);
+    } else if (thread.collaboration_developer_instructions) |value| {
+        try replaceConfigOptionalString(allocator, &cfg.developer_instructions, value);
+    }
 }
 
 fn applyTurnStartRuntimeOverrides(

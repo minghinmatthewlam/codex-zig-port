@@ -11248,6 +11248,113 @@ args = ["provider-token"]
         shutil.rmtree(codex_home, ignore_errors=True)
 
 
+def run_turn_auth_failure_preserves_runtime_overrides_smoke(binary: Path) -> None:
+    codex_home = Path(tempfile.mkdtemp(prefix="codex-zig-app-server-auth-failure-", dir="/tmp"))
+    try:
+        env = os.environ.copy()
+        env["CODEX_HOME"] = str(codex_home)
+        env.pop("CODEX_ACCESS_TOKEN", None)
+        env.pop("OPENAI_API_KEY", None)
+
+        proc = subprocess.Popen(
+            [str(binary), "app-server"],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            env=env,
+        )
+        try:
+            write_json_line(
+                proc,
+                {
+                    "jsonrpc": "2.0",
+                    "id": "initialize",
+                    "method": "initialize",
+                    "params": {
+                        "clientInfo": {"name": "app-server-smoke", "version": "0"},
+                        "capabilities": {},
+                    },
+                },
+            )
+            assert read_json_line(proc, 5)["id"] == "initialize"
+
+            with tempfile.TemporaryDirectory(prefix="codex-zig-auth-failure-cwd-", dir="/tmp") as cwd:
+                with tempfile.TemporaryDirectory(prefix="codex-zig-auth-failure-next-cwd-", dir="/tmp") as next_cwd:
+                    resolved_cwd = str(Path(cwd).resolve())
+                    write_json_line(
+                        proc,
+                        {
+                            "jsonrpc": "2.0",
+                            "id": "thread-start-before-auth-failure",
+                            "method": "thread/start",
+                            "params": {
+                                "cwd": cwd,
+                                "model": "gpt-original",
+                                "modelProvider": "openai",
+                                "approvalPolicy": "never",
+                                "sandbox": "read-only",
+                            },
+                        },
+                    )
+                    thread_start = read_json_line(proc, 5)
+                    assert thread_start["id"] == "thread-start-before-auth-failure"
+                    thread = thread_start["result"]["thread"]
+                    thread_id = thread["id"]
+                    assert thread["cwd"] == resolved_cwd
+                    assert thread["modelProvider"] == "openai"
+                    assert_thread_started_notification(read_json_line(proc, 5), thread)
+
+                    write_json_line(
+                        proc,
+                        {
+                            "jsonrpc": "2.0",
+                            "id": "turn-start-auth-failure",
+                            "method": "turn/start",
+                            "params": {
+                                "threadId": thread_id,
+                                "input": [{"type": "text", "text": "should not commit overrides"}],
+                                "cwd": next_cwd,
+                                "model": "gpt-mutated",
+                                "modelProvider": "custom",
+                                "approvalPolicy": "on-request",
+                                "sandbox": "danger-full-access",
+                            },
+                        },
+                    )
+                    failed_turn = read_json_line(proc, 5)
+                    assert failed_turn["id"] == "turn-start-auth-failure"
+                    assert failed_turn["error"]["code"] == -32603
+                    assert "turn/start failed to load auth" in failed_turn["error"]["message"]
+
+                    write_json_line(
+                        proc,
+                        {
+                            "jsonrpc": "2.0",
+                            "id": "thread-read-after-auth-failure",
+                            "method": "thread/read",
+                            "params": {"threadId": thread_id},
+                        },
+                    )
+                    read_after_failure = read_json_line(proc, 5)
+                    assert read_after_failure["id"] == "thread-read-after-auth-failure"
+                    persisted_thread = read_after_failure["result"]["thread"]
+                    assert persisted_thread["cwd"] == resolved_cwd
+                    assert persisted_thread["modelProvider"] == "openai"
+                    assert persisted_thread["status"] == {"type": "idle"}
+
+            proc.stdin.close()
+            proc.wait(timeout=5)
+            if proc.returncode != 0:
+                raise AssertionError(f"app-server exited {proc.returncode}: {proc.stderr.read()}")
+        finally:
+            if proc.poll() is None:
+                proc.kill()
+                proc.wait(timeout=5)
+    finally:
+        shutil.rmtree(codex_home, ignore_errors=True)
+
+
 def run_turn_mcp_status_notification_smoke(binary: Path) -> None:
     server, base_url = start_turn_responses_server()
     codex_home = Path(tempfile.mkdtemp(prefix="codex-zig-app-server-mcp-notify-", dir="/tmp"))
@@ -48219,6 +48326,8 @@ def main() -> None:
     print("app-server-windows-sandbox-rpc-e2e: ok")
     run_model_rpc_smoke(binary)
     print("app-server-model-rpc-e2e: ok")
+    run_turn_auth_failure_preserves_runtime_overrides_smoke(binary)
+    print("app-server-turn-auth-failure-preserves-runtime-overrides-e2e: ok")
     run_collaboration_mode_rpc_smoke(binary)
     print("app-server-collaboration-mode-rpc-e2e: ok")
     run_config_read_rpc_smoke(binary)
