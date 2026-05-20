@@ -26,6 +26,30 @@ from pathlib import Path
 from typing import Callable
 
 _OMIT = object()
+_STDOUT_LINE_QUEUES: dict[int, queue.Queue[str]] = {}
+
+
+def stdout_line_queue(proc: subprocess.Popen[str]) -> queue.Queue[str]:
+    key = proc.pid if proc.pid is not None else id(proc)
+    existing = _STDOUT_LINE_QUEUES.get(key)
+    if existing is not None:
+        return existing
+
+    assert proc.stdout is not None
+    line_queue: queue.Queue[str] = queue.Queue()
+
+    def read_lines() -> None:
+        while True:
+            line = proc.stdout.readline()
+            line_queue.put(line)
+            if not line:
+                break
+
+    _STDOUT_LINE_QUEUES[key] = line_queue
+    threading.Thread(target=read_lines, daemon=True).start()
+    return line_queue
+
+
 # Experimental one-shot clients initialize before the request under test; opt
 # out of unrelated config warnings so the next read is the request response.
 EXPERIMENTAL_API_CAPABILITIES = {
@@ -1976,14 +2000,7 @@ def read_json_line(
             raise AssertionError(f"timed out waiting for app-server response\n{stderr}")
 
         try:
-            assert proc.stdout is not None
-            line_queue: queue.Queue[str] = queue.Queue(maxsize=1)
-
-            def read_line() -> None:
-                line_queue.put(proc.stdout.readline())
-
-            threading.Thread(target=read_line, daemon=True).start()
-            line = line_queue.get(timeout=remaining)
+            line = stdout_line_queue(proc).get(timeout=remaining)
         except queue.Empty:
             stderr = proc.stderr.read() if proc.poll() is not None else ""
             raise AssertionError(f"timed out waiting for app-server response\n{stderr}")
