@@ -2619,6 +2619,7 @@ fn parsePluginMcpRequirements(allocator: std.mem.Allocator, payload: []const u8)
 
     var current_section: ?PluginMcpRequirementPath = null;
     defer if (current_section) |*section| section.deinit(allocator);
+    var current_section_is_identity = false;
     var current_table: ?PluginMcpRequirementsTable = null;
     defer if (current_table) |*table| table.deinit(allocator);
 
@@ -2631,9 +2632,14 @@ fn parsePluginMcpRequirements(allocator: std.mem.Allocator, payload: []const u8)
         if (line[0] == '[') {
             if (current_section) |*section| section.deinit(allocator);
             current_section = null;
+            current_section_is_identity = false;
             if (current_table) |*table| table.deinit(allocator);
             current_table = null;
             if (try parsePluginMcpRequirementHeader(allocator, line)) |section| {
+                requirements.active = true;
+                current_section = section;
+                current_section_is_identity = true;
+            } else if (try parsePluginMcpRequirementServerHeader(allocator, line)) |section| {
                 requirements.active = true;
                 current_section = section;
             } else if (try parsePluginMcpRequirementsTableHeader(allocator, line)) |table| {
@@ -2670,8 +2676,10 @@ fn parsePluginMcpRequirements(allocator: std.mem.Allocator, payload: []const u8)
         }
 
         if (current_section) |section| {
-            if (std.mem.eql(u8, lhs, "command") or std.mem.eql(u8, lhs, "url")) {
+            if (current_section_is_identity and (std.mem.eql(u8, lhs, "command") or std.mem.eql(u8, lhs, "url"))) {
                 try addPluginMcpRequirementValue(allocator, &requirements, section.plugin_id, section.server_name, lhs, rhs);
+            } else if (!current_section_is_identity) {
+                _ = try addPluginMcpRequirementFromServerTableAssignment(allocator, &requirements, section.plugin_id, section.server_name, lhs, rhs);
             }
         }
     }
@@ -2711,6 +2719,25 @@ fn parsePluginMcpRequirementHeader(allocator: std.mem.Allocator, line: []const u
     if (!std.mem.eql(u8, path.items[0], "plugins")) return null;
     if (!std.mem.eql(u8, path.items[2], "mcp_servers")) return null;
     if (!std.mem.eql(u8, path.items[4], "identity")) return null;
+    const plugin_id = try allocator.dupe(u8, path.items[1]);
+    errdefer allocator.free(plugin_id);
+    const server_name = try allocator.dupe(u8, path.items[3]);
+    errdefer allocator.free(server_name);
+    return .{
+        .plugin_id = plugin_id,
+        .server_name = server_name,
+    };
+}
+
+fn parsePluginMcpRequirementServerHeader(allocator: std.mem.Allocator, line: []const u8) !?PluginMcpRequirementPath {
+    if (line.len < 2 or line[0] != '[' or line[line.len - 1] != ']') return null;
+    if (line.len >= 4 and line[1] == '[') return null;
+    const inner = std.mem.trim(u8, line[1 .. line.len - 1], " \t\r");
+    var path = (try parseTomlDottedPath(allocator, inner)) orelse return null;
+    defer path.deinit(allocator);
+    if (path.items.len != 4) return null;
+    if (!std.mem.eql(u8, path.items[0], "plugins")) return null;
+    if (!std.mem.eql(u8, path.items[2], "mcp_servers")) return null;
     const plugin_id = try allocator.dupe(u8, path.items[1]);
     errdefer allocator.free(plugin_id);
     const server_name = try allocator.dupe(u8, path.items[3]);
@@ -2777,6 +2804,29 @@ fn parsePluginMcpTableInlineAssignment(allocator: std.mem.Allocator, lhs: []cons
     defer path.deinit(allocator);
     if (path.items.len != 1) return null;
     return try allocator.dupe(u8, path.items[0]);
+}
+
+fn addPluginMcpRequirementFromServerTableAssignment(
+    allocator: std.mem.Allocator,
+    requirements: *PluginMcpRequirements,
+    plugin_id: []const u8,
+    server_name: []const u8,
+    lhs: []const u8,
+    rhs: []const u8,
+) !bool {
+    if (std.mem.eql(u8, lhs, "identity")) {
+        try addPluginMcpIdentityInlineTable(allocator, requirements, plugin_id, server_name, rhs);
+        return true;
+    }
+
+    var path = (try parseTomlDottedPath(allocator, lhs)) orelse return false;
+    defer path.deinit(allocator);
+    if (path.items.len != 2) return false;
+    if (!std.mem.eql(u8, path.items[0], "identity")) return false;
+    if (!std.mem.eql(u8, path.items[1], "command") and !std.mem.eql(u8, path.items[1], "url")) return false;
+
+    try addPluginMcpRequirementValue(allocator, requirements, plugin_id, server_name, path.items[1], rhs);
+    return true;
 }
 
 fn addPluginMcpRequirementValue(
@@ -4146,6 +4196,8 @@ test "mcp config parses section-relative and inline plugin mcp requirements" {
         \\  "mcpServers": {
         \\    "relative_docs": {"command": "relative-mcp"},
         \\    "inline_docs": {"command": "inline-mcp"},
+        \\    "table_command_docs": {"command": "table-command-mcp"},
+        \\    "table_inline_docs": {"command": "table-inline-mcp"},
         \\    "blocked_docs": {"command": "blocked-mcp"}
         \\  }
         \\}
@@ -4166,6 +4218,12 @@ test "mcp config parses section-relative and inline plugin mcp requirements" {
         \\relative_docs.identity.command = "relative-mcp"
         \\inline_docs = { identity = { command = "inline-mcp" } }
         \\
+        \\[plugins."sample@test".mcp_servers.table_command_docs]
+        \\identity.command = "table-command-mcp"
+        \\
+        \\[plugins."sample@test".mcp_servers.table_inline_docs]
+        \\identity = { command = "table-inline-mcp" }
+        \\
     );
     defer requirements.deinit(allocator);
 
@@ -4173,9 +4231,11 @@ test "mcp config parses section-relative and inline plugin mcp requirements" {
     defer servers.deinit(allocator);
     try appendPluginMcpServersWithRequirements(allocator, codex_home, config_bytes, requirements, &servers);
 
-    try std.testing.expectEqual(@as(usize, 3), servers.items.items.len);
+    try std.testing.expectEqual(@as(usize, 5), servers.items.items.len);
     try std.testing.expect(servers.get("relative_docs").?.enabled);
     try std.testing.expect(servers.get("inline_docs").?.enabled);
+    try std.testing.expect(servers.get("table_command_docs").?.enabled);
+    try std.testing.expect(servers.get("table_inline_docs").?.enabled);
     try std.testing.expect(!servers.get("blocked_docs").?.enabled);
 }
 
