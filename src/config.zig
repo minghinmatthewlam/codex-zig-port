@@ -761,14 +761,41 @@ pub fn applyOssMode(
     const provider = try OssProvider.parse(provider_name);
 
     const next_base_url = try resolveOssBaseUrl(allocator, provider);
+    errdefer allocator.free(next_base_url);
+    const next_model = if (!explicit_model) try allocator.dupe(u8, provider.defaultModel()) else null;
+
+    clearModelProviderRequestMetadata(allocator, cfg);
     allocator.free(cfg.openai_base_url);
     cfg.openai_base_url = next_base_url;
-
-    if (!explicit_model) {
-        const next_model = try allocator.dupe(u8, provider.defaultModel());
+    if (next_model) |model| {
         allocator.free(cfg.model);
-        cfg.model = next_model;
+        cfg.model = model;
     }
+}
+
+fn clearModelProviderRequestMetadata(allocator: std.mem.Allocator, cfg: *Config) void {
+    if (cfg.model_provider_id) |value| allocator.free(value);
+    cfg.model_provider_id = null;
+    cfg.model_provider_requires_openai_auth = false;
+    cfg.model_provider_wire_api = .responses;
+
+    if (cfg.model_provider_env_key) |value| allocator.free(value);
+    cfg.model_provider_env_key = null;
+
+    if (cfg.model_provider_bearer_token) |value| allocator.free(value);
+    cfg.model_provider_bearer_token = null;
+
+    if (cfg.model_provider_auth_command) |*value| value.deinit(allocator);
+    cfg.model_provider_auth_command = null;
+
+    if (cfg.model_provider_query_params) |*value| value.deinit(allocator);
+    cfg.model_provider_query_params = null;
+
+    if (cfg.model_provider_http_headers) |*value| value.deinit(allocator);
+    cfg.model_provider_http_headers = null;
+
+    if (cfg.model_provider_env_http_headers) |*value| value.deinit(allocator);
+    cfg.model_provider_env_http_headers = null;
 }
 
 fn resolveOssBaseUrl(allocator: std.mem.Allocator, provider: OssProvider) ![]const u8 {
@@ -3785,8 +3812,12 @@ test "oss mode applies local provider defaults" {
         .codex_home = try allocator.dupe(u8, "/tmp/codex-zig-test"),
         .active_profile = null,
         .model = try allocator.dupe(u8, "configured-model"),
+        .model_provider_id = try allocator.dupe(u8, "custom-provider"),
+        .model_provider_requires_openai_auth = true,
         .openai_base_url = try allocator.dupe(u8, "https://api.openai.com/v1"),
         .chatgpt_base_url = try allocator.dupe(u8, "https://chatgpt.com/backend-api/codex"),
+        .model_provider_env_key = try allocator.dupe(u8, "CUSTOM_PROVIDER_TOKEN"),
+        .model_provider_bearer_token = try allocator.dupe(u8, "secret-token"),
         .oss_provider = try allocator.dupe(u8, "ollama"),
         .installation_id = try allocator.dupe(u8, "install"),
         .approval_policy = .never,
@@ -3803,9 +3834,45 @@ test "oss mode applies local provider defaults" {
     };
     defer cfg.deinit(allocator);
 
+    const command_args = try allocator.alloc([]const u8, 1);
+    command_args[0] = try allocator.dupe(u8, "arg");
+    cfg.model_provider_auth_command = .{
+        .command = try allocator.dupe(u8, "provider-token"),
+        .args = .{ .items = command_args },
+    };
+
+    const query_entries = try allocator.alloc(StringMapEntry, 1);
+    query_entries[0] = .{
+        .key = try allocator.dupe(u8, "api-version"),
+        .value = try allocator.dupe(u8, "2025-04-01-preview"),
+    };
+    cfg.model_provider_query_params = .{ .entries = query_entries };
+
+    const header_entries = try allocator.alloc(StringMapEntry, 1);
+    header_entries[0] = .{
+        .key = try allocator.dupe(u8, "Authorization"),
+        .value = try allocator.dupe(u8, "Bearer profile-token"),
+    };
+    cfg.model_provider_http_headers = .{ .entries = header_entries };
+
+    const env_header_entries = try allocator.alloc(StringMapEntry, 1);
+    env_header_entries[0] = .{
+        .key = try allocator.dupe(u8, "X-Tenant"),
+        .value = try allocator.dupe(u8, "TENANT_ENV"),
+    };
+    cfg.model_provider_env_http_headers = .{ .entries = env_header_entries };
+
     try applyOssMode(&cfg, allocator, null, false);
     try std.testing.expectEqualStrings("gpt-oss:20b", cfg.model);
     try std.testing.expect(std.mem.endsWith(u8, cfg.openai_base_url, "/v1"));
+    try std.testing.expect(cfg.model_provider_id == null);
+    try std.testing.expect(!cfg.model_provider_requires_openai_auth);
+    try std.testing.expect(cfg.model_provider_env_key == null);
+    try std.testing.expect(cfg.model_provider_bearer_token == null);
+    try std.testing.expect(cfg.model_provider_auth_command == null);
+    try std.testing.expect(cfg.model_provider_query_params == null);
+    try std.testing.expect(cfg.model_provider_http_headers == null);
+    try std.testing.expect(cfg.model_provider_env_http_headers == null);
 
     try applyOssMode(&cfg, allocator, "lmstudio", true);
     try std.testing.expectEqualStrings("gpt-oss:20b", cfg.model);
