@@ -2236,6 +2236,49 @@ def run_update_command_smoke(binary: Path) -> None:
         raise AssertionError(f"update still used generic placeholder:\n{result.stderr}")
 
 
+def run_remote_control_command_smoke(binary: Path) -> None:
+    help_result = subprocess.run(
+        [str(binary), "help", "remote-control"],
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        timeout=5,
+        check=True,
+    )
+    assert help_result.stdout == ""
+    assert "codex-zig remote-control [OPTIONS]" in help_result.stderr
+
+    temp_root = Path(tempfile.mkdtemp(prefix="codex-zig-cli-remote-control-", dir="/tmp"))
+    try:
+        env = os.environ.copy()
+        env["CODEX_HOME"] = str(temp_root / "codex-home")
+        result = subprocess.run(
+            [
+                str(binary),
+                "remote-control",
+                "-c",
+                'model="o3"',
+                "--enable",
+                "goals",
+            ],
+            env=env,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=5,
+            check=False,
+        )
+        if result.returncode == 0:
+            raise AssertionError("remote-control unexpectedly succeeded without state DB support")
+        assert result.stdout == ""
+        if "sqlite state db is unavailable" not in result.stderr:
+            raise AssertionError(f"remote-control did not report state DB unavailability:\n{result.stderr}")
+        if "parsed but not implemented yet" in result.stderr:
+            raise AssertionError(f"remote-control still used generic placeholder:\n{result.stderr}")
+    finally:
+        shutil.rmtree(temp_root, ignore_errors=True)
+
+
 def run_exec_server_stdio_smoke(binary: Path) -> None:
     temp_root = Path(tempfile.mkdtemp(prefix="codex-zig-cli-exec-server-", dir="/tmp"))
     try:
@@ -9569,6 +9612,7 @@ def main() -> None:
     binary = Path(sys.argv[1]) if len(sys.argv) > 1 else Path("zig-out/bin/codex-zig")
     run_completion_snapshot_smoke(binary)
     run_update_command_smoke(binary)
+    run_remote_control_command_smoke(binary)
     run_exec_server_stdio_smoke(binary)
     run_exec_server_remote_registration_smoke(binary)
     run_exec_server_remote_wss_registration_smoke(binary)
@@ -9609,6 +9653,7 @@ def main() -> None:
     run_debug_trace_reduce_smoke(binary)
     print("cli-completion-snapshot-e2e: ok")
     print("cli-update-e2e: ok")
+    print("cli-remote-control-command-e2e: ok")
     print("cli-exec-server-stdio-e2e: ok")
     print("cli-exec-server-remote-registration-e2e: ok")
     print("cli-app-command-e2e: ok")

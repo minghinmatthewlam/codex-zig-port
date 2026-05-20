@@ -1577,9 +1577,9 @@ def run_unimplemented_command_smoke(
     )
     if remote_result.returncode == 0:
         raise AssertionError("remote-control unexpectedly succeeded")
-    if "headless app-server remote control is not implemented yet" not in remote_result.stderr:
+    if "sqlite state db is unavailable" not in remote_result.stderr:
         raise AssertionError(
-            f"expected remote-control transport gap message:\n{remote_result.stderr}"
+            f"expected remote-control state DB gap message:\n{remote_result.stderr}"
         )
 
     remote_positional_result = subprocess.run(

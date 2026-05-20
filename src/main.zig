@@ -97,6 +97,10 @@ pub fn main(init: std.process.Init) !void {
                 .{},
             ),
             error.RemoteControlHelpRequested => std.process.exit(0),
+            error.RemoteControlStateDbUnavailable => std.debug.print(
+                "error: no transport configured; remote control disabled because sqlite state db is unavailable\n",
+                .{},
+            ),
             error.ExecServerCommandFailed => {},
             else => std.debug.print("error: {s}\n", .{@errorName(err)}),
         }

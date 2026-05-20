@@ -20,11 +20,7 @@ pub fn run(allocator: std.mem.Allocator, args: *std.process.Args.Iterator) !void
     var parsed = try parseArgSlice(allocator, raw_args.items);
     defer parsed.deinit(allocator);
 
-    std.debug.print(
-        "codex-zig remote-control parsed Rust-compatible options, but headless app-server remote control is not implemented yet\n",
-        .{},
-    );
-    return error.RemoteControlCommandNotImplemented;
+    return error.RemoteControlStateDbUnavailable;
 }
 
 fn parseArgSlice(allocator: std.mem.Allocator, args: []const []const u8) !ParsedOptions {
