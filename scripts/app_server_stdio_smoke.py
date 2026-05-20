@@ -7,6 +7,7 @@ import json
 import os
 import queue
 import select
+import shlex
 import shutil
 import signal
 import socket
@@ -27174,8 +27175,10 @@ def run_filesystem_watch_rpc_smoke(binary: Path) -> None:
 
 def run_command_exec_rpc_smoke(binary: Path) -> None:
     root = Path(tempfile.mkdtemp(prefix="codex-zig-app-server-command-exec-", dir="/tmp"))
-    non_tmp_parent = Path.cwd() / ".zig-cache"
-    non_tmp_parent.mkdir(exist_ok=True)
+    non_tmp_parent = Path("/var/tmp")
+    if not non_tmp_parent.is_dir() or not os.access(non_tmp_parent, os.W_OK):
+        non_tmp_parent = Path.home()
+    non_tmp_parent = non_tmp_parent.resolve()
     non_tmp_root = Path(
         tempfile.mkdtemp(
             prefix=".codex-zig-app-server-command-exec-nontmp-",
@@ -27755,7 +27758,9 @@ def run_command_exec_rpc_smoke(binary: Path) -> None:
             },
             "network": {"enabled": False},
         }
-        tmpdir_target = command_tmpdir / "permission-profile-tmpdir.txt"
+        tmpdir_target_name = "permission-profile-tmpdir.txt"
+        tmpdir_target = command_tmpdir / tmpdir_target_name
+        quoted_slash_tmp_target = shlex.quote(str(slash_tmp_target))
         permission_profile_tmpdir = request_stdio_app_server(
             binary,
             {
@@ -27766,9 +27771,10 @@ def run_command_exec_rpc_smoke(binary: Path) -> None:
                     "command": [
                         "/bin/sh",
                         "-c",
-                        f"printf tmp > {tmpdir_target} && printf slash > {slash_tmp_target} && ! printf child > child-tmp-denied.txt && printf tmp-roots",
+                        f'printf tmp > "$TMPDIR/{tmpdir_target_name}" && printf slash > {quoted_slash_tmp_target} && ! printf child > child-tmp-denied.txt && printf tmp-roots',
                     ],
                     "cwd": str(non_tmp_denied_cwd),
+                    "env": {},
                     "permissionProfile": permission_profile_tmp_roots,
                 },
             },
