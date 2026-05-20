@@ -34,7 +34,7 @@ parity tracker; implementation parity remains tracked in `docs/parity.md`.
   `b99963bdbc1bed794de440c71c7ed152818e679a`.
 - Fresh public clone proof: a clean HTTPS clone from
   `https://github.com/minghinmatthewlam/codex-zig-port` at pushed head
-  `f466097d75196c0593e4786999139320784017e0` passed `python3 -m py_compile`
+  `b99963bdbc1bed794de440c71c7ed152818e679a` passed `python3 -m py_compile`
   for the app-server, CLI, OSS secret-scan, and TUI smoke scripts,
   `python3 scripts/oss_secret_scan.py`, `zig fmt --check build.zig
   build.zig.zon src/*.zig`, `zig build`, `zig build test`, and
