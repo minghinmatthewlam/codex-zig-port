@@ -1,6 +1,6 @@
 # OSS Readiness
 
-Last checked: 2026-05-19.
+Last checked: 2026-05-20.
 
 This file records the public-readiness state for the repository. It is not a
 parity tracker; implementation parity remains tracked in `docs/parity.md`.
@@ -14,13 +14,13 @@ parity tracker; implementation parity remains tracked in `docs/parity.md`.
 - Community files: `README.md`, `CONTRIBUTING.md`, `SECURITY.md`,
   `.github/CODE_OF_CONDUCT.md`, issue templates, PR template, and CODEOWNERS
 - GitHub community profile: 100% by the repository community-profile API.
-- Security settings: GitHub API checks through 2026-05-19 show secret scanning,
+- Security settings: GitHub API checks through 2026-05-20 show secret scanning,
   push protection, and Dependabot security updates enabled. GitHub reports
   non-provider pattern scanning and secret validity checks as disabled.
   `SECURITY.md` is exposed through the repository security-policy URL. CodeQL
   Python code scanning is configured; the latest completed CodeQL run
-  `26114969415` passed on pushed head
-  `3afed29848f6fc37511b36541153fd8997285f05`. Open-alert queries for
+  `26134165392` passed on pushed head
+  `7201b2ff7814f3cac8e7b6d1d2fcc77643168077`. Open-alert queries for
   CodeQL, Dependabot, and secret scanning returned empty arrays after the
   token-shaped smoke-fixture cleanup. Historical CodeQL alerts remain visible
   through the API as fixed.
@@ -29,28 +29,29 @@ parity tracker; implementation parity remains tracked in `docs/parity.md`.
 - CI: GitHub Actions runs formatting, Python smoke-script compilation, unit
   tests, and product-surface smoke tests on macOS with a direct Zig 0.16.0
   install from `ziglang.org` rather than a deprecated Node-based setup action.
-  Checked push run `26114969354` passed on pushed head
-  `3afed29848f6fc37511b36541153fd8997285f05`. Local pre-push verification for
-  the latest config-reload parity and OSS-readiness slices included
-  `python3 -m py_compile` for the app-server, CLI, and TUI smoke scripts,
-  focused config value-write and batch-write app-server smokes,
-  `zig build --summary all`, `git diff --check`, `zig build test --summary
-  all`, and `zig build e2e --summary all`.
+  Checked push run `26134165414` passed on pushed head
+  `7201b2ff7814f3cac8e7b6d1d2fcc77643168077`. Local pre-push verification for
+  the latest model-list remote-catalog parity slice included `zig build
+  --summary all`, `zig build test --summary all`, `zig build e2e --summary
+  all`, focused app-server model RPC smoke coverage,
+  `python3 -m py_compile scripts/app_server_stdio_smoke.py`, and `git diff
+  --check`.
 - Fresh public clone proof: a clean HTTPS clone from
   `https://github.com/minghinmatthewlam/codex-zig-port` at pushed head
-  `3afed29848f6fc37511b36541153fd8997285f05` passed `python3 -m py_compile`
+  `7201b2ff7814f3cac8e7b6d1d2fcc77643168077` passed `python3 -m py_compile`
   for the app-server, CLI, and TUI smoke scripts, `zig build --summary all`,
   `zig build test --summary all`, and `zig build e2e --summary all`. The same
-  clone had no quoted token-shaped `sk-*` fixture matches in tracked source,
-  scripts, docs, or GitHub metadata.
+  clone had no high-confidence OpenAI, GitHub, AWS, Google, or Slack token
+  patterns and no private-key blocks in tracked source, scripts, docs, tests,
+  or GitHub metadata.
 - Source hygiene: current tracked-file and hidden working-tree scans found no
   high-confidence OpenAI, GitHub, AWS, Google, or Slack token patterns and no
-  private-key blocks. Broad secret-word matches are limited to source variable
-  names, public documentation guardrails, runtime token-handling code, and
-  non-secret smoke fixture names. `gitleaks`, `trufflehog`, and the local CodeQL
-  CLI were not installed on the local machine during the latest check, so the
-  local scan used repository `rg` patterns plus GitHub's enabled secret
-  scanning and CodeQL runs.
+  private-key blocks. A broad secret-word scan is expectedly noisy because this
+  repository implements auth flows, so the actionable local check uses
+  high-confidence credential patterns plus GitHub's enabled secret scanning.
+  `gitleaks`, `trufflehog`, and the local CodeQL CLI were not installed on the
+  local machine during the latest check, so the local scan used repository `rg`
+  patterns plus GitHub's enabled secret scanning and CodeQL runs.
 - Package boundary: `build.zig.zon` lists only source, test, script, and public
   documentation paths so local ignored artifacts are not part of a Zig package.
 
