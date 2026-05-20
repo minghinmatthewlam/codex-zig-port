@@ -56516,7 +56516,7 @@ fn modelCatalogCacheScope(
     if (cfg.model_provider_query_params) |params| {
         for (params.entries) |entry| {
             try appendModelCatalogCacheKeyPart(allocator, &key, "query_key", entry.key);
-            try appendModelCatalogCacheKeyPart(allocator, &key, "query_value", entry.value);
+            try appendModelCatalogCacheHashedKeyPart(allocator, &key, "query_value", entry.value);
         }
     }
     try appendModelCatalogCacheHeaderKeyParts(allocator, &key, cfg);
@@ -56718,6 +56718,21 @@ test "model catalog cache scope includes credentials without leaking token" {
     try std.testing.expect(std.mem.indexOf(u8, scope.key, "credential.token") != null);
     try std.testing.expect(std.mem.indexOf(u8, scope.key, "provider-token") == null);
     try std.testing.expect(std.mem.indexOf(u8, scope.key, "acct-provider") == null);
+}
+
+test "model catalog cache scope hashes query values" {
+    var cfg = testDefaultModelCatalogCacheConfig();
+    var query_entries = [_]config.StringMapEntry{.{ .key = "api_key", .value = "secret-query-token" }};
+    cfg.model_provider_query_params = .{ .entries = query_entries[0..] };
+
+    var scope = try modelCatalogCacheScope(std.testing.allocator, &cfg, null);
+    defer scope.deinit(std.testing.allocator);
+
+    try std.testing.expect(!scope.allow_unscoped);
+    try std.testing.expect(std.mem.indexOf(u8, scope.key, "query_key") != null);
+    try std.testing.expect(std.mem.indexOf(u8, scope.key, "api_key") != null);
+    try std.testing.expect(std.mem.indexOf(u8, scope.key, "query_value") != null);
+    try std.testing.expect(std.mem.indexOf(u8, scope.key, "secret-query-token") == null);
 }
 
 test "model catalog cache scope includes backend auth but not default api keys" {
