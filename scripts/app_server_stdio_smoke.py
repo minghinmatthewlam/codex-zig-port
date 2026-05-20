@@ -30094,6 +30094,15 @@ def run_model_rpc_smoke(binary: Path) -> None:
         assert cached_beta["defaultReasoningEffort"] == "none"
         assert cached_beta["inputModalities"] == ["text", "image"]
 
+        (codex_home / "auth.json").write_text(
+            json.dumps({"OPENAI_API_KEY": "test-api-key"}, separators=(",", ":")),
+            encoding="utf-8",
+        )
+        cached_models_with_api_key = rpc("model-list-cache-api-key", "model/list", {"limit": 5})
+        assert cached_models_with_api_key["id"] == "model-list-cache-api-key"
+        assert cached_models_with_api_key["result"]["data"][1]["id"] == "cache-alpha"
+        (codex_home / "auth.json").unlink()
+
         cached_hidden = rpc(
             "model-list-cache-hidden",
             "model/list",
@@ -30244,14 +30253,16 @@ wire_api = "responses"
         assert not cache_path.exists()
         assert len(ModelCatalogBackendHandler.requests) == 1
 
+        provider_token_path = codex_home / "provider-token.txt"
+        provider_token_path.write_text("provider-token\n", encoding="utf-8")
         (codex_home / "config.toml").write_text(
             f'''model_provider = "custom"
 [model_providers.custom]
 base_url = "{model_catalog_base_url}"
 wire_api = "responses"
 [model_providers.custom.auth]
-command = "/bin/echo"
-args = ["provider-token"]
+command = "/bin/cat"
+args = [{json.dumps(str(provider_token_path))}]
 ''',
             encoding="utf-8",
         )
@@ -30299,17 +30310,7 @@ args = ["provider-token"]
         assert "online-chatgpt-only" not in provider_cached_ids
         assert len(ModelCatalogBackendHandler.requests) == 2
 
-        (codex_home / "config.toml").write_text(
-            f'''model_provider = "custom"
-[model_providers.custom]
-base_url = "{model_catalog_base_url}"
-wire_api = "responses"
-[model_providers.custom.auth]
-command = "/bin/echo"
-args = ["provider-token-rotated"]
-''',
-            encoding="utf-8",
-        )
+        provider_token_path.write_text("provider-token-rotated\n", encoding="utf-8")
         provider_rotated_models = rpc("model-list-provider-command-rotated-cache-miss", "model/list", {"limit": 10})
         assert provider_rotated_models["id"] == "model-list-provider-command-rotated-cache-miss"
         assert len(ModelCatalogBackendHandler.requests) == 3

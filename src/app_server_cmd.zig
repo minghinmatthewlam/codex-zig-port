@@ -56302,7 +56302,14 @@ const ModelCatalogCacheScope = struct {
 fn loadFreshModelCatalogCache(allocator: std.mem.Allocator) !?CachedModelCatalog {
     var cfg = config.loadWithOptions(allocator, .{}) catch return null;
     defer cfg.deinit(allocator);
-    var scope = try modelCatalogCacheScope(allocator, &cfg);
+
+    var maybe_credentials: ?auth_mod.Credentials = null;
+    if (cfg.model_provider_auth_command != null) {
+        maybe_credentials = auth_mod.loadForConfig(allocator, &cfg) catch return null;
+    }
+    defer if (maybe_credentials) |*credentials| credentials.deinit(allocator);
+
+    var scope = try modelCatalogCacheScope(allocator, &cfg, maybe_credentials);
     defer scope.deinit(allocator);
     return loadModelCatalogCache(allocator, true, &scope);
 }
@@ -56395,7 +56402,7 @@ fn renewModelCatalogCacheForModelsEtag(
 ) !void {
     if (etag.len == 0) return;
 
-    var scope = try modelCatalogCacheScope(allocator, cfg);
+    var scope = try modelCatalogCacheScope(allocator, cfg, modelCatalogScopeCredentials(cfg, credentials));
     defer scope.deinit(allocator);
 
     var cache = try loadModelCatalogCache(allocator, false, &scope) orelse {
@@ -56435,7 +56442,7 @@ fn refreshModelCatalogCacheIfAllowedForConfig(
 ) !?RefreshedModelCatalog {
     if (!modelCatalogOnlineRefreshAllowed(cfg, credentials)) return null;
 
-    var scope = try modelCatalogCacheScope(allocator, cfg);
+    var scope = try modelCatalogCacheScope(allocator, cfg, modelCatalogScopeCredentials(cfg, credentials));
     defer scope.deinit(allocator);
     var catalog = try fetchRemoteModelCatalog(allocator, cfg, credentials);
     errdefer catalog.deinit(allocator);
@@ -56455,7 +56462,16 @@ fn modelCatalogOnlineRefreshAllowed(cfg: *const config.Config, credentials: auth
     };
 }
 
-fn modelCatalogCacheScope(allocator: std.mem.Allocator, cfg: *const config.Config) !ModelCatalogCacheScope {
+fn modelCatalogScopeCredentials(cfg: *const config.Config, credentials: auth_mod.Credentials) ?auth_mod.Credentials {
+    if (cfg.model_provider_auth_command != null) return credentials;
+    return null;
+}
+
+fn modelCatalogCacheScope(
+    allocator: std.mem.Allocator,
+    cfg: *const config.Config,
+    credentials: ?auth_mod.Credentials,
+) !ModelCatalogCacheScope {
     var key = std.ArrayList(u8).empty;
     errdefer key.deinit(allocator);
 
@@ -56465,6 +56481,9 @@ fn modelCatalogCacheScope(allocator: std.mem.Allocator, cfg: *const config.Confi
     try appendModelCatalogCacheKeyPart(allocator, &key, "wire_api", cfg.model_provider_wire_api.label());
     try appendModelCatalogCacheKeyPart(allocator, &key, "auth_source", modelCatalogAuthSource(cfg));
     try appendModelCatalogCacheAuthKeyParts(allocator, &key, cfg);
+    if (credentials) |creds| {
+        try appendModelCatalogCacheCredentialKeyParts(allocator, &key, creds);
+    }
     if (cfg.model_provider_query_params) |params| {
         for (params.entries) |entry| {
             try appendModelCatalogCacheKeyPart(allocator, &key, "query_key", entry.key);
@@ -56553,6 +56572,39 @@ fn appendModelCatalogCacheAuthKeyParts(
     }
 }
 
+fn appendModelCatalogCacheCredentialKeyParts(
+    allocator: std.mem.Allocator,
+    key: *std.ArrayList(u8),
+    creds: auth_mod.Credentials,
+) !void {
+    try appendModelCatalogCacheKeyPart(
+        allocator,
+        key,
+        "credential.mode",
+        authMethodLabel(creds.mode) orelse "local_oss",
+    );
+    switch (creds.mode) {
+        .local_oss => {},
+        else => try appendModelCatalogCacheHashedKeyPart(allocator, key, "credential.token", creds.token),
+    }
+    if (creds.account_id) |account_id| {
+        try appendModelCatalogCacheHashedKeyPart(allocator, key, "credential.account_id", account_id);
+    } else {
+        try appendModelCatalogCacheKeyPart(allocator, key, "credential.account_id", "null");
+    }
+    if (creds.chatgpt_user_id) |chatgpt_user_id| {
+        try appendModelCatalogCacheHashedKeyPart(allocator, key, "credential.chatgpt_user_id", chatgpt_user_id);
+    } else {
+        try appendModelCatalogCacheKeyPart(allocator, key, "credential.chatgpt_user_id", "null");
+    }
+    try appendModelCatalogCacheKeyPart(
+        allocator,
+        key,
+        "credential.fedramp",
+        if (creds.fedramp) "true" else "false",
+    );
+}
+
 fn appendModelCatalogCacheHeaderKeyParts(
     allocator: std.mem.Allocator,
     key: *std.ArrayList(u8),
@@ -56614,6 +56666,29 @@ test "model catalog unscoped cache rejects provider headers" {
     cfg.model_provider_http_headers = null;
     cfg.model_provider_env_http_headers = .{ .entries = header_entries[0..] };
     try std.testing.expect(!modelCatalogAllowsUnscopedCache(&cfg));
+}
+
+test "model catalog cache scope includes credentials without leaking token" {
+    var cfg = testDefaultModelCatalogCacheConfig();
+    const command_args = [_][]const u8{};
+    cfg.model_provider_auth_command = .{
+        .command = "/bin/cat",
+        .args = .{ .items = command_args[0..] },
+    };
+    const credentials: auth_mod.Credentials = .{
+        .mode = .api_key,
+        .token = "provider-token",
+        .account_id = "acct-provider",
+    };
+
+    var scope = try modelCatalogCacheScope(std.testing.allocator, &cfg, credentials);
+    defer scope.deinit(std.testing.allocator);
+
+    try std.testing.expect(!scope.allow_unscoped);
+    try std.testing.expect(std.mem.indexOf(u8, scope.key, "credential.mode") != null);
+    try std.testing.expect(std.mem.indexOf(u8, scope.key, "credential.token") != null);
+    try std.testing.expect(std.mem.indexOf(u8, scope.key, "provider-token") == null);
+    try std.testing.expect(std.mem.indexOf(u8, scope.key, "acct-provider") == null);
 }
 
 fn testDefaultModelCatalogCacheConfig() config.Config {
