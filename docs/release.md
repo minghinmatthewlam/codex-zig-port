@@ -6,7 +6,11 @@ not implemented.
 
 ## Versioning
 
-- Keep `build.zig.zon` as the source of truth for the package version.
+- Update `build.zig.zon` and every shipped version constant in the same commit.
+  Until the build injects a single generated version, this includes CLI version
+  output, app-server/thread metadata defaults, MCP initialize metadata,
+  feedback tags, model-cache client metadata, and `codex-zig-port/<version>`
+  User-Agent strings.
 - Use `0.x.y` versions while the port is still parity-incomplete.
 - Increment the minor version for user-visible command, TUI, app-server, or
   protocol additions.
@@ -58,7 +62,8 @@ final.
 ## Tagging
 
 1. Confirm `main` is clean and synchronized with `origin/main`.
-2. Update `build.zig.zon` and release notes in a focused commit.
+2. Update `build.zig.zon`, shipped version constants, and release notes in a
+   focused commit.
 3. Create an annotated tag named `v<version>`.
 4. Push the commit and tag.
 5. Create a GitHub release from the tag, attach artifacts, and paste the
