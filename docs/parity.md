@@ -723,8 +723,18 @@ turn runtime overrides now apply the same scalar requirements to effective
 runtime state, with explicit disallowed lifecycle/turn approval, reviewer,
 sandbox, and web-search overrides rejected before they can become thread
 state. Origin/source fidelity, thread hot reload notifications, cloud
-requirements loading, plugin requirement enforcement, and app requirements
-outside the effective config/app-list surfaces remain planned.
+requirements loading, broader plugin requirement enforcement beyond local
+plugin MCP identity allow-lists, and app requirements outside the effective
+config/app-list surfaces remain planned.
+
+Additional MCP requirements coverage: local plugin-provided MCP servers now
+honor system `requirements.toml` identity allow-lists of the Rust shape
+`[plugins."<plugin-id>".mcp_servers.<server>.identity]`. Listed plugin MCP
+servers remain available when their configured `command` or `url` matches the
+requirement; unlisted or identity-mismatched plugin MCP servers are marked
+disabled before `mcpServerStatus/list`, resource reads, tool calls, and MCP
+catalog loading consume them. Cloud/MDM sourcing and broader plugin
+requirement fields remain planned.
 
 `approvals_reviewer` is covered as a runtime config scalar, raw CLI config
 override, app-server `config/read`/write field, and loaded-thread reload value.
