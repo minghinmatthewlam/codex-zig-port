@@ -371,6 +371,44 @@ def assert_timestamp_cursor(value: object) -> str:
 
 
 class TurnResponsesHandler(BaseHTTPRequestHandler):
+    def do_GET(self) -> None:
+        self.server.request_paths.append(self.path)
+        self.server.request_headers.append(
+            {key.lower(): value for key, value in self.headers.items()}
+        )
+        self.server.request_bodies.append({})
+        if urllib.parse.urlparse(self.path).path != "/models":
+            self.send_response(404)
+            self.end_headers()
+            return
+
+        body = json.dumps(
+            {
+                "models": [
+                    {
+                        "slug": "turn-provider-online",
+                        "display_name": "Turn Provider Online",
+                        "description": "Fetched during turn ETag renewal",
+                        "default_reasoning_level": "medium",
+                        "supported_reasoning_levels": [
+                            {"effort": "medium", "description": "Balanced provider reasoning"}
+                        ],
+                        "visibility": "list",
+                        "supported_in_api": True,
+                        "priority": 1,
+                        "input_modalities": ["text"],
+                    }
+                ]
+            },
+            separators=(",", ":"),
+        ).encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("ETag", "turn-provider-model-etag")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
     def do_POST(self) -> None:
         length = int(self.headers.get("Content-Length", "0"))
         body = self.rfile.read(length)
@@ -10854,6 +10892,37 @@ def run_turn_model_notification_smoke(binary: Path) -> None:
             f'openai_base_url = "{base_url}"\nmodel = "gpt-requested-model"\n',
             encoding="utf-8",
         )
+        cache_path = codex_home / "models_cache.json"
+        stale_cache_timestamp = "1970-01-01T00:00:00Z"
+        cache_path.write_text(
+            json.dumps(
+                {
+                    "fetched_at": stale_cache_timestamp,
+                    "etag": "turn-model-etag",
+                    "client_version": "0.0.1",
+                    "models": [
+                        {
+                            "slug": "turn-cache-alpha",
+                            "display_name": "Turn Cache Alpha",
+                            "description": "Cached before turn",
+                            "default_reasoning_level": "medium",
+                            "supported_reasoning_levels": [
+                                {
+                                    "effort": "medium",
+                                    "description": "Balanced cached reasoning",
+                                }
+                            ],
+                            "visibility": "list",
+                            "supported_in_api": True,
+                            "priority": 1,
+                            "input_modalities": ["text"],
+                        }
+                    ],
+                },
+                separators=(",", ":"),
+            ),
+            encoding="utf-8",
+        )
         env = os.environ.copy()
         env["CODEX_HOME"] = str(codex_home)
         env["OPENAI_API_KEY"] = "test-api-key"
@@ -10923,7 +10992,12 @@ def run_turn_model_notification_smoke(binary: Path) -> None:
                     for event in model_events
                 )
                 server.response_payloads.append((payload + "data: [DONE]\n\n").encode())
-                server.response_headers.append({"OpenAI-Model": "gpt-rerouted-model"})
+                server.response_headers.append(
+                    {
+                        "OpenAI-Model": "gpt-rerouted-model",
+                        "X-Models-Etag": "turn-model-etag",
+                    }
+                )
 
                 write_json_line(
                     proc,
@@ -10984,6 +11058,174 @@ def run_turn_model_notification_smoke(binary: Path) -> None:
 
                 assert server.request_paths == ["/responses"]
                 assert server.request_bodies[0]["model"] == "gpt-requested-model"
+                renewed_cache = json.loads(cache_path.read_text(encoding="utf-8"))
+                assert renewed_cache["etag"] == "turn-model-etag"
+                assert renewed_cache["fetched_at"] != stale_cache_timestamp
+                assert renewed_cache["models"][0]["slug"] == "turn-cache-alpha"
+
+            proc.stdin.close()
+            proc.wait(timeout=5)
+            if proc.returncode != 0:
+                raise AssertionError(f"app-server exited {proc.returncode}: {proc.stderr.read()}")
+        finally:
+            if proc.poll() is None:
+                proc.kill()
+                proc.wait(timeout=5)
+    finally:
+        server.shutdown()
+        server.server_close()
+        shutil.rmtree(codex_home, ignore_errors=True)
+
+
+def run_turn_model_provider_cache_refresh_smoke(binary: Path) -> None:
+    server, base_url = start_turn_responses_server()
+    codex_home = Path(tempfile.mkdtemp(prefix="codex-zig-app-server-model-provider-", dir="/tmp"))
+    try:
+        codex_home.joinpath("config.toml").write_text(
+            f'''model_provider = "custom"
+model = "gpt-provider-requested"
+[model_providers.custom]
+base_url = "{base_url}"
+wire_api = "responses"
+[model_providers.custom.auth]
+command = "/bin/echo"
+args = ["provider-token"]
+''',
+            encoding="utf-8",
+        )
+        cache_path = codex_home / "models_cache.json"
+        cache_path.write_text(
+            json.dumps(
+                {
+                    "fetched_at": "1970-01-01T00:00:00Z",
+                    "etag": "stale-provider-etag",
+                    "client_version": "0.0.1",
+                    "models": [
+                        {
+                            "slug": "stale-provider-cache",
+                            "display_name": "Stale Provider Cache",
+                            "description": "Cached before provider refresh",
+                            "default_reasoning_level": "medium",
+                            "supported_reasoning_levels": [
+                                {
+                                    "effort": "medium",
+                                    "description": "Balanced stale reasoning",
+                                }
+                            ],
+                            "visibility": "list",
+                            "supported_in_api": True,
+                            "priority": 1,
+                            "input_modalities": ["text"],
+                        }
+                    ],
+                },
+                separators=(",", ":"),
+            ),
+            encoding="utf-8",
+        )
+        env = os.environ.copy()
+        env["CODEX_HOME"] = str(codex_home)
+        env.pop("CODEX_ACCESS_TOKEN", None)
+        env.pop("OPENAI_API_KEY", None)
+
+        proc = subprocess.Popen(
+            [str(binary), "app-server"],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            env=env,
+        )
+        try:
+            write_json_line(
+                proc,
+                {
+                    "jsonrpc": "2.0",
+                    "id": "initialize",
+                    "method": "initialize",
+                    "params": {
+                        "clientInfo": {"name": "app-server-smoke", "version": "0"},
+                        "capabilities": {},
+                    },
+                },
+            )
+            assert read_json_line(proc, 5)["id"] == "initialize"
+
+            with tempfile.TemporaryDirectory(prefix="codex-zig-turn-provider-cwd-", dir="/tmp") as cwd:
+                write_json_line(
+                    proc,
+                    {
+                        "jsonrpc": "2.0",
+                        "id": "thread-start-provider-model",
+                        "method": "thread/start",
+                        "params": {
+                            "cwd": cwd,
+                            "approvalPolicy": "never",
+                            "sandbox": "danger-full-access",
+                        },
+                    },
+                )
+                thread_start = read_json_line(proc, 5)
+                assert thread_start["id"] == "thread-start-provider-model"
+                thread = thread_start["result"]["thread"]
+                thread_id = thread["id"]
+                assert thread["modelProvider"] == "custom"
+                assert_thread_started_notification(read_json_line(proc, 5), thread)
+
+                server.response_payloads.append(
+                    b'data: {"type":"response.output_text.delta","delta":"provider model reply"}\n\n'
+                    b"data: [DONE]\n\n"
+                )
+                server.response_headers.append(
+                    {
+                        "X-Models-Etag": "turn-provider-model-etag",
+                    }
+                )
+
+                write_json_line(
+                    proc,
+                    {
+                        "jsonrpc": "2.0",
+                        "id": "turn-start-provider-model",
+                        "method": "turn/start",
+                        "params": {
+                            "threadId": thread_id,
+                            "input": [{"type": "text", "text": "refresh provider models"}],
+                        },
+                    },
+                )
+                turn_start = read_json_line(proc, 5)
+                assert turn_start["id"] == "turn-start-provider-model"
+                assert turn_start["result"]["turn"]["id"] == "turn-0"
+                assert_thread_status_notification(
+                    read_json_line(proc, 5), thread_id, "active"
+                )
+                assert read_json_line(proc, 5)["method"] == "turn/started"
+                assert read_json_line(proc, 5)["method"] == "item/started"
+                assert read_json_line(proc, 5)["method"] == "item/completed"
+                agent_item_started = read_json_line(proc, 5)
+                assert agent_item_started["method"] == "item/started"
+                assert agent_item_started["params"]["item"]["text"] == "provider model reply"
+                agent_delta = read_json_line(proc, 5)
+                assert agent_delta["method"] == "item/agentMessage/delta"
+                assert agent_delta["params"]["delta"] == "provider model reply"
+                assert read_json_line(proc, 5)["method"] == "item/completed"
+                completed = read_json_line(proc, 5)
+                assert completed["method"] == "turn/completed"
+                assert completed["params"]["turn"]["id"] == "turn-0"
+                assert_thread_status_notification(
+                    read_json_line(proc, 5), thread_id, "idle"
+                )
+
+                assert server.request_paths == [
+                    "/responses",
+                    "/models?client_version=0.124.0",
+                ]
+                assert server.request_headers[0]["authorization"] == "Bearer provider-token"
+                assert server.request_headers[1]["authorization"] == "Bearer provider-token"
+                renewed_cache = json.loads(cache_path.read_text(encoding="utf-8"))
+                assert renewed_cache["etag"] == "turn-provider-model-etag"
+                assert renewed_cache["models"][0]["slug"] == "turn-provider-online"
 
             proc.stdin.close()
             proc.wait(timeout=5)
@@ -47829,6 +48071,8 @@ def main() -> None:
     print("app-server-turn-reasoning-notification-e2e: ok")
     run_turn_model_notification_smoke(binary)
     print("app-server-turn-model-notification-e2e: ok")
+    run_turn_model_provider_cache_refresh_smoke(binary)
+    print("app-server-turn-model-provider-cache-refresh-e2e: ok")
     run_turn_mcp_status_notification_smoke(binary)
     print("app-server-turn-mcp-status-notification-e2e: ok")
     run_mcp_reload_loaded_thread_turn_smoke(binary)

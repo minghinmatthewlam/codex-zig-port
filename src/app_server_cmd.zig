@@ -28539,6 +28539,8 @@ fn handleReviewStart(
     };
     var model_notification_context = ModelNotificationContext{
         .allocator = allocator,
+        .cfg = &cfg,
+        .credentials = &credentials,
         .rerouted_enabled = !notificationMethodOptedOut(state, "model/rerouted"),
         .verification_enabled = !notificationMethodOptedOut(state, "model/verification"),
         .requested_model = cfg.model,
@@ -28778,6 +28780,10 @@ fn handleReviewStart(
         .server_model_callback = .{
             .ctx = &model_notification_context,
             .on_server_model = handleSessionServerModel,
+        },
+        .models_etag_callback = .{
+            .ctx = &model_notification_context,
+            .on_models_etag = handleSessionModelsEtag,
         },
         .model_verification_callback = .{
             .ctx = &model_notification_context,
@@ -29417,11 +29423,6 @@ fn handleTurnStart(
         return try renderJsonRpcErrorForFailure(allocator, id_value, "turn/start failed to load project config", err);
     };
 
-    var credentials = auth_mod.loadForConfig(allocator, &cfg) catch |err| {
-        return try renderJsonRpcErrorForFailure(allocator, id_value, "turn/start failed to load auth", err);
-    };
-    defer credentials.deinit(allocator);
-
     const turn_id = try allocateNextTurnIdForThread(allocator, thread);
     defer allocator.free(turn_id);
 
@@ -29429,6 +29430,11 @@ fn handleTurnStart(
         error.InvalidTurnContextOverride => return try renderJsonRpcError(allocator, id_value, -32602, "invalid turn context override"),
         else => return err,
     };
+
+    var credentials = auth_mod.loadForConfig(allocator, &cfg) catch |err| {
+        return try renderJsonRpcErrorForFailure(allocator, id_value, "turn/start failed to load auth", err);
+    };
+    defer credentials.deinit(allocator);
 
     var local_images = try loadTurnLocalImages(allocator, input.local_image_paths);
     defer local_images.deinit(allocator);
@@ -29559,6 +29565,8 @@ fn handleTurnStart(
     };
     var model_notification_context = ModelNotificationContext{
         .allocator = allocator,
+        .cfg = &cfg,
+        .credentials = &credentials,
         .rerouted_enabled = !notificationMethodOptedOut(state, "model/rerouted"),
         .verification_enabled = !notificationMethodOptedOut(state, "model/verification"),
         .requested_model = cfg.model,
@@ -29761,6 +29769,10 @@ fn handleTurnStart(
         .server_model_callback = .{
             .ctx = &model_notification_context,
             .on_server_model = handleSessionServerModel,
+        },
+        .models_etag_callback = .{
+            .ctx = &model_notification_context,
+            .on_models_etag = handleSessionModelsEtag,
         },
         .model_verification_callback = .{
             .ctx = &model_notification_context,
@@ -33189,6 +33201,8 @@ const ReasoningEventNotificationContext = struct {
 
 const ModelNotificationContext = struct {
     allocator: std.mem.Allocator,
+    cfg: *const config.Config,
+    credentials: *const auth_mod.Credentials,
     rerouted_enabled: bool,
     verification_enabled: bool,
     requested_model: []const u8,
@@ -33330,6 +33344,14 @@ fn handleSessionServerModel(ctx: *anyopaque, model: []const u8) anyerror!void {
     const notification = try renderModelReroutedNotification(context.allocator, context.thread_id, context.turn_id, context.requested_model, model);
     errdefer context.allocator.free(notification);
     try context.notifications.append(context.allocator, notification);
+}
+
+fn handleSessionModelsEtag(ctx: *anyopaque, etag: []const u8) anyerror!void {
+    const context: *ModelNotificationContext = @ptrCast(@alignCast(ctx));
+    renewModelCatalogCacheForModelsEtag(context.allocator, context.cfg, context.credentials.*, etag) catch |err| switch (err) {
+        error.OutOfMemory => return err,
+        else => return,
+    };
 }
 
 fn handleSessionModelVerifications(ctx: *anyopaque, verifications: []const api.ModelVerification) anyerror!void {
@@ -56149,6 +56171,10 @@ const ModelCatalogFetchContext = struct {
 };
 
 fn loadFreshModelCatalogCache(allocator: std.mem.Allocator) !?CachedModelCatalog {
+    return loadModelCatalogCache(allocator, true);
+}
+
+fn loadModelCatalogCache(allocator: std.mem.Allocator, require_fresh: bool) !?CachedModelCatalog {
     const path = modelCatalogCachePath(allocator) catch return null;
     defer allocator.free(path);
 
@@ -56159,7 +56185,7 @@ fn loadFreshModelCatalogCache(allocator: std.mem.Allocator) !?CachedModelCatalog
         .limited(MODEL_CACHE_MAX_BYTES),
     ) catch return null;
 
-    return parseModelCatalogCacheBytes(allocator, bytes) catch {
+    return parseModelCatalogCacheBytes(allocator, bytes, .{ .require_fresh = require_fresh }) catch {
         allocator.free(bytes);
         return null;
     };
@@ -56171,7 +56197,11 @@ fn modelCatalogCachePath(allocator: std.mem.Allocator) ![]const u8 {
     return std.fs.path.join(allocator, &.{ codex_home, MODEL_CACHE_FILE_NAME });
 }
 
-fn parseModelCatalogCacheBytes(allocator: std.mem.Allocator, bytes: []u8) !CachedModelCatalog {
+const ModelCatalogCacheParseOptions = struct {
+    require_fresh: bool = true,
+};
+
+fn parseModelCatalogCacheBytes(allocator: std.mem.Allocator, bytes: []u8, options: ModelCatalogCacheParseOptions) !CachedModelCatalog {
     var parsed = try std.json.parseFromSlice(std.json.Value, allocator, bytes, .{});
     var keep = false;
     defer if (!keep) {
@@ -56184,19 +56214,51 @@ fn parseModelCatalogCacheBytes(allocator: std.mem.Allocator, bytes: []u8) !Cache
     if (!modelCacheClientVersionIsCompatible(client_version)) return error.InvalidModelCatalogCache;
     const fetched_at = cachedStringField(object, "fetched_at") orelse return error.InvalidModelCatalogCache;
     const fetched_at_ms = parseThreadListRfc3339Milliseconds(fetched_at) orelse return error.InvalidModelCatalogCache;
-    if (!modelCacheTimestampIsFresh(fetched_at_ms)) return error.InvalidModelCatalogCache;
+    if (options.require_fresh and !modelCacheTimestampIsFresh(fetched_at_ms)) return error.InvalidModelCatalogCache;
     const models_value = object.get("models") orelse return error.InvalidModelCatalogCache;
     if (models_value != .array) return error.InvalidModelCatalogCache;
     for (models_value.array.items) |model| {
         if (!cachedModelIsUsable(model)) return error.InvalidModelCatalogCache;
     }
+    const etag = if (cachedStringField(object, "etag")) |value|
+        try allocator.dupe(u8, value)
+    else
+        null;
+    errdefer if (etag) |value| allocator.free(value);
 
     keep = true;
     return .{
         .bytes = bytes,
         .parsed = parsed,
         .models = models_value.array.items,
+        .etag = etag,
     };
+}
+
+fn renewModelCatalogCacheForModelsEtag(
+    allocator: std.mem.Allocator,
+    cfg: *const config.Config,
+    credentials: auth_mod.Credentials,
+    etag: []const u8,
+) !void {
+    if (etag.len == 0) return;
+
+    var cache = try loadModelCatalogCache(allocator, false) orelse {
+        var refreshed = try refreshModelCatalogCacheIfAllowedForConfig(allocator, cfg, credentials);
+        defer if (refreshed) |*value| value.deinit(allocator);
+        return;
+    };
+    defer cache.deinit(allocator);
+
+    if (cache.etag) |cached_etag| {
+        if (std.mem.eql(u8, cached_etag, etag)) {
+            try persistModelCatalogCache(allocator, &cache);
+            return;
+        }
+    }
+
+    var refreshed = try refreshModelCatalogCacheIfAllowedForConfig(allocator, cfg, credentials);
+    defer if (refreshed) |*value| value.deinit(allocator);
 }
 
 fn refreshModelCatalogCacheIfAllowed(allocator: std.mem.Allocator) !?RefreshedModelCatalog {
@@ -56205,9 +56267,17 @@ fn refreshModelCatalogCacheIfAllowed(allocator: std.mem.Allocator) !?RefreshedMo
 
     var credentials = auth_mod.loadForConfig(allocator, &cfg) catch return null;
     defer credentials.deinit(allocator);
-    if (!modelCatalogOnlineRefreshAllowed(&cfg, credentials)) return null;
+    return refreshModelCatalogCacheIfAllowedForConfig(allocator, &cfg, credentials);
+}
 
-    var catalog = try fetchRemoteModelCatalog(allocator, &cfg, credentials);
+fn refreshModelCatalogCacheIfAllowedForConfig(
+    allocator: std.mem.Allocator,
+    cfg: *const config.Config,
+    credentials: auth_mod.Credentials,
+) !?RefreshedModelCatalog {
+    if (!modelCatalogOnlineRefreshAllowed(cfg, credentials)) return null;
+
+    var catalog = try fetchRemoteModelCatalog(allocator, cfg, credentials);
     errdefer catalog.deinit(allocator);
     persistModelCatalogCache(allocator, &catalog) catch {};
     return .{
