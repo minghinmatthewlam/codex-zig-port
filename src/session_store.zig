@@ -12,6 +12,7 @@ const StoredLine = struct {
     type: []const u8,
     title: ?[]const u8 = null,
     memory_mode: ?[]const u8 = null,
+    cwd: ?[]const u8 = null,
     git: ?StoredGitInfo = null,
     goal: ?StoredGoalInfo = null,
     total_token_usage: ?StoredTokenUsage = null,
@@ -180,11 +181,12 @@ pub fn saveTranscript(allocator: std.mem.Allocator, path: []const u8, transcript
     var output = std.ArrayList(u8).empty;
     defer output.deinit(allocator);
 
-    if (transcript.title != null or transcript.memory_mode != null or transcriptHasGitInfo(transcript) or transcript.goal != null or transcript.token_usage != null) {
+    if (transcript.title != null or transcript.memory_mode != null or transcript.cwd != null or transcriptHasGitInfo(transcript) or transcript.goal != null or transcript.token_usage != null) {
         try appendStoredLineJson(allocator, &output, .{
             .type = "metadata",
             .title = transcript.title,
             .memory_mode = transcript.memory_mode,
+            .cwd = transcript.cwd,
             .git = storedGitInfoFromTranscript(transcript),
             .goal = storedGoalInfoFromTranscript(transcript),
             .total_token_usage = storedTotalTokenUsageFromTranscript(transcript),
@@ -544,6 +546,7 @@ fn appendTranscriptLine(allocator: std.mem.Allocator, transcript: *session.Trans
     if (std.mem.eql(u8, line_type, "metadata")) {
         if (jsonStringField(object, "title")) |title| try transcript.setTitle(allocator, title);
         if (jsonStringField(object, "memory_mode")) |value| try transcript.setMemoryMode(allocator, value);
+        if (jsonStringField(object, "cwd")) |value| try transcript.setCwd(allocator, value);
         try applyGitInfo(allocator, transcript, object.get("git"));
         try applyGoalInfo(allocator, transcript, object.get("goal"));
         applyStoredTokenUsageInfo(transcript, object);
@@ -1428,6 +1431,7 @@ test "session store round trips transcript jsonl" {
     defer transcript.deinit(allocator);
     try transcript.setTitle(allocator, "demo transcript");
     try transcript.setMemoryMode(allocator, "disabled");
+    try transcript.setCwd(allocator, root);
     try transcript.setGitSha(allocator, "abc123");
     try transcript.setGitBranch(allocator, "main");
     try transcript.setGitOriginUrl(allocator, "https://example.test/repo.git");
@@ -1477,6 +1481,7 @@ test "session store round trips transcript jsonl" {
 
     try std.testing.expectEqualStrings("demo transcript", loaded.title.?);
     try std.testing.expectEqualStrings("disabled", loaded.memory_mode.?);
+    try std.testing.expectEqualStrings(root, loaded.cwd.?);
     try std.testing.expectEqualStrings("abc123", loaded.git_sha.?);
     try std.testing.expectEqualStrings("main", loaded.git_branch.?);
     try std.testing.expectEqualStrings("https://example.test/repo.git", loaded.git_origin_url.?);
