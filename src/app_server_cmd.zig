@@ -28121,10 +28121,9 @@ fn handleGetConversationSummary(
         const conversation_id = conversation_id_value.string;
         if (findLoadedThread(state, conversation_id)) |thread| {
             var state_metadata: ?thread_state.ThreadMetadata = null;
-            if (config.load(allocator)) |loaded_cfg| {
-                var cfg = loaded_cfg;
-                defer cfg.deinit(allocator);
-                state_metadata = thread_state.findThreadMetadataByThreadId(allocator, cfg.codex_home, conversation_id) catch null;
+            if (config.resolveCodexHome(allocator)) |codex_home| {
+                defer allocator.free(codex_home);
+                state_metadata = thread_state.findThreadMetadataByThreadId(allocator, codex_home, conversation_id) catch null;
             } else |_| {}
             defer if (state_metadata) |*metadata| metadata.deinit(allocator);
 

@@ -17697,6 +17697,46 @@ def run_thread_resume_rpc_smoke(binary: Path) -> None:
                 "origin_url": "https://example.test/state.git",
             }
 
+            original_config = config_path.read_text(encoding="utf-8")
+            config_path.write_text('profile = "missing-profile"\n', encoding="utf-8")
+            try:
+                write_json_line(
+                    proc,
+                    {
+                        "jsonrpc": "2.0",
+                        "id": "conversation-summary-loaded-state-db-invalid-config",
+                        "method": "getConversationSummary",
+                        "params": {"conversationId": state_db_thread_id},
+                    },
+                )
+                loaded_state_db_invalid_config_summary = read_json_line(proc, 5)
+                assert (
+                    loaded_state_db_invalid_config_summary["id"]
+                    == "conversation-summary-loaded-state-db-invalid-config"
+                )
+                loaded_state_db_invalid_config_body = (
+                    loaded_state_db_invalid_config_summary["result"]["summary"]
+                )
+                assert (
+                    loaded_state_db_invalid_config_body["conversationId"]
+                    == state_db_thread_id
+                )
+                assert (
+                    loaded_state_db_invalid_config_body["timestamp"]
+                    == "2025-01-05T12:00:00.000Z"
+                )
+                assert (
+                    loaded_state_db_invalid_config_body["updatedAt"]
+                    == "2025-01-05T12:05:00.000Z"
+                )
+                assert (
+                    loaded_state_db_invalid_config_body["modelProvider"]
+                    == "state_provider"
+                )
+                assert loaded_state_db_invalid_config_body["cwd"] == "/state-db-cwd"
+            finally:
+                config_path.write_text(original_config, encoding="utf-8")
+
             write_json_line(
                 proc,
                 {
