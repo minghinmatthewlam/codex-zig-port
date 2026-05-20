@@ -46515,7 +46515,7 @@ fn addCommandExecPermissionProfileEntry(
             return;
         },
         .subpath => |subpath| {
-            const owned = try commandExecResolveCwdSubpath(allocator, cwd, subpath);
+            const owned = try commandExecResolveCwdSubpath(allocator, cwd, subpath, .{});
             errdefer allocator.free(owned);
             try summary.owned_paths.append(allocator, owned);
             errdefer _ = summary.owned_paths.pop();
@@ -46551,7 +46551,7 @@ fn addCommandExecPermissionReadDenyRoot(
     switch (try commandExecPermissionProjectRootsPath(path)) {
         .not_project_roots => {},
         .root => {
-            const owned = try commandExecResolveCwdSubpath(allocator, cwd, null);
+            const owned = try commandExecResolveCwdSubpath(allocator, cwd, null, .{});
             errdefer allocator.free(owned);
             try summary.owned_paths.append(allocator, owned);
             errdefer _ = summary.owned_paths.pop();
@@ -46559,7 +46559,7 @@ fn addCommandExecPermissionReadDenyRoot(
             return;
         },
         .subpath => |subpath| {
-            const owned = try commandExecResolveCwdSubpath(allocator, cwd, subpath);
+            const owned = try commandExecResolveCwdSubpath(allocator, cwd, subpath, .{ .allow_missing_leaf = true });
             errdefer allocator.free(owned);
             try summary.owned_paths.append(allocator, owned);
             errdefer _ = summary.owned_paths.pop();
@@ -46609,7 +46609,16 @@ fn commandExecPermissionProjectRootsPath(value: std.json.Value) !CommandExecProj
     return .root;
 }
 
-fn commandExecResolveCwdSubpath(allocator: std.mem.Allocator, cwd: ?[]const u8, subpath: ?[]const u8) ![]const u8 {
+const CommandExecResolveCwdSubpathOptions = struct {
+    allow_missing_leaf: bool = false,
+};
+
+fn commandExecResolveCwdSubpath(
+    allocator: std.mem.Allocator,
+    cwd: ?[]const u8,
+    subpath: ?[]const u8,
+    options: CommandExecResolveCwdSubpathOptions,
+) ![]const u8 {
     const base = try realPathFileAllocPlain(allocator, cwd orelse ".");
     defer allocator.free(base);
     const child = subpath orelse return allocator.dupe(u8, base);
@@ -46618,12 +46627,43 @@ fn commandExecResolveCwdSubpath(allocator: std.mem.Allocator, cwd: ?[]const u8, 
     defer allocator.free(resolved);
     if (!commandExecPathIsWithinBase(base, resolved)) return error.InvalidCommandExecPermissionProfileEntry;
     const canonical = realPathFileAllocPlain(allocator, resolved) catch |err| switch (err) {
-        error.FileNotFound, error.NotDir => return error.InvalidCommandExecPermissionProfileEntry,
+        error.FileNotFound, error.NotDir => if (options.allow_missing_leaf)
+            try commandExecCanonicalMissingPath(allocator, resolved)
+        else
+            return error.InvalidCommandExecPermissionProfileEntry,
         else => return err,
     };
     errdefer allocator.free(canonical);
     if (!commandExecPathIsWithinBase(base, canonical)) return error.InvalidCommandExecPermissionProfileEntry;
     return canonical;
+}
+
+fn commandExecCanonicalMissingPath(allocator: std.mem.Allocator, absolute_path: []const u8) ![]const u8 {
+    var probe_end = absolute_path.len;
+    while (probe_end > 0) {
+        const probe = absolute_path[0..probe_end];
+        const real_parent = realPathFileAllocPlain(allocator, probe) catch |err| switch (err) {
+            error.FileNotFound, error.NotDir => {
+                const parent = std.fs.path.dirname(probe) orelse return allocator.dupe(u8, absolute_path);
+                if (parent.len >= probe.len) return allocator.dupe(u8, absolute_path);
+                probe_end = parent.len;
+                continue;
+            },
+            else => return err,
+        };
+        errdefer allocator.free(real_parent);
+
+        const suffix = if (probe_end < absolute_path.len and absolute_path[probe_end] == std.fs.path.sep)
+            absolute_path[probe_end + 1 ..]
+        else
+            absolute_path[probe_end..];
+        if (suffix.len == 0) return real_parent;
+
+        const joined = try std.fs.path.join(allocator, &.{ real_parent, suffix });
+        allocator.free(real_parent);
+        return joined;
+    }
+    return allocator.dupe(u8, absolute_path);
 }
 
 fn commandExecPathIsWithinBase(base: []const u8, path: []const u8) bool {

@@ -29353,6 +29353,61 @@ def run_command_exec_rpc_smoke(binary: Path) -> None:
         assert child_cwd.joinpath("allowed-read-deny.txt").read_text(encoding="utf-8") == "allowed"
         assert read_denied_target.read_text(encoding="utf-8") == "secret"
 
+        missing_read_denied_target = child_cwd / "future-secret.txt"
+        missing_read_deny_permission_profile = {
+            "type": "managed",
+            "fileSystem": {
+                "type": "restricted",
+                "entries": [
+                    {
+                        "path": {"type": "special", "value": {"kind": "root"}},
+                        "access": "read",
+                    },
+                    {
+                        "path": {"type": "special", "value": {"kind": "project_roots"}},
+                        "access": "write",
+                    },
+                    {
+                        "path": {
+                            "type": "special",
+                            "value": {
+                                "kind": "project_roots",
+                                "subpath": missing_read_denied_target.name,
+                            },
+                        },
+                        "access": "none",
+                    },
+                ],
+            },
+            "network": {"enabled": False},
+        }
+        permission_profile_missing_read_deny = request_stdio_app_server(
+            binary,
+            {
+                "jsonrpc": "2.0",
+                "id": "command-exec-permission-profile-missing-read-deny",
+                "method": "command/exec",
+                "params": {
+                    "command": [
+                        "/bin/sh",
+                        "-c",
+                        "printf allowed > allowed-missing-read-deny.txt && ! printf blocked > future-secret.txt && printf missing-read-deny",
+                    ],
+                    "cwd": str(child_cwd),
+                    "permissionProfile": missing_read_deny_permission_profile,
+                },
+            },
+            env,
+        )
+        assert (
+            permission_profile_missing_read_deny["id"]
+            == "command-exec-permission-profile-missing-read-deny"
+        )
+        assert permission_profile_missing_read_deny["result"]["exitCode"] == 0
+        assert permission_profile_missing_read_deny["result"]["stdout"] == "missing-read-deny"
+        assert child_cwd.joinpath("allowed-missing-read-deny.txt").read_text(encoding="utf-8") == "allowed"
+        assert not missing_read_denied_target.exists()
+
         permission_profile_network_enabled = request_stdio_app_server(
             binary,
             {
