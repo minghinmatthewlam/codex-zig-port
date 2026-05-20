@@ -55,7 +55,7 @@ Current app-server `config/read` coverage also includes user
 `writable_roots`, `network_access`, `exclude_tmpdir_env_var`, and
 `exclude_slash_tmp`, including user origins/layers and post-`config/batchWrite`
 reads. Legacy managed config reads now cover top-level `model`,
-`review_model`, `model_context_window`,
+`model_provider`, `review_model`, `model_context_window`,
 `model_auto_compact_token_limit`, `approval_policy`, `approvals_reviewer`, `sandbox_mode`,
 `web_search`, `model_reasoning_effort`, `model_verbosity`, and
 `service_tier`, plus managed `sandbox_workspace_write` leaf precedence over
@@ -77,10 +77,12 @@ origins, and user/project/system/legacy-managed layers, matching the account
 login validation surface.
 
 Current app-server `config/read` scalar coverage also includes top-level
-`model_context_window`, top-level `model_auto_compact_token_limit`, and
-profile-over-top-level `model_verbosity` in the effective config, origins, and
-user/project/system/legacy-managed layers. Managed override metadata is covered
-for writes to these supported scalar fields.
+`model_context_window`, top-level `model_auto_compact_token_limit`,
+profile-over-top-level `model_provider`, and profile-over-top-level
+`model_verbosity` in the effective config, origins, and user, system, and
+legacy-managed layers. Project-local `model_provider` remains Rust-denylisted
+and ignored. Managed override metadata is covered for writes to these supported
+scalar fields.
 
 Current app-server TypeScript and JSON Schema generation coverage includes the
 minimal JSON-RPC envelope, client-notification, and initialize helper files plus
