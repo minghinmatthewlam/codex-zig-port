@@ -520,6 +520,11 @@ fn startExecSession(argv: []const []const u8, options: ExecSessionOptions) !usiz
         );
         break :blk sandboxed_argv.?.argv;
     } else argv;
+    var child_env: ?std.process.Environ.Map = null;
+    defer if (child_env) |*env_map| env_map.deinit();
+    if (sandboxed_argv != null) {
+        child_env = try sandbox.environmentWithSeatbeltMarker(session_allocator);
+    }
 
     const cwd: std.process.Child.Cwd = if (options.workdir) |workdir| .{ .path = workdir } else .inherit;
     var pty_master: ?std.Io.File = null;
@@ -540,6 +545,7 @@ fn startExecSession(argv: []const []const u8, options: ExecSessionOptions) !usiz
         .stdin = child_stdio,
         .stdout = child_stdio,
         .stderr = child_stdio,
+        .environ_map = if (child_env) |*env_map| env_map else null,
     });
     var child_owned = true;
     errdefer if (child_owned) child.kill(io_instance.io());
@@ -880,12 +886,18 @@ fn runArgvWithOptions(
         );
         break :blk sandboxed_argv.?.argv;
     } else argv;
+    var child_env: ?std.process.Environ.Map = null;
+    defer if (child_env) |*env_map| env_map.deinit();
+    if (sandboxed_argv != null) {
+        child_env = try sandbox.environmentWithSeatbeltMarker(allocator);
+    }
 
     const cwd: std.process.Child.Cwd = if (options.workdir) |workdir| .{ .path = workdir } else .inherit;
     const started = std.Io.Timestamp.now(io_instance.io(), .awake);
     const result = try std.process.run(allocator, io_instance.io(), .{
         .argv = effective_argv,
         .cwd = cwd,
+        .environ_map = if (child_env) |*env_map| env_map else null,
         .stdout_limit = .limited(64 * 1024),
         .stderr_limit = .limited(64 * 1024),
         .timeout = .{ .duration = .{
@@ -1874,6 +1886,35 @@ test "exec_command honors workdir" {
     const result = try runFunctionCall(allocator, call, .{ .auto_approve = true });
     defer result.deinit(allocator);
     try std.testing.expect(std.mem.indexOf(u8, result.output, cwd) != null);
+}
+
+test "exec_command marks seatbelt sandbox environment" {
+    if (builtin.os.tag != .macos) return error.SkipZigTest;
+
+    const allocator = std.testing.allocator;
+    var dir = std.testing.tmpDir(.{});
+    defer dir.cleanup();
+    const cwd = try dir.dir.realPathFileAlloc(std.Io.Threaded.global_single_threaded.io(), ".", allocator);
+    defer allocator.free(cwd);
+
+    const cwd_json = try std.json.Stringify.valueAlloc(allocator, cwd, .{});
+    defer allocator.free(cwd_json);
+    const args = try std.fmt.allocPrint(allocator, "{{\"cmd\":\"printf $CODEX_SANDBOX\",\"workdir\":{s}}}", .{cwd_json});
+    defer allocator.free(args);
+
+    const call = api.FunctionCall{
+        .call_id = "exec-sandbox-env",
+        .name = "exec_command",
+        .arguments = args,
+    };
+    const result = try runFunctionCall(allocator, call, .{
+        .auto_approve = true,
+        .sandbox_mode = .workspace_write,
+    });
+    defer result.deinit(allocator);
+
+    try std.testing.expectEqualStrings("exit 0", result.summary);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, sandbox.seatbelt_env_value) != null);
 }
 
 test "exec_command applies read-denied roots" {

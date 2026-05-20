@@ -9142,6 +9142,29 @@ def run_sandbox_permission_profile_smoke(binary: Path) -> None:
         assert read_only_denied.returncode != 0
         assert not (workspace / "blocked.txt").exists()
 
+        sandbox_env_marker = subprocess.run(
+            [
+                str(binary.resolve()),
+                "sandbox",
+                "macos",
+                "--permissions-profile",
+                ":workspace",
+                "--cd",
+                str(workspace),
+                "--",
+                "/usr/bin/printenv",
+                "CODEX_SANDBOX",
+            ],
+            cwd=temp_root,
+            env=env,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=5,
+            check=True,
+        )
+        assert sandbox_env_marker.stdout == "seatbelt\n"
+
         workspace_allowed = subprocess.run(
             [
                 str(binary.resolve()),

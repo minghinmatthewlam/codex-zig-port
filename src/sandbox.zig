@@ -4,6 +4,8 @@ const builtin = @import("builtin");
 const config = @import("config.zig");
 
 const sandbox_exec_path = "/usr/bin/sandbox-exec";
+pub const codex_sandbox_env_var = "CODEX_SANDBOX";
+pub const seatbelt_env_value = "seatbelt";
 
 pub const SandboxedArgv = struct {
     argv: []const []const u8,
@@ -27,6 +29,36 @@ pub fn shouldSandbox(mode: config.SandboxMode) bool {
         .danger_full_access => false,
         .read_only, .workspace_write => builtin.os.tag == .macos,
     };
+}
+
+pub fn environmentWithSeatbeltMarker(allocator: std.mem.Allocator) !std.process.Environ.Map {
+    var result = std.process.Environ.Map.init(allocator);
+    errdefer result.deinit();
+
+    if (builtin.os.tag == .windows) {
+        var parent_env = try std.process.Environ.createMap(.{ .block = .global }, allocator);
+        defer parent_env.deinit();
+        var iterator = parent_env.iterator();
+        while (iterator.next()) |entry| {
+            try result.put(entry.key_ptr.*, entry.value_ptr.*);
+        }
+    } else {
+        var index: usize = 0;
+        while (std.c.environ[index]) |entry_ptr| : (index += 1) {
+            const entry = std.mem.span(entry_ptr);
+            const eq = std.mem.indexOfScalar(u8, entry, '=') orelse continue;
+            const key = entry[0..eq];
+            if (!std.process.Environ.Map.validateKeyForPut(key)) continue;
+            try result.put(key, entry[eq + 1 ..]);
+        }
+    }
+
+    try markEnvironmentSeatbelt(&result);
+    return result;
+}
+
+pub fn markEnvironmentSeatbelt(env_map: *std.process.Environ.Map) !void {
+    try env_map.put(codex_sandbox_env_var, seatbelt_env_value);
 }
 
 pub fn wrapArgv(
@@ -294,6 +326,14 @@ test "wrap argv builds sandbox-exec command" {
     try std.testing.expectEqualStrings("-p", wrapped.argv[1]);
     try std.testing.expectEqualStrings("--", wrapped.argv[3]);
     try std.testing.expectEqualStrings("/bin/echo", wrapped.argv[4]);
+}
+
+test "seatbelt marker environment overrides parent value" {
+    const allocator = std.testing.allocator;
+    var env_map = try environmentWithSeatbeltMarker(allocator);
+    defer env_map.deinit();
+
+    try std.testing.expectEqualStrings(seatbelt_env_value, env_map.get(codex_sandbox_env_var).?);
 }
 
 test "seatbelt string escaping handles quotes and backslashes" {

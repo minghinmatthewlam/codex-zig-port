@@ -7989,6 +7989,13 @@ def run_review_start_rpc_smoke(binary: Path) -> None:
                     'web_search = "live"',
                     'developer_instructions = "review must not inherit this"',
                     "",
+                    "[permissions.review-read-deny-profile.filesystem]",
+                    '":root" = "read"',
+                    '":project_roots" = { "." = "write", "review-secret.txt" = "none" }',
+                    "",
+                    "[permissions.review-read-deny-profile.network]",
+                    "enabled = true",
+                    "",
                 ]
             ),
             encoding="utf-8",
@@ -8120,6 +8127,7 @@ def run_review_start_rpc_smoke(binary: Path) -> None:
                 "+review wrote this\n"
                 "*** End Patch\n"
             )
+            review_read_deny_call_id = "review-read-deny-call"
             review_tool_calls = [
                 {
                     "type": "function_call",
@@ -8175,36 +8183,6 @@ def run_review_start_rpc_smoke(binary: Path) -> None:
                     ),
                 },
             ]
-            server.response_payloads.append(
-                (
-                    "".join(
-                        "data: "
-                        + json.dumps(
-                            {
-                                "type": "response.output_item.done",
-                                "item": tool_call,
-                            },
-                            separators=(",", ":"),
-                        )
-                        + "\n\n"
-                        for tool_call in review_tool_calls
-                    )
-                    + "data: [DONE]\n\n"
-                ).encode()
-            )
-            server.response_payloads.append(
-                (
-                    "data: "
-                    + json.dumps(
-                        {
-                            "type": "response.output_text.delta",
-                            "delta": structured_review_text,
-                        },
-                        separators=(",", ":"),
-                    )
-                    + "\n\ndata: [DONE]\n\n"
-                ).encode()
-            )
             expected_rendered_review = (
                 "Looks correct\n\n"
                 "Review comment:\n\n"
@@ -8246,6 +8224,9 @@ def run_review_start_rpc_smoke(binary: Path) -> None:
             with tempfile.TemporaryDirectory(prefix="codex-zig-review-start-cwd-", dir="/tmp") as cwd_root:
                 cwd = str(Path(cwd_root) / "repo")
                 upstream_base = setup_review_base_branch_repo(Path(cwd_root))
+                review_secret_path = Path(cwd) / "review-secret.txt"
+                review_secret_value = "review-secret-value"
+                review_secret_path.write_text(review_secret_value, encoding="utf-8")
                 write_json_line(
                     proc,
                     {
@@ -8273,6 +8254,11 @@ def run_review_start_rpc_smoke(binary: Path) -> None:
                         "method": "turn/start",
                         "params": {
                             "threadId": thread_id,
+                            "approvalPolicy": "never",
+                            "permissions": {
+                                "type": "profile",
+                                "id": "review-read-deny-profile",
+                            },
                             "input": [
                                 {
                                     "type": "text",
@@ -8656,6 +8642,53 @@ def run_review_start_rpc_smoke(binary: Path) -> None:
                     config_path.read_text(encoding="utf-8") + review_mcp_config,
                     encoding="utf-8",
                 )
+                review_tool_calls.append(
+                    {
+                        "type": "function_call",
+                        "call_id": review_read_deny_call_id,
+                        "name": "exec_command",
+                        "arguments": json.dumps(
+                            {
+                                "cmd": (
+                                    "! cat review-secret.txt "
+                                    "&& printf review-read-deny-ok"
+                                ),
+                                "workdir": cwd,
+                            },
+                            separators=(",", ":"),
+                        ),
+                    }
+                )
+                server.response_payloads.append(
+                    (
+                        "".join(
+                            "data: "
+                            + json.dumps(
+                                {
+                                    "type": "response.output_item.done",
+                                    "item": tool_call,
+                                },
+                                separators=(",", ":"),
+                            )
+                            + "\n\n"
+                            for tool_call in review_tool_calls
+                        )
+                        + "data: [DONE]\n\n"
+                    ).encode()
+                )
+                server.response_payloads.append(
+                    (
+                        "data: "
+                        + json.dumps(
+                            {
+                                "type": "response.output_text.delta",
+                                "delta": structured_review_text,
+                            },
+                            separators=(",", ":"),
+                        )
+                        + "\n\ndata: [DONE]\n\n"
+                    ).encode()
+                )
 
                 write_json_line(
                     proc,
@@ -8745,6 +8778,7 @@ def run_review_start_rpc_smoke(binary: Path) -> None:
                     "review-disabled-stdin-call",
                     "review-disabled-permissions-call",
                     "review-disabled-user-input-call",
+                    review_read_deny_call_id,
                 }.issubset(raw_review_call_ids)
                 assert exited_started["method"] == "item/started"
                 assert exited_started["params"]["item"] == {
@@ -9227,6 +9261,18 @@ def run_review_start_rpc_smoke(binary: Path) -> None:
                     and "request_user_input is disabled in this session"
                     in item.get("output", "")
                     for item in custom_after_tool_request["input"]
+                )
+                review_read_deny_output = next(
+                    item
+                    for item in custom_after_tool_request["input"]
+                    if item.get("type") == "function_call_output"
+                    and item.get("call_id") == review_read_deny_call_id
+                )
+                assert "review-read-deny-ok" in review_read_deny_output["output"], (
+                    review_read_deny_output["output"]
+                )
+                assert review_secret_value not in review_read_deny_output["output"], (
+                    review_read_deny_output["output"]
                 )
                 base_request = server.request_bodies[5]
                 assert base_request["model"] == "gpt-review-smoke"
@@ -28586,6 +28632,27 @@ def run_command_exec_rpc_smoke(binary: Path) -> None:
             "stderr": "",
         }
         assert command_tmpdir.joinpath("tmpdir-ok.txt").read_text(encoding="utf-8") == "tmpdir"
+
+        sandbox_policy_env_marker = request_stdio_app_server(
+            binary,
+            {
+                "jsonrpc": "2.0",
+                "id": "command-exec-sandbox-policy-env-marker",
+                "method": "command/exec",
+                "params": {
+                    "command": ["/bin/sh", "-c", 'printf "$CODEX_SANDBOX"'],
+                    "cwd": str(cwd),
+                    "sandboxPolicy": {"type": "workspaceWrite"},
+                },
+            },
+            env,
+        )
+        assert sandbox_policy_env_marker["id"] == "command-exec-sandbox-policy-env-marker"
+        assert sandbox_policy_env_marker["result"] == {
+            "exitCode": 0,
+            "stdout": "seatbelt",
+            "stderr": "",
+        }
 
         sandbox_policy_slash_tmp_default = request_stdio_app_server(
             binary,

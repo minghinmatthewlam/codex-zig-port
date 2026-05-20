@@ -29117,6 +29117,7 @@ fn handleReviewStart(
         .mcp_elicitation_callback = mcp_elicitation_callback,
         .external_auth_refresh_callback = external_auth_refresh_callback,
         .additional_writable_roots = &.{},
+        .read_denied_roots = thread.sandbox_read_denied_roots.items,
         .include_cwd_write_root = false,
         .network_enabled = false,
         .developer_messages_after_user = user_prompt_hooks.contexts.items,
@@ -44277,6 +44278,13 @@ fn handleCommandExec(allocator: std.mem.Allocator, state: *AppServerState, id_va
                 error.InvalidCommandExecEnvValue => return try renderJsonRpcError(allocator, id_value, -32602, "env values must be strings or null"),
                 else => return err,
             };
+        }
+    }
+    if (sandboxed_argv != null) {
+        if (child_env) |*map| {
+            try sandbox_mod.markEnvironmentSeatbelt(map);
+        } else {
+            child_env = try sandbox_mod.environmentWithSeatbeltMarker(allocator);
         }
     }
 

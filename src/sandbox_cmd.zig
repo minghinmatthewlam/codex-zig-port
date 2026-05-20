@@ -240,9 +240,15 @@ fn runCommand(
         });
         break :blk sandboxed_argv.?.argv;
     } else argv;
+    var child_env: ?std.process.Environ.Map = null;
+    defer if (child_env) |*env_map| env_map.deinit();
+    if (sandboxed_argv != null) {
+        child_env = try sandbox.environmentWithSeatbeltMarker(allocator);
+    }
 
     const result = try std.process.run(allocator, io_instance.io(), .{
         .argv = effective_argv,
+        .environ_map = if (child_env) |*env_map| env_map else null,
         .stdout_limit = .limited(10 * 1024 * 1024),
         .stderr_limit = .limited(10 * 1024 * 1024),
     });
