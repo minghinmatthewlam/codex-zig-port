@@ -51725,7 +51725,9 @@ fn handleConfigRead(
     };
     defer requirements.deinit(allocator);
 
-    const result = try renderConfigReadResponse(allocator, cfg, state.cli_feature_overrides, feature_overrides, state.runtime_feature_enablement, requirements.feature_requirements, include_layers, managed_layer, project_layers, user_layer, system_layer);
+    const result = renderConfigReadResponse(allocator, cfg, state.cli_feature_overrides, feature_overrides, state.runtime_feature_enablement, requirements, include_layers, managed_layer, project_layers, user_layer, system_layer) catch |err| {
+        return renderJsonRpcErrorForFailure(allocator, id_value, "config/read failed to render config", err);
+    };
     defer allocator.free(result);
     return renderJsonRpcResult(allocator, id_value, result);
 }
@@ -52182,7 +52184,7 @@ fn renderConfigReadResponse(
     cli_feature_overrides: features_cmd.FeatureOverrides,
     config_feature_overrides: features_cmd.FeatureOverrides,
     runtime_feature_enablement: features_cmd.FeatureOverrides,
-    feature_requirements: ?FeatureRequirementList,
+    requirements: ConfigRequirementsReadRequirements,
     include_layers: bool,
     managed_layer: ?ConfigReadManagedLayer,
     project_layers: ConfigReadProjectLayers,
@@ -52229,13 +52231,16 @@ fn renderConfigReadResponse(
     const compact_prompt = managed_compact_prompt orelse project_layers.compactPrompt() orelse configReadUserOrSystemMaybeString(cfg.compact_prompt, user_layer, "compact_prompt", system_compact_prompt);
     try appendJsonMaybeStringField(allocator, &result, &first, "compact_prompt", compact_prompt);
     const system_approval_policy = if (system_layer) |layer| layer.approval_policy else null;
-    const approval_policy = if (managed_layer) |layer| layer.approval_policy orelse project_layers.approvalPolicy() orelse configReadUserOrSystemApprovalPolicy(cfg.approval_policy, user_layer, system_approval_policy) else project_layers.approvalPolicy() orelse configReadUserOrSystemApprovalPolicy(cfg.approval_policy, user_layer, system_approval_policy);
+    const configured_approval_policy = if (managed_layer) |layer| layer.approval_policy orelse project_layers.approvalPolicy() orelse configReadUserOrSystemApprovalPolicy(cfg.approval_policy, user_layer, system_approval_policy) else project_layers.approvalPolicy() orelse configReadUserOrSystemApprovalPolicy(cfg.approval_policy, user_layer, system_approval_policy);
+    const approval_policy = try configReadRequirementApprovalPolicy(configured_approval_policy, requirements);
     try appendJsonStringField(allocator, &result, &first, "approval_policy", approval_policy.label());
     const system_approvals_reviewer = if (system_layer) |layer| layer.approvals_reviewer else null;
-    const approvals_reviewer = if (managed_layer) |layer| layer.approvals_reviewer orelse project_layers.approvalsReviewer() orelse configReadUserOrSystemApprovalsReviewer(cfg.approvals_reviewer, user_layer, system_approvals_reviewer) else project_layers.approvalsReviewer() orelse configReadUserOrSystemApprovalsReviewer(cfg.approvals_reviewer, user_layer, system_approvals_reviewer);
+    const configured_approvals_reviewer = if (managed_layer) |layer| layer.approvals_reviewer orelse project_layers.approvalsReviewer() orelse configReadUserOrSystemApprovalsReviewer(cfg.approvals_reviewer, user_layer, system_approvals_reviewer) else project_layers.approvalsReviewer() orelse configReadUserOrSystemApprovalsReviewer(cfg.approvals_reviewer, user_layer, system_approvals_reviewer);
+    const approvals_reviewer = try configReadRequirementApprovalsReviewer(configured_approvals_reviewer, requirements);
     try appendJsonStringField(allocator, &result, &first, "approvals_reviewer", approvals_reviewer.label());
     const system_sandbox_mode = if (system_layer) |layer| layer.sandbox_mode else null;
-    const sandbox_mode = if (managed_layer) |layer| layer.sandbox_mode orelse project_layers.sandboxMode() orelse configReadUserOrSystemSandboxMode(cfg.sandbox_mode, user_layer, system_sandbox_mode) else project_layers.sandboxMode() orelse configReadUserOrSystemSandboxMode(cfg.sandbox_mode, user_layer, system_sandbox_mode);
+    const configured_sandbox_mode = if (managed_layer) |layer| layer.sandbox_mode orelse project_layers.sandboxMode() orelse configReadUserOrSystemSandboxMode(cfg.sandbox_mode, user_layer, system_sandbox_mode) else project_layers.sandboxMode() orelse configReadUserOrSystemSandboxMode(cfg.sandbox_mode, user_layer, system_sandbox_mode);
+    const sandbox_mode = try configReadRequirementSandboxMode(configured_sandbox_mode, requirements);
     try appendJsonStringField(allocator, &result, &first, "sandbox_mode", sandbox_mode.label());
     try appendConfigReadSandboxWorkspaceWriteField(allocator, &result, &first, effectiveConfigReadSandboxWorkspaceWrite(managed_layer, project_layers, user_layer, system_layer));
     const system_forced_chatgpt_workspace_id = if (system_layer) |layer| layer.forced_chatgpt_workspace_id else null;
@@ -52248,7 +52253,8 @@ fn renderConfigReadResponse(
     try appendJsonMaybeStringField(allocator, &result, &first, "forced_login_method", if (forced_login_method) |method| method.label() else null);
     const system_web_search_mode = if (system_layer) |layer| layer.web_search_mode else null;
     const managed_web_search_mode = if (managed_layer) |layer| layer.web_search_mode else null;
-    const web_search_mode = managed_web_search_mode orelse project_layers.webSearchMode() orelse configReadUserOrSystemWebSearchMode(cfg.web_search_mode, user_layer, system_web_search_mode);
+    const configured_web_search_mode = managed_web_search_mode orelse project_layers.webSearchMode() orelse configReadUserOrSystemWebSearchMode(cfg.web_search_mode, user_layer, system_web_search_mode);
+    const web_search_mode = try configReadRequirementWebSearchMode(configured_web_search_mode, requirements);
     try appendJsonMaybeStringField(allocator, &result, &first, "web_search", if (web_search_mode) |mode| mode.label() else null);
     try appendConfigReadToolsField(allocator, &result, &first, effectiveConfigReadTools(managed_layer, project_layers, user_layer, system_layer));
     var apps = try effectiveConfigReadApps(allocator, managed_layer, project_layers, user_layer, system_layer);
@@ -52270,7 +52276,7 @@ fn renderConfigReadResponse(
     try appendJsonMaybeStringField(allocator, &result, &first, "oss_provider", cfg.oss_provider);
     try appendJsonStringField(allocator, &result, &first, "openai_base_url", cfg.openai_base_url);
     try appendJsonStringField(allocator, &result, &first, "chatgpt_base_url", cfg.chatgpt_base_url);
-    try appendConfigReadFeaturesField(allocator, &result, &first, cli_feature_overrides, config_feature_overrides, runtime_feature_enablement, feature_requirements);
+    try appendConfigReadFeaturesField(allocator, &result, &first, cli_feature_overrides, config_feature_overrides, runtime_feature_enablement, requirements.feature_requirements);
     try result.appendSlice(allocator, "},\"origins\":");
     try appendConfigReadOrigins(allocator, &result, managed_layer, project_layers, user_layer, system_layer);
     try result.appendSlice(allocator, ",\"layers\":");
@@ -52498,6 +52504,57 @@ fn configReadUserOrSystemWebSearchMode(
 ) ?config.WebSearchMode {
     if (if (user_layer) |layer| configReadUserLayerHasOriginKey(layer, "web_search") else false) return user_value;
     return system_value orelse user_value;
+}
+
+fn configReadRequirementListContains(list: config.StringList, label: []const u8) bool {
+    for (list.items) |item| {
+        if (std.mem.eql(u8, item, label)) return true;
+    }
+    return false;
+}
+
+fn configReadRequirementApprovalPolicy(
+    value: config.ApprovalPolicy,
+    requirements: ConfigRequirementsReadRequirements,
+) !config.ApprovalPolicy {
+    const allowed = requirements.allowed_approval_policies orelse return value;
+    if (allowed.items.len == 0) return error.ConfigReadRequirementsNoAllowedApprovalPolicies;
+    if (configReadRequirementListContains(allowed, value.label())) return value;
+    return config.ApprovalPolicy.parse(allowed.items[0]);
+}
+
+fn configReadRequirementApprovalsReviewer(
+    value: config.ApprovalsReviewer,
+    requirements: ConfigRequirementsReadRequirements,
+) !config.ApprovalsReviewer {
+    const allowed = requirements.allowed_approvals_reviewers orelse return value;
+    if (allowed.items.len == 0) return error.ConfigReadRequirementsNoAllowedApprovalsReviewers;
+    if (configReadRequirementListContains(allowed, value.label())) return value;
+    return config.ApprovalsReviewer.parse(allowed.items[0]);
+}
+
+fn configReadRequirementSandboxMode(
+    value: config.SandboxMode,
+    requirements: ConfigRequirementsReadRequirements,
+) !config.SandboxMode {
+    const allowed = requirements.allowed_sandbox_modes orelse return value;
+    if (allowed.items.len == 0) return error.ConfigReadRequirementsNoSupportedSandboxModes;
+    if (configReadRequirementListContains(allowed, value.label())) return value;
+    return config.SandboxMode.parse(allowed.items[0]);
+}
+
+fn configReadRequirementWebSearchMode(
+    value: ?config.WebSearchMode,
+    requirements: ConfigRequirementsReadRequirements,
+) !?config.WebSearchMode {
+    const allowed = requirements.allowed_web_search_modes orelse return value;
+    if (allowed.items.len == 0) return value;
+    if (value) |mode| {
+        if (configReadRequirementListContains(allowed, mode.label())) return value;
+    }
+    if (configReadRequirementListContains(allowed, config.WebSearchMode.cached.label())) return .cached;
+    if (configReadRequirementListContains(allowed, config.WebSearchMode.live.label())) return .live;
+    return .disabled;
 }
 
 fn configReadUserOrSystemReasoningEffort(
@@ -61051,6 +61108,53 @@ test "config requirements filter external sandbox mode from API list" {
     defer external_only.deinit(allocator);
 
     try std.testing.expectEqual(@as(usize, 0), external_only.items.len);
+}
+
+test "config/read scalar requirements fall back to first allowed value" {
+    const allocator = std.testing.allocator;
+    var requirements = ConfigRequirementsReadRequirements{
+        .allowed_approval_policies = try stringListFromLabels(allocator, &.{"on-request"}),
+        .allowed_approvals_reviewers = try stringListFromLabels(allocator, &.{"guardian_subagent"}),
+        .allowed_sandbox_modes = try stringListFromLabels(allocator, &.{"read-only"}),
+        .allowed_web_search_modes = try stringListFromLabels(allocator, &.{ "live", "cached", "disabled" }),
+    };
+    defer requirements.deinit(allocator);
+
+    try std.testing.expectEqual(config.ApprovalPolicy.on_request, try configReadRequirementApprovalPolicy(.never, requirements));
+    try std.testing.expectEqual(config.ApprovalsReviewer.auto_review, try configReadRequirementApprovalsReviewer(.user, requirements));
+    try std.testing.expectEqual(config.SandboxMode.read_only, try configReadRequirementSandboxMode(.danger_full_access, requirements));
+    try std.testing.expectEqual(config.WebSearchMode.live, (try configReadRequirementWebSearchMode(.live, requirements)).?);
+    try std.testing.expectEqual(config.WebSearchMode.cached, (try configReadRequirementWebSearchMode(null, requirements)).?);
+
+    var unsupported_approval = ConfigRequirementsReadRequirements{
+        .allowed_approval_policies = try stringListFromLabels(allocator, &.{}),
+    };
+    defer unsupported_approval.deinit(allocator);
+
+    try std.testing.expectError(
+        error.ConfigReadRequirementsNoAllowedApprovalPolicies,
+        configReadRequirementApprovalPolicy(.never, unsupported_approval),
+    );
+
+    var unsupported_reviewer = ConfigRequirementsReadRequirements{
+        .allowed_approvals_reviewers = try stringListFromLabels(allocator, &.{}),
+    };
+    defer unsupported_reviewer.deinit(allocator);
+
+    try std.testing.expectError(
+        error.ConfigReadRequirementsNoAllowedApprovalsReviewers,
+        configReadRequirementApprovalsReviewer(.user, unsupported_reviewer),
+    );
+
+    var unsupported_sandbox = ConfigRequirementsReadRequirements{
+        .allowed_sandbox_modes = try stringListFromLabels(allocator, &.{}),
+    };
+    defer unsupported_sandbox.deinit(allocator);
+
+    try std.testing.expectError(
+        error.ConfigReadRequirementsNoSupportedSandboxModes,
+        configReadRequirementSandboxMode(.danger_full_access, unsupported_sandbox),
+    );
 }
 
 test "config/read profiles parse inline tables and sandbox mode" {

@@ -32966,6 +32966,62 @@ def run_config_read_rpc_smoke(binary: Path) -> None:
             }
         }
 
+        requirements_enforced_read = rpc(
+            "config-read-requirements-enforced",
+            "config/read",
+            {"cwd": str(codex_home)},
+        )
+        assert requirements_enforced_read["id"] == "config-read-requirements-enforced"
+        requirements_config = requirements_enforced_read["result"]["config"]
+        assert requirements_config["approval_policy"] == "on-request"
+        assert requirements_config["approvals_reviewer"] == "guardian_subagent"
+        assert requirements_config["sandbox_mode"] == "danger-full-access"
+        assert requirements_config["web_search"] == "cached"
+        assert requirements_enforced_read["result"]["layers"] is None
+
+        requirements_payload = system_requirements_path.read_text(encoding="utf-8")
+        system_requirements_path.write_text(
+            "allowed_approval_policies = []\n",
+            encoding="utf-8",
+        )
+        empty_approval_requirements = rpc(
+            "config-read-empty-approval-requirements",
+            "config/read",
+            {"cwd": str(codex_home)},
+        )
+        system_requirements_path.write_text(requirements_payload, encoding="utf-8")
+        assert empty_approval_requirements["id"] == "config-read-empty-approval-requirements"
+        assert empty_approval_requirements["error"]["code"] == -32603
+        assert "ConfigReadRequirementsNoAllowedApprovalPolicies" in empty_approval_requirements["error"]["message"]
+
+        system_requirements_path.write_text(
+            "allowed_approvals_reviewers = []\n",
+            encoding="utf-8",
+        )
+        empty_reviewer_requirements = rpc(
+            "config-read-empty-reviewer-requirements",
+            "config/read",
+            {"cwd": str(codex_home)},
+        )
+        system_requirements_path.write_text(requirements_payload, encoding="utf-8")
+        assert empty_reviewer_requirements["id"] == "config-read-empty-reviewer-requirements"
+        assert empty_reviewer_requirements["error"]["code"] == -32603
+        assert "ConfigReadRequirementsNoAllowedApprovalsReviewers" in empty_reviewer_requirements["error"]["message"]
+
+        system_requirements_path.write_text(
+            'allowed_sandbox_modes = ["external-sandbox"]\n',
+            encoding="utf-8",
+        )
+        external_sandbox_only = rpc(
+            "config-read-external-sandbox-only-requirements",
+            "config/read",
+            {"cwd": str(codex_home)},
+        )
+        system_requirements_path.write_text(requirements_payload, encoding="utf-8")
+        assert external_sandbox_only["id"] == "config-read-external-sandbox-only-requirements"
+        assert external_sandbox_only["error"]["code"] == -32603
+        assert "ConfigReadRequirementsNoSupportedSandboxModes" in external_sandbox_only["error"]["message"]
+
         feature_enablement = rpc(
             "config-feature-enable",
             "experimentalFeature/enablement/set",
