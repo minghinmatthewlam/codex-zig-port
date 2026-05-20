@@ -18,8 +18,8 @@ parity tracker; implementation parity remains tracked in `docs/parity.md`.
   push protection, and Dependabot security updates enabled. GitHub reports
   non-provider pattern scanning and secret validity checks as disabled.
   `SECURITY.md` is exposed through the repository security-policy URL. CodeQL
-  Python code scanning is configured; checked CodeQL run `26148237786` passed
-  on pushed head `da304da4b863321a65f7e4fe1ae972a690ba2994`.
+  Python code scanning is configured; checked CodeQL run `26157868444` passed
+  on pushed head `f466097d75196c0593e4786999139320784017e0`.
   Open-alert queries for
   CodeQL, Dependabot, and secret scanning returned empty arrays after the
   token-shaped smoke-fixture cleanup. Historical CodeQL alerts remain visible
@@ -30,14 +30,15 @@ parity tracker; implementation parity remains tracked in `docs/parity.md`.
   tests, and product-surface smoke tests on macOS with a direct Zig 0.16.0
   install from `ziglang.org` rather than a deprecated Node-based setup action.
   It also runs the repository OSS secret-scan script. Checked push run
-  `26148237589` passed on pushed head
-  `da304da4b863321a65f7e4fe1ae972a690ba2994`.
+  `26157868443` passed on pushed head
+  `f466097d75196c0593e4786999139320784017e0`.
 - Fresh public clone proof: a clean HTTPS clone from
   `https://github.com/minghinmatthewlam/codex-zig-port` at pushed head
-  `da304da4b863321a65f7e4fe1ae972a690ba2994` passed `python3 -m py_compile`
+  `f466097d75196c0593e4786999139320784017e0` passed `python3 -m py_compile`
   for the app-server, CLI, OSS secret-scan, and TUI smoke scripts,
-  `python3 scripts/oss_secret_scan.py`, `zig build --summary all`, `zig build
-  test --summary all`, and `zig build e2e --summary all`.
+  `python3 scripts/oss_secret_scan.py`, `zig fmt --check build.zig
+  build.zig.zon src/*.zig`, `zig build`, `zig build test`, and
+  `zig build e2e`.
 - Source hygiene: the current CI and fresh-public-clone scans found no
   high-confidence OpenAI, Anthropic, GitHub, AWS, Google, or Slack token
   patterns and no private-key blocks in tracked source, scripts, docs, tests,
