@@ -1258,6 +1258,19 @@ class ModelCatalogBackendHandler(BaseHTTPRequestHandler):
                         "supported_in_api": True,
                         "priority": 1,
                         "input_modalities": ["text"],
+                    },
+                    {
+                        "slug": "online-chatgpt-only",
+                        "display_name": "Online ChatGPT Only",
+                        "description": "Fetched ChatGPT-only model",
+                        "default_reasoning_level": "medium",
+                        "supported_reasoning_levels": [
+                            {"effort": "medium", "description": "Balanced online reasoning"}
+                        ],
+                        "visibility": "list",
+                        "supported_in_api": False,
+                        "priority": 2,
+                        "input_modalities": ["text"],
                     }
                 ]
             },
@@ -29836,6 +29849,9 @@ def run_model_rpc_smoke(binary: Path) -> None:
         assert online_models["result"]["data"][1]["id"] == "online-alpha"
         assert online_models["result"]["data"][1]["displayName"] == "Online Alpha"
         assert online_models["result"]["data"][1]["inputModalities"] == ["text"]
+        assert "online-chatgpt-only" in [
+            item["id"] for item in online_models["result"]["data"]
+        ]
         assert len(ModelCatalogBackendHandler.requests) == 1
         request = ModelCatalogBackendHandler.requests[0]
         assert request["path"] == "/models"
@@ -29852,6 +29868,62 @@ def run_model_rpc_smoke(binary: Path) -> None:
         assert cached_online_models["id"] == "model-list-online-cache-hit"
         assert cached_online_models["result"]["data"][1]["id"] == "online-alpha"
         assert len(ModelCatalogBackendHandler.requests) == 1
+
+        cache_path.unlink()
+        (codex_home / "config.toml").write_text(
+            f'''model_provider = "custom"
+[model_providers.custom]
+base_url = "{model_catalog_base_url}"
+wire_api = "responses"
+[model_providers.custom.auth]
+command = "/bin/echo"
+args = ["provider-token"]
+''',
+            encoding="utf-8",
+        )
+        (codex_home / "auth.json").write_text(
+            json.dumps(
+                {
+                    "auth_mode": "chatgpt",
+                    "tokens": {
+                        "id_token": encode_unsigned_jwt(
+                            {
+                                "https://api.openai.com/auth": {
+                                    "chatgpt_account_id": "acct_provider"
+                                }
+                            }
+                        ),
+                        "access_token": encode_unsigned_jwt({"exp": 4_102_444_800}),
+                        "refresh_token": "refresh-token",
+                        "account_id": "acct_provider",
+                    },
+                },
+                separators=(",", ":"),
+            ),
+            encoding="utf-8",
+        )
+        provider_models = rpc("model-list-provider-command-refresh", "model/list", {"limit": 10})
+        assert provider_models["id"] == "model-list-provider-command-refresh"
+        provider_ids = [item["id"] for item in provider_models["result"]["data"]]
+        assert "online-alpha" in provider_ids
+        assert "online-chatgpt-only" not in provider_ids
+        assert len(ModelCatalogBackendHandler.requests) == 2
+        provider_request = ModelCatalogBackendHandler.requests[1]
+        assert provider_request["path"] == "/models"
+        assert provider_request["query"] == {"client_version": ["0.0.1"]}
+        assert provider_request["authorization"] == "Bearer provider-token"
+
+        provider_cache = json.loads(cache_path.read_text(encoding="utf-8"))
+        assert provider_cache["models"][1]["slug"] == "online-chatgpt-only"
+
+        provider_cached_models = rpc("model-list-provider-command-cache-hit", "model/list", {"limit": 10})
+        assert provider_cached_models["id"] == "model-list-provider-command-cache-hit"
+        provider_cached_ids = [
+            item["id"] for item in provider_cached_models["result"]["data"]
+        ]
+        assert "online-alpha" in provider_cached_ids
+        assert "online-chatgpt-only" not in provider_cached_ids
+        assert len(ModelCatalogBackendHandler.requests) == 2
     finally:
         if model_catalog_server is not None:
             model_catalog_server.shutdown()

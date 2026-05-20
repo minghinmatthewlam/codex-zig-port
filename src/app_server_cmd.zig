@@ -56004,16 +56004,16 @@ fn handleModelList(allocator: std.mem.Allocator, id_value: std.json.Value, param
     var cached_models = try loadFreshModelCatalogCache(allocator);
     defer if (cached_models) |*cache| cache.deinit(allocator);
     if (cached_models) |*cache| {
-        return handleCachedModelList(allocator, id_value, start, limit, include_hidden, cache);
+        return handleCachedModelList(allocator, id_value, start, limit, include_hidden, cache, modelListUsesCodexBackend(allocator));
     }
 
     var refreshed_models = refreshModelCatalogCacheIfAllowed(allocator) catch |err| switch (err) {
         error.OutOfMemory => return err,
         else => null,
     };
-    defer if (refreshed_models) |*cache| cache.deinit(allocator);
-    if (refreshed_models) |*cache| {
-        return handleCachedModelList(allocator, id_value, start, limit, include_hidden, cache);
+    defer if (refreshed_models) |*refresh| refresh.deinit(allocator);
+    if (refreshed_models) |*refresh| {
+        return handleCachedModelList(allocator, id_value, start, limit, include_hidden, &refresh.catalog, refresh.uses_codex_backend);
     }
 
     const total = bundledModelListTotal(include_hidden);
@@ -56125,6 +56125,15 @@ const CachedModelCatalog = struct {
     }
 };
 
+const RefreshedModelCatalog = struct {
+    catalog: CachedModelCatalog,
+    uses_codex_backend: bool,
+
+    fn deinit(self: *RefreshedModelCatalog, allocator: std.mem.Allocator) void {
+        self.catalog.deinit(allocator);
+    }
+};
+
 const ModelCatalogFetchContext = struct {
     allocator: std.mem.Allocator,
     io: std.Io,
@@ -56186,7 +56195,7 @@ fn parseModelCatalogCacheBytes(allocator: std.mem.Allocator, bytes: []u8) !Cache
     };
 }
 
-fn refreshModelCatalogCacheIfAllowed(allocator: std.mem.Allocator) !?CachedModelCatalog {
+fn refreshModelCatalogCacheIfAllowed(allocator: std.mem.Allocator) !?RefreshedModelCatalog {
     var cfg = config.loadWithOptions(allocator, .{}) catch return null;
     defer cfg.deinit(allocator);
 
@@ -56197,7 +56206,10 @@ fn refreshModelCatalogCacheIfAllowed(allocator: std.mem.Allocator) !?CachedModel
     var catalog = try fetchRemoteModelCatalog(allocator, &cfg, credentials);
     errdefer catalog.deinit(allocator);
     persistModelCatalogCache(allocator, &catalog) catch {};
-    return catalog;
+    return .{
+        .catalog = catalog,
+        .uses_codex_backend = modelCatalogCredentialsUseCodexBackend(credentials),
+    };
 }
 
 fn modelCatalogOnlineRefreshAllowed(cfg: *const config.Config, credentials: auth_mod.Credentials) bool {
@@ -56504,11 +56516,11 @@ fn handleCachedModelList(
     limit: ?usize,
     include_hidden: bool,
     cache: *const CachedModelCatalog,
+    uses_codex_backend: bool,
 ) ![]const u8 {
     var entries = std.ArrayList(IndexedModelListEntry).empty;
     defer entries.deinit(allocator);
 
-    const uses_codex_backend = cachedModelListUsesCodexBackend(allocator);
     var order: usize = 0;
     for (model_catalog.bundled_models) |bundled_model| {
         const entry = if (cachedModelForSlug(cache.models, bundled_model.slug)) |cached_model|
@@ -56573,11 +56585,17 @@ fn handleCachedModelList(
     return renderJsonRpcResult(allocator, id_value, result.items);
 }
 
-fn cachedModelListUsesCodexBackend(allocator: std.mem.Allocator) bool {
+fn modelListUsesCodexBackend(allocator: std.mem.Allocator) bool {
     var cfg = config.loadWithOptions(allocator, .{}) catch return false;
     defer cfg.deinit(allocator);
+    if (cfg.model_provider_auth_command != null or cfg.model_provider_env_key != null or cfg.model_provider_bearer_token != null) return false;
+
     var credentials = auth_mod.loadCliAuthNoRefreshForConfig(allocator, &cfg) catch return false;
     defer credentials.deinit(allocator);
+    return modelCatalogCredentialsUseCodexBackend(credentials);
+}
+
+fn modelCatalogCredentialsUseCodexBackend(credentials: auth_mod.Credentials) bool {
     return switch (credentials.mode) {
         .chatgpt, .chatgpt_auth_tokens, .agent_identity => true,
         .api_key, .local_oss => false,
