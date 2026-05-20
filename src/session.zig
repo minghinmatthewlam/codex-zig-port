@@ -1,4 +1,5 @@
 const std = @import("std");
+const builtin = @import("builtin");
 
 const api = @import("api.zig");
 const auth = @import("auth.zig");
@@ -976,6 +977,8 @@ fn runToolCall(
 }
 
 test "runToolCall applies read-denied roots" {
+    if (builtin.os.tag != .macos) return error.SkipZigTest;
+
     const allocator = std.testing.allocator;
     var dir = std.testing.tmpDir(.{});
     defer dir.cleanup();

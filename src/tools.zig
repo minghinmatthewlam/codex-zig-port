@@ -1930,6 +1930,8 @@ test "exec_command marks seatbelt sandbox environment" {
 }
 
 test "exec_command applies read-denied roots" {
+    if (builtin.os.tag != .macos) return error.SkipZigTest;
+
     const allocator = std.testing.allocator;
     var dir = std.testing.tmpDir(.{});
     defer dir.cleanup();
@@ -1973,6 +1975,8 @@ test "exec_command applies read-denied roots" {
 }
 
 test "exec_command applies absolute read-denied roots from command workdir" {
+    if (builtin.os.tag != .macos) return error.SkipZigTest;
+
     const allocator = std.testing.allocator;
     var dir = std.testing.tmpDir(.{});
     defer dir.cleanup();
