@@ -27174,6 +27174,14 @@ def run_filesystem_watch_rpc_smoke(binary: Path) -> None:
 
 def run_command_exec_rpc_smoke(binary: Path) -> None:
     root = Path(tempfile.mkdtemp(prefix="codex-zig-app-server-command-exec-", dir="/tmp"))
+    non_tmp_parent = Path.cwd() / ".zig-cache"
+    non_tmp_parent.mkdir(exist_ok=True)
+    non_tmp_root = Path(
+        tempfile.mkdtemp(
+            prefix=".codex-zig-app-server-command-exec-nontmp-",
+            dir=non_tmp_parent,
+        )
+    )
     codex_home = Path(tempfile.mkdtemp(prefix="codex-zig-app-server-command-exec-home-", dir="/tmp"))
     workspace_codex_home = Path(tempfile.mkdtemp(prefix="codex-zig-app-server-command-exec-workspace-home-", dir="/tmp"))
     network_server: ThreadingHTTPServer | None = None
@@ -27188,8 +27196,10 @@ def run_command_exec_rpc_smoke(binary: Path) -> None:
         )
         cwd = root / "cwd"
         cwd.mkdir()
-        command_tmpdir = root / "command-tmpdir"
+        command_tmpdir = non_tmp_root / "command-tmpdir"
         command_tmpdir.mkdir()
+        non_tmp_denied_cwd = non_tmp_root / "denied-cwd"
+        non_tmp_denied_cwd.mkdir()
         slash_tmp_target = Path("/tmp") / f"{root.name}-slash-tmp.txt"
         if slash_tmp_target.exists():
             slash_tmp_target.unlink()
@@ -27723,6 +27733,53 @@ def run_command_exec_rpc_smoke(binary: Path) -> None:
         assert permission_profile_project_roots["result"]["stdout"] == "project-roots"
         assert child_cwd.joinpath("child.txt").read_text(encoding="utf-8") == "child"
         assert not cwd.joinpath("parent.txt").exists()
+
+        permission_profile_tmp_roots = {
+            "type": "managed",
+            "fileSystem": {
+                "type": "restricted",
+                "entries": [
+                    {
+                        "path": {"type": "special", "value": {"kind": "root"}},
+                        "access": "read",
+                    },
+                    {
+                        "path": {"type": "special", "value": {"kind": "tmpdir"}},
+                        "access": "write",
+                    },
+                    {
+                        "path": {"type": "special", "value": {"kind": "slash_tmp"}},
+                        "access": "write",
+                    },
+                ],
+            },
+            "network": {"enabled": False},
+        }
+        tmpdir_target = command_tmpdir / "permission-profile-tmpdir.txt"
+        permission_profile_tmpdir = request_stdio_app_server(
+            binary,
+            {
+                "jsonrpc": "2.0",
+                "id": "command-exec-permission-profile-tmp-roots",
+                "method": "command/exec",
+                "params": {
+                    "command": [
+                        "/bin/sh",
+                        "-c",
+                        f"printf tmp > {tmpdir_target} && printf slash > {slash_tmp_target} && ! printf child > child-tmp-denied.txt && printf tmp-roots",
+                    ],
+                    "cwd": str(non_tmp_denied_cwd),
+                    "permissionProfile": permission_profile_tmp_roots,
+                },
+            },
+            env,
+        )
+        assert permission_profile_tmpdir["id"] == "command-exec-permission-profile-tmp-roots"
+        assert permission_profile_tmpdir["result"]["exitCode"] == 0
+        assert permission_profile_tmpdir["result"]["stdout"] == "tmp-roots"
+        assert tmpdir_target.read_text(encoding="utf-8") == "tmp"
+        assert slash_tmp_target.read_text(encoding="utf-8") == "slash"
+        assert not non_tmp_denied_cwd.joinpath("child-tmp-denied.txt").exists()
 
         permission_profile_absolute_root = request_stdio_app_server(
             binary,
@@ -28649,6 +28706,7 @@ def run_command_exec_rpc_smoke(binary: Path) -> None:
         if "slash_tmp_target" in locals() and slash_tmp_target.exists():
             slash_tmp_target.unlink()
         shutil.rmtree(root, ignore_errors=True)
+        shutil.rmtree(non_tmp_root, ignore_errors=True)
         shutil.rmtree(codex_home, ignore_errors=True)
         shutil.rmtree(workspace_codex_home, ignore_errors=True)
 
