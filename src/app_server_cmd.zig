@@ -56098,6 +56098,10 @@ fn optionalModelListParams(params_value: ?std.json.Value) OptionalObjectParams {
 
 const MODEL_CACHE_FILE_NAME = "models_cache.json";
 const MODEL_CACHE_CLIENT_VERSION = "0.0.1";
+// The /models backend filters entries by minimal_client_version. Keep this
+// aligned with the newest upstream client generation represented in the bundled
+// catalog, not with the Zig port's local cache schema/version marker.
+const MODEL_CATALOG_REFRESH_CLIENT_VERSION = "0.124.0";
 const MODEL_CACHE_RUST_SOURCE_CLIENT_VERSION = "0.0.0";
 const MODEL_CACHE_MIN_RUST_RELEASE_CLIENT_VERSION = Semver{ .major = 0, .minor = 98, .patch = 0 };
 const MODEL_CACHE_TTL_MS: i64 = 300_000;
@@ -56395,7 +56399,7 @@ fn modelCatalogRefreshUrl(
     }
     try url.append(allocator, if (has_query) '&' else '?');
     try url.appendSlice(allocator, "client_version=");
-    try url.appendSlice(allocator, MODEL_CACHE_CLIENT_VERSION);
+    try url.appendSlice(allocator, MODEL_CATALOG_REFRESH_CLIENT_VERSION);
     return url.toOwnedSlice(allocator);
 }
 

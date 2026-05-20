@@ -29855,7 +29855,7 @@ def run_model_rpc_smoke(binary: Path) -> None:
         assert len(ModelCatalogBackendHandler.requests) == 1
         request = ModelCatalogBackendHandler.requests[0]
         assert request["path"] == "/models"
-        assert request["query"] == {"client_version": ["0.0.1"]}
+        assert request["query"] == {"client_version": ["0.124.0"]}
         assert request["authorization"] == "Bearer remote-model-token"
         assert request["accept"] == "application/json"
 
@@ -29910,7 +29910,7 @@ args = ["provider-token"]
         assert len(ModelCatalogBackendHandler.requests) == 2
         provider_request = ModelCatalogBackendHandler.requests[1]
         assert provider_request["path"] == "/models"
-        assert provider_request["query"] == {"client_version": ["0.0.1"]}
+        assert provider_request["query"] == {"client_version": ["0.124.0"]}
         assert provider_request["authorization"] == "Bearer provider-token"
 
         provider_cache = json.loads(cache_path.read_text(encoding="utf-8"))
