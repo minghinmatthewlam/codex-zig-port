@@ -225,7 +225,7 @@ pub fn runFunctionCall(allocator: std.mem.Allocator, call: api.FunctionCall, pol
         var parsed = try std.json.parseFromSlice(ApplyPatchArgs, allocator, call.arguments, .{ .ignore_unknown_fields = true });
         defer parsed.deinit();
         if (try permissionResult(allocator, call.call_id, policy, .apply_patch, parsed.value.patch, policy.workdir, false)) |result| return result;
-        return runApplyPatch(allocator, call.call_id, parsed.value.patch, policy.workdir);
+        return runApplyPatch(allocator, call.call_id, parsed.value.patch, policy.workdir, policy.read_denied_roots);
     }
 
     return .{
@@ -599,7 +599,13 @@ fn fileFromFd(fd: c_int) std.Io.File {
     };
 }
 
-fn runApplyPatch(allocator: std.mem.Allocator, call_id: []const u8, patch: []const u8, workdir: ?[]const u8) !ToolResult {
+fn runApplyPatch(
+    allocator: std.mem.Allocator,
+    call_id: []const u8,
+    patch: []const u8,
+    workdir: ?[]const u8,
+    read_denied_roots: []const []const u8,
+) !ToolResult {
     const io = std.Io.Threaded.global_single_threaded.io();
     var opened_dir: ?std.Io.Dir = null;
     defer if (opened_dir) |*dir| dir.close(io);
@@ -610,6 +616,11 @@ fn runApplyPatch(allocator: std.mem.Allocator, call_id: []const u8, patch: []con
             try std.Io.Dir.cwd().openDir(io, path, .{});
         break :blk opened_dir.?;
     } else std.Io.Dir.cwd();
+
+    if (try patchReadDeniedPath(allocator, root_dir, patch, read_denied_roots)) |denied_path| {
+        defer allocator.free(denied_path);
+        return blockedByReadDeniedPatchPath(allocator, call_id, denied_path);
+    }
 
     const stats = try applyPatchInDir(allocator, root_dir, patch);
     const summary = try std.fmt.allocPrint(
@@ -631,6 +642,189 @@ fn runApplyPatch(allocator: std.mem.Allocator, call_id: []const u8, patch: []con
         .summary = summary,
         .output = output,
     };
+}
+
+fn blockedByReadDeniedPatchPath(allocator: std.mem.Allocator, call_id: []const u8, path: []const u8) !ToolResult {
+    return .{
+        .call_id = try allocator.dupe(u8, call_id),
+        .summary = try allocator.dupe(u8, "blocked by sandbox"),
+        .output = try std.fmt.allocPrint(allocator, "blocked by read-denied path: {s}", .{path}),
+    };
+}
+
+fn patchReadDeniedPath(
+    allocator: std.mem.Allocator,
+    root: std.Io.Dir,
+    patch: []const u8,
+    read_denied_roots: []const []const u8,
+) !?[]const u8 {
+    if (read_denied_roots.len == 0) return null;
+
+    var lines = std.ArrayList([]const u8).empty;
+    defer lines.deinit(allocator);
+
+    const root_path = try root.realPathFileAlloc(std.Io.Threaded.global_single_threaded.io(), ".", allocator);
+    defer allocator.free(root_path);
+
+    const resolved_denied_roots = try resolvePatchReadDeniedRoots(allocator, root_path, read_denied_roots);
+    defer freeResolvedRoots(allocator, resolved_denied_roots);
+
+    const patch_text = normalizePatchText(patch);
+    var raw_lines = std.mem.splitScalar(u8, patch_text, '\n');
+    while (raw_lines.next()) |raw_line| {
+        try lines.append(allocator, std.mem.trimEnd(u8, raw_line, "\r"));
+    }
+
+    if (lines.items.len < 2) return error.InvalidPatch;
+    if (!std.mem.eql(u8, patchDirective(lines.items[0]), "*** Begin Patch")) return error.InvalidPatch;
+    try validatePatchTerminator(lines.items);
+
+    var index: usize = 1;
+    while (index < lines.items.len) {
+        const line = patchDirective(lines.items[index]);
+        if (std.mem.eql(u8, line, "*** End Patch")) return null;
+
+        if (std.mem.startsWith(u8, line, "*** Add File: ")) {
+            const path = try resolvePatchPath(allocator, root_path, line["*** Add File: ".len..]);
+            defer path.deinit(allocator);
+            if (try patchPathReadDenied(allocator, root_path, path.value, resolved_denied_roots)) |denied_path| return denied_path;
+            index += 1;
+            skipPatchBody(lines.items, &index);
+            continue;
+        }
+
+        if (std.mem.startsWith(u8, line, "*** Update File: ")) {
+            const path = try resolvePatchPath(allocator, root_path, line["*** Update File: ".len..]);
+            defer path.deinit(allocator);
+            if (try patchPathReadDenied(allocator, root_path, path.value, resolved_denied_roots)) |denied_path| return denied_path;
+            index += 1;
+            if (index < lines.items.len) {
+                const directive = patchDirective(lines.items[index]);
+                if (std.mem.startsWith(u8, directive, "*** Move to: ")) {
+                    const target_path = try resolvePatchPath(allocator, root_path, directive["*** Move to: ".len..]);
+                    defer target_path.deinit(allocator);
+                    if (try patchPathReadDenied(allocator, root_path, target_path.value, resolved_denied_roots)) |denied_path| return denied_path;
+                    index += 1;
+                }
+            }
+            skipPatchBody(lines.items, &index);
+            continue;
+        }
+
+        if (std.mem.startsWith(u8, line, "*** Delete File: ")) {
+            const path = try resolvePatchPath(allocator, root_path, line["*** Delete File: ".len..]);
+            defer path.deinit(allocator);
+            if (try patchPathReadDenied(allocator, root_path, path.value, resolved_denied_roots)) |denied_path| return denied_path;
+            index += 1;
+            continue;
+        }
+
+        return error.InvalidPatch;
+    }
+
+    return error.InvalidPatch;
+}
+
+fn skipPatchBody(lines: []const []const u8, index: *usize) void {
+    while (index.* < lines.len and !isPatchSection(lines[index.*])) : (index.* += 1) {}
+}
+
+fn resolvePatchReadDeniedRoots(
+    allocator: std.mem.Allocator,
+    root_path: []const u8,
+    read_denied_roots: []const []const u8,
+) ![]const []const u8 {
+    var resolved = try allocator.alloc([]const u8, read_denied_roots.len);
+    errdefer allocator.free(resolved);
+
+    var count: usize = 0;
+    errdefer {
+        for (resolved[0..count]) |root| allocator.free(root);
+    }
+
+    for (read_denied_roots) |root| {
+        resolved[count] = try resolvePatchAbsolutePath(allocator, root_path, root);
+        count += 1;
+    }
+
+    return resolved;
+}
+
+fn patchPathReadDenied(
+    allocator: std.mem.Allocator,
+    root_path: []const u8,
+    path: []const u8,
+    read_denied_roots: []const []const u8,
+) !?[]const u8 {
+    const absolute_path = try resolvePatchAbsolutePath(allocator, root_path, path);
+    defer allocator.free(absolute_path);
+
+    for (read_denied_roots) |denied_root| {
+        if (pathIsAtOrUnderRoot(absolute_path, denied_root)) {
+            const denied_path: []const u8 = try allocator.dupe(u8, absolute_path);
+            return denied_path;
+        }
+    }
+    return null;
+}
+
+fn resolvePatchAbsolutePath(allocator: std.mem.Allocator, root_path: []const u8, path: []const u8) ![]const u8 {
+    const resolved = if (std.fs.path.isAbsolute(path))
+        try std.fs.path.resolve(allocator, &.{path})
+    else
+        try std.fs.path.resolve(allocator, &.{ root_path, path });
+    defer allocator.free(resolved);
+
+    return realPatchPathAlloc(allocator, resolved) catch |err| switch (err) {
+        error.FileNotFound, error.NotDir, error.AccessDenied => try canonicalPatchMissingPath(allocator, resolved),
+        else => return err,
+    };
+}
+
+fn canonicalPatchMissingPath(allocator: std.mem.Allocator, absolute_path: []const u8) ![]const u8 {
+    var probe_end = absolute_path.len;
+    while (probe_end > 0) {
+        const probe = absolute_path[0..probe_end];
+        const real_parent = realPatchPathAlloc(allocator, probe) catch |err| switch (err) {
+            error.FileNotFound, error.NotDir, error.AccessDenied => {
+                const parent = std.fs.path.dirname(probe) orelse return allocator.dupe(u8, absolute_path);
+                if (parent.len >= probe.len) return allocator.dupe(u8, absolute_path);
+                probe_end = parent.len;
+                continue;
+            },
+            else => return err,
+        };
+        errdefer allocator.free(real_parent);
+
+        const suffix = if (probe_end < absolute_path.len and absolute_path[probe_end] == std.fs.path.sep)
+            absolute_path[probe_end + 1 ..]
+        else
+            absolute_path[probe_end..];
+        if (suffix.len == 0) return real_parent;
+
+        const joined = try std.fs.path.join(allocator, &.{ real_parent, suffix });
+        allocator.free(real_parent);
+        return joined;
+    }
+    return allocator.dupe(u8, absolute_path);
+}
+
+fn realPatchPathAlloc(allocator: std.mem.Allocator, path: []const u8) ![]const u8 {
+    const real_path = try std.Io.Dir.cwd().realPathFileAlloc(std.Io.Threaded.global_single_threaded.io(), path, allocator);
+    defer allocator.free(real_path);
+    return allocator.dupe(u8, real_path);
+}
+
+fn freeResolvedRoots(allocator: std.mem.Allocator, roots: []const []const u8) void {
+    for (roots) |root| allocator.free(root);
+    allocator.free(roots);
+}
+
+fn pathIsAtOrUnderRoot(path: []const u8, root: []const u8) bool {
+    if (std.mem.eql(u8, path, root)) return true;
+    if (std.mem.eql(u8, root, std.fs.path.sep_str)) return std.fs.path.isAbsolute(path);
+    if (path.len <= root.len) return false;
+    return std.mem.startsWith(u8, path, root) and path[root.len] == std.fs.path.sep;
 }
 
 fn runArgv(
@@ -2817,6 +3011,223 @@ test "read-only sandbox blocks apply_patch even with auto approval" {
     defer result.deinit(allocator);
     try std.testing.expectEqualStrings("blocked by sandbox", result.summary);
     try std.testing.expectEqualStrings("blocked by sandbox_mode=read-only", result.output);
+}
+
+fn applyPatchArgumentsForTest(allocator: std.mem.Allocator, patch: []const u8) ![]const u8 {
+    const patch_json = try std.json.Stringify.valueAlloc(allocator, patch, .{});
+    defer allocator.free(patch_json);
+    return std.fmt.allocPrint(allocator, "{{\"patch\":{s}}}", .{patch_json});
+}
+
+test "apply_patch blocks read-denied source paths" {
+    const allocator = std.testing.allocator;
+    var dir = std.testing.tmpDir(.{});
+    defer dir.cleanup();
+
+    try dir.dir.writeFile(std.Io.Threaded.global_single_threaded.io(), .{
+        .sub_path = "secret.txt",
+        .data = "secret\n",
+    });
+    const cwd = try dir.dir.realPathFileAlloc(std.Io.Threaded.global_single_threaded.io(), ".", allocator);
+    defer allocator.free(cwd);
+
+    const patch =
+        \\*** Begin Patch
+        \\*** Update File: secret.txt
+        \\@@
+        \\-secret
+        \\+changed
+        \\*** End Patch
+    ;
+    const args = try applyPatchArgumentsForTest(allocator, patch);
+    defer allocator.free(args);
+    const call = api.FunctionCall{
+        .call_id = "call-read-denied-patch",
+        .name = "apply_patch",
+        .arguments = args,
+    };
+
+    const result = try runFunctionCall(allocator, call, .{
+        .approval_policy = .never,
+        .sandbox_mode = .workspace_write,
+        .auto_approve = true,
+        .workdir = cwd,
+        .read_denied_roots = &.{"secret.txt"},
+    });
+    defer result.deinit(allocator);
+
+    try std.testing.expectEqualStrings("blocked by sandbox", result.summary);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "secret.txt") != null);
+    const content = try dir.dir.readFileAlloc(std.Io.Threaded.global_single_threaded.io(), "secret.txt", allocator, .limited(1024));
+    defer allocator.free(content);
+    try std.testing.expectEqualStrings("secret\n", content);
+}
+
+test "apply_patch blocks read-denied move targets" {
+    const allocator = std.testing.allocator;
+    var dir = std.testing.tmpDir(.{});
+    defer dir.cleanup();
+
+    try dir.dir.writeFile(std.Io.Threaded.global_single_threaded.io(), .{
+        .sub_path = "public.txt",
+        .data = "public\n",
+    });
+    const cwd = try dir.dir.realPathFileAlloc(std.Io.Threaded.global_single_threaded.io(), ".", allocator);
+    defer allocator.free(cwd);
+
+    const patch =
+        \\*** Begin Patch
+        \\*** Update File: public.txt
+        \\*** Move to: secrets/moved.txt
+        \\@@
+        \\-public
+        \\+changed
+        \\*** End Patch
+    ;
+    const args = try applyPatchArgumentsForTest(allocator, patch);
+    defer allocator.free(args);
+    const call = api.FunctionCall{
+        .call_id = "call-read-denied-move",
+        .name = "apply_patch",
+        .arguments = args,
+    };
+
+    const result = try runFunctionCall(allocator, call, .{
+        .approval_policy = .never,
+        .sandbox_mode = .workspace_write,
+        .auto_approve = true,
+        .workdir = cwd,
+        .read_denied_roots = &.{"secrets"},
+    });
+    defer result.deinit(allocator);
+
+    try std.testing.expectEqualStrings("blocked by sandbox", result.summary);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "secrets") != null);
+    const content = try dir.dir.readFileAlloc(std.Io.Threaded.global_single_threaded.io(), "public.txt", allocator, .limited(1024));
+    defer allocator.free(content);
+    try std.testing.expectEqualStrings("public\n", content);
+    try std.testing.expectError(error.FileNotFound, dir.dir.access(std.Io.Threaded.global_single_threaded.io(), "secrets/moved.txt", .{}));
+}
+
+test "apply_patch blocks read-denied adds through symlinked parents" {
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
+
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var dir = std.testing.tmpDir(.{});
+    defer dir.cleanup();
+
+    try dir.dir.createDirPath(io, "secret");
+    try dir.dir.symLink(io, "secret", "alias", .{ .is_directory = true });
+    const cwd = try dir.dir.realPathFileAlloc(io, ".", allocator);
+    defer allocator.free(cwd);
+
+    const patch =
+        \\*** Begin Patch
+        \\*** Add File: alias/new.txt
+        \\+leak
+        \\*** End Patch
+    ;
+    const args = try applyPatchArgumentsForTest(allocator, patch);
+    defer allocator.free(args);
+    const call = api.FunctionCall{
+        .call_id = "call-read-denied-symlink-add",
+        .name = "apply_patch",
+        .arguments = args,
+    };
+
+    const result = try runFunctionCall(allocator, call, .{
+        .approval_policy = .never,
+        .sandbox_mode = .workspace_write,
+        .auto_approve = true,
+        .workdir = cwd,
+        .read_denied_roots = &.{"secret"},
+    });
+    defer result.deinit(allocator);
+
+    try std.testing.expectEqualStrings("blocked by sandbox", result.summary);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "secret") != null);
+    try std.testing.expectError(error.FileNotFound, dir.dir.access(io, "secret/new.txt", .{}));
+}
+
+test "apply_patch blocks root read-deny entries" {
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
+
+    const allocator = std.testing.allocator;
+    var dir = std.testing.tmpDir(.{});
+    defer dir.cleanup();
+
+    const cwd = try dir.dir.realPathFileAlloc(std.Io.Threaded.global_single_threaded.io(), ".", allocator);
+    defer allocator.free(cwd);
+
+    const patch =
+        \\*** Begin Patch
+        \\*** Add File: public.txt
+        \\+blocked
+        \\*** End Patch
+    ;
+    const args = try applyPatchArgumentsForTest(allocator, patch);
+    defer allocator.free(args);
+    const call = api.FunctionCall{
+        .call_id = "call-read-denied-root",
+        .name = "apply_patch",
+        .arguments = args,
+    };
+
+    const result = try runFunctionCall(allocator, call, .{
+        .approval_policy = .never,
+        .sandbox_mode = .workspace_write,
+        .auto_approve = true,
+        .workdir = cwd,
+        .read_denied_roots = &.{std.fs.path.sep_str},
+    });
+    defer result.deinit(allocator);
+
+    try std.testing.expectEqualStrings("blocked by sandbox", result.summary);
+    try std.testing.expectError(error.FileNotFound, dir.dir.access(std.Io.Threaded.global_single_threaded.io(), "public.txt", .{}));
+}
+
+test "apply_patch allows non-denied paths with read-denied roots" {
+    const allocator = std.testing.allocator;
+    var dir = std.testing.tmpDir(.{});
+    defer dir.cleanup();
+
+    try dir.dir.writeFile(std.Io.Threaded.global_single_threaded.io(), .{
+        .sub_path = "public.txt",
+        .data = "public\n",
+    });
+    const cwd = try dir.dir.realPathFileAlloc(std.Io.Threaded.global_single_threaded.io(), ".", allocator);
+    defer allocator.free(cwd);
+
+    const patch =
+        \\*** Begin Patch
+        \\*** Update File: public.txt
+        \\@@
+        \\-public
+        \\+changed
+        \\*** End Patch
+    ;
+    const args = try applyPatchArgumentsForTest(allocator, patch);
+    defer allocator.free(args);
+    const call = api.FunctionCall{
+        .call_id = "call-public-patch",
+        .name = "apply_patch",
+        .arguments = args,
+    };
+
+    const result = try runFunctionCall(allocator, call, .{
+        .approval_policy = .never,
+        .sandbox_mode = .workspace_write,
+        .auto_approve = true,
+        .workdir = cwd,
+        .read_denied_roots = &.{"secret.txt"},
+    });
+    defer result.deinit(allocator);
+
+    try std.testing.expectEqualStrings("patched +0 ~1 -0", result.summary);
+    const content = try dir.dir.readFileAlloc(std.Io.Threaded.global_single_threaded.io(), "public.txt", allocator, .limited(1024));
+    defer allocator.free(content);
+    try std.testing.expectEqualStrings("changed\n", content);
 }
 
 test "untrusted policy rejects untrusted shell command when prompting is disabled" {
