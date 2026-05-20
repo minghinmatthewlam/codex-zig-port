@@ -1224,6 +1224,56 @@ class RateLimitBackendHandler(BaseHTTPRequestHandler):
         return
 
 
+class ModelCatalogBackendHandler(BaseHTTPRequestHandler):
+    requests: list[dict[str, object]] = []
+
+    def do_GET(self) -> None:
+        parsed = urllib.parse.urlparse(self.path)
+        ModelCatalogBackendHandler.requests.append(
+            {
+                "path": parsed.path,
+                "query": urllib.parse.parse_qs(parsed.query),
+                "authorization": self.headers.get("Authorization"),
+                "account_id": self.headers.get("ChatGPT-Account-ID"),
+                "accept": self.headers.get("Accept"),
+            }
+        )
+        if parsed.path != "/models":
+            self.send_response(404)
+            self.end_headers()
+            return
+
+        body = json.dumps(
+            {
+                "models": [
+                    {
+                        "slug": "online-alpha",
+                        "display_name": "Online Alpha",
+                        "description": "Fetched model",
+                        "default_reasoning_level": "medium",
+                        "supported_reasoning_levels": [
+                            {"effort": "medium", "description": "Balanced online reasoning"}
+                        ],
+                        "visibility": "list",
+                        "supported_in_api": True,
+                        "priority": 1,
+                        "input_modalities": ["text"],
+                    }
+                ]
+            },
+            separators=(",", ":"),
+        ).encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("ETag", "remote-model-etag")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def log_message(self, format: str, *args: object) -> None:
+        return
+
+
 class AddCreditsNudgeBackendHandler(BaseHTTPRequestHandler):
     requests: list[dict[str, object]] = []
     status_code: int = 200
@@ -29516,6 +29566,7 @@ def run_feedback_rpc_smoke(binary: Path) -> None:
 
 def run_model_rpc_smoke(binary: Path) -> None:
     codex_home = Path(tempfile.mkdtemp(prefix="codex-zig-app-server-model-", dir="/tmp"))
+    model_catalog_server: ThreadingHTTPServer | None = None
 
     def rpc(request_id: str, method: str, params: dict) -> dict:
         env = os.environ.copy()
@@ -29764,7 +29815,47 @@ def run_model_rpc_smoke(binary: Path) -> None:
             "imageGeneration": False,
             "webSearch": False,
         }
+
+        model_catalog_server, model_catalog_base_url = start_model_catalog_backend()
+        cache_path = codex_home / "models_cache.json"
+        if cache_path.exists():
+            cache_path.unlink()
+        (codex_home / "config.toml").write_text(
+            f'chatgpt_base_url = "{model_catalog_base_url}"\n',
+            encoding="utf-8",
+        )
+        (codex_home / "auth.json").write_text(
+            json.dumps(
+                {"auth_mode": "agentIdentity", "agent_identity": "remote-model-token"},
+                separators=(",", ":"),
+            ),
+            encoding="utf-8",
+        )
+        online_models = rpc("model-list-online-refresh", "model/list", {"limit": 5})
+        assert online_models["id"] == "model-list-online-refresh"
+        assert online_models["result"]["data"][1]["id"] == "online-alpha"
+        assert online_models["result"]["data"][1]["displayName"] == "Online Alpha"
+        assert online_models["result"]["data"][1]["inputModalities"] == ["text"]
+        assert len(ModelCatalogBackendHandler.requests) == 1
+        request = ModelCatalogBackendHandler.requests[0]
+        assert request["path"] == "/models"
+        assert request["query"] == {"client_version": ["0.0.1"]}
+        assert request["authorization"] == "Bearer remote-model-token"
+        assert request["accept"] == "application/json"
+
+        cache = json.loads(cache_path.read_text(encoding="utf-8"))
+        assert cache["etag"] == "remote-model-etag"
+        assert cache["client_version"] == "0.0.1"
+        assert cache["models"][0]["slug"] == "online-alpha"
+
+        cached_online_models = rpc("model-list-online-cache-hit", "model/list", {"limit": 5})
+        assert cached_online_models["id"] == "model-list-online-cache-hit"
+        assert cached_online_models["result"]["data"][1]["id"] == "online-alpha"
+        assert len(ModelCatalogBackendHandler.requests) == 1
     finally:
+        if model_catalog_server is not None:
+            model_catalog_server.shutdown()
+            model_catalog_server.server_close()
         shutil.rmtree(codex_home, ignore_errors=True)
 
 
@@ -33916,6 +34007,13 @@ def encode_unsigned_jwt(payload: dict) -> str:
 def start_rate_limit_backend() -> tuple[ThreadingHTTPServer, str]:
     RateLimitBackendHandler.requests = []
     server = ThreadingHTTPServer(("127.0.0.1", 0), RateLimitBackendHandler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    return server, f"http://127.0.0.1:{server.server_port}"
+
+
+def start_model_catalog_backend() -> tuple[ThreadingHTTPServer, str]:
+    ModelCatalogBackendHandler.requests = []
+    server = ThreadingHTTPServer(("127.0.0.1", 0), ModelCatalogBackendHandler)
     threading.Thread(target=server.serve_forever, daemon=True).start()
     return server, f"http://127.0.0.1:{server.server_port}"
 
