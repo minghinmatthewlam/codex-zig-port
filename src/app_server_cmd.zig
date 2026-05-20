@@ -28120,7 +28120,18 @@ fn handleGetConversationSummary(
         }
         const conversation_id = conversation_id_value.string;
         if (findLoadedThread(state, conversation_id)) |thread| {
-            const result = try renderConversationSummaryResponseFromLoadedThread(allocator, thread);
+            var cfg = config.load(allocator) catch |err| {
+                return renderJsonRpcErrorForFailure(allocator, id_value, "getConversationSummary failed to load config", err);
+            };
+            defer cfg.deinit(allocator);
+
+            var state_metadata = thread_state.findThreadMetadataByThreadId(allocator, cfg.codex_home, conversation_id) catch |err| {
+                return renderJsonRpcErrorForFailure(allocator, id_value, "getConversationSummary failed to load state metadata", err);
+            };
+            defer if (state_metadata) |*metadata| metadata.deinit(allocator);
+
+            const metadata = if (state_metadata) |*value| value else null;
+            const result = try renderConversationSummaryResponseFromLoadedThread(allocator, thread, metadata);
             defer allocator.free(result);
             return renderJsonRpcResult(allocator, id_value, result);
         }
@@ -38414,10 +38425,20 @@ const ConversationSummaryView = struct {
     git_origin_url: ?[]const u8,
 };
 
-fn renderConversationSummaryResponseFromLoadedThread(allocator: std.mem.Allocator, thread: *const LoadedThread) ![]const u8 {
-    const timestamp = try conversationSummaryTimestampSeconds(allocator, thread.created_at);
+fn renderConversationSummaryResponseFromLoadedThread(
+    allocator: std.mem.Allocator,
+    thread: *const LoadedThread,
+    metadata: ?*const thread_state.ThreadMetadata,
+) ![]const u8 {
+    const timestamp = if (metadata) |value|
+        try conversationSummaryTimestamp(allocator, value.created_at_ms)
+    else
+        null;
     defer if (timestamp) |value| allocator.free(value);
-    const updated_at = try conversationSummaryTimestampSeconds(allocator, thread.updated_at);
+    const updated_at = if (metadata) |value|
+        try conversationSummaryTimestamp(allocator, value.updated_at_ms)
+    else
+        null;
     defer if (updated_at) |value| allocator.free(value);
 
     return renderConversationSummaryResponse(allocator, .{
@@ -38430,9 +38451,9 @@ fn renderConversationSummaryResponseFromLoadedThread(allocator: std.mem.Allocato
         .cwd = thread.cwd,
         .cli_version = thread.cli_version,
         .source = thread.source,
-        .git_sha = thread.git_sha,
-        .git_branch = thread.git_branch,
-        .git_origin_url = thread.git_origin_url,
+        .git_sha = conversationSummaryGitMetadataString(metadata, .git_sha, thread.git_sha),
+        .git_branch = conversationSummaryGitMetadataString(metadata, .git_branch, thread.git_branch),
+        .git_origin_url = conversationSummaryGitMetadataString(metadata, .git_origin_url, thread.git_origin_url),
     });
 }
 
@@ -38508,11 +38529,6 @@ fn conversationSummaryGitMetadataString(
 ) ?[]const u8 {
     if (metadata == null) return fallback;
     return conversationSummaryMetadataString(metadata, field);
-}
-
-fn conversationSummaryTimestampSeconds(allocator: std.mem.Allocator, timestamp_seconds: i64) !?[]const u8 {
-    if (timestamp_seconds < 0 or timestamp_seconds > std.math.maxInt(i64) / 1000) return null;
-    return conversationSummaryTimestamp(allocator, timestamp_seconds * 1000);
 }
 
 fn conversationSummaryTimestamp(allocator: std.mem.Allocator, timestamp_ms: ?i64) !?[]const u8 {

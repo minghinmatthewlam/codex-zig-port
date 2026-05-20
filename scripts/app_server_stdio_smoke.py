@@ -17359,6 +17359,8 @@ def run_thread_resume_rpc_smoke(binary: Path) -> None:
             assert loaded_summary_body["conversationId"] == resume_thread_id
             assert loaded_summary_body["path"] == os.path.realpath(rollout_path)
             assert loaded_summary_body["preview"] == "saved hello"
+            assert loaded_summary_body["timestamp"] is None
+            assert loaded_summary_body["updatedAt"] is None
             assert loaded_summary_body["modelProvider"] == "mock_provider"
             assert loaded_summary_body["cwd"] == os.path.realpath(".")
             assert loaded_summary_body["cliVersion"] == "0.0.1"
@@ -17672,6 +17674,7 @@ def run_thread_resume_rpc_smoke(binary: Path) -> None:
                         "threadId": state_db_thread_id,
                         "model": "gpt-explicit",
                         "modelProvider": "explicit_provider",
+                        "cwd": str(codex_home),
                         "excludeTurns": True,
                     },
                 },
@@ -17687,7 +17690,41 @@ def run_thread_resume_rpc_smoke(binary: Path) -> None:
                 explicit_state_db_resume_result["modelProvider"]
                 == "explicit_provider"
             )
+            explicit_state_db_cwd = os.path.realpath(codex_home)
+            assert explicit_state_db_resume_result["cwd"] == explicit_state_db_cwd
             assert explicit_state_db_resume_result["reasoningEffort"] is None
+
+            write_json_line(
+                proc,
+                {
+                    "jsonrpc": "2.0",
+                    "id": "conversation-summary-loaded-state-db-overrides",
+                    "method": "getConversationSummary",
+                    "params": {"conversationId": state_db_thread_id},
+                },
+            )
+            explicit_state_db_summary = read_json_line(proc, 5)
+            assert (
+                explicit_state_db_summary["id"]
+                == "conversation-summary-loaded-state-db-overrides"
+            )
+            explicit_state_db_summary_body = explicit_state_db_summary["result"][
+                "summary"
+            ]
+            assert explicit_state_db_summary_body["conversationId"] == state_db_thread_id
+            assert (
+                explicit_state_db_summary_body["modelProvider"]
+                == "explicit_provider"
+            )
+            assert explicit_state_db_summary_body["cwd"] == explicit_state_db_cwd
+            assert (
+                explicit_state_db_summary_body["timestamp"]
+                == "2025-01-05T12:00:00.000Z"
+            )
+            assert (
+                explicit_state_db_summary_body["updatedAt"]
+                == "2025-01-05T12:05:00.000Z"
+            )
 
             spawn_parent_thread_id = "66666666-6666-4666-8666-666666666666"
             spawn_child_thread_id = "77777777-7777-4777-8777-777777777777"
