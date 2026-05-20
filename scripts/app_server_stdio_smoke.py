@@ -7819,6 +7819,74 @@ def run_turn_start_rpc_smoke(binary: Path) -> None:
                 assert turn_read_deny_secret.read_text(encoding="utf-8") == "secret"
                 assert turn_read_deny_allowed.read_text(encoding="utf-8") == "ok"
 
+                turn_read_deny_patch = (
+                    "*** Begin Patch\n"
+                    "*** Update File: secret.txt\n"
+                    "@@\n"
+                    "-secret\n"
+                    "+patched\n"
+                    "*** End Patch"
+                )
+                turn_read_deny_patch_call = {
+                    "type": "response.output_item.done",
+                    "item": {
+                        "type": "function_call",
+                        "call_id": "call-turn-permissions-read-deny-patch",
+                        "name": "apply_patch",
+                        "arguments": json.dumps({"patch": turn_read_deny_patch}),
+                    },
+                }
+                request_count_before_read_deny_patch = len(server.request_paths)
+                server.response_payloads.append(
+                    (
+                        f"data: {json.dumps(turn_read_deny_patch_call)}\n\n"
+                        "data: [DONE]\n\n"
+                    ).encode()
+                )
+                write_json_line(
+                    proc,
+                    {
+                        "jsonrpc": "2.0",
+                        "id": "turn-start-permissions-read-deny-apply-patch",
+                        "method": "turn/start",
+                        "params": {
+                            "threadId": thread_id,
+                            "approvalPolicy": "never",
+                            "permissions": {
+                                "type": "profile",
+                                "id": "turn-read-deny-profile",
+                            },
+                            "input": [
+                                {
+                                    "type": "text",
+                                    "text": "use read-deny apply_patch",
+                                },
+                            ],
+                        },
+                    },
+                )
+                assert_turn_start_rpc_completed(
+                    proc, thread_id, "turn-start-permissions-read-deny-apply-patch"
+                )
+                assert (
+                    len(server.request_paths)
+                    == request_count_before_read_deny_patch + 2
+                )
+                read_deny_patch_followup = server.request_bodies[-1]
+                read_deny_patch_output = next(
+                    item
+                    for item in read_deny_patch_followup["input"]
+                    if item.get("type") == "function_call_output"
+                    and item.get("call_id")
+                    == "call-turn-permissions-read-deny-patch"
+                )
+                assert "blocked by read-denied path" in read_deny_patch_output[
+                    "output"
+                ], read_deny_patch_output["output"]
+                assert str(turn_read_deny_secret) in read_deny_patch_output["output"]
+                assert turn_read_deny_secret.read_text(encoding="utf-8") == "secret"
+                assert turn_read_deny_public.read_text(encoding="utf-8") == "public"
+
                 write_json_line(
                     proc,
                     {
