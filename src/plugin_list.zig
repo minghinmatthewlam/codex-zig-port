@@ -184,7 +184,7 @@ pub fn parseAppRequirements(allocator: std.mem.Allocator, payload: []const u8) !
         disabled_ids.deinit(allocator);
     }
 
-    var current_section: ?[]const u8 = null;
+    var current_scope: AppRequirementScope = .top_level;
 
     var lines = std.mem.splitScalar(u8, payload, '\n');
     while (lines.next()) |raw_line| {
@@ -192,10 +192,15 @@ pub fn parseAppRequirements(allocator: std.mem.Allocator, payload: []const u8) !
         const line = std.mem.trim(u8, line_without_comment, " \t\r");
         if (line.len == 0) continue;
         if (line[0] == '[') {
-            current_section = appRequirementSectionForLine(line);
+            current_scope = appRequirementScopeForLine(line);
             continue;
         }
 
+        const current_section: ?[]const u8 = switch (current_scope) {
+            .top_level => null,
+            .table => |section| section,
+            .ignored => continue,
+        };
         try appendDisabledAppRequirementsForLine(allocator, &disabled_ids, current_section, line);
     }
 
@@ -1517,10 +1522,16 @@ fn appConfigTableForLine(line: []const u8, app_id: []const u8) AppConfigTable {
     return if (std.mem.eql(u8, suffix, app_id)) .target else .none;
 }
 
-fn appRequirementSectionForLine(line: []const u8) ?[]const u8 {
-    if (line.len < 3 or line[0] != '[' or line[line.len - 1] != ']') return null;
-    if (line.len >= 4 and line[1] == '[') return null;
-    return std.mem.trim(u8, line[1 .. line.len - 1], " \t\r");
+const AppRequirementScope = union(enum) {
+    top_level,
+    table: []const u8,
+    ignored,
+};
+
+fn appRequirementScopeForLine(line: []const u8) AppRequirementScope {
+    if (line.len < 3 or line[0] != '[' or line[line.len - 1] != ']') return .ignored;
+    if (line.len >= 4 and line[1] == '[') return .ignored;
+    return .{ .table = std.mem.trim(u8, line[1 .. line.len - 1], " \t\r") };
 }
 
 fn appendDisabledAppRequirementsForLine(
@@ -2450,6 +2461,23 @@ test "app requirements parser accepts dotted and inline app requirements" {
     try std.testing.expect(top_level_inline.disables("slack"));
     try std.testing.expect(top_level_inline.disables("drive.docs"));
     try std.testing.expect(!top_level_inline.disables("gmail"));
+}
+
+test "app requirements parser ignores app-shaped keys inside array tables" {
+    const allocator = std.testing.allocator;
+    var requirements = (try parseAppRequirements(allocator,
+        \\[[hooks.PreToolUse]]
+        \\apps.slack.enabled = false
+        \\apps = { zoom = { enabled = false } }
+        \\
+        \\[apps]
+        \\calendar.enabled = false
+    )) orelse return error.TestExpectedAppRequirements;
+    defer requirements.deinit(allocator);
+
+    try std.testing.expect(!requirements.disables("slack"));
+    try std.testing.expect(!requirements.disables("zoom"));
+    try std.testing.expect(requirements.disables("calendar"));
 }
 
 test "plugin list renders local marketplaces with installed state and manifest metadata" {
