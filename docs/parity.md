@@ -854,7 +854,9 @@ continuing to reject unsupported canonical features separately from unknown
 feature keys. App-server `config/read` and `experimentalFeature/list` now keep
 `requirements.toml` feature pins above CLI, config, and runtime enablement so a
 runtime toggle response can report the requested change without changing the
-effective value of a managed feature.
+effective value of a managed feature; this covers inline TOML comments and
+Rust-compatible feature-requirement aliases such as `connectors` and
+`auto_review`.
 
 Additional app-server experimental-feature generation coverage: `experimentalFeature/list` and `experimentalFeature/enablement/set` are included in current TypeScript and JSON schema generation with cursor/limit params, Rust-shaped paginated feature rows, runtime enablement maps, and enablement set params/responses until broader experimental feature protocol generation parity lands.
 

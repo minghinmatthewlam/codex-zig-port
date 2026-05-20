@@ -32528,10 +32528,11 @@ def run_config_read_rpc_smoke(binary: Path) -> None:
                     'allowed_web_search_modes = ["cached"]',
                     'enforce_residency = "us"',
                     "",
-                    "[features]",
-                    "apps = false",
+                    "[features] # managed feature pins",
+                    "connectors = false # legacy apps alias",
                     "goals = true",
                     "plugins = false",
+                    'auto_review = false # legacy guardian approval alias',
                     "",
                     "[hooks]",
                     'managed_dir = "/tmp/codex-managed-hooks"',
@@ -32601,7 +32602,12 @@ def run_config_read_rpc_smoke(binary: Path) -> None:
                 "allowedApprovalsReviewers": ["guardian_subagent", "user"],
                 "allowedSandboxModes": ["danger-full-access"],
                 "allowedWebSearchModes": ["cached", "disabled"],
-                "featureRequirements": {"apps": False, "goals": True, "plugins": False},
+                "featureRequirements": {
+                    "auto_review": False,
+                    "connectors": False,
+                    "goals": True,
+                    "plugins": False,
+                },
                 "hooks": {
                     "managedDir": "/tmp/codex-managed-hooks",
                     "windowsManagedDir": "C:\\codex\\hooks",
@@ -32664,6 +32670,7 @@ def run_config_read_rpc_smoke(binary: Path) -> None:
         after_features = after_enablement["result"]["config"]["features"]
         assert after_features["apps"] is False
         assert after_features["goals"] is True
+        assert after_features["guardian_approval"] is False
         assert after_features["memories"] is True
         assert after_features["plugins"] is False
         assert after_enablement["result"]["layers"] is None
@@ -32675,6 +32682,7 @@ def run_config_read_rpc_smoke(binary: Path) -> None:
         }
         assert listed_features["apps"] is False
         assert listed_features["goals"] is True
+        assert listed_features["guardian_approval"] is False
         assert listed_features["memories"] is True
         assert listed_features["plugins"] is False
 
