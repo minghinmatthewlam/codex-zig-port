@@ -2197,6 +2197,7 @@ fn loadEffectiveMcpServers(
     defer requirements.deinit(allocator);
     applyGlobalMcpRequirements(servers, requirements.global);
     try appendPluginMcpServersWithRequirements(allocator, codex_home, config_bytes, requirements.plugin, servers);
+    applyEmptyGlobalMcpRequirements(servers, requirements.global);
 }
 
 fn applyGlobalMcpRequirements(servers: *McpServers, requirements: McpRequirements) void {
@@ -2208,6 +2209,11 @@ fn applyGlobalMcpRequirements(servers: *McpServers, requirements: McpRequirement
         };
         if (!identity.matches(server.*)) server.enabled = false;
     }
+}
+
+fn applyEmptyGlobalMcpRequirements(servers: *McpServers, requirements: McpRequirements) void {
+    if (!requirements.active or requirements.items.items.len != 0) return;
+    for (servers.items.items) |*server| server.enabled = false;
 }
 
 fn appendPluginMcpServersWithRequirements(
@@ -3970,6 +3976,47 @@ test "mcp config empty global mcp requirements disables configured servers" {
 
     try std.testing.expectEqual(@as(usize, 1), servers.items.items.len);
     try std.testing.expect(!servers.get("docs").?.enabled);
+}
+
+test "mcp config empty global mcp requirements disables plugin servers" {
+    const allocator = std.testing.allocator;
+    var dir = std.testing.tmpDir(.{});
+    defer dir.cleanup();
+    try dir.dir.createDirPath(std.Io.Threaded.global_single_threaded.io(), "plugins/cache/test/sample/local");
+    try dir.dir.writeFile(std.Io.Threaded.global_single_threaded.io(), .{
+        .sub_path = "plugins/cache/test/sample/local/.mcp.json",
+        .data =
+        \\{
+        \\  "mcpServers": {
+        \\    "plugin_docs": {"command": "plugin-mcp"}
+        \\  }
+        \\}
+        ,
+    });
+    const codex_home = try dir.dir.realPathFileAlloc(std.Io.Threaded.global_single_threaded.io(), ".", allocator);
+    defer allocator.free(codex_home);
+    const config_bytes =
+        \\[features]
+        \\plugins = true
+        \\
+        \\[plugins."sample@test"]
+        \\enabled = true
+        \\
+    ;
+    var requirements = try parseGlobalMcpRequirements(allocator,
+        \\[mcp_servers]
+        \\
+    );
+    defer requirements.deinit(allocator);
+
+    var servers = try parseServers(allocator, config_bytes);
+    defer servers.deinit(allocator);
+    applyGlobalMcpRequirements(&servers, requirements);
+    try appendPluginMcpServersWithRequirements(allocator, codex_home, config_bytes, .{}, &servers);
+    applyEmptyGlobalMcpRequirements(&servers, requirements);
+
+    try std.testing.expectEqual(@as(usize, 1), servers.items.items.len);
+    try std.testing.expect(!servers.get("plugin_docs").?.enabled);
 }
 
 test "mcp config applies plugin mcp requirements to plugin servers" {
