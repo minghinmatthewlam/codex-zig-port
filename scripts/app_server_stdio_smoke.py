@@ -29827,6 +29827,7 @@ def run_config_read_rpc_smoke(binary: Path) -> None:
         "\n".join(
             [
                 'model = "gpt-project"',
+                'model_provider = "project-provider"',
                 'review_model = "gpt-project-review"',
                 'approval_policy = "on-request"',
                 'approvals_reviewer = "auto_review"',
@@ -29874,6 +29875,7 @@ def run_config_read_rpc_smoke(binary: Path) -> None:
         "\n".join(
             [
                 'model = "gpt-child"',
+                'model_provider = "child-provider"',
                 'review_model = "gpt-child-review"',
                 'approval_policy = "on-failure"',
                 'approvals_reviewer = "user"',
@@ -29941,6 +29943,7 @@ def run_config_read_rpc_smoke(binary: Path) -> None:
                 "apps = false",
                 "",
                 "[profiles.work]",
+                'model_provider = "profile-provider"',
                 'model_verbosity = "high"',
                 "",
                 "[profiles.work.features]",
@@ -29954,6 +29957,31 @@ def run_config_read_rpc_smoke(binary: Path) -> None:
         ),
         encoding="utf-8",
     )
+    env_provider_home = Path(tempfile.mkdtemp(prefix="codex-zig-app-server-env-provider-", dir="/tmp"))
+    env_provider_env = os.environ.copy()
+    env_provider_env["CODEX_HOME"] = str(env_provider_home)
+    env_provider_env["CODEX_ZIG_MODEL_PROVIDER"] = "env-provider"
+    env_provider_proc = subprocess.Popen(
+        [str(binary), "app-server"],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        env=env_provider_env,
+    )
+    try:
+        write_json_line(
+            env_provider_proc,
+            {"jsonrpc": "2.0", "id": "config-read-env-provider", "method": "config/read", "params": {}},
+        )
+        env_provider_config_read = read_json_line(env_provider_proc, 5)
+        assert env_provider_config_read["id"] == "config-read-env-provider"
+        assert env_provider_config_read["result"]["config"]["model_provider"] == "env-provider"
+        assert env_provider_config_read["result"]["origins"] == {}
+        assert env_provider_config_read["result"]["layers"] is None
+    finally:
+        env_provider_proc.terminate()
+        env_provider_proc.wait(timeout=5)
     env = os.environ.copy()
     env["CODEX_HOME"] = str(codex_home)
     managed_config_path = codex_home / "managed_config.toml"
@@ -29965,6 +29993,7 @@ def run_config_read_rpc_smoke(binary: Path) -> None:
         "\n".join(
             [
                 'model = "gpt-system"',
+                'model_provider = "system-provider"',
                 'review_model = "gpt-system-review"',
                 'approval_policy = "on-failure"',
                 'approvals_reviewer = "auto_review"',
@@ -30037,6 +30066,7 @@ def run_config_read_rpc_smoke(binary: Path) -> None:
         assert config_read["id"] == "config-read"
         config_body = config_read["result"]["config"]
         assert config_body["model"] == "gpt-config"
+        assert config_body["model_provider"] == "profile-provider"
         assert config_body["review_model"] == "gpt-user-review"
         assert config_body["model_context_window"] == 128000
         assert config_body["model_auto_compact_token_limit"] == 96000
@@ -30116,6 +30146,7 @@ def run_config_read_rpc_smoke(binary: Path) -> None:
         origins = config_read["result"]["origins"]
         for key in [
             "model",
+            "model_provider",
             "review_model",
             "model_context_window",
             "model_auto_compact_token_limit",
@@ -30174,6 +30205,7 @@ def run_config_read_rpc_smoke(binary: Path) -> None:
         assert layers[0]["version"] == origins["model"]["version"]
         assert layers[0]["config"] == {
             "model": "gpt-config",
+            "model_provider": "profile-provider",
             "review_model": "gpt-user-review",
             "model_context_window": 128000,
             "model_auto_compact_token_limit": 96000,
@@ -30233,6 +30265,7 @@ def run_config_read_rpc_smoke(binary: Path) -> None:
         assert layers[1]["version"] == origins["sandbox_workspace_write.exclude_tmpdir_env_var"]["version"]
         assert layers[1]["config"] == {
             "model": "gpt-system",
+            "model_provider": "system-provider",
             "review_model": "gpt-system-review",
             "instructions": "system base instructions",
             "developer_instructions": "system developer instructions",
@@ -30307,6 +30340,7 @@ def run_config_read_rpc_smoke(binary: Path) -> None:
         assert project_config_read["id"] == "config-read-project"
         project_config_body = project_config_read["result"]["config"]
         assert project_config_body["model"] == "gpt-project"
+        assert project_config_body["model_provider"] == "profile-provider"
         assert project_config_body["review_model"] == "gpt-project-review"
         assert project_config_body["approval_policy"] == "on-request"
         assert project_config_body["approvals_reviewer"] == "guardian_subagent"
@@ -30421,6 +30455,7 @@ def run_config_read_rpc_smoke(binary: Path) -> None:
             assert project_origins[key]["name"] == project_source
             assert project_origins[key]["version"].startswith("sha256:")
         for key in [
+            "model_provider",
             "tools.web_search.allowed_domains.0",
             "tools.web_search.location.country",
             "tools.web_search.location.city",
@@ -30528,6 +30563,7 @@ def run_config_read_rpc_smoke(binary: Path) -> None:
         assert nested_project_config_read["id"] == "config-read-nested-project"
         nested_config_body = nested_project_config_read["result"]["config"]
         assert nested_config_body["model"] == "gpt-child"
+        assert nested_config_body["model_provider"] == "profile-provider"
         assert nested_config_body["review_model"] == "gpt-child-review"
         assert nested_config_body["approval_policy"] == "on-failure"
         assert nested_config_body["approvals_reviewer"] == "user"
@@ -30566,6 +30602,7 @@ def run_config_read_rpc_smoke(binary: Path) -> None:
         }
         nested_origins = nested_project_config_read["result"]["origins"]
         assert nested_origins["model"]["name"] == child_project_source
+        assert nested_origins["model_provider"]["name"] == {"type": "user", "file": config_path}
         assert nested_origins["review_model"]["name"] == child_project_source
         assert nested_origins["approval_policy"]["name"] == child_project_source
         assert nested_origins["approvals_reviewer"]["name"] == child_project_source
@@ -30686,6 +30723,7 @@ def run_config_read_rpc_smoke(binary: Path) -> None:
             "\n".join(
                 [
                     'model = "gpt-managed"',
+                    'model_provider = "managed-provider"',
                     'review_model = "gpt-managed-review"',
                     'approval_policy = "on-request"',
                     'approvals_reviewer = "auto_review"',
@@ -30738,6 +30776,7 @@ def run_config_read_rpc_smoke(binary: Path) -> None:
         assert managed_config_read["id"] == "config-read-managed"
         managed_config_body = managed_config_read["result"]["config"]
         assert managed_config_body["model"] == "gpt-managed"
+        assert managed_config_body["model_provider"] == "managed-provider"
         assert managed_config_body["review_model"] == "gpt-managed-review"
         assert managed_config_body["approval_policy"] == "on-request"
         assert managed_config_body["approvals_reviewer"] == "guardian_subagent"
@@ -30826,6 +30865,7 @@ def run_config_read_rpc_smoke(binary: Path) -> None:
         managed_origins = managed_config_read["result"]["origins"]
         for key in [
             "model",
+            "model_provider",
             "review_model",
             "approval_policy",
             "approvals_reviewer",
@@ -30884,6 +30924,7 @@ def run_config_read_rpc_smoke(binary: Path) -> None:
         assert managed_layers[0]["version"] == managed_origins["model"]["version"]
         assert managed_layers[0]["config"] == {
             "model": "gpt-managed",
+            "model_provider": "managed-provider",
             "review_model": "gpt-managed-review",
             "approval_policy": "on-request",
             "approvals_reviewer": "guardian_subagent",
@@ -30950,6 +30991,7 @@ def run_config_read_rpc_smoke(binary: Path) -> None:
         }
         assert managed_layers[1]["name"] == {"type": "user", "file": config_path}
         assert managed_layers[1]["config"]["model"] == "gpt-config"
+        assert managed_layers[1]["config"]["model_provider"] == "profile-provider"
         assert managed_layers[1]["config"]["review_model"] == "gpt-user-review"
         assert managed_layers[1]["config"]["approval_policy"] == "never"
         assert managed_layers[1]["config"]["approvals_reviewer"] == "user"
@@ -31732,6 +31774,7 @@ def run_config_write_overridden_metadata_rpc_smoke(binary: Path) -> None:
                 'review_model = "gpt-managed-review"',
                 "model_context_window = 256000",
                 "model_auto_compact_token_limit = 192000",
+                'model_provider = "managed-provider"',
                 'model_verbosity = "high"',
                 'base_instructions = "managed base instructions"',
                 'developer_instructions = "managed developer instructions"',
@@ -31775,6 +31818,35 @@ def run_config_write_overridden_metadata_rpc_smoke(binary: Path) -> None:
         assert write_same["id"] == "config-write-managed-same"
         assert write_same["result"]["status"] == "ok"
         assert write_same["result"]["overriddenMetadata"] is None
+
+        write_provider_same = rpc(
+            "config-write-managed-provider-same",
+            "config/value/write",
+            {
+                "keyPath": "model_provider",
+                "value": "managed-provider",
+                "mergeStrategy": "replace",
+            },
+        )
+        assert write_provider_same["id"] == "config-write-managed-provider-same"
+        assert write_provider_same["result"]["status"] == "ok"
+        assert write_provider_same["result"]["overriddenMetadata"] is None
+
+        write_provider_overridden = rpc(
+            "config-write-managed-provider-overridden",
+            "config/value/write",
+            {
+                "keyPath": "model_provider",
+                "value": "user-provider",
+                "mergeStrategy": "replace",
+            },
+        )
+        assert write_provider_overridden["id"] == "config-write-managed-provider-overridden"
+        assert write_provider_overridden["result"]["status"] == "okOverridden"
+        assert (
+            write_provider_overridden["result"]["overriddenMetadata"]["effectiveValue"]
+            == "managed-provider"
+        )
 
         write_review_overridden = rpc(
             "config-write-managed-review-overridden",
@@ -31921,6 +31993,7 @@ def run_config_write_overridden_metadata_rpc_smoke(binary: Path) -> None:
 
         after_write = rpc("config-read-after-overridden-write", "config/read", {})
         assert after_write["id"] == "config-read-after-overridden-write"
+        assert after_write["result"]["config"]["model_provider"] == "managed-provider"
         assert after_write["result"]["config"]["review_model"] == "gpt-managed-review"
         assert after_write["result"]["config"]["model_context_window"] == 256000
         assert after_write["result"]["config"]["model_auto_compact_token_limit"] == 192000
@@ -32216,6 +32289,7 @@ def run_config_batch_write_rpc_smoke(binary: Path) -> None:
         after_batch = rpc("config-read-after-batch-write", "config/read", {})
         assert after_batch["id"] == "config-read-after-batch-write"
         assert after_batch["result"]["config"]["model"] == "gpt-batch"
+        assert after_batch["result"]["config"]["model_provider"] == "custom-provider"
         assert after_batch["result"]["config"]["service_tier"] == "flex"
         assert after_batch["result"]["config"]["approval_policy"] == "never"
         assert after_batch["result"]["config"]["model_reasoning_effort"] == "high"

@@ -31538,6 +31538,7 @@ fn applyLoadedThreadRuntimeToConfig(
     } else {
         cfg.model_verbosity = null;
     }
+    try replaceConfigOptionalString(allocator, &cfg.model_provider_id, thread.model_provider);
     cfg.web_search_mode = thread.web_search_mode;
     cfg.approval_policy = config.ApprovalPolicy.parse(thread.approval_policy) catch return error.InvalidLoadedThreadRuntime;
     cfg.sandbox_mode = config.SandboxMode.parse(thread.sandbox_mode) catch return error.InvalidLoadedThreadRuntime;
@@ -31716,6 +31717,7 @@ fn applyTurnStartRuntimeOverrides(
         try thread.transcript.setModelProvider(allocator, model_provider);
         thread.runtime_overrides.model_provider = true;
     }
+    try replaceConfigOptionalString(allocator, &cfg.model_provider_id, thread.model_provider);
 
     if (params.get("serviceTier")) |service_tier_value| {
         if (service_tier_value != .null and service_tier_value != .string) return error.InvalidTurnContextOverride;
@@ -36104,8 +36106,7 @@ fn createLoadedThreadFromStartParams(
     const model_verbosity = try threadModelVerbosity(allocator, cfg);
     errdefer if (model_verbosity) |value| allocator.free(value);
 
-    const configured_model_provider = try config.loadModelProviderId(allocator, cfg.active_profile);
-    defer if (configured_model_provider) |value| allocator.free(value);
+    const configured_model_provider = cfg.model_provider_id;
     const model_provider = try allocator.dupe(u8, optionalStringParam(params, "modelProvider") orelse configured_model_provider orelse "openai");
     errdefer allocator.free(model_provider);
 
@@ -36263,8 +36264,7 @@ fn createLoadedThreadFromHistoryParams(
     const model_verbosity = try threadModelVerbosity(allocator, cfg);
     errdefer if (model_verbosity) |value| allocator.free(value);
 
-    const configured_model_provider = try config.loadModelProviderId(allocator, cfg.active_profile);
-    defer if (configured_model_provider) |value| allocator.free(value);
+    const configured_model_provider = cfg.model_provider_id;
     const model_provider = try allocator.dupe(u8, optionalStringParam(params, "modelProvider") orelse configured_model_provider orelse "openai");
     errdefer allocator.free(model_provider);
 
@@ -36440,8 +36440,7 @@ fn createLoadedThreadFromResumeParams(
     const model_verbosity = try threadModelVerbosity(allocator, cfg);
     errdefer if (model_verbosity) |value| allocator.free(value);
 
-    const configured_model_provider = try config.loadModelProviderId(allocator, cfg.active_profile);
-    defer if (configured_model_provider) |value| allocator.free(value);
+    const configured_model_provider = cfg.model_provider_id;
     const default_model_provider = if (use_request_profile)
         configured_model_provider orelse "openai"
     else
@@ -36618,11 +36617,7 @@ fn createLoadedThreadFromForkParams(
         null;
     errdefer if (model_verbosity) |value| allocator.free(value);
 
-    const configured_model_provider = if (use_request_profile)
-        try config.loadModelProviderId(allocator, cfg.active_profile)
-    else
-        null;
-    defer if (configured_model_provider) |value| allocator.free(value);
+    const configured_model_provider = if (use_request_profile) cfg.model_provider_id else null;
     const default_model_provider = if (use_request_profile) configured_model_provider orelse "openai" else source.model_provider;
     const model_provider = try allocator.dupe(u8, optionalStringParam(params, "modelProvider") orelse default_model_provider);
     errdefer allocator.free(model_provider);
@@ -50576,12 +50571,7 @@ fn reloadLoadedThreadRuntimeConfig(allocator: std.mem.Allocator, state: *AppServ
         };
         defer cfg.deinit(allocator);
 
-        const configured_model_provider = config.loadModelProviderId(allocator, cfg.active_profile) catch |err| switch (err) {
-            error.OutOfMemory => return err,
-            else => null,
-        };
-        defer if (configured_model_provider) |value| allocator.free(value);
-        const model_provider = configured_model_provider orelse "openai";
+        const model_provider = cfg.model_provider_id orelse "openai";
 
         if (!thread.runtime_overrides.model) {
             try replaceOwnedString(allocator, &thread.model, cfg.model);
@@ -51148,6 +51138,8 @@ fn renderManagedConfigWriteOverrideValueJson(
         if (layer.model_context_window) |value| return renderI64OverrideValue(allocator, value, key_path, user_config_bytes);
     } else if (std.mem.eql(u8, key_path, "model_auto_compact_token_limit")) {
         if (layer.model_auto_compact_token_limit) |value| return renderI64OverrideValue(allocator, value, key_path, user_config_bytes);
+    } else if (std.mem.eql(u8, key_path, "model_provider")) {
+        if (layer.model_provider) |value| return renderStringOverrideValue(allocator, value, key_path, user_config_bytes);
     } else if (std.mem.eql(u8, key_path, "instructions") or std.mem.eql(u8, key_path, "base_instructions")) {
         if (layer.instructions) |value| return renderStringOverrideValue(allocator, value, key_path, user_config_bytes);
     } else if (std.mem.eql(u8, key_path, "developer_instructions")) {
@@ -51227,6 +51219,9 @@ fn configWriteUserScalarValue(
     }
     if (std.mem.eql(u8, key_path, "review_model")) {
         return configWriteRequiredTopLevelStringValue(allocator, user_config_bytes, "review_model");
+    }
+    if (std.mem.eql(u8, key_path, "model_provider")) {
+        return configWriteRequiredTopLevelStringValue(allocator, user_config_bytes, "model_provider");
     }
     if (std.mem.eql(u8, key_path, "instructions")) {
         return configWriteRequiredTopLevelStringValue(allocator, user_config_bytes, "instructions");
@@ -51422,6 +51417,10 @@ fn renderConfigReadResponse(
     const managed_model_auto_compact_token_limit = if (managed_layer) |layer| layer.model_auto_compact_token_limit else null;
     const model_auto_compact_token_limit = managed_model_auto_compact_token_limit orelse project_layers.modelAutoCompactTokenLimit() orelse configReadUserOrSystemMaybeI64(cfg.model_auto_compact_token_limit, user_layer, "model_auto_compact_token_limit", system_model_auto_compact_token_limit);
     try appendJsonMaybeI64Field(allocator, &result, &first, "model_auto_compact_token_limit", model_auto_compact_token_limit);
+    const system_model_provider = if (system_layer) |layer| layer.model_provider else null;
+    const managed_model_provider = if (managed_layer) |layer| layer.model_provider else null;
+    const model_provider = managed_model_provider orelse configReadUserOrSystemMaybeString(cfg.model_provider_id, user_layer, "model_provider", system_model_provider);
+    try appendJsonMaybeStringField(allocator, &result, &first, "model_provider", model_provider);
     try appendJsonMaybeStringField(allocator, &result, &first, "profile", cfg.active_profile);
     const system_instructions = if (system_layer) |layer| layer.instructions else null;
     const managed_instructions = if (managed_layer) |layer| layer.instructions else null;
@@ -51494,6 +51493,7 @@ const ConfigReadManagedLayer = struct {
     review_model: ?[]const u8 = null,
     model_context_window: ?i64 = null,
     model_auto_compact_token_limit: ?i64 = null,
+    model_provider: ?[]const u8 = null,
     instructions: ?[]const u8 = null,
     developer_instructions: ?[]const u8 = null,
     compact_prompt: ?[]const u8 = null,
@@ -51515,6 +51515,7 @@ const ConfigReadManagedLayer = struct {
         allocator.free(self.version);
         if (self.model) |value| allocator.free(value);
         if (self.review_model) |value| allocator.free(value);
+        if (self.model_provider) |value| allocator.free(value);
         if (self.instructions) |value| allocator.free(value);
         if (self.developer_instructions) |value| allocator.free(value);
         if (self.compact_prompt) |value| allocator.free(value);
@@ -51593,6 +51594,7 @@ const ConfigReadSystemLayer = struct {
     review_model: ?[]const u8,
     model_context_window: ?i64,
     model_auto_compact_token_limit: ?i64,
+    model_provider: ?[]const u8,
     instructions: ?[]const u8,
     developer_instructions: ?[]const u8,
     compact_prompt: ?[]const u8,
@@ -51614,6 +51616,7 @@ const ConfigReadSystemLayer = struct {
         allocator.free(self.version);
         if (self.model) |value| allocator.free(value);
         if (self.review_model) |value| allocator.free(value);
+        if (self.model_provider) |value| allocator.free(value);
         if (self.instructions) |value| allocator.free(value);
         if (self.developer_instructions) |value| allocator.free(value);
         if (self.compact_prompt) |value| allocator.free(value);
@@ -51896,12 +51899,14 @@ const ConfigReadUserLayer = struct {
     file_path: []const u8,
     version: []const u8,
     origin_keys: []const []const u8,
+    model_provider: ?[]const u8,
     tools: ConfigReadTools,
     apps: ConfigReadApps,
     sandbox_workspace_write: ConfigReadSandboxWorkspaceWrite,
 
     fn deinit(self: *ConfigReadUserLayer, allocator: std.mem.Allocator) void {
         allocator.free(self.version);
+        if (self.model_provider) |value| allocator.free(value);
         for (self.origin_keys) |key| allocator.free(key);
         allocator.free(self.origin_keys);
         self.tools.deinit(allocator);
@@ -51925,6 +51930,8 @@ fn loadConfigReadUserLayer(
     errdefer tools.deinit(allocator);
     var apps = try loadConfigReadApps(allocator, bytes);
     errdefer apps.deinit(allocator);
+    const model_provider = try config.scopedStringValue(allocator, bytes, active_profile, "model_provider");
+    errdefer if (model_provider) |value| allocator.free(value);
     var sandbox_workspace_write = try loadConfigReadSandboxWorkspaceWrite(allocator, bytes);
     errdefer sandbox_workspace_write.deinit(allocator);
     const version = try configVersionAlloc(allocator, bytes);
@@ -51933,6 +51940,7 @@ fn loadConfigReadUserLayer(
         .file_path = config_path,
         .version = version,
         .origin_keys = origin_keys,
+        .model_provider = model_provider,
         .tools = tools,
         .apps = apps,
         .sandbox_workspace_write = sandbox_workspace_write,
@@ -52693,6 +52701,8 @@ fn loadConfigReadManagedLayer(allocator: std.mem.Allocator) !?ConfigReadManagedL
     errdefer if (review_model) |value| allocator.free(value);
     var model_context_window: ?i64 = null;
     var model_auto_compact_token_limit: ?i64 = null;
+    var model_provider: ?[]const u8 = null;
+    errdefer if (model_provider) |value| allocator.free(value);
     var instructions: ?[]const u8 = null;
     errdefer if (instructions) |value| allocator.free(value);
     var developer_instructions: ?[]const u8 = null;
@@ -52730,6 +52740,10 @@ fn loadConfigReadManagedLayer(allocator: std.mem.Allocator) !?ConfigReadManagedL
     if (try config.topLevelI64Value(payload, "model_auto_compact_token_limit")) |value| {
         model_auto_compact_token_limit = value;
         try appendUniqueOriginKey(allocator, &origin_keys, "model_auto_compact_token_limit");
+    }
+    if (try config.topLevelStringValue(allocator, payload, "model_provider")) |value| {
+        model_provider = value;
+        try appendUniqueOriginKey(allocator, &origin_keys, "model_provider");
     }
     if (try configReadTopLevelInstructionsValue(allocator, payload)) |value| {
         instructions = value;
@@ -52807,6 +52821,7 @@ fn loadConfigReadManagedLayer(allocator: std.mem.Allocator) !?ConfigReadManagedL
         .review_model = review_model,
         .model_context_window = model_context_window,
         .model_auto_compact_token_limit = model_auto_compact_token_limit,
+        .model_provider = model_provider,
         .instructions = instructions,
         .developer_instructions = developer_instructions,
         .compact_prompt = compact_prompt,
@@ -52844,6 +52859,8 @@ fn loadConfigReadSystemLayer(allocator: std.mem.Allocator) !ConfigReadSystemLaye
     errdefer if (review_model) |value| allocator.free(value);
     var model_context_window: ?i64 = null;
     var model_auto_compact_token_limit: ?i64 = null;
+    var model_provider: ?[]const u8 = null;
+    errdefer if (model_provider) |value| allocator.free(value);
     var instructions: ?[]const u8 = null;
     errdefer if (instructions) |value| allocator.free(value);
     var developer_instructions: ?[]const u8 = null;
@@ -52881,6 +52898,10 @@ fn loadConfigReadSystemLayer(allocator: std.mem.Allocator) !ConfigReadSystemLaye
     if (try config.topLevelI64Value(payload, "model_auto_compact_token_limit")) |value| {
         model_auto_compact_token_limit = value;
         try appendUniqueOriginKey(allocator, &origin_keys, "model_auto_compact_token_limit");
+    }
+    if (try config.topLevelStringValue(allocator, payload, "model_provider")) |value| {
+        model_provider = value;
+        try appendUniqueOriginKey(allocator, &origin_keys, "model_provider");
     }
     if (try configReadTopLevelInstructionsValue(allocator, payload)) |value| {
         instructions = value;
@@ -52958,6 +52979,7 @@ fn loadConfigReadSystemLayer(allocator: std.mem.Allocator) !ConfigReadSystemLaye
         .review_model = review_model,
         .model_context_window = model_context_window,
         .model_auto_compact_token_limit = model_auto_compact_token_limit,
+        .model_provider = model_provider,
         .instructions = instructions,
         .developer_instructions = developer_instructions,
         .compact_prompt = compact_prompt,
@@ -53381,6 +53403,7 @@ fn isConfigReadOriginField(key: []const u8) bool {
         std.mem.eql(u8, key, "review_model") or
         std.mem.eql(u8, key, "model_context_window") or
         std.mem.eql(u8, key, "model_auto_compact_token_limit") or
+        std.mem.eql(u8, key, "model_provider") or
         std.mem.eql(u8, key, "profile") or
         std.mem.eql(u8, key, "instructions") or
         std.mem.eql(u8, key, "developer_instructions") or
@@ -54358,6 +54381,7 @@ fn appendConfigReadManagedLayerConfig(
     if (layer.review_model) |value| try appendJsonStringField(allocator, result, &first, "review_model", value);
     if (layer.model_context_window) |value| try appendJsonMaybeI64Field(allocator, result, &first, "model_context_window", value);
     if (layer.model_auto_compact_token_limit) |value| try appendJsonMaybeI64Field(allocator, result, &first, "model_auto_compact_token_limit", value);
+    if (layer.model_provider) |value| try appendJsonStringField(allocator, result, &first, "model_provider", value);
     if (layer.instructions) |value| try appendJsonStringField(allocator, result, &first, "instructions", value);
     if (layer.developer_instructions) |value| try appendJsonStringField(allocator, result, &first, "developer_instructions", value);
     if (layer.compact_prompt) |value| try appendJsonStringField(allocator, result, &first, "compact_prompt", value);
@@ -54401,6 +54425,8 @@ fn appendConfigReadSystemLayerConfig(
             try appendJsonMaybeI64Field(allocator, result, &first, key, layer.model_context_window);
         } else if (std.mem.eql(u8, key, "model_auto_compact_token_limit")) {
             try appendJsonMaybeI64Field(allocator, result, &first, key, layer.model_auto_compact_token_limit);
+        } else if (std.mem.eql(u8, key, "model_provider")) {
+            try appendJsonMaybeStringField(allocator, result, &first, key, layer.model_provider);
         } else if (std.mem.eql(u8, key, "instructions")) {
             try appendJsonMaybeStringField(allocator, result, &first, key, layer.instructions);
         } else if (std.mem.eql(u8, key, "developer_instructions")) {
@@ -54459,6 +54485,8 @@ fn appendConfigReadUserLayerConfig(
             try appendJsonMaybeI64Field(allocator, result, &first, key, cfg.model_context_window);
         } else if (std.mem.eql(u8, key, "model_auto_compact_token_limit")) {
             try appendJsonMaybeI64Field(allocator, result, &first, key, cfg.model_auto_compact_token_limit);
+        } else if (std.mem.eql(u8, key, "model_provider")) {
+            try appendJsonMaybeStringField(allocator, result, &first, key, layer.model_provider);
         } else if (std.mem.eql(u8, key, "profile")) {
             try appendJsonMaybeStringField(allocator, result, &first, key, cfg.active_profile);
         } else if (std.mem.eql(u8, key, "instructions")) {

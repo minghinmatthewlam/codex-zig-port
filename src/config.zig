@@ -13,6 +13,7 @@ pub const Config = struct {
     review_model: ?[]const u8 = null,
     model_context_window: ?i64 = null,
     model_auto_compact_token_limit: ?i64 = null,
+    model_provider_id: ?[]const u8 = null,
     openai_base_url: []const u8,
     chatgpt_base_url: []const u8,
     model_provider_wire_api: ModelProviderWireApi = .responses,
@@ -50,6 +51,7 @@ pub const Config = struct {
         if (self.active_profile) |value| allocator.free(value);
         allocator.free(self.model);
         if (self.review_model) |value| allocator.free(value);
+        if (self.model_provider_id) |value| allocator.free(value);
         allocator.free(self.openai_base_url);
         allocator.free(self.chatgpt_base_url);
         if (self.model_provider_env_key) |value| allocator.free(value);
@@ -832,6 +834,8 @@ pub fn loadWithOptions(allocator: std.mem.Allocator, options: LoadOptions) !Conf
     errdefer if (review_model) |value| allocator.free(value);
     const model_context_window = try resolveModelContextWindow(config_view);
     const model_auto_compact_token_limit = try resolveModelAutoCompactTokenLimit(config_view);
+    const model_provider_id = try resolveModelProviderId(allocator, config_view, active_profile);
+    errdefer if (model_provider_id) |value| allocator.free(value);
 
     const base_urls = try resolveBaseUrls(allocator, config_view, active_profile);
     errdefer allocator.free(base_urls.openai);
@@ -888,6 +892,7 @@ pub fn loadWithOptions(allocator: std.mem.Allocator, options: LoadOptions) !Conf
         .review_model = review_model,
         .model_context_window = model_context_window,
         .model_auto_compact_token_limit = model_auto_compact_token_limit,
+        .model_provider_id = model_provider_id,
         .openai_base_url = base_urls.openai,
         .chatgpt_base_url = base_urls.chatgpt,
         .model_provider_wire_api = model_provider_wire_api,
