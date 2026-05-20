@@ -39091,7 +39091,7 @@ fn projectConfigHasRootKey(config_bytes: []const u8, key: []const u8) bool {
         }
 
         if (!in_top_level) continue;
-        const eq = std.mem.indexOfScalar(u8, line, '=') orelse continue;
+        const eq = tomlAssignmentEqualsIndex(line) orelse continue;
         const raw_key = std.mem.trim(u8, line[0..eq], " \t");
         if (tomlKeyRootMatches(raw_key, key)) return true;
     }
@@ -51645,6 +51645,29 @@ fn parseTomlBoolLiteral(raw: []const u8) ?bool {
     return null;
 }
 
+fn tomlAssignmentEqualsIndex(line: []const u8) ?usize {
+    var quote: u8 = 0;
+    var escaped = false;
+    for (line, 0..) |byte, index| {
+        if (quote != 0) {
+            if (quote == '"' and escaped) {
+                escaped = false;
+            } else if (quote == '"' and byte == '\\') {
+                escaped = true;
+            } else if (byte == quote) {
+                quote = 0;
+            }
+            continue;
+        }
+        if (byte == '"' or byte == '\'') {
+            quote = byte;
+            continue;
+        }
+        if (byte == '=') return index;
+    }
+    return null;
+}
+
 fn configWriteAssignmentPath(
     allocator: std.mem.Allocator,
     current_section: ?[]const u8,
@@ -51682,7 +51705,7 @@ fn configWriteInlineTableFeatureRequirementConflictMessage(
     }) |field_raw| {
         const field = std.mem.trim(u8, field_raw, " \t\r\n");
         if (field.len == 0) continue;
-        const eq = std.mem.indexOfScalar(u8, field, '=') orelse continue;
+        const eq = tomlAssignmentEqualsIndex(field) orelse continue;
         const key = (parseConfigReadInlineFieldKey(allocator, field[0..eq]) catch |err| switch (err) {
             error.InvalidConfigReadAppSection, error.InvalidTomlString => continue,
             else => return err,
@@ -51787,7 +51810,7 @@ fn configWriteScalarRequirementConflictMessage(
         }
         defer observeTomlMultilineStringOpen(&multiline_string, line_without_comment);
 
-        const eq = std.mem.indexOfScalar(u8, line, '=') orelse continue;
+        const eq = tomlAssignmentEqualsIndex(line) orelse continue;
         const lhs = std.mem.trim(u8, line[0..eq], " \t");
         const rhs = std.mem.trim(u8, line[eq + 1 ..], " \t");
         const current_section: ?[]const u8 = switch (current_scope) {
@@ -51828,7 +51851,7 @@ fn configWriteInlineTableScalarRequirementConflictMessage(
     }) |field_raw| {
         const field = std.mem.trim(u8, field_raw, " \t\r\n");
         if (field.len == 0) continue;
-        const eq = std.mem.indexOfScalar(u8, field, '=') orelse continue;
+        const eq = tomlAssignmentEqualsIndex(field) orelse continue;
         const key = (parseConfigReadInlineFieldKey(allocator, field[0..eq]) catch |err| switch (err) {
             error.InvalidConfigReadAppSection, error.InvalidTomlString => continue,
             else => return err,
@@ -61655,6 +61678,97 @@ test "config/read scalar requirements fall back to first allowed value" {
         error.ConfigReadRequirementsNoSupportedSandboxModes,
         configReadRequirementSandboxMode(.danger_full_access, unsupported_sandbox),
     );
+}
+
+test "config write scalar requirements reject disallowed top-level and profile values" {
+    const allocator = std.testing.allocator;
+    var requirements = ConfigRequirementsReadRequirements{
+        .allowed_approval_policies = try stringListFromLabels(allocator, &.{"on-request"}),
+        .allowed_approvals_reviewers = try stringListFromLabels(allocator, &.{"guardian_subagent"}),
+        .allowed_sandbox_modes = try stringListFromLabels(allocator, &.{"read-only"}),
+        .allowed_web_search_modes = try stringListFromLabels(allocator, &.{ "cached", "disabled" }),
+    };
+    defer requirements.deinit(allocator);
+
+    const approval_conflict = try configWriteScalarRequirementConflictMessage(allocator,
+        \\approval_policy = "never"
+        \\
+    , requirements);
+    try std.testing.expect(approval_conflict != null);
+    defer allocator.free(approval_conflict.?);
+    try std.testing.expect(std.mem.indexOf(u8, approval_conflict.?, "approval_policy=\"never\"") != null);
+
+    const profile_conflict = try configWriteScalarRequirementConflictMessage(allocator,
+        \\[profiles.enterprise]
+        \\sandbox_mode = "danger-full-access"
+        \\
+    , requirements);
+    try std.testing.expect(profile_conflict != null);
+    defer allocator.free(profile_conflict.?);
+    try std.testing.expect(std.mem.indexOf(u8, profile_conflict.?, "profiles.enterprise.sandbox_mode=\"danger-full-access\"") != null);
+
+    const inline_profile_conflict = try configWriteScalarRequirementConflictMessage(allocator,
+        \\profiles = { enterprise = { web_search = "live" } }
+        \\
+    , requirements);
+    try std.testing.expect(inline_profile_conflict != null);
+    defer allocator.free(inline_profile_conflict.?);
+    try std.testing.expect(std.mem.indexOf(u8, inline_profile_conflict.?, "profiles.enterprise.web_search=\"live\"") != null);
+
+    const dotted_profile_conflict = try configWriteScalarRequirementConflictMessage(allocator,
+        \\profiles.enterprise.approvals_reviewer = "user"
+        \\
+    , requirements);
+    try std.testing.expect(dotted_profile_conflict != null);
+    defer allocator.free(dotted_profile_conflict.?);
+    try std.testing.expect(std.mem.indexOf(u8, dotted_profile_conflict.?, "profiles.enterprise.approvals_reviewer=\"user\"") != null);
+
+    const unrelated_nested_profile_inline = try configWriteScalarRequirementConflictMessage(allocator,
+        \\profiles = { enterprise = { tools = { default = { note = "}" } } } }
+        \\
+    , requirements);
+    try std.testing.expect(unrelated_nested_profile_inline == null);
+
+    const array_table_local_scalar = try configWriteScalarRequirementConflictMessage(allocator,
+        \\[[skills.config]]
+        \\name = "local"
+        \\approval_policy = "never"
+        \\
+    , requirements);
+    try std.testing.expect(array_table_local_scalar == null);
+
+    try std.testing.expectError(
+        error.InvalidConfigWriteScalarType,
+        configWriteScalarRequirementConflictMessage(allocator,
+            \\approval_policy = true
+            \\
+        , requirements),
+    );
+
+    const allowed = try configWriteScalarRequirementConflictMessage(allocator,
+        \\approval_policy = "on-request"
+        \\approvals_reviewer = "auto_review"
+        \\sandbox_mode = "read-only"
+        \\web_search = "cached"
+        \\
+        \\[profiles.enterprise]
+        \\approvals_reviewer = "guardian_subagent"
+        \\web_search = "disabled"
+        \\
+    , requirements);
+    try std.testing.expect(allowed == null);
+
+    var empty_sandbox_requirement = ConfigRequirementsReadRequirements{
+        .allowed_sandbox_modes = try stringListFromLabels(allocator, &.{}),
+    };
+    defer empty_sandbox_requirement.deinit(allocator);
+    const empty_conflict = try configWriteScalarRequirementConflictMessage(allocator,
+        \\sandbox_mode = "read-only"
+        \\
+    , empty_sandbox_requirement);
+    try std.testing.expect(empty_conflict != null);
+    defer allocator.free(empty_conflict.?);
+    try std.testing.expect(std.mem.indexOf(u8, empty_conflict.?, "sandbox_mode=\"read-only\"") != null);
 }
 
 test "config/read profiles parse inline tables and sandbox mode" {

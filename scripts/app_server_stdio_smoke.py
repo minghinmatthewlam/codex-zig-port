@@ -33414,6 +33414,94 @@ def run_config_value_write_rpc_smoke(binary: Path) -> None:
             in rejected_inline_profile_feature["error"]["message"]
         )
         assert config_path.read_text(encoding="utf-8") == before_rejected_feature_write
+
+        system_requirements_path.write_text(
+            "\n".join(
+                [
+                    'allowed_approval_policies = ["on-request"]',
+                    'allowed_approvals_reviewers = ["auto_review"]',
+                    'allowed_sandbox_modes = ["read-only"]',
+                    'allowed_web_search_modes = ["cached"]',
+                ]
+            ),
+            encoding="utf-8",
+        )
+        allowed_approval = rpc(
+            "config-write-allowed-approval-requirement",
+            "config/value/write",
+            {
+                "filePath": str(config_path),
+                "keyPath": "approval_policy",
+                "value": "on-request",
+                "mergeStrategy": "replace",
+                "expectedVersion": write_feature["result"]["version"],
+            },
+        )
+        assert allowed_approval["id"] == "config-write-allowed-approval-requirement"
+        assert allowed_approval["result"]["status"] == "ok"
+
+        before_rejected_scalar_write = config_path.read_text(encoding="utf-8")
+        rejected_approval = rpc(
+            "config-write-reject-approval-requirement",
+            "config/value/write",
+            {
+                "filePath": str(config_path),
+                "keyPath": "approval_policy",
+                "value": "never",
+                "mergeStrategy": "replace",
+                "expectedVersion": allowed_approval["result"]["version"],
+            },
+        )
+        assert rejected_approval["id"] == "config-write-reject-approval-requirement"
+        assert rejected_approval["error"]["code"] == -32602
+        assert (
+            'invalid value for `approval_policy`: `approval_policy="never"`'
+            in rejected_approval["error"]["message"]
+        )
+        assert config_path.read_text(encoding="utf-8") == before_rejected_scalar_write
+
+        rejected_scalar_batch = rpc(
+            "config-batch-reject-scalar-requirement",
+            "config/batchWrite",
+            {
+                "filePath": str(config_path),
+                "edits": [
+                    {
+                        "keyPath": "sandbox_mode",
+                        "value": "danger-full-access",
+                        "mergeStrategy": "replace",
+                    },
+                    {
+                        "keyPath": "web_search",
+                        "value": "live",
+                        "mergeStrategy": "replace",
+                    },
+                ],
+                "expectedVersion": allowed_approval["result"]["version"],
+            },
+        )
+        assert rejected_scalar_batch["id"] == "config-batch-reject-scalar-requirement"
+        assert rejected_scalar_batch["error"]["code"] == -32602
+        assert (
+            'invalid value for `sandbox_mode`: `sandbox_mode="danger-full-access"`'
+            in rejected_scalar_batch["error"]["message"]
+        )
+        assert config_path.read_text(encoding="utf-8") == before_rejected_scalar_write
+
+        clear_approval = rpc(
+            "config-write-clear-approval-requirement",
+            "config/value/write",
+            {
+                "filePath": str(config_path),
+                "keyPath": "approval_policy",
+                "value": None,
+                "mergeStrategy": "replace",
+                "expectedVersion": allowed_approval["result"]["version"],
+            },
+        )
+        assert clear_approval["id"] == "config-write-clear-approval-requirement"
+        assert clear_approval["result"]["status"] == "ok"
+        assert "approval_policy" not in config_path.read_text(encoding="utf-8")
         system_requirements_path.unlink()
 
         canonical_config_path = config_path.resolve()
@@ -33425,7 +33513,7 @@ def run_config_value_write_rpc_smoke(binary: Path) -> None:
                 "keyPath": "model",
                 "value": "gpt-canonical",
                 "mergeStrategy": "replace",
-                "expectedVersion": write_feature["result"]["version"],
+                "expectedVersion": clear_approval["result"]["version"],
             },
         )
         assert canonical_write["id"] == "config-write-canonical-path"
