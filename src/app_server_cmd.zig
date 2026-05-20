@@ -51511,6 +51511,25 @@ fn handleConfigWriteEdits(
         defer allocator.free(full_message);
         return .{ .response = try renderJsonRpcError(allocator, id_value, -32602, full_message), .wrote = false };
     }
+    const scalar_conflict = configWriteScalarRequirementConflictMessage(allocator, updated, requirements) catch |err| switch (err) {
+        error.InvalidApprovalPolicy,
+        error.InvalidApprovalsReviewer,
+        error.InvalidSandboxMode,
+        error.InvalidWebSearchMode,
+        error.InvalidConfigWriteScalarType,
+        => {
+            const message = try std.fmt.allocPrint(allocator, "Invalid configuration: {s}", .{@errorName(err)});
+            defer allocator.free(message);
+            return .{ .response = try renderJsonRpcError(allocator, id_value, -32602, message), .wrote = false };
+        },
+        else => return err,
+    };
+    if (scalar_conflict) |message| {
+        defer allocator.free(message);
+        const full_message = try std.fmt.allocPrint(allocator, "Invalid configuration: {s}", .{message});
+        defer allocator.free(full_message);
+        return .{ .response = try renderJsonRpcError(allocator, id_value, -32602, full_message), .wrote = false };
+    }
 
     var managed_layer = loadConfigReadManagedLayer(allocator) catch |err| {
         const message = try std.fmt.allocPrint(allocator, "{s} failed to read managed config", .{method_name});
@@ -51715,6 +51734,188 @@ fn configWriteFeatureRequirementConflictForPathItems(
         .{ key_path, if (enabled) "true" else "false" },
     );
     return @as(?[]const u8, message);
+}
+
+const ConfigWriteScalarRequirementKind = enum {
+    approval_policy,
+    approvals_reviewer,
+    sandbox_mode,
+    web_search,
+
+    fn key(self: ConfigWriteScalarRequirementKind) []const u8 {
+        return switch (self) {
+            .approval_policy => "approval_policy",
+            .approvals_reviewer => "approvals_reviewer",
+            .sandbox_mode => "sandbox_mode",
+            .web_search => "web_search",
+        };
+    }
+};
+
+fn configWriteScalarRequirementConflictMessage(
+    allocator: std.mem.Allocator,
+    bytes: []const u8,
+    requirements: ConfigRequirementsReadRequirements,
+) !?[]const u8 {
+    if (requirements.allowed_approval_policies == null and
+        requirements.allowed_approvals_reviewers == null and
+        requirements.allowed_sandbox_modes == null and
+        requirements.allowed_web_search_modes == null)
+    {
+        return null;
+    }
+
+    var current_scope: ConfigWriteTomlScope = .top_level;
+    var multiline_string: ?TomlMultilineStringKind = null;
+
+    var start: usize = 0;
+    while (start < bytes.len) {
+        const end = std.mem.indexOfScalarPos(u8, bytes, start, '\n') orelse bytes.len;
+        const line_raw = bytes[start..end];
+        start = if (end < bytes.len) end + 1 else bytes.len;
+
+        if (tomlLineIsMultilineStringBody(&multiline_string, line_raw)) continue;
+        const line_without_comment = stripTomlLineComment(line_raw);
+        const line = std.mem.trim(u8, line_without_comment, " \t\r");
+        if (line.len == 0) continue;
+        if (line[0] == '[') {
+            current_scope = if (configWriteTomlSectionPath(line)) |section|
+                ConfigWriteTomlScope{ .table = section }
+            else
+                .ignored;
+            continue;
+        }
+        defer observeTomlMultilineStringOpen(&multiline_string, line_without_comment);
+
+        const eq = std.mem.indexOfScalar(u8, line, '=') orelse continue;
+        const lhs = std.mem.trim(u8, line[0..eq], " \t");
+        const rhs = std.mem.trim(u8, line[eq + 1 ..], " \t");
+        const current_section: ?[]const u8 = switch (current_scope) {
+            .top_level => null,
+            .table => current_scope.table,
+            .ignored => continue,
+        };
+
+        var path = (configWriteAssignmentPath(allocator, current_section, lhs) catch |err| switch (err) {
+            error.InvalidConfigReadProfileDottedKey, error.InvalidConfigReadAppSection, error.InvalidTomlString => continue,
+            else => return err,
+        }) orelse continue;
+        defer path.deinit(allocator);
+
+        if (try configWriteScalarRequirementConflictForPathItems(allocator, requirements, path.items, rhs)) |message| return message;
+        if (rhs.len > 0 and rhs[0] == '{' and configWritePathMayContainScalarRequirement(path.items)) {
+            var path_stack = std.ArrayList([]const u8).empty;
+            defer path_stack.deinit(allocator);
+            try path_stack.appendSlice(allocator, path.items);
+            if (try configWriteInlineTableScalarRequirementConflictMessage(allocator, requirements, &path_stack, rhs)) |message| return message;
+        }
+    }
+    return null;
+}
+
+fn configWriteInlineTableScalarRequirementConflictMessage(
+    allocator: std.mem.Allocator,
+    requirements: ConfigRequirementsReadRequirements,
+    path_stack: *std.ArrayList([]const u8),
+    raw_table: []const u8,
+) !?[]const u8 {
+    const body = configReadInlineTableBody(raw_table) catch |err| switch (err) {
+        error.InvalidConfigReadInlineTable => return null,
+    };
+    var field_start: usize = 0;
+    while (nextConfigReadInlineTableField(body, &field_start) catch |err| switch (err) {
+        error.InvalidConfigReadInlineTable => return null,
+    }) |field_raw| {
+        const field = std.mem.trim(u8, field_raw, " \t\r\n");
+        if (field.len == 0) continue;
+        const eq = std.mem.indexOfScalar(u8, field, '=') orelse continue;
+        const key = (parseConfigReadInlineFieldKey(allocator, field[0..eq]) catch |err| switch (err) {
+            error.InvalidConfigReadAppSection, error.InvalidTomlString => continue,
+            else => return err,
+        }) orelse continue;
+        defer allocator.free(key);
+        try path_stack.append(allocator, key);
+        defer _ = path_stack.pop();
+
+        const rhs = std.mem.trim(u8, field[eq + 1 ..], " \t\r\n");
+        if (try configWriteScalarRequirementConflictForPathItems(allocator, requirements, path_stack.items, rhs)) |message| return message;
+        if (rhs.len > 0 and rhs[0] == '{' and configWritePathMayContainScalarRequirement(path_stack.items)) {
+            if (try configWriteInlineTableScalarRequirementConflictMessage(allocator, requirements, path_stack, rhs)) |message| return message;
+        }
+    }
+    return null;
+}
+
+fn configWritePathMayContainScalarRequirement(path_items: []const []const u8) bool {
+    if (path_items.len == 0) return false;
+    return std.mem.eql(u8, path_items[0], "profiles") and path_items.len <= 2;
+}
+
+fn configWriteScalarRequirementConflictForPathItems(
+    allocator: std.mem.Allocator,
+    requirements: ConfigRequirementsReadRequirements,
+    path_items: []const []const u8,
+    raw_value: []const u8,
+) !?[]const u8 {
+    const kind = configWriteScalarRequirementKindForPathItems(path_items) orelse return null;
+    const allowed = configWriteAllowedScalarRequirementList(requirements, kind) orelse return null;
+
+    const label = try configWriteScalarRequirementValueLabel(allocator, kind, raw_value);
+    defer allocator.free(label);
+    if (configReadRequirementListContains(allowed, label)) return null;
+
+    const key_path = try configWriteJoinPath(allocator, path_items);
+    defer allocator.free(key_path);
+    return @as(?[]const u8, try std.fmt.allocPrint(
+        allocator,
+        "invalid value for `{s}`: `{s}=\"{s}\"` is disallowed by requirements",
+        .{ kind.key(), key_path, label },
+    ));
+}
+
+fn configWriteScalarRequirementKindForPathItems(path_items: []const []const u8) ?ConfigWriteScalarRequirementKind {
+    const key = if (path_items.len == 1)
+        path_items[0]
+    else if (path_items.len == 3 and std.mem.eql(u8, path_items[0], "profiles"))
+        path_items[2]
+    else
+        return null;
+    if (std.mem.eql(u8, key, "approval_policy")) return .approval_policy;
+    if (std.mem.eql(u8, key, "approvals_reviewer")) return .approvals_reviewer;
+    if (std.mem.eql(u8, key, "sandbox_mode")) return .sandbox_mode;
+    if (std.mem.eql(u8, key, "web_search")) return .web_search;
+    return null;
+}
+
+fn configWriteAllowedScalarRequirementList(
+    requirements: ConfigRequirementsReadRequirements,
+    kind: ConfigWriteScalarRequirementKind,
+) ?config.StringList {
+    return switch (kind) {
+        .approval_policy => requirements.allowed_approval_policies,
+        .approvals_reviewer => requirements.allowed_approvals_reviewers,
+        .sandbox_mode => requirements.allowed_sandbox_modes,
+        .web_search => requirements.allowed_web_search_modes,
+    };
+}
+
+fn configWriteScalarRequirementValueLabel(
+    allocator: std.mem.Allocator,
+    kind: ConfigWriteScalarRequirementKind,
+    raw_value: []const u8,
+) ![]const u8 {
+    const value = configReadStringValue(allocator, raw_value) catch |err| switch (err) {
+        error.InvalidConfigReadString, error.InvalidTomlString => return error.InvalidConfigWriteScalarType,
+        else => return err,
+    };
+    defer allocator.free(value);
+    const label = switch (kind) {
+        .approval_policy => (try config.ApprovalPolicy.parse(value)).label(),
+        .approvals_reviewer => (try config.ApprovalsReviewer.parse(value)).label(),
+        .sandbox_mode => (try config.SandboxMode.parse(value)).label(),
+        .web_search => (try config.WebSearchMode.parse(value)).label(),
+    };
+    return allocator.dupe(u8, label);
 }
 
 fn configWriteJoinPath(allocator: std.mem.Allocator, path_items: []const []const u8) ![]const u8 {
