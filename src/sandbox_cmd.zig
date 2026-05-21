@@ -75,8 +75,12 @@ pub fn runWithOptions(allocator: std.mem.Allocator, args: *std.process.Args.Iter
         .linux => return error.LinuxSandboxUnsupported,
         .windows => return error.WindowsSandboxUnsupported,
     }
-    if (parsed.allow_unix_sockets.items.len > 0) return error.SandboxAllowUnixSocketUnsupported;
     if (parsed.log_denials) return error.SandboxLogDenialsUnsupported;
+
+    const original_cwd = try std.Io.Dir.cwd().realPathFileAlloc(std.Io.Threaded.global_single_threaded.io(), ".", allocator);
+    defer allocator.free(original_cwd);
+    const allow_unix_sockets = try sandbox.resolveUnixSocketPathsAgainst(allocator, original_cwd, parsed.allow_unix_sockets.items);
+    defer sandbox.freeResolvedPaths(allocator, allow_unix_sockets);
 
     var cfg = try config.loadWithOptions(allocator, .{ .profile = options.profile });
     defer cfg.deinit(allocator);
@@ -115,7 +119,7 @@ pub fn runWithOptions(allocator: std.mem.Allocator, args: *std.process.Args.Iter
     const network_enabled = if (sandbox_profile) |profile| profile.network_enabled else true;
     const read_denied_roots = if (sandbox_profile) |profile| profile.read_denied_roots.items else &.{};
     const read_denied_globs = if (sandbox_profile) |profile| profile.read_denied_globs.items else &.{};
-    try runCommand(allocator, parsed.command, cfg.sandbox_mode, additional_writable_roots, include_cwd_write_root, network_enabled, read_denied_roots, read_denied_globs);
+    try runCommand(allocator, parsed.command, cfg.sandbox_mode, additional_writable_roots, include_cwd_write_root, network_enabled, read_denied_roots, read_denied_globs, allow_unix_sockets);
 }
 
 fn parseSandboxKind(subcommand: []const u8) ?SandboxKind {
@@ -230,6 +234,7 @@ fn runCommand(
     network_enabled: bool,
     read_denied_roots: []const []const u8,
     read_denied_globs: []const []const u8,
+    allow_unix_sockets: []const []const u8,
 ) !void {
     var io_instance: std.Io.Threaded = .init(allocator, .{});
     defer io_instance.deinit();
@@ -242,6 +247,7 @@ fn runCommand(
             .network_enabled = network_enabled,
             .read_denied_roots = read_denied_roots,
             .read_denied_globs = read_denied_globs,
+            .allow_unix_sockets = allow_unix_sockets,
         });
         break :blk sandboxed_argv.?.argv;
     } else argv;
@@ -305,7 +311,7 @@ fn printMacosHelp() void {
         \\  --include-managed-config
         \\                      Recognize managed config with --permissions-profile
         \\  --allow-unix-socket PATH
-        \\                      Parse Rust socket allowlists; currently returns an explicit unsupported error
+        \\                      Allow AF_UNIX bind/connect operations rooted at PATH
         \\  --log-denials      Parse Rust denial logging; currently returns an explicit unsupported error
         \\  -s, --sandbox MODE  read-only, workspace-write, or danger-full-access
         \\  -C, --cd DIR        Profile working root; requires --permissions-profile

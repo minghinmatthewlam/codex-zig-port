@@ -9105,29 +9105,6 @@ def run_sandbox_permission_profile_smoke(binary: Path) -> None:
         assert "--allow-unix-socket PATH" in help_result.stderr
         assert "--log-denials" in help_result.stderr
 
-        socket_unsupported = subprocess.run(
-            [
-                str(binary.resolve()),
-                "sandbox",
-                "macos",
-                "--allow-unix-socket",
-                str(temp_root / "codex-browser-use"),
-                "--",
-                "/bin/echo",
-                "ok",
-            ],
-            cwd=temp_root,
-            env=env,
-            text=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            timeout=5,
-            check=False,
-        )
-        assert socket_unsupported.returncode != 0
-        assert socket_unsupported.stdout == ""
-        assert "error: SandboxAllowUnixSocketUnsupported" in socket_unsupported.stderr
-
         denials_unsupported = subprocess.run(
             [
                 str(binary.resolve()),
@@ -9180,6 +9157,8 @@ def run_sandbox_permission_profile_smoke(binary: Path) -> None:
         outside = temp_root / "outside"
         workspace.mkdir()
         outside.mkdir()
+        socket_dir = workspace / "ipc"
+        socket_dir.mkdir()
         secret = workspace / "secret.txt"
         public = workspace / "public.txt"
         nested = workspace / "nested"
@@ -9236,6 +9215,69 @@ def run_sandbox_permission_profile_smoke(binary: Path) -> None:
             check=True,
         )
         assert sandbox_env_marker.stdout == "seatbelt\n"
+
+        bind_unix_socket = "\n".join(
+            [
+                "import pathlib",
+                "import socket",
+                "path = pathlib.Path('ipc/codex.sock')",
+                "sock = socket.socket(socket.AF_UNIX)",
+                "sock.bind(str(path))",
+                "sock.close()",
+                "print('unix-socket-ok')",
+            ]
+        )
+        unix_socket_denied = subprocess.run(
+            [
+                str(binary.resolve()),
+                "sandbox",
+                "macos",
+                "--permissions-profile",
+                ":workspace",
+                "--cd",
+                str(workspace),
+                "--",
+                sys.executable,
+                "-c",
+                bind_unix_socket.replace("codex.sock", "blocked.sock"),
+            ],
+            cwd=temp_root,
+            env=env,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=5,
+            check=False,
+        )
+        assert unix_socket_denied.returncode != 0
+        assert not (socket_dir / "blocked.sock").exists()
+
+        unix_socket_allowed = subprocess.run(
+            [
+                str(binary.resolve()),
+                "sandbox",
+                "macos",
+                "--permissions-profile",
+                ":workspace",
+                "--cd",
+                str(workspace),
+                "--allow-unix-socket",
+                "workspace/ipc",
+                "--",
+                sys.executable,
+                "-c",
+                bind_unix_socket,
+            ],
+            cwd=temp_root,
+            env=env,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=5,
+            check=True,
+        )
+        assert unix_socket_allowed.stdout == "unix-socket-ok\n"
+        assert (socket_dir / "codex.sock").exists()
 
         workspace_allowed = subprocess.run(
             [

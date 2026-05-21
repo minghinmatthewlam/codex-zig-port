@@ -60,7 +60,7 @@ The first demo slice targets macOS and focuses on the interactive CLI surface:
 - run a command through the macOS Seatbelt sandbox with `sandbox macos`,
   including Rust built-ins, supported custom `[permissions]` profiles, macOS
   deny-read glob entries, shared tool/app-server enforcement, and parsed
-  Seatbelt-only socket/denial flags
+  Seatbelt-only denial flags plus applied Unix socket allowlists
 - check `prefix_rule` execpolicy files against a command with
   `execpolicy check`, including `match` / `not_match` examples,
   `network_rule` validation, and absolute host executable resolution
@@ -525,7 +525,8 @@ dispatch with `--cd`, equals-form exec options, piped-stdin exec prompts, the
 exec Git-repository guard, `exec resume` option placement, yolo /
 `--dangerously-bypass-approvals-and-sandbox` approval-policy conflicts, and removed
 `--full-auto` compatibility, plus rejection of the removed top-level
-`marketplace` namespace and sandbox built-in permission-profile execution.
+`marketplace` namespace, sandbox built-in permission-profile execution, and
+macOS Unix socket allowlist enforcement.
 App-server smokes cover profile-scoped feature enablement writes and reads. Run
 `scripts/tui_e2e.py --show-output` directly when you want to inspect the
 terminal transcript.
@@ -626,6 +627,7 @@ codex-zig exec resume --all last "continue"
 codex-zig exec --image screenshot.png -- "describe this"
 codex-zig sandbox macos -- /bin/echo ok
 codex-zig sandbox macos --permissions-profile :workspace --cd . -- /bin/echo ok
+codex-zig sandbox macos --permissions-profile :workspace --cd . --allow-unix-socket . -- /bin/echo ok
 codex-zig sandbox macos --permissions-profile custom-profile --cd . -- /bin/echo ok
 codex-zig features list
 codex-zig features enable goals

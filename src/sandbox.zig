@@ -10,8 +10,11 @@ pub const seatbelt_env_value = "seatbelt";
 pub const SandboxedArgv = struct {
     argv: []const []const u8,
     profile: []const u8,
+    owned_args: []const []const u8 = &.{},
 
     pub fn deinit(self: *const SandboxedArgv, allocator: std.mem.Allocator) void {
+        for (self.owned_args) |arg| allocator.free(arg);
+        if (self.owned_args.len > 0) allocator.free(self.owned_args);
         allocator.free(self.argv);
         allocator.free(self.profile);
     }
@@ -23,6 +26,7 @@ pub const WrapOptions = struct {
     network_enabled: bool = true,
     read_denied_roots: []const []const u8 = &.{},
     read_denied_globs: []const []const u8 = &.{},
+    allow_unix_sockets: []const []const u8 = &.{},
 };
 
 pub fn shouldSandbox(mode: config.SandboxMode) bool {
@@ -121,6 +125,8 @@ pub fn wrapArgvWithPolicy(
     defer freeResolvedPaths(allocator, resolved_read_denied_roots);
     const resolved_read_denied_globs = try resolveReadDeniedGlobPatterns(allocator, cwd, options.read_denied_globs);
     defer freeResolvedPaths(allocator, resolved_read_denied_globs);
+    const resolved_unix_sockets = try resolveUnixSocketPaths(allocator, options.allow_unix_sockets);
+    defer freeResolvedPaths(allocator, resolved_unix_sockets);
 
     const profile = try buildProfileWithOptions(
         allocator,
@@ -131,18 +137,24 @@ pub fn wrapArgvWithPolicy(
         options.network_enabled,
         resolved_read_denied_roots,
         resolved_read_denied_globs,
+        resolved_unix_sockets.len,
     );
     errdefer allocator.free(profile);
 
-    var wrapped = try allocator.alloc([]const u8, argv.len + 4);
+    const definition_args = try unixSocketDefinitionArgs(allocator, resolved_unix_sockets);
+    errdefer freeOwnedArgs(allocator, definition_args);
+
+    var wrapped = try allocator.alloc([]const u8, argv.len + 4 + definition_args.len);
     errdefer allocator.free(wrapped);
     wrapped[0] = sandbox_exec_path;
     wrapped[1] = "-p";
     wrapped[2] = profile;
-    wrapped[3] = "--";
-    @memcpy(wrapped[4..], argv);
+    @memcpy(wrapped[3 .. 3 + definition_args.len], definition_args);
+    const command_separator_index = 3 + definition_args.len;
+    wrapped[command_separator_index] = "--";
+    @memcpy(wrapped[command_separator_index + 1 ..], argv);
 
-    return .{ .argv = wrapped, .profile = profile };
+    return .{ .argv = wrapped, .profile = profile, .owned_args = definition_args };
 }
 
 fn buildProfile(
@@ -151,7 +163,7 @@ fn buildProfile(
     cwd: []const u8,
     additional_writable_roots: []const []const u8,
 ) ![]const u8 {
-    return buildProfileWithOptions(allocator, mode, cwd, additional_writable_roots, true, true, &.{}, &.{});
+    return buildProfileWithOptions(allocator, mode, cwd, additional_writable_roots, true, true, &.{}, &.{}, 0);
 }
 
 fn buildProfileWithOptions(
@@ -163,10 +175,11 @@ fn buildProfileWithOptions(
     network_enabled: bool,
     read_denied_roots: []const []const u8,
     read_denied_globs: []const []const u8,
+    unix_socket_path_count: usize,
 ) ![]const u8 {
     return switch (mode) {
         .danger_full_access => error.SandboxNotNeeded,
-        .read_only => buildReadOnlyProfile(allocator, network_enabled, read_denied_roots, read_denied_globs),
+        .read_only => buildReadOnlyProfile(allocator, network_enabled, read_denied_roots, read_denied_globs, unix_socket_path_count),
         .workspace_write => blk: {
             var profile = std.ArrayList(u8).empty;
             errdefer profile.deinit(allocator);
@@ -185,6 +198,7 @@ fn buildProfileWithOptions(
             try appendReadDeniedRoots(allocator, &profile, read_denied_roots);
             try appendReadDeniedGlobPatterns(allocator, &profile, read_denied_globs);
             try appendNetworkPolicy(allocator, &profile, network_enabled);
+            try appendUnixSocketPolicy(allocator, &profile, unix_socket_path_count);
             break :blk try profile.toOwnedSlice(allocator);
         },
     };
@@ -195,6 +209,7 @@ fn buildReadOnlyProfile(
     network_enabled: bool,
     read_denied_roots: []const []const u8,
     read_denied_globs: []const []const u8,
+    unix_socket_path_count: usize,
 ) ![]const u8 {
     var profile = std.ArrayList(u8).empty;
     errdefer profile.deinit(allocator);
@@ -203,6 +218,7 @@ fn buildReadOnlyProfile(
     try appendReadDeniedRoots(allocator, &profile, read_denied_roots);
     try appendReadDeniedGlobPatterns(allocator, &profile, read_denied_globs);
     try appendNetworkPolicy(allocator, &profile, network_enabled);
+    try appendUnixSocketPolicy(allocator, &profile, unix_socket_path_count);
     return profile.toOwnedSlice(allocator);
 }
 
@@ -213,6 +229,92 @@ fn appendNetworkPolicy(
 ) !void {
     if (network_enabled) return;
     try profile.appendSlice(allocator, deniedNetworkPolicy);
+}
+
+fn appendUnixSocketPolicy(
+    allocator: std.mem.Allocator,
+    profile: *std.ArrayList(u8),
+    path_count: usize,
+) !void {
+    if (path_count == 0) return;
+    try profile.appendSlice(allocator, "(allow system-socket (socket-domain AF_UNIX))\n");
+    for (0..path_count) |index| {
+        const block = try std.fmt.allocPrint(
+            allocator,
+            \\(allow network-bind (local unix-socket (subpath (param "UNIX_SOCKET_PATH_{d}"))))
+            \\(allow network-outbound (remote unix-socket (subpath (param "UNIX_SOCKET_PATH_{d}"))))
+            \\
+        ,
+            .{ index, index },
+        );
+        defer allocator.free(block);
+        try profile.appendSlice(allocator, block);
+    }
+}
+
+pub fn resolveUnixSocketPathsAgainst(
+    allocator: std.mem.Allocator,
+    base_cwd: []const u8,
+    paths: []const []const u8,
+) ![]const []const u8 {
+    var resolved = std.ArrayList([]const u8).empty;
+    var moved = false;
+    errdefer if (!moved) {
+        for (resolved.items) |path| allocator.free(path);
+        resolved.deinit(allocator);
+    };
+
+    for (paths) |path| {
+        const absolute = if (std.fs.path.isAbsolute(path))
+            try allocator.dupe(u8, path)
+        else
+            try std.fs.path.join(allocator, &.{ base_cwd, path });
+        defer allocator.free(absolute);
+
+        const normalized = realPathAlloc(allocator, absolute) catch |err| switch (err) {
+            error.FileNotFound, error.NotDir, error.AccessDenied => try canonicalMissingPath(allocator, absolute),
+            else => return err,
+        };
+        try appendUniqueOwnedPath(allocator, &resolved, normalized);
+    }
+
+    const items = try resolved.toOwnedSlice(allocator);
+    moved = true;
+    return items;
+}
+
+fn resolveUnixSocketPaths(
+    allocator: std.mem.Allocator,
+    paths: []const []const u8,
+) ![]const []const u8 {
+    const cwd = try realPathAlloc(allocator, ".");
+    defer allocator.free(cwd);
+    return resolveUnixSocketPathsAgainst(allocator, cwd, paths);
+}
+
+fn unixSocketDefinitionArgs(
+    allocator: std.mem.Allocator,
+    paths: []const []const u8,
+) ![]const []const u8 {
+    if (paths.len == 0) return &.{};
+
+    var args = try allocator.alloc([]const u8, paths.len);
+    errdefer allocator.free(args);
+    var count: usize = 0;
+    errdefer {
+        for (args[0..count]) |arg| allocator.free(arg);
+    }
+
+    for (paths, 0..) |path, index| {
+        args[count] = try std.fmt.allocPrint(allocator, "-DUNIX_SOCKET_PATH_{d}={s}", .{ index, path });
+        count += 1;
+    }
+    return args;
+}
+
+fn freeOwnedArgs(allocator: std.mem.Allocator, args: []const []const u8) void {
+    for (args) |arg| allocator.free(arg);
+    if (args.len > 0) allocator.free(args);
 }
 
 fn realPathAlloc(allocator: std.mem.Allocator, path: []const u8) ![]const u8 {
@@ -699,15 +801,69 @@ test "seatbelt string escaping handles quotes and backslashes" {
 
 test "sandbox profile can disable network access" {
     const allocator = std.testing.allocator;
-    const profile = try buildProfileWithOptions(allocator, .workspace_write, "/tmp/codex-workspace", &.{}, true, false, &.{}, &.{});
+    const profile = try buildProfileWithOptions(allocator, .workspace_write, "/tmp/codex-workspace", &.{}, true, false, &.{}, &.{}, 0);
     defer allocator.free(profile);
 
     try std.testing.expect(std.mem.indexOf(u8, profile, "(deny network*)") != null);
 }
 
+test "sandbox profile can allow unix socket paths" {
+    const allocator = std.testing.allocator;
+    var dir = std.testing.tmpDir(.{});
+    defer dir.cleanup();
+    var io_instance: std.Io.Threaded = .init(allocator, .{});
+    defer io_instance.deinit();
+
+    try dir.dir.createDirPath(io_instance.io(), "socket-root");
+
+    const root = try dir.dir.realPathFileAlloc(std.Io.Threaded.global_single_threaded.io(), ".", allocator);
+    defer allocator.free(root);
+    const socket_root = try std.fs.path.join(allocator, &.{ root, "socket-root" });
+    defer allocator.free(socket_root);
+
+    const argv = [_][]const u8{ "/bin/echo", "ok" };
+    var wrapped = try wrapArgvWithPolicy(allocator, .read_only, argv[0..], &.{}, .{
+        .network_enabled = false,
+        .allow_unix_sockets = &.{socket_root},
+    });
+    defer wrapped.deinit(allocator);
+
+    const expected_definition = try std.fmt.allocPrint(allocator, "-DUNIX_SOCKET_PATH_0={s}", .{socket_root});
+    defer allocator.free(expected_definition);
+
+    try std.testing.expectEqualStrings(expected_definition, wrapped.argv[3]);
+    try std.testing.expectEqualStrings("--", wrapped.argv[4]);
+    try std.testing.expectEqualStrings("/bin/echo", wrapped.argv[5]);
+    try std.testing.expect(std.mem.indexOf(u8, wrapped.profile, "(deny network*)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, wrapped.profile, "(allow system-socket (socket-domain AF_UNIX))") != null);
+    try std.testing.expect(std.mem.indexOf(u8, wrapped.profile, "(allow network-bind (local unix-socket (subpath (param \"UNIX_SOCKET_PATH_0\"))))") != null);
+    try std.testing.expect(std.mem.indexOf(u8, wrapped.profile, "(allow network-outbound (remote unix-socket (subpath (param \"UNIX_SOCKET_PATH_0\"))))") != null);
+}
+
+test "relative unix socket paths resolve against provided base cwd" {
+    const allocator = std.testing.allocator;
+    var dir = std.testing.tmpDir(.{});
+    defer dir.cleanup();
+    var io_instance: std.Io.Threaded = .init(allocator, .{});
+    defer io_instance.deinit();
+
+    try dir.dir.createDirPath(io_instance.io(), "socket-root");
+
+    const root = try dir.dir.realPathFileAlloc(std.Io.Threaded.global_single_threaded.io(), ".", allocator);
+    defer allocator.free(root);
+    const expected = try std.fs.path.join(allocator, &.{ root, "socket-root" });
+    defer allocator.free(expected);
+
+    const resolved = try resolveUnixSocketPathsAgainst(allocator, root, &.{"socket-root"});
+    defer freeResolvedPaths(allocator, resolved);
+
+    try std.testing.expectEqual(@as(usize, 1), resolved.len);
+    try std.testing.expectEqualStrings(expected, resolved[0]);
+}
+
 test "sandbox profile can deny read roots" {
     const allocator = std.testing.allocator;
-    const profile = try buildProfileWithOptions(allocator, .workspace_write, "/tmp/codex-workspace", &.{}, true, true, &.{"/tmp/codex-workspace/secret"}, &.{});
+    const profile = try buildProfileWithOptions(allocator, .workspace_write, "/tmp/codex-workspace", &.{}, true, true, &.{"/tmp/codex-workspace/secret"}, &.{}, 0);
     defer allocator.free(profile);
 
     try std.testing.expect(std.mem.indexOf(u8, profile, "(deny file-read* (literal \"/tmp/codex-workspace/secret\"))") != null);
@@ -716,7 +872,7 @@ test "sandbox profile can deny read roots" {
 
 test "sandbox profile can deny read glob patterns" {
     const allocator = std.testing.allocator;
-    const profile = try buildProfileWithOptions(allocator, .workspace_write, "/tmp/codex-workspace", &.{}, true, true, &.{}, &.{"/tmp/codex-workspace/**/*.secret"});
+    const profile = try buildProfileWithOptions(allocator, .workspace_write, "/tmp/codex-workspace", &.{}, true, true, &.{}, &.{"/tmp/codex-workspace/**/*.secret"}, 0);
     defer allocator.free(profile);
 
     try std.testing.expect(std.mem.indexOf(u8, profile, "(deny file-read* (regex #\"^/tmp/codex-workspace/(.*/)?[^/]*\\.secret$\"))") != null);
@@ -1025,7 +1181,7 @@ test "workspace-write sandbox can omit cwd write root" {
     defer allocator.free(extra_target);
 
     const additional_roots = [_][]const u8{extra_root};
-    const profile = try buildProfileWithOptions(allocator, .workspace_write, cwd_root, additional_roots[0..], false, true, &.{}, &.{});
+    const profile = try buildProfileWithOptions(allocator, .workspace_write, cwd_root, additional_roots[0..], false, true, &.{}, &.{}, 0);
     defer allocator.free(profile);
     const script = try std.fmt.allocPrint(
         allocator,
