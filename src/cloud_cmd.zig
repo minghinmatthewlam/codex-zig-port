@@ -1783,9 +1783,13 @@ fn renderTaskStatus(allocator: std.mem.Allocator, task: TaskSummary, indent: boo
 fn renderTaskListJson(allocator: std.mem.Allocator, base_url: []const u8, page: TaskListPage) ![]const u8 {
     var out = std.ArrayList(u8).empty;
     errdefer out.deinit(allocator);
-    try out.appendSlice(allocator, "{\"tasks\":[");
+    try out.appendSlice(allocator, "{\n  \"tasks\": [");
     for (page.tasks.items, 0..) |task, index| {
-        if (index > 0) try out.append(allocator, ',');
+        if (index > 0) {
+            try out.appendSlice(allocator, ",\n");
+        } else {
+            try out.append(allocator, '\n');
+        }
         const id_json = try std.json.Stringify.valueAlloc(allocator, task.id, .{});
         defer allocator.free(id_json);
         const url = try taskUrl(allocator, base_url, task.id);
@@ -1802,24 +1806,31 @@ fn renderTaskListJson(allocator: std.mem.Allocator, base_url: []const u8, page: 
         defer allocator.free(updated_json);
         try out.print(
             allocator,
-            "{{\"id\":{s},\"url\":{s},\"title\":{s},\"status\":{s},\"updated_at\":{s},",
+            "    {{\n      \"id\": {s},\n      \"url\": {s},\n      \"title\": {s},\n      \"status\": {s},\n      \"updated_at\": {s},\n",
             .{ id_json, url_json, title_json, status_json, updated_json },
         );
-        try appendOptionalStringJson(allocator, &out, "environment_id", task.environment_id);
-        try out.append(allocator, ',');
-        try appendOptionalStringJson(allocator, &out, "environment_label", task.environment_label);
+        try appendOptionalStringJsonField(allocator, &out, "environment_id", task.environment_id);
+        try out.appendSlice(allocator, ",\n");
+        try appendOptionalStringJsonField(allocator, &out, "environment_label", task.environment_label);
         try out.print(
             allocator,
-            ",\"summary\":{{\"files_changed\":{d},\"lines_added\":{d},\"lines_removed\":{d}}},\"is_review\":{},",
+            ",\n      \"summary\": {{\n        \"files_changed\": {d},\n        \"lines_added\": {d},\n        \"lines_removed\": {d}\n      }},\n      \"is_review\": {},\n",
             .{ task.summary.files_changed, task.summary.lines_added, task.summary.lines_removed, task.is_review },
         );
+        try out.appendSlice(allocator, "      \"attempt_total\": ");
         if (task.attempt_total) |attempt_total| {
-            try out.print(allocator, "\"attempt_total\":{d}}}", .{attempt_total});
+            try out.print(allocator, "{d}\n", .{attempt_total});
         } else {
-            try out.appendSlice(allocator, "\"attempt_total\":null}");
+            try out.appendSlice(allocator, "null\n");
         }
+        try out.appendSlice(allocator, "    }");
     }
-    try out.appendSlice(allocator, "],\"cursor\":");
+    if (page.tasks.items.len > 0) {
+        try out.appendSlice(allocator, "\n  ],\n");
+    } else {
+        try out.appendSlice(allocator, "],\n");
+    }
+    try out.appendSlice(allocator, "  \"cursor\": ");
     if (page.cursor) |cursor| {
         const cursor_json = try std.json.Stringify.valueAlloc(allocator, cursor, .{});
         defer allocator.free(cursor_json);
@@ -1827,14 +1838,12 @@ fn renderTaskListJson(allocator: std.mem.Allocator, base_url: []const u8, page: 
     } else {
         try out.appendSlice(allocator, "null");
     }
-    try out.appendSlice(allocator, "}\n");
+    try out.appendSlice(allocator, "\n}\n");
     return out.toOwnedSlice(allocator);
 }
 
-fn appendOptionalStringJson(allocator: std.mem.Allocator, out: *std.ArrayList(u8), name: []const u8, value: ?[]const u8) !void {
-    const name_json = try std.json.Stringify.valueAlloc(allocator, name, .{});
-    defer allocator.free(name_json);
-    try out.print(allocator, "{s}:", .{name_json});
+fn appendOptionalStringJsonField(allocator: std.mem.Allocator, out: *std.ArrayList(u8), name: []const u8, value: ?[]const u8) !void {
+    try out.print(allocator, "      \"{s}\": ", .{name});
     if (value) |actual| {
         const value_json = try std.json.Stringify.valueAlloc(allocator, actual, .{});
         defer allocator.free(value_json);
@@ -2943,6 +2952,36 @@ test "cloud picker page renders indexed task rows" {
     try std.testing.expect(std.mem.indexOf(u8, rendered, "Cloud Tasks - all environments") != null);
     try std.testing.expect(std.mem.indexOf(u8, rendered, "1. [READY] First task") != null);
     try std.testing.expect(std.mem.indexOf(u8, rendered, "https://chatgpt.com/codex/tasks/task-one") != null);
+}
+
+test "cloud list JSON renders Rust-style pretty output" {
+    const allocator = std.testing.allocator;
+
+    var page = TaskListPage{ .cursor = "cursor-next" };
+    defer page.tasks.deinit(allocator);
+    try page.tasks.append(allocator, .{
+        .id = "task-one",
+        .title = "First task",
+        .status = .ready,
+        .updated_at = 1760000000.0,
+        .environment_id = "env-one",
+        .environment_label = "Demo env",
+        .summary = .{ .files_changed = 1, .lines_added = 3, .lines_removed = 1 },
+        .is_review = true,
+        .attempt_total = 2,
+    });
+
+    const rendered = try renderTaskListJson(allocator, "https://chatgpt.com/backend-api", page);
+    defer allocator.free(rendered);
+    try std.testing.expect(std.mem.startsWith(u8, rendered, "{\n  \"tasks\": [\n"));
+    try std.testing.expect(std.mem.indexOf(u8, rendered, "\n      \"summary\": {\n") != null);
+    try std.testing.expect(std.mem.endsWith(u8, rendered, "\n}\n"));
+
+    var parsed = try std.json.parseFromSlice(std.json.Value, allocator, rendered, .{});
+    defer parsed.deinit();
+    const first_task = parsed.value.object.get("tasks").?.array.items[0].object;
+    try std.testing.expectEqualStrings("task-one", first_task.get("id").?.string);
+    try std.testing.expectEqualStrings("cursor-next", parsed.value.object.get("cursor").?.string);
 }
 
 test "cloud sibling turns URL follows task backend path style" {

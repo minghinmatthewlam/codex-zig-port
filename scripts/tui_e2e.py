@@ -1900,6 +1900,8 @@ def run_unimplemented_command_smoke(
             f"stdout:\n{cloud_list_json.stdout}\n"
             f"stderr:\n{cloud_list_json.stderr}"
         )
+    if not cloud_list_json.stdout.startswith('{\n  "tasks": [\n'):
+        raise AssertionError(f"expected pretty cloud list JSON:\n{cloud_list_json.stdout}")
     parsed_list = json.loads(cloud_list_json.stdout)
     if parsed_list["tasks"][0]["id"] != "task-ready":
         raise AssertionError(f"expected cloud list task JSON:\n{cloud_list_json.stdout}")
