@@ -9126,6 +9126,28 @@ def run_sandbox_permission_profile_smoke(binary: Path) -> None:
         assert denials_logged.stdout == "ok\n"
         assert "=== Sandbox denials ===" in denials_logged.stderr
 
+        background_output = subprocess.run(
+            [
+                str(binary.resolve()),
+                "sandbox",
+                "macos",
+                "--log-denials",
+                "--",
+                "/bin/sh",
+                "-c",
+                "(sleep 0.05; echo late) &",
+            ],
+            cwd=temp_root,
+            env=env,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=8,
+            check=True,
+        )
+        assert background_output.stdout == "late\n"
+        assert "=== Sandbox denials ===" in background_output.stderr
+
         cwd_without_profile = subprocess.run(
             [str(binary.resolve()), "sandbox", "macos", "--cd", str(temp_root), "--", "/bin/echo", "ok"],
             cwd=temp_root,
@@ -9456,6 +9478,35 @@ def run_sandbox_permission_profile_smoke(binary: Path) -> None:
         assert logged_shell_denial.stdout == ""
         assert "=== Sandbox denials ===" in logged_shell_denial.stderr
         assert "file-read" in logged_shell_denial.stderr
+
+        logged_background_denial = subprocess.run(
+            [
+                str(binary.resolve()),
+                "sandbox",
+                "macos",
+                "--log-denials",
+                "--permissions-profile",
+                "read-deny-profile",
+                "--cd",
+                str(workspace),
+                "--",
+                "/bin/sh",
+                "-c",
+                "(/bin/cat secret.txt) &",
+            ],
+            cwd=temp_root,
+            env=env,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=8,
+            check=False,
+        )
+        assert logged_background_denial.returncode == 0
+        assert logged_background_denial.stdout == ""
+        assert "cat: secret.txt: Operation not permitted" in logged_background_denial.stderr
+        assert "=== Sandbox denials ===" in logged_background_denial.stderr
+        assert "file-read" in logged_background_denial.stderr
 
         allowed_read = subprocess.run(
             [
