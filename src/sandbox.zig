@@ -23,7 +23,9 @@ pub const SandboxedArgv = struct {
 pub const WrapOptions = struct {
     cwd_override: ?[]const u8 = null,
     include_cwd_write_root: bool = true,
+    include_platform_defaults: bool = false,
     network_enabled: bool = true,
+    readable_roots: []const []const u8 = &.{},
     read_denied_roots: []const []const u8 = &.{},
     read_denied_globs: []const []const u8 = &.{},
     allow_unix_sockets: []const []const u8 = &.{},
@@ -121,6 +123,8 @@ pub fn wrapArgvWithPolicy(
         try allocator.alloc([]const u8, 0);
     defer freeResolvedPaths(allocator, resolved_roots);
 
+    const resolved_readable_roots = try resolveReadableRoots(allocator, cwd, options.readable_roots);
+    defer freeResolvedPaths(allocator, resolved_readable_roots);
     const resolved_read_denied_roots = try resolveReadDeniedRoots(allocator, cwd, options.read_denied_roots);
     defer freeResolvedPaths(allocator, resolved_read_denied_roots);
     const resolved_read_denied_globs = try resolveReadDeniedGlobPatterns(allocator, cwd, options.read_denied_globs);
@@ -133,7 +137,9 @@ pub fn wrapArgvWithPolicy(
         mode,
         cwd,
         resolved_roots,
+        resolved_readable_roots,
         options.include_cwd_write_root,
+        options.include_platform_defaults,
         options.network_enabled,
         resolved_read_denied_roots,
         resolved_read_denied_globs,
@@ -163,7 +169,7 @@ fn buildProfile(
     cwd: []const u8,
     additional_writable_roots: []const []const u8,
 ) ![]const u8 {
-    return buildProfileWithOptions(allocator, mode, cwd, additional_writable_roots, true, true, &.{}, &.{}, 0);
+    return buildProfileWithOptions(allocator, mode, cwd, additional_writable_roots, &.{}, true, false, true, &.{}, &.{}, 0);
 }
 
 fn buildProfileWithOptions(
@@ -171,7 +177,9 @@ fn buildProfileWithOptions(
     mode: config.SandboxMode,
     cwd: []const u8,
     additional_writable_roots: []const []const u8,
+    readable_roots: []const []const u8,
     include_cwd_write_root: bool,
+    include_platform_defaults: bool,
     network_enabled: bool,
     read_denied_roots: []const []const u8,
     read_denied_globs: []const []const u8,
@@ -179,7 +187,10 @@ fn buildProfileWithOptions(
 ) ![]const u8 {
     return switch (mode) {
         .danger_full_access => error.SandboxNotNeeded,
-        .read_only => buildReadOnlyProfile(allocator, network_enabled, read_denied_roots, read_denied_globs, unix_socket_path_count),
+        .read_only => if (readable_roots.len > 0 or include_platform_defaults)
+            buildRestrictedReadOnlyProfile(allocator, readable_roots, include_platform_defaults, network_enabled, read_denied_roots, read_denied_globs, unix_socket_path_count)
+        else
+            buildReadOnlyProfile(allocator, network_enabled, read_denied_roots, read_denied_globs, unix_socket_path_count),
         .workspace_write => blk: {
             var profile = std.ArrayList(u8).empty;
             errdefer profile.deinit(allocator);
@@ -224,6 +235,34 @@ fn buildReadOnlyProfile(
     return profile.toOwnedSlice(allocator);
 }
 
+fn buildRestrictedReadOnlyProfile(
+    allocator: std.mem.Allocator,
+    readable_roots: []const []const u8,
+    include_platform_defaults: bool,
+    network_enabled: bool,
+    read_denied_roots: []const []const u8,
+    read_denied_globs: []const []const u8,
+    unix_socket_path_count: usize,
+) ![]const u8 {
+    var profile = std.ArrayList(u8).empty;
+    errdefer profile.deinit(allocator);
+    try profile.appendSlice(allocator, restrictedBaseProfile);
+    try profile.append(allocator, '\n');
+    try profile.appendSlice(allocator, "; allow read-only file operations\n");
+    for (readable_roots) |root| {
+        try appendReadableSubpath(allocator, &profile, root, read_denied_roots);
+    }
+    try appendRestrictedNetworkPolicy(allocator, &profile, network_enabled);
+    try appendUnixSocketPolicy(allocator, &profile, unix_socket_path_count);
+    if (include_platform_defaults) {
+        try profile.append(allocator, '\n');
+        try profile.appendSlice(allocator, restrictedReadOnlyPlatformDefaults);
+    }
+    try appendRestrictedReadDeniedRoots(allocator, &profile, read_denied_roots, readable_roots);
+    try appendReadDeniedGlobPatterns(allocator, &profile, read_denied_globs, &.{}, read_denied_roots);
+    return profile.toOwnedSlice(allocator);
+}
+
 fn appendNetworkPolicy(
     allocator: std.mem.Allocator,
     profile: *std.ArrayList(u8),
@@ -231,6 +270,19 @@ fn appendNetworkPolicy(
 ) !void {
     if (network_enabled) return;
     try profile.appendSlice(allocator, deniedNetworkPolicy);
+}
+
+fn appendRestrictedNetworkPolicy(
+    allocator: std.mem.Allocator,
+    profile: *std.ArrayList(u8),
+    network_enabled: bool,
+) !void {
+    if (!network_enabled) return;
+    try profile.appendSlice(allocator,
+        \\(allow network-outbound)
+        \\(allow network-inbound)
+        \\
+    );
 }
 
 fn appendUnixSocketPolicy(
@@ -369,6 +421,10 @@ fn resolveReadDeniedRoots(allocator: std.mem.Allocator, base_cwd: []const u8, ro
     return resolved;
 }
 
+fn resolveReadableRoots(allocator: std.mem.Allocator, base_cwd: []const u8, roots: []const []const u8) ![]const []const u8 {
+    return resolveReadDeniedRoots(allocator, base_cwd, roots);
+}
+
 pub fn resolveReadDeniedGlobPatterns(allocator: std.mem.Allocator, base_cwd: []const u8, patterns: []const []const u8) ![]const []const u8 {
     var resolved = std.ArrayList([]const u8).empty;
     var moved = false;
@@ -481,6 +537,84 @@ fn appendWritableSubpath(allocator: std.mem.Allocator, profile: *std.ArrayList(u
     const line = try std.fmt.allocPrint(allocator, "(allow file-write* (subpath \"{s}\"))\n", .{escaped});
     defer allocator.free(line);
     try profile.appendSlice(allocator, line);
+}
+
+fn appendReadableSubpath(allocator: std.mem.Allocator, profile: *std.ArrayList(u8), path: []const u8, read_denied_roots: []const []const u8) !void {
+    const escaped = try escapeSeatbeltString(allocator, path);
+    defer allocator.free(escaped);
+    try profile.print(
+        allocator,
+        "(allow file-read* file-test-existence (require-all (literal \"{s}\")",
+        .{escaped},
+    );
+    try appendReadableSubpathDenyRequirements(allocator, profile, path, read_denied_roots);
+    try profile.appendSlice(allocator, "))\n");
+    try profile.print(
+        allocator,
+        "(allow file-read* file-test-existence (require-all (subpath \"{s}\")",
+        .{escaped},
+    );
+    try appendReadableSubpathDenyRequirements(allocator, profile, path, read_denied_roots);
+    try profile.appendSlice(allocator, "))\n");
+}
+
+fn appendReadableSubpathDenyRequirements(allocator: std.mem.Allocator, profile: *std.ArrayList(u8), readable_root: []const u8, read_denied_roots: []const []const u8) !void {
+    for (read_denied_roots) |denied_root| {
+        if (!pathWithinRoot(denied_root, readable_root)) continue;
+        const escaped = try escapeSeatbeltString(allocator, denied_root);
+        defer allocator.free(escaped);
+        try profile.print(
+            allocator,
+            " (require-not (literal \"{s}\")) (require-not (subpath \"{s}\"))",
+            .{ escaped, escaped },
+        );
+    }
+}
+
+fn appendRestrictedReadDeniedRoots(
+    allocator: std.mem.Allocator,
+    profile: *std.ArrayList(u8),
+    roots: []const []const u8,
+    readable_roots: []const []const u8,
+) !void {
+    for (roots) |root| {
+        if (std.mem.eql(u8, root, std.fs.path.sep_str)) continue;
+        const escaped = try escapeSeatbeltString(allocator, root);
+        defer allocator.free(escaped);
+
+        try profile.print(allocator, "(deny file-read* (literal \"{s}\"))\n", .{escaped});
+        try profile.print(allocator, "(deny file-read* (require-all (subpath \"{s}\")", .{escaped});
+        try appendRestrictedReadDenyCarveouts(allocator, profile, root, readable_roots);
+        try profile.appendSlice(allocator, "))\n");
+
+        try profile.print(
+            allocator,
+            \\(deny file-write* (literal "{s}"))
+            \\(deny file-write* (subpath "{s}"))
+            \\
+        ,
+            .{ escaped, escaped },
+        );
+    }
+}
+
+fn appendRestrictedReadDenyCarveouts(
+    allocator: std.mem.Allocator,
+    profile: *std.ArrayList(u8),
+    denied_root: []const u8,
+    readable_roots: []const []const u8,
+) !void {
+    for (readable_roots) |readable_root| {
+        if (std.mem.eql(u8, readable_root, denied_root)) continue;
+        if (!pathWithinRoot(readable_root, denied_root)) continue;
+        const escaped = try escapeSeatbeltString(allocator, readable_root);
+        defer allocator.free(escaped);
+        try profile.print(
+            allocator,
+            " (require-not (literal \"{s}\")) (require-not (subpath \"{s}\"))",
+            .{ escaped, escaped },
+        );
+    }
 }
 
 fn appendReadDeniedRoots(allocator: std.mem.Allocator, profile: *std.ArrayList(u8), roots: []const []const u8) !void {
@@ -841,6 +975,9 @@ const baseProfile =
     \\(allow default)
 ;
 
+const restrictedBaseProfile = @embedFile("seatbelt_base_policy.sbpl");
+const restrictedReadOnlyPlatformDefaults = @embedFile("restricted_read_only_platform_defaults.sbpl");
+
 const readOnlyWritePolicy =
     \\(deny file-write*)
     \\(allow file-write* (literal "/dev/null"))
@@ -882,7 +1019,7 @@ test "seatbelt string escaping handles quotes and backslashes" {
 
 test "sandbox profile can disable network access" {
     const allocator = std.testing.allocator;
-    const profile = try buildProfileWithOptions(allocator, .workspace_write, "/tmp/codex-workspace", &.{}, true, false, &.{}, &.{}, 0);
+    const profile = try buildProfileWithOptions(allocator, .workspace_write, "/tmp/codex-workspace", &.{}, &.{}, true, false, false, &.{}, &.{}, 0);
     defer allocator.free(profile);
 
     try std.testing.expect(std.mem.indexOf(u8, profile, "(deny network*)") != null);
@@ -944,16 +1081,125 @@ test "relative unix socket paths resolve against provided base cwd" {
 
 test "sandbox profile can deny read roots" {
     const allocator = std.testing.allocator;
-    const profile = try buildProfileWithOptions(allocator, .workspace_write, "/tmp/codex-workspace", &.{}, true, true, &.{"/tmp/codex-workspace/secret"}, &.{}, 0);
+    const profile = try buildProfileWithOptions(allocator, .workspace_write, "/tmp/codex-workspace", &.{}, &.{}, true, false, true, &.{"/tmp/codex-workspace/secret"}, &.{}, 0);
     defer allocator.free(profile);
 
     try std.testing.expect(std.mem.indexOf(u8, profile, "(deny file-read* (literal \"/tmp/codex-workspace/secret\"))") != null);
     try std.testing.expect(std.mem.indexOf(u8, profile, "(deny file-write* (subpath \"/tmp/codex-workspace/secret\"))") != null);
 }
 
+test "restricted read-only profile allows explicit readable roots" {
+    const allocator = std.testing.allocator;
+    const profile = try buildProfileWithOptions(allocator, .read_only, "/tmp/codex-workspace", &.{}, &.{"/Users/example/repo"}, true, false, false, &.{}, &.{}, 0);
+    defer allocator.free(profile);
+
+    try std.testing.expect(std.mem.indexOf(u8, profile, "(deny default)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, profile, "(allow file-read* file-test-existence (require-all (literal \"/Users/example/repo\")))") != null);
+    try std.testing.expect(std.mem.indexOf(u8, profile, "(allow file-read* file-test-existence (require-all (subpath \"/Users/example/repo\")))") != null);
+    try std.testing.expect(std.mem.indexOf(u8, profile, "(allow file-read-data (subpath \"/bin\"))") == null);
+    try std.testing.expect(std.mem.indexOf(u8, profile, "(allow file-read* file-test-existence file-write* (subpath \"/tmp\"))") == null);
+    try std.testing.expect(std.mem.indexOf(u8, profile, "(deny network*)") == null);
+    try std.testing.expect(std.mem.indexOf(u8, profile, "(allow network-outbound)") == null);
+}
+
+test "restricted read-only profile gates platform defaults on minimal read" {
+    const allocator = std.testing.allocator;
+    const profile = try buildProfileWithOptions(allocator, .read_only, "/tmp/codex-workspace", &.{}, &.{"/Users/example/repo"}, true, true, false, &.{}, &.{}, 0);
+    defer allocator.free(profile);
+
+    try std.testing.expect(std.mem.indexOf(u8, profile, "(allow file-read-data (subpath \"/bin\"))") != null);
+    try std.testing.expect(std.mem.indexOf(u8, profile, "(allow file-read* file-test-existence file-write* (subpath \"/tmp\"))") != null);
+}
+
+test "restricted read-only profile applies deny roots after minimal defaults" {
+    const allocator = std.testing.allocator;
+    const profile = try buildProfileWithOptions(allocator, .read_only, "/tmp/codex-workspace", &.{}, &.{"/tmp/allowed"}, true, true, false, &.{ "/tmp", "/tmp/secret" }, &.{}, 0);
+    defer allocator.free(profile);
+
+    const tmp_default_index = std.mem.indexOf(u8, profile, "(allow file-read* file-test-existence file-write* (subpath \"/tmp\"))").?;
+    const tmp_deny_index = std.mem.indexOf(u8, profile, "(deny file-read* (require-all (subpath \"/tmp\") (require-not (literal \"/tmp/allowed\"))").?;
+    const secret_deny_index = std.mem.indexOf(u8, profile, "(deny file-read* (require-all (subpath \"/tmp/secret\"))").?;
+
+    try std.testing.expect(tmp_default_index < tmp_deny_index);
+    try std.testing.expect(tmp_deny_index < secret_deny_index);
+    try std.testing.expect(std.mem.indexOf(u8, profile, "(deny file-write* (subpath \"/tmp\"))") != null);
+    try std.testing.expect(std.mem.indexOf(u8, profile, "(deny file-write* (subpath \"/tmp/secret\"))") != null);
+}
+
+test "restricted read-only profile carves denied descendants from readable roots" {
+    const allocator = std.testing.allocator;
+    const profile = try buildProfileWithOptions(allocator, .read_only, "/tmp/codex-workspace", &.{}, &.{"/Users/example/repo"}, true, false, false, &.{ "/", "/Users/example/repo/private" }, &.{}, 0);
+    defer allocator.free(profile);
+
+    try std.testing.expect(std.mem.indexOf(u8, profile, "(deny file-read* (subpath \"/\"))") == null);
+    try std.testing.expect(std.mem.indexOf(u8, profile, "(require-not (literal \"/Users/example/repo/private\"))") != null);
+    try std.testing.expect(std.mem.indexOf(u8, profile, "(require-not (subpath \"/Users/example/repo/private\"))") != null);
+}
+
+test "restricted read-only profile can enable network access" {
+    const allocator = std.testing.allocator;
+    const profile = try buildProfileWithOptions(allocator, .read_only, "/tmp/codex-workspace", &.{}, &.{"/Users/example/repo"}, true, false, true, &.{}, &.{}, 0);
+    defer allocator.free(profile);
+
+    try std.testing.expect(std.mem.indexOf(u8, profile, "(allow network-outbound)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, profile, "(allow network-inbound)") != null);
+}
+
+test "restricted read-only sandbox honors explicit readable roots with minimal defaults" {
+    if (builtin.os.tag != .macos) return;
+
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var allowed_dir = std.testing.tmpDir(.{});
+    defer allowed_dir.cleanup();
+    var blocked_dir = std.testing.tmpDir(.{});
+    defer blocked_dir.cleanup();
+
+    try allowed_dir.dir.writeFile(io, .{ .sub_path = "allowed.txt", .data = "allowed" });
+    try blocked_dir.dir.writeFile(io, .{ .sub_path = "blocked.txt", .data = "blocked" });
+
+    const allowed_root = try allowed_dir.dir.realPathFileAlloc(io, ".", allocator);
+    defer allocator.free(allowed_root);
+    const blocked_root = try blocked_dir.dir.realPathFileAlloc(io, ".", allocator);
+    defer allocator.free(blocked_root);
+    const allowed_file = try std.fs.path.join(allocator, &.{ allowed_root, "allowed.txt" });
+    defer allocator.free(allowed_file);
+    const blocked_file = try std.fs.path.join(allocator, &.{ blocked_root, "blocked.txt" });
+    defer allocator.free(blocked_file);
+    const write_target = try std.fs.path.join(allocator, &.{ allowed_root, "write-blocked.txt" });
+    defer allocator.free(write_target);
+
+    const profile = try buildProfileWithOptions(allocator, .read_only, allowed_root, &.{}, &.{allowed_root}, true, true, false, &.{"/"}, &.{}, 0);
+    defer allocator.free(profile);
+    const script = try std.fmt.allocPrint(
+        allocator,
+        "cat {s}; ! cat {s}; ! printf nope > {s}; printf ok",
+        .{ allowed_file, blocked_file, write_target },
+    );
+    defer allocator.free(script);
+    const argv = [_][]const u8{ sandbox_exec_path, "-p", profile, "--", "/bin/sh", "-c", script };
+
+    var io_instance: std.Io.Threaded = .init(allocator, .{});
+    defer io_instance.deinit();
+    const result = try std.process.run(allocator, io_instance.io(), .{
+        .argv = argv[0..],
+        .stdout_limit = .limited(4096),
+        .stderr_limit = .limited(4096),
+    });
+    defer allocator.free(result.stdout);
+    defer allocator.free(result.stderr);
+
+    try std.testing.expectEqual(@as(u8, 0), switch (result.term) {
+        .exited => |code| code,
+        else => 255,
+    });
+    try std.testing.expectEqualStrings("allowedok", result.stdout);
+    try std.testing.expectError(error.FileNotFound, allowed_dir.dir.access(io, "write-blocked.txt", .{}));
+}
+
 test "sandbox profile can deny read glob patterns" {
     const allocator = std.testing.allocator;
-    const profile = try buildProfileWithOptions(allocator, .workspace_write, "/tmp/codex-workspace", &.{}, true, true, &.{}, &.{"/tmp/codex-workspace/**/*.secret"}, 0);
+    const profile = try buildProfileWithOptions(allocator, .workspace_write, "/tmp/codex-workspace", &.{}, &.{}, true, false, true, &.{}, &.{"/tmp/codex-workspace/**/*.secret"}, 0);
     defer allocator.free(profile);
 
     try std.testing.expect(std.mem.indexOf(u8, profile, "(deny file-read* (regex #\"^/tmp/codex-workspace/(.*/)?[^/]*\\.secret$\"))") != null);
@@ -963,7 +1209,7 @@ test "sandbox profile can deny read glob patterns" {
 
 test "sandbox profile keeps glob data write allow scoped to writable roots" {
     const allocator = std.testing.allocator;
-    const profile = try buildProfileWithOptions(allocator, .workspace_write, "/tmp/codex-workspace", &.{"/tmp/codex-extra"}, false, true, &.{}, &.{"/tmp/codex-workspace/**/*.secret"}, 0);
+    const profile = try buildProfileWithOptions(allocator, .workspace_write, "/tmp/codex-workspace", &.{"/tmp/codex-extra"}, &.{}, false, false, true, &.{}, &.{"/tmp/codex-workspace/**/*.secret"}, 0);
     defer allocator.free(profile);
 
     try std.testing.expect(std.mem.indexOf(u8, profile, "(deny file-read* (regex #\"^/tmp/codex-workspace/(.*/)?[^/]*\\.secret$\"))") != null);
@@ -973,7 +1219,7 @@ test "sandbox profile keeps glob data write allow scoped to writable roots" {
 
 test "sandbox profile keeps root slash glob data write allow" {
     const allocator = std.testing.allocator;
-    const profile = try buildProfileWithOptions(allocator, .workspace_write, "/tmp/codex-workspace", &.{"/"}, false, true, &.{}, &.{"/**/*.secret"}, 0);
+    const profile = try buildProfileWithOptions(allocator, .workspace_write, "/tmp/codex-workspace", &.{"/"}, &.{}, false, false, true, &.{}, &.{"/**/*.secret"}, 0);
     defer allocator.free(profile);
 
     try std.testing.expect(std.mem.indexOf(u8, profile, "(deny file-read* (regex #\"^/(.*/)?[^/]*\\.secret$\"))") != null);
@@ -983,7 +1229,7 @@ test "sandbox profile keeps root slash glob data write allow" {
 
 test "sandbox profile skips glob data write allow when explicit read root overlaps" {
     const allocator = std.testing.allocator;
-    const profile = try buildProfileWithOptions(allocator, .workspace_write, "/tmp/codex-workspace", &.{}, true, true, &.{"/tmp/codex-workspace/secret-dir"}, &.{"/tmp/codex-workspace/**/*.secret"}, 0);
+    const profile = try buildProfileWithOptions(allocator, .workspace_write, "/tmp/codex-workspace", &.{}, &.{}, true, false, true, &.{"/tmp/codex-workspace/secret-dir"}, &.{"/tmp/codex-workspace/**/*.secret"}, 0);
     defer allocator.free(profile);
 
     try std.testing.expect(std.mem.indexOf(u8, profile, "(allow file-write-data (regex #\"^/tmp/codex-workspace/(.*/)?[^/]*\\.secret$\"))") == null);
@@ -992,7 +1238,7 @@ test "sandbox profile skips glob data write allow when explicit read root overla
 
 test "sandbox profile keeps literal glob data write allow outside explicit read roots" {
     const allocator = std.testing.allocator;
-    const profile = try buildProfileWithOptions(allocator, .workspace_write, "/tmp/codex-workspace", &.{}, true, true, &.{"/tmp/codex-workspace/private2"}, &.{"/tmp/codex-workspace/private"}, 0);
+    const profile = try buildProfileWithOptions(allocator, .workspace_write, "/tmp/codex-workspace", &.{}, &.{}, true, false, true, &.{"/tmp/codex-workspace/private2"}, &.{"/tmp/codex-workspace/private"}, 0);
     defer allocator.free(profile);
 
     try std.testing.expect(std.mem.indexOf(u8, profile, "(allow file-write-data (regex #\"^/tmp/codex-workspace/private(/.*)?$\"))") != null);
@@ -1306,7 +1552,7 @@ test "workspace-write sandbox can omit cwd write root" {
     defer allocator.free(extra_target);
 
     const additional_roots = [_][]const u8{extra_root};
-    const profile = try buildProfileWithOptions(allocator, .workspace_write, cwd_root, additional_roots[0..], false, true, &.{}, &.{}, 0);
+    const profile = try buildProfileWithOptions(allocator, .workspace_write, cwd_root, additional_roots[0..], &.{}, false, false, true, &.{}, &.{}, 0);
     defer allocator.free(profile);
     const script = try std.fmt.allocPrint(
         allocator,

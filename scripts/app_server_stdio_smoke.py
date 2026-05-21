@@ -29468,6 +29468,240 @@ def run_command_exec_rpc_smoke(binary: Path) -> None:
         assert permission_profile_read_only["result"]["exitCode"] != 0
         assert not read_only_target.exists()
 
+        narrow_read_root = Path(
+            tempfile.mkdtemp(
+                prefix=".codex-zig-app-server-command-exec-readable-",
+                dir=Path.home(),
+            )
+        )
+        narrow_blocked_root = Path(
+            tempfile.mkdtemp(
+                prefix=".codex-zig-app-server-command-exec-unreadable-",
+                dir=Path.home(),
+            )
+        )
+        narrow_allowed_file = narrow_read_root / "allowed.txt"
+        narrow_allowed_file.write_text("narrow-allowed", encoding="utf-8")
+        narrow_blocked_file = narrow_blocked_root / "blocked.txt"
+        narrow_blocked_file.write_text("blocked", encoding="utf-8")
+        narrow_write_target = narrow_read_root / "write-blocked.txt"
+        narrow_tmp_write_target = Path(
+            f"/tmp/codex-zig-app-server-command-exec-narrow-write-blocked-{os.getpid()}"
+        )
+        narrow_tmp_write_target.unlink(missing_ok=True)
+        narrow_tmp_denied_file = Path(
+            f"/tmp/codex-zig-app-server-command-exec-read-denied-{os.getpid()}"
+        )
+        narrow_tmp_denied_file.write_text("tmp-denied", encoding="utf-8")
+        narrow_read_without_minimal_permission_profile = {
+            "type": "managed",
+            "fileSystem": {
+                "type": "restricted",
+                "entries": [
+                    {
+                        "path": {"type": "path", "path": str(narrow_read_root)},
+                        "access": "read",
+                    }
+                ],
+            },
+            "network": {"enabled": False},
+        }
+        permission_profile_narrow_read_without_minimal = request_stdio_app_server(
+            binary,
+            {
+                "jsonrpc": "2.0",
+                "id": "command-exec-permission-profile-narrow-read-without-minimal",
+                "method": "command/exec",
+                "params": {
+                    "command": [
+                        "/bin/sh",
+                        "-c",
+                        f"printf nope > {shlex.quote(str(narrow_tmp_write_target))}",
+                    ],
+                    "permissionProfile": narrow_read_without_minimal_permission_profile,
+                },
+            },
+            env,
+        )
+        assert permission_profile_narrow_read_without_minimal["id"] == "command-exec-permission-profile-narrow-read-without-minimal"
+        assert permission_profile_narrow_read_without_minimal["result"]["exitCode"] != 0
+        assert not narrow_tmp_write_target.exists()
+
+        narrow_read_permission_profile = {
+            "type": "managed",
+            "fileSystem": {
+                "type": "restricted",
+                "entries": [
+                    {
+                        "path": {"type": "special", "value": {"kind": "minimal"}},
+                        "access": "read",
+                    },
+                    {
+                        "path": {"type": "path", "path": str(narrow_read_root)},
+                        "access": "read",
+                    }
+                ],
+            },
+            "network": {"enabled": False},
+        }
+        permission_profile_narrow_read = request_stdio_app_server(
+            binary,
+            {
+                "jsonrpc": "2.0",
+                "id": "command-exec-permission-profile-narrow-read",
+                "method": "command/exec",
+                "params": {
+                    "command": [
+                        "/bin/sh",
+                        "-c",
+                        f"cat {shlex.quote(str(narrow_allowed_file))} && ! cat {shlex.quote(str(narrow_blocked_file))} && ! printf nope > {shlex.quote(str(narrow_write_target))} && printf narrow-read",
+                    ],
+                    "permissionProfile": narrow_read_permission_profile,
+                },
+            },
+            env,
+        )
+        assert permission_profile_narrow_read["id"] == "command-exec-permission-profile-narrow-read"
+        assert permission_profile_narrow_read["result"]["exitCode"] == 0
+        assert permission_profile_narrow_read["result"]["stdout"] == "narrow-allowednarrow-read"
+        assert not narrow_write_target.exists()
+
+        narrow_read_with_parent_deny_permission_profile = {
+            "type": "managed",
+            "fileSystem": {
+                "type": "restricted",
+                "entries": [
+                    {
+                        "path": {"type": "special", "value": {"kind": "root"}},
+                        "access": "none",
+                    },
+                    {
+                        "path": {"type": "special", "value": {"kind": "minimal"}},
+                        "access": "read",
+                    },
+                    {
+                        "path": {"type": "path", "path": str(narrow_read_root)},
+                        "access": "read",
+                    },
+                    {
+                        "path": {"type": "path", "path": str(narrow_tmp_denied_file)},
+                        "access": "none",
+                    },
+                ],
+            },
+            "network": {"enabled": False},
+        }
+        permission_profile_parent_deny_read = request_stdio_app_server(
+            binary,
+            {
+                "jsonrpc": "2.0",
+                "id": "command-exec-permission-profile-parent-deny-read",
+                "method": "command/exec",
+                "params": {
+                    "command": [
+                        "/bin/sh",
+                        "-c",
+                        f"cat {shlex.quote(str(narrow_allowed_file))} && printf parent-deny-read",
+                    ],
+                    "permissionProfile": narrow_read_with_parent_deny_permission_profile,
+                },
+            },
+            env,
+        )
+        assert permission_profile_parent_deny_read["id"] == "command-exec-permission-profile-parent-deny-read"
+        assert permission_profile_parent_deny_read["result"]["exitCode"] == 0
+        assert permission_profile_parent_deny_read["result"]["stdout"] == "narrow-allowedparent-deny-read"
+
+        minimal_read_permission_profile = {
+            "type": "managed",
+            "fileSystem": {
+                "type": "restricted",
+                "entries": [
+                    {
+                        "path": {"type": "special", "value": {"kind": "minimal"}},
+                        "access": "read",
+                    },
+                    {
+                        "path": {"type": "path", "path": str(narrow_read_root)},
+                        "access": "read",
+                    },
+                    {
+                        "path": {"type": "path", "path": str(narrow_tmp_denied_file)},
+                        "access": "none",
+                    },
+                ],
+            },
+            "network": {"enabled": False},
+        }
+        permission_profile_minimal_read = request_stdio_app_server(
+            binary,
+            {
+                "jsonrpc": "2.0",
+                "id": "command-exec-permission-profile-minimal-read",
+                "method": "command/exec",
+                "params": {
+                    "command": [
+                        "/bin/sh",
+                        "-c",
+                        f"cat {shlex.quote(str(narrow_allowed_file))} && ! cat {shlex.quote(str(narrow_tmp_denied_file))} && printf minimal-read",
+                    ],
+                    "permissionProfile": minimal_read_permission_profile,
+                },
+            },
+            env,
+        )
+        assert permission_profile_minimal_read["id"] == "command-exec-permission-profile-minimal-read"
+        assert permission_profile_minimal_read["result"]["exitCode"] == 0
+        assert permission_profile_minimal_read["result"]["stdout"] == "narrow-allowedminimal-read"
+
+        missing_read_subpath_permission_profile = {
+            "type": "managed",
+            "fileSystem": {
+                "type": "restricted",
+                "entries": [
+                    {
+                        "path": {"type": "special", "value": {"kind": "minimal"}},
+                        "access": "read",
+                    },
+                    {
+                        "path": {"type": "path", "path": str(cwd)},
+                        "access": "read",
+                    },
+                    {
+                        "path": {
+                            "type": "special",
+                            "value": {
+                                "kind": "current_working_directory",
+                                "subpath": "future-readable",
+                            },
+                        },
+                        "access": "read",
+                    },
+                ],
+            },
+            "network": {"enabled": False},
+        }
+        permission_profile_missing_read_subpath = request_stdio_app_server(
+            binary,
+            {
+                "jsonrpc": "2.0",
+                "id": "command-exec-permission-profile-missing-read-subpath",
+                "method": "command/exec",
+                "params": {
+                    "command": ["/bin/sh", "-c", "printf missing-read-subpath"],
+                    "cwd": str(cwd),
+                    "permissionProfile": missing_read_subpath_permission_profile,
+                },
+            },
+            env,
+        )
+        assert permission_profile_missing_read_subpath["id"] == "command-exec-permission-profile-missing-read-subpath"
+        assert permission_profile_missing_read_subpath["result"] == {
+            "exitCode": 0,
+            "stdout": "missing-read-subpath",
+            "stderr": "",
+        }
+
         child_cwd = cwd / "child"
         child_cwd.mkdir()
         permission_profile_project_roots = request_stdio_app_server(
@@ -30794,6 +31028,14 @@ def run_command_exec_rpc_smoke(binary: Path) -> None:
             network_server.server_close()
         if "slash_tmp_target" in locals() and slash_tmp_target.exists():
             slash_tmp_target.unlink()
+        if "narrow_read_root" in locals():
+            shutil.rmtree(narrow_read_root, ignore_errors=True)
+        if "narrow_blocked_root" in locals():
+            shutil.rmtree(narrow_blocked_root, ignore_errors=True)
+        if "narrow_tmp_write_target" in locals():
+            narrow_tmp_write_target.unlink(missing_ok=True)
+        if "narrow_tmp_denied_file" in locals():
+            narrow_tmp_denied_file.unlink(missing_ok=True)
         shutil.rmtree(root, ignore_errors=True)
         shutil.rmtree(non_tmp_root, ignore_errors=True)
         shutil.rmtree(codex_home, ignore_errors=True)

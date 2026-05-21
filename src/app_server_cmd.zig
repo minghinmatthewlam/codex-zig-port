@@ -44347,14 +44347,17 @@ const COMMAND_EXEC_TIMEOUT_EXIT_CODE: i32 = 124;
 const CommandExecSandbox = struct {
     mode: config.SandboxMode,
     writable_roots: []const []const u8 = &.{},
+    readable_roots: []const []const u8 = &.{},
     read_denied_roots: []const []const u8 = &.{},
     read_denied_globs: []const []const u8 = &.{},
     owned_paths: []const []const u8 = &.{},
     include_cwd_write_root: bool = true,
+    include_platform_defaults: bool = false,
     network_enabled: bool = true,
 
     fn deinit(self: *CommandExecSandbox, allocator: std.mem.Allocator) void {
         allocator.free(self.writable_roots);
+        allocator.free(self.readable_roots);
         allocator.free(self.read_denied_roots);
         allocator.free(self.read_denied_globs);
         for (self.owned_paths) |path| allocator.free(path);
@@ -44367,9 +44370,11 @@ const CommandExecPermissionProfileSummary = struct {
     root_read: bool = false,
     root_write: bool = false,
     non_root_read: bool = false,
+    include_platform_defaults: bool = false,
     project_roots_write: bool = false,
     tmpdir_write: bool = false,
     slash_tmp_write: bool = false,
+    readable_roots: std.ArrayList([]const u8) = .empty,
     path_writable_roots: std.ArrayList([]const u8) = .empty,
     read_denied_roots: std.ArrayList([]const u8) = .empty,
     read_denied_globs: std.ArrayList([]const u8) = .empty,
@@ -44377,6 +44382,7 @@ const CommandExecPermissionProfileSummary = struct {
     unsupported: bool = false,
 
     fn deinit(self: *CommandExecPermissionProfileSummary, allocator: std.mem.Allocator) void {
+        self.readable_roots.deinit(allocator);
         self.path_writable_roots.deinit(allocator);
         self.read_denied_roots.deinit(allocator);
         self.read_denied_globs.deinit(allocator);
@@ -44507,7 +44513,9 @@ fn handleCommandExec(allocator: std.mem.Allocator, state: *AppServerState, id_va
         sandboxed_argv = try sandbox_mod.wrapArgvWithPolicy(allocator, command_sandbox.mode, command, command_sandbox.writable_roots, .{
             .cwd_override = sandbox_cwd,
             .include_cwd_write_root = command_sandbox.include_cwd_write_root,
+            .include_platform_defaults = command_sandbox.include_platform_defaults,
             .network_enabled = command_sandbox.network_enabled,
+            .readable_roots = command_sandbox.readable_roots,
             .read_denied_roots = command_sandbox.read_denied_roots,
             .read_denied_globs = command_sandbox.read_denied_globs,
         });
@@ -46622,7 +46630,7 @@ fn parseCommandExecPermissionProfile(
         try addCommandExecPermissionProfileEntry(allocator, &summary, entry, cwd);
     }
 
-    if (summary.unsupported or (summary.non_root_read and !summary.root_read)) return error.UnsupportedCommandExecPermissionProfile;
+    if (summary.unsupported) return error.UnsupportedCommandExecPermissionProfile;
     if (summary.root_write) {
         if (!summary.root_read) return error.UnsupportedCommandExecPermissionProfile;
         if (summary.read_denied_roots.items.len > 0 or summary.read_denied_globs.items.len > 0) {
@@ -46648,6 +46656,9 @@ fn parseCommandExecPermissionProfile(
     if (summary.root_read) {
         return try commandExecSandboxFromPermissionSummary(allocator, &summary, .read_only, try allocator.alloc([]const u8, 0), true, network_enabled);
     }
+    if (summary.non_root_read and (summary.readable_roots.items.len > 0 or summary.include_platform_defaults)) {
+        return try commandExecSandboxFromPermissionSummary(allocator, &summary, .read_only, try allocator.alloc([]const u8, 0), true, network_enabled);
+    }
     return error.UnsupportedCommandExecPermissionProfile;
 }
 
@@ -46667,6 +46678,14 @@ fn commandExecSandboxFromPermissionSummary(
     const read_denied_globs = try summary.read_denied_globs.toOwnedSlice(allocator);
     summary.read_denied_globs = .empty;
     errdefer allocator.free(read_denied_globs);
+    const readable_roots = if (summary.root_read)
+        try allocator.alloc([]const u8, 0)
+    else blk: {
+        const roots = try summary.readable_roots.toOwnedSlice(allocator);
+        summary.readable_roots = .empty;
+        break :blk roots;
+    };
+    errdefer allocator.free(readable_roots);
 
     const owned_paths = try summary.owned_paths.toOwnedSlice(allocator);
     summary.owned_paths = .empty;
@@ -46675,10 +46694,12 @@ fn commandExecSandboxFromPermissionSummary(
     return .{
         .mode = mode,
         .writable_roots = writable_roots,
+        .readable_roots = readable_roots,
         .read_denied_roots = read_denied_roots,
         .read_denied_globs = read_denied_globs,
         .owned_paths = owned_paths,
         .include_cwd_write_root = include_cwd_write_root,
+        .include_platform_defaults = mode == .read_only and !summary.root_read and summary.include_platform_defaults,
         .network_enabled = network_enabled,
     };
 }
@@ -46750,7 +46771,7 @@ fn addCommandExecPermissionProfileEntry(
         }) {
             summary.root_read = true;
         } else {
-            summary.non_root_read = true;
+            try addCommandExecPermissionReadRoot(allocator, summary, path, cwd);
         }
         return;
     }
@@ -46813,6 +46834,7 @@ fn addCommandExecPermissionReadDenyRoot(
         try summary.read_denied_roots.append(allocator, "/");
         return;
     }
+    if (try commandExecPermissionPathIsMinimal(path)) return;
     switch (try commandExecPermissionProjectRootsPath(path)) {
         .not_project_roots => {},
         .root => {
@@ -46846,6 +46868,55 @@ fn addCommandExecPermissionReadDenyRoot(
     }
     if (try commandExecPermissionPathAbsolute(path)) |absolute_path| {
         try summary.read_denied_roots.append(allocator, absolute_path);
+        return;
+    }
+    summary.unsupported = true;
+}
+
+fn addCommandExecPermissionReadRoot(
+    allocator: std.mem.Allocator,
+    summary: *CommandExecPermissionProfileSummary,
+    path: std.json.Value,
+    cwd: ?[]const u8,
+) !void {
+    summary.non_root_read = true;
+    if (try commandExecPermissionPathIsMinimal(path)) {
+        summary.include_platform_defaults = true;
+        return;
+    }
+    switch (try commandExecPermissionProjectRootsPath(path)) {
+        .not_project_roots => {},
+        .root => {
+            const owned = try commandExecResolveCwdSubpath(allocator, cwd, null, .{});
+            errdefer allocator.free(owned);
+            try summary.owned_paths.append(allocator, owned);
+            errdefer _ = summary.owned_paths.pop();
+            try summary.readable_roots.append(allocator, owned);
+            return;
+        },
+        .subpath => |subpath| {
+            const owned = try commandExecResolveCwdSubpath(allocator, cwd, subpath, .{ .allow_missing_leaf = true });
+            errdefer allocator.free(owned);
+            try summary.owned_paths.append(allocator, owned);
+            errdefer _ = summary.owned_paths.pop();
+            try summary.readable_roots.append(allocator, owned);
+            return;
+        },
+    }
+    if (try commandExecPermissionPathIsTmpdir(path)) {
+        if (commandExecCurrentAbsoluteEnv("TMPDIR")) |tmpdir| {
+            try summary.readable_roots.append(allocator, tmpdir);
+            return;
+        }
+        summary.unsupported = true;
+        return;
+    }
+    if (try commandExecPermissionPathIsSlashTmp(path)) {
+        try summary.readable_roots.append(allocator, "/tmp");
+        return;
+    }
+    if (try commandExecPermissionPathAbsolute(path)) |absolute_path| {
+        try summary.readable_roots.append(allocator, absolute_path);
         return;
     }
     summary.unsupported = true;
@@ -46894,6 +46965,11 @@ fn commandExecSafeRelativeGlobPattern(pattern: []const u8) bool {
 fn commandExecPermissionPathIsRoot(value: std.json.Value) !bool {
     const special = try commandExecPermissionSpecialPathKind(value);
     return if (special) |kind| std.mem.eql(u8, kind, "root") else false;
+}
+
+fn commandExecPermissionPathIsMinimal(value: std.json.Value) !bool {
+    const special = try commandExecPermissionSpecialPathKind(value);
+    return if (special) |kind| std.mem.eql(u8, kind, "minimal") else false;
 }
 
 fn commandExecPermissionProjectRootsPath(value: std.json.Value) !CommandExecProjectRootsPath {
