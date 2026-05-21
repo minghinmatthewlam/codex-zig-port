@@ -779,8 +779,9 @@ Additional remote app-server TUI config coverage: remote TUI `--profile`,
 accepted for start, resume, and fork flows and forwarded through thread
 lifecycle `params.config` as `profile`, `model_provider`, `openai_base_url`,
 `chatgpt_base_url`, `web_search`, `oss`, and `oss_provider`. The simple remote
-TUI also accepts legacy `syntax_theme` overrides as local no-ops for CLI
-compatibility. App-server `thread/start`, `thread/resume`, and `thread/fork`
+TUI rejects legacy `syntax_theme` overrides because they are local-only and
+cannot be represented in remote app-server requests yet. App-server
+`thread/start`, `thread/resume`, and `thread/fork`
 honor those request config overrides when creating loaded threads; later
 `turn/start`, compact, and review requests reload the loaded thread's active
 profile while preserving explicit request model providers, base URLs,

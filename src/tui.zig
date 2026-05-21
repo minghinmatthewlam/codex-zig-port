@@ -548,6 +548,7 @@ fn runRemoteTui(allocator: std.mem.Allocator, options: Options, remote: []const 
         std.debug.print("`--remote-control` cannot be combined with `--remote`.\n", .{});
         return error.RemoteControlCannotCombineWithRemote;
     }
+    try validateRemoteTuiSupportedOptions(options);
 
     const parts = try validateRemoteUrl(remote);
 
@@ -701,6 +702,17 @@ fn remoteRequestConfigOverrides(options: Options) RemoteRequestConfigOverrides {
         .oss_mode = options.oss,
         .oss_provider = if (options.oss) options.oss_provider orelse options.runtime_overrides.oss_provider else null,
     };
+}
+
+fn validateRemoteTuiSupportedOptions(options: Options) !void {
+    if (options.runtime_overrides.syntax_theme != null) {
+        return rejectUnsupportedRemoteTuiOption("-c syntax_theme");
+    }
+}
+
+fn rejectUnsupportedRemoteTuiOption(option: []const u8) error{RemoteTuiUnsupportedOption} {
+    std.debug.print("remote app-server TUI does not support `{s}` yet\n", .{option});
+    return error.RemoteTuiUnsupportedOption;
 }
 
 const RemoteTuiState = struct {
@@ -4372,6 +4384,18 @@ test "remote TUI resolves relative writable roots against cwd" {
 
 test "remote TUI serializes supported runtime overrides" {
     const allocator = std.testing.allocator;
+    try validateRemoteTuiSupportedOptions(.{
+        .runtime_overrides = .{
+            .openai_base_url = "https://api.example/v1",
+            .chatgpt_base_url = "https://chatgpt.example/backend-api/codex",
+        },
+    });
+    try std.testing.expectError(error.RemoteTuiUnsupportedOption, validateRemoteTuiSupportedOptions(.{
+        .runtime_overrides = .{
+            .syntax_theme = "dracula",
+        },
+    }));
+
     const thread_start = try renderRemoteThreadStartRequest(allocator, "/tmp/work", .{
         .model = "gpt-remote",
         .approval_policy = .never,
