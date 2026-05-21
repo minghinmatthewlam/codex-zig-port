@@ -25,6 +25,7 @@ const StoredLine = struct {
     content: ?[]const api.HistoryContent = null,
     images: ?[]const api.HistoryImage = null,
     call_id: ?[]const u8 = null,
+    namespace: ?[]const u8 = null,
     name: ?[]const u8 = null,
     arguments: ?[]const u8 = null,
     output: ?[]const u8 = null,
@@ -755,6 +756,7 @@ fn appendStoredFunctionCall(allocator: std.mem.Allocator, transcript: *session.T
     try transcript.appendHistoryItem(allocator, .{
         .kind = .function_call,
         .call_id = jsonStringField(object, "call_id") orelse return error.InvalidSessionLine,
+        .namespace = jsonStringField(object, "namespace"),
         .name = jsonStringField(object, "name") orelse return error.InvalidSessionLine,
         .arguments = jsonStringField(object, "arguments") orelse return error.InvalidSessionLine,
     });
@@ -1558,6 +1560,7 @@ fn storedLineFromHistoryItem(item: api.HistoryItem) !StoredLine {
         .function_call => .{
             .type = "function_call",
             .call_id = item.call_id orelse return error.InvalidSessionItem,
+            .namespace = item.namespace,
             .name = item.name orelse return error.InvalidSessionItem,
             .arguments = item.arguments orelse return error.InvalidSessionItem,
         },
@@ -1696,6 +1699,18 @@ test "session store round trips transcript jsonl" {
         .call_id = "search-1",
         .output = "[{\"type\":\"namespace\",\"name\":\"mcp__demo__\"}]",
     });
+    try transcript.appendHistoryItem(allocator, .{
+        .kind = .function_call,
+        .call_id = "call-ns",
+        .namespace = "mcp__demo__",
+        .name = "echo",
+        .arguments = "{}",
+    });
+    try transcript.appendHistoryItem(allocator, .{
+        .kind = .function_call_output,
+        .call_id = "call-ns",
+        .output = "echo ok",
+    });
     transcript.token_usage = .{
         .total = .{
             .input_tokens = 90,
@@ -1743,7 +1758,7 @@ test "session store round trips transcript jsonl" {
     try std.testing.expectEqual(@as(i64, 12), loaded.token_usage.?.total.reasoning_output_tokens);
     try std.testing.expectEqual(@as(i64, 50), loaded.token_usage.?.last.total_tokens);
     try std.testing.expectEqual(@as(i64, 200000), loaded.token_usage.?.model_context_window.?);
-    try std.testing.expectEqual(@as(usize, 7), loaded.history.items.len);
+    try std.testing.expectEqual(@as(usize, 9), loaded.history.items.len);
     try std.testing.expectEqual(api.HistoryItem.Kind.message, loaded.history.items[0].kind);
     try std.testing.expectEqualStrings("user", loaded.history.items[0].role.?);
     try std.testing.expectEqualStrings("hello\nafter image", loaded.history.items[0].text.?);
@@ -1766,6 +1781,13 @@ test "session store round trips transcript jsonl" {
     try std.testing.expectEqual(api.HistoryItem.Kind.tool_search_output, loaded.history.items[6].kind);
     try std.testing.expectEqualStrings("search-1", loaded.history.items[6].call_id.?);
     try std.testing.expectEqualStrings("[{\"type\":\"namespace\",\"name\":\"mcp__demo__\"}]", loaded.history.items[6].output.?);
+    try std.testing.expectEqual(api.HistoryItem.Kind.function_call, loaded.history.items[7].kind);
+    try std.testing.expectEqualStrings("call-ns", loaded.history.items[7].call_id.?);
+    try std.testing.expectEqualStrings("mcp__demo__", loaded.history.items[7].namespace.?);
+    try std.testing.expectEqualStrings("echo", loaded.history.items[7].name.?);
+    try std.testing.expectEqualStrings("{}", loaded.history.items[7].arguments.?);
+    try std.testing.expectEqual(api.HistoryItem.Kind.function_call_output, loaded.history.items[8].kind);
+    try std.testing.expectEqualStrings("echo ok", loaded.history.items[8].output.?);
 }
 
 test "session store rollback clears transcript metadata goal" {

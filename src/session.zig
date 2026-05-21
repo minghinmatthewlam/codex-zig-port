@@ -228,6 +228,7 @@ pub const Transcript = struct {
         owned.content = try cloneHistoryContent(allocator, item.content);
         owned.images = try cloneHistoryImages(allocator, item.images);
         owned.call_id = if (item.call_id) |value| try allocator.dupe(u8, value) else null;
+        owned.namespace = if (item.namespace) |value| try allocator.dupe(u8, value) else null;
         owned.name = if (item.name) |value| try allocator.dupe(u8, value) else null;
         owned.arguments = if (item.arguments) |value| try allocator.dupe(u8, value) else null;
         owned.output = if (item.output) |value| try allocator.dupe(u8, value) else null;
@@ -281,6 +282,8 @@ pub const Transcript = struct {
         if (call.kind == .tool_search) return self.appendToolSearchCall(allocator, call);
         const call_id_copy = try allocator.dupe(u8, call.call_id);
         errdefer allocator.free(call_id_copy);
+        const namespace_copy = if (call.namespace) |namespace| try allocator.dupe(u8, namespace) else null;
+        errdefer if (namespace_copy) |value| allocator.free(value);
         const name_copy = try allocator.dupe(u8, call.name);
         errdefer allocator.free(name_copy);
         const arguments_copy = try allocator.dupe(u8, call.arguments);
@@ -289,6 +292,7 @@ pub const Transcript = struct {
         try self.history.append(allocator, .{
             .kind = .function_call,
             .call_id = call_id_copy,
+            .namespace = namespace_copy,
             .name = name_copy,
             .arguments = arguments_copy,
         });
@@ -792,11 +796,13 @@ fn appendResponseHistoryFunctionCall(
     object: std.json.ObjectMap,
 ) !void {
     const call_id = requiredJsonStringField(object, "call_id") orelse requiredJsonStringField(object, "callId") orelse return error.InvalidHistory;
+    const namespace = optionalJsonStringField(object, "namespace");
     const name = requiredJsonStringField(object, "name") orelse return error.InvalidHistory;
     const arguments = requiredJsonStringField(object, "arguments") orelse return error.InvalidHistory;
     try transcript.appendHistoryItem(allocator, .{
         .kind = .function_call,
         .call_id = call_id,
+        .namespace = namespace,
         .name = name,
         .arguments = arguments,
     });
@@ -945,6 +951,12 @@ fn defaultHistoryContentType(role: []const u8) []const u8 {
 }
 
 fn requiredJsonStringField(object: std.json.ObjectMap, name: []const u8) ?[]const u8 {
+    const value = object.get(name) orelse return null;
+    if (value != .string) return null;
+    return value.string;
+}
+
+fn optionalJsonStringField(object: std.json.ObjectMap, name: []const u8) ?[]const u8 {
     const value = object.get(name) orelse return null;
     if (value != .string) return null;
     return value.string;
@@ -1273,7 +1285,7 @@ fn runToolCall(
     }
 
     if (mcpToolsEnabled(options)) {
-        if (mcp_catalog.find(call.name)) |mcp_tool| {
+        if (try findMcpToolForFunctionCall(allocator, mcp_catalog, call)) |mcp_tool| {
             try reportMcpToolCallProgress(allocator, options, call.call_id, "calling", mcp_tool.server_name, mcp_tool.raw_tool_name, null);
             var mcp_progress_context = McpRuntimeProgressContext{
                 .allocator = allocator,
@@ -1341,6 +1353,19 @@ fn runToolCall(
     }
 
     return tool_result;
+}
+
+fn findMcpToolForFunctionCall(
+    allocator: std.mem.Allocator,
+    mcp_catalog: mcp_runtime.Catalog,
+    call: api.FunctionCall,
+) !?mcp_runtime.ToolSpec {
+    if (call.namespace) |namespace| {
+        const namespaced_name = try std.fmt.allocPrint(allocator, "{s}{s}", .{ namespace, call.name });
+        defer allocator.free(namespaced_name);
+        if (mcp_catalog.find(namespaced_name)) |tool| return tool;
+    }
+    return mcp_catalog.find(call.name);
 }
 
 const ToolSearchArgs = struct {
@@ -1571,6 +1596,29 @@ fn toolSearchNamespaceName(allocator: std.mem.Allocator, server_name: []const u8
         return std.fmt.allocPrint(allocator, "{s}__", .{placeholder[0 .. placeholder.len - suffix.len]});
     }
     return allocator.dupe(u8, placeholder);
+}
+
+test "findMcpToolForFunctionCall resolves namespaced mcp calls" {
+    const allocator = std.testing.allocator;
+    var mcp_tools = [_]mcp_runtime.ToolSpec{.{
+        .server_name = "demo",
+        .raw_tool_name = "echo",
+        .callable_name = "mcp__demo__echo",
+        .description = "Echo through MCP",
+        .input_schema_json = "{\"type\":\"object\"}",
+    }};
+    const catalog = mcp_runtime.Catalog{ .tools = mcp_tools[0..] };
+    const call = api.FunctionCall{
+        .call_id = "call-1",
+        .namespace = "mcp__demo__",
+        .name = "echo",
+        .arguments = "{}",
+    };
+
+    const resolved = (try findMcpToolForFunctionCall(allocator, catalog, call)).?;
+    try std.testing.expectEqualStrings("demo", resolved.server_name);
+    try std.testing.expectEqualStrings("echo", resolved.raw_tool_name);
+    try std.testing.expectEqualStrings("mcp__demo__echo", resolved.callable_name);
 }
 
 test "runToolSearchCall returns matching mcp namespace tools" {
@@ -2150,6 +2198,31 @@ test "append response history function call output accepts structured content it
     try std.testing.expectEqualStrings("data:image/png;base64,AAA", output_content[1].image_url.?);
     try std.testing.expectEqualStrings("high", output_content[1].detail.?);
     try std.testing.expectEqualStrings("line two", output_content[3].text.?);
+}
+
+test "append response history function call preserves namespace" {
+    const allocator = std.testing.allocator;
+    var parsed = try std.json.parseFromSlice(std.json.Value, allocator,
+        \\{
+        \\  "type": "function_call",
+        \\  "call_id": "call-ns",
+        \\  "namespace": "mcp__demo__",
+        \\  "name": "echo",
+        \\  "arguments": "{}"
+        \\}
+    , .{});
+    defer parsed.deinit();
+
+    var transcript = Transcript{};
+    defer transcript.deinit(allocator);
+
+    try appendResponseHistoryItem(allocator, &transcript, parsed.value);
+
+    try std.testing.expectEqual(@as(usize, 1), transcript.history.items.len);
+    try std.testing.expectEqual(api.HistoryItem.Kind.function_call, transcript.history.items[0].kind);
+    try std.testing.expectEqualStrings("call-ns", transcript.history.items[0].call_id.?);
+    try std.testing.expectEqualStrings("mcp__demo__", transcript.history.items[0].namespace.?);
+    try std.testing.expectEqualStrings("echo", transcript.history.items[0].name.?);
 }
 
 test "append response history tool_search call and output" {

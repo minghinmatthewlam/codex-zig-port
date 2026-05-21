@@ -11,11 +11,13 @@ const mcp_runtime = @import("mcp_runtime.zig");
 pub const FunctionCall = struct {
     kind: Kind = .function,
     call_id: []const u8,
+    namespace: ?[]const u8 = null,
     name: []const u8,
     arguments: []const u8,
 
     pub fn deinit(self: FunctionCall, allocator: std.mem.Allocator) void {
         allocator.free(self.call_id);
+        if (self.namespace) |value| allocator.free(value);
         allocator.free(self.name);
         allocator.free(self.arguments);
     }
@@ -123,6 +125,7 @@ pub const HistoryItem = struct {
     content: []const HistoryContent = &.{},
     images: []const HistoryImage = &.{},
     call_id: ?[]const u8 = null,
+    namespace: ?[]const u8 = null,
     name: ?[]const u8 = null,
     arguments: ?[]const u8 = null,
     output: ?[]const u8 = null,
@@ -137,6 +140,7 @@ pub const HistoryItem = struct {
         for (self.images) |image| image.deinit(allocator);
         if (self.images.len > 0) allocator.free(self.images);
         if (self.call_id) |value| allocator.free(value);
+        if (self.namespace) |value| allocator.free(value);
         if (self.name) |value| allocator.free(value);
         if (self.arguments) |value| allocator.free(value);
         if (self.output) |value| allocator.free(value);
@@ -210,6 +214,7 @@ const InputItem = struct {
     role: ?[]const u8 = null,
     content: ?[]const ContentItem = null,
     call_id: ?[]const u8 = null,
+    namespace: ?[]const u8 = null,
     name: ?[]const u8 = null,
     arguments: ?InputArguments = null,
     output: ?FunctionCallOutputBody = null,
@@ -731,6 +736,7 @@ pub fn buildRequestBodyWithOptions(
             .function_call => try inputs.append(allocator, .{
                 .type = "function_call",
                 .call_id = item.call_id,
+                .namespace = item.namespace,
                 .name = item.name,
                 .arguments = if (item.arguments) |arguments| .{ .string = arguments } else null,
             }),
@@ -1183,12 +1189,14 @@ pub fn parseSseResponse(allocator: std.mem.Allocator, bytes: []const u8) !Parsed
             if (item_type != .string) continue;
             if (std.mem.eql(u8, item_type.string, "function_call")) {
                 const call_id = item.get("call_id") orelse continue;
+                const namespace = item.get("namespace");
                 const name = item.get("name") orelse continue;
                 const arguments = item.get("arguments") orelse continue;
                 if (call_id != .string or name != .string or arguments != .string) continue;
                 try calls.append(allocator, .{
                     .kind = .function,
                     .call_id = try allocator.dupe(u8, call_id.string),
+                    .namespace = if (namespace != null and namespace.? == .string) try allocator.dupe(u8, namespace.?.string) else null,
                     .name = try allocator.dupe(u8, name.string),
                     .arguments = try allocator.dupe(u8, arguments.string),
                 });
@@ -1734,6 +1742,21 @@ test "parses SSE text and function call" {
     try std.testing.expectEqualStrings("shell_command", parsed.function_calls[0].name);
     try std.testing.expectEqual(@as(usize, 1), parsed.raw_response_items.len);
     try std.testing.expect(std.mem.indexOf(u8, parsed.raw_response_items[0], "\"call_id\":\"c1\"") != null);
+}
+
+test "parses SSE namespaced function call" {
+    const allocator = std.testing.allocator;
+    const body =
+        "data: {\"type\":\"response.output_item.done\",\"item\":{\"type\":\"function_call\",\"call_id\":\"c1\",\"namespace\":\"mcp__demo__\",\"name\":\"echo\",\"arguments\":\"{\\\"message\\\":\\\"hi\\\"}\"}}\n" ++
+        "data: [DONE]\n";
+    var parsed = try parseSseResponse(allocator, body);
+    defer parsed.deinit(allocator);
+
+    try std.testing.expectEqual(@as(usize, 1), parsed.function_calls.len);
+    try std.testing.expectEqual(FunctionCall.Kind.function, parsed.function_calls[0].kind);
+    try std.testing.expectEqualStrings("mcp__demo__", parsed.function_calls[0].namespace.?);
+    try std.testing.expectEqualStrings("echo", parsed.function_calls[0].name);
+    try std.testing.expectEqualStrings("{\"message\":\"hi\"}", parsed.function_calls[0].arguments);
 }
 
 test "parses SSE tool_search call" {
@@ -2535,6 +2558,13 @@ test "serializes tool_search history items" {
             .call_id = "search-1",
             .output = "[{\"type\":\"function\",\"name\":\"mcp__demo__echo\"}]",
         },
+        .{
+            .kind = .function_call,
+            .call_id = "call-1",
+            .namespace = "mcp__demo__",
+            .name = "echo",
+            .arguments = "{}",
+        },
     };
 
     const body = try buildRequestBodyWithOptions(allocator, cfg, history[0..], .{});
@@ -2546,6 +2576,7 @@ test "serializes tool_search history items" {
 
     var found_call = false;
     var found_output = false;
+    var found_namespaced_function_call = false;
     for (inputs.items) |input| {
         const object = input.object;
         const item_type = object.get("type") orelse continue;
@@ -2561,11 +2592,18 @@ test "serializes tool_search history items" {
             try std.testing.expectEqualStrings("completed", object.get("status").?.string);
             try std.testing.expectEqualStrings("client", object.get("execution").?.string);
             try std.testing.expectEqualStrings("mcp__demo__echo", object.get("tools").?.array.items[0].object.get("name").?.string);
+        } else if (std.mem.eql(u8, item_type.string, "function_call")) {
+            if (object.get("namespace")) |namespace| {
+                found_namespaced_function_call = true;
+                try std.testing.expectEqualStrings("mcp__demo__", namespace.string);
+                try std.testing.expectEqualStrings("echo", object.get("name").?.string);
+            }
         }
     }
 
     try std.testing.expect(found_call);
     try std.testing.expect(found_output);
+    try std.testing.expect(found_namespaced_function_call);
 }
 
 test "runtime feature overrides can disable configured mcp function tools" {
