@@ -58,8 +58,9 @@ The first demo slice targets macOS and focuses on the interactive CLI surface:
 - run explicit local TUI shell commands with `!COMMAND`
 - execute basic `shell` / `shell_command` tool calls after user confirmation
 - run a command through the macOS Seatbelt sandbox with `sandbox macos`,
-  including Rust built-ins and supported custom `[permissions]` profiles
-  for parsed Seatbelt-only socket/denial flags
+  including Rust built-ins, supported custom `[permissions]` profiles, macOS
+  deny-read glob entries, shared tool/app-server enforcement, and parsed
+  Seatbelt-only socket/denial flags
 - check `prefix_rule` execpolicy files against a command with
   `execpolicy check`, including `match` / `not_match` examples,
   `network_rule` validation, and absolute host executable resolution
