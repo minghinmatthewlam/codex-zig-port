@@ -3115,6 +3115,8 @@ def run_remote_wss_tui_smoke(
                 "--no-alt-screen",
                 "-p",
                 "remote-work",
+                "-c",
+                "openai_base_url='http://127.0.0.1:11434/v1'",
                 "--search",
                 "--add-dir",
                 extra_root.name,
@@ -3146,9 +3148,13 @@ def run_remote_wss_tui_smoke(
         if not thread_requests:
             raise AssertionError(f"remote wss TUI did not send thread/start: {wss_server.requests!r}")
         request_config = thread_requests[-1]["params"].get("config")
-        if request_config != {"profile": "remote-work", "web_search": "live"}:
+        if request_config != {
+            "profile": "remote-work",
+            "openai_base_url": "http://127.0.0.1:11434/v1",
+            "web_search": "live",
+        }:
             raise AssertionError(
-                f"remote wss TUI did not forward profile/search config: {request_config!r}"
+                f"remote wss TUI did not forward profile/base URL/search config: {request_config!r}"
             )
 
         turn_requests = [

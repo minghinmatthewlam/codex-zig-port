@@ -566,6 +566,7 @@ const LoadedThread = struct {
     model_auto_compact_token_limit: ?i64,
     model_verbosity: ?[]const u8,
     model_provider: []const u8,
+    openai_base_url: ?[]const u8,
     oss_provider: ?[]const u8,
     service_tier: ?[]const u8,
     active_profile: ?[]const u8,
@@ -621,6 +622,7 @@ const LoadedThread = struct {
         allocator.free(self.model);
         if (self.model_verbosity) |value| allocator.free(value);
         allocator.free(self.model_provider);
+        if (self.openai_base_url) |value| allocator.free(value);
         if (self.oss_provider) |value| allocator.free(value);
         if (self.service_tier) |value| allocator.free(value);
         if (self.active_profile) |value| allocator.free(value);
@@ -31960,6 +31962,7 @@ fn applyLoadedThreadRuntimeToConfig(
         cfg.model_verbosity = null;
     }
     try replaceConfigOptionalString(allocator, &cfg.model_provider_id, thread.model_provider);
+    try applyLoadedThreadOpenaiBaseUrlToConfig(allocator, cfg, thread);
     cfg.web_search_mode = thread.web_search_mode;
     cfg.approval_policy = config.ApprovalPolicy.parse(thread.approval_policy) catch return error.InvalidLoadedThreadRuntime;
     cfg.sandbox_mode = config.SandboxMode.parse(thread.sandbox_mode) catch return error.InvalidLoadedThreadRuntime;
@@ -32163,6 +32166,7 @@ fn applyTurnStartRuntimeConfigOverrides(
         &cfg.model_provider_id,
         optionalStringParam(params, "modelProvider") orelse thread.model_provider,
     );
+    try applyLoadedThreadOpenaiBaseUrlToConfig(allocator, cfg, thread);
 
     if (params.get("serviceTier")) |service_tier_value| {
         if (service_tier_value != .null and service_tier_value != .string) return error.InvalidTurnContextOverride;
@@ -32372,6 +32376,7 @@ fn applyTurnStartRuntimeOverrides(
         thread.runtime_overrides.model_provider = true;
     }
     try replaceConfigOptionalString(allocator, &cfg.model_provider_id, thread.model_provider);
+    try applyLoadedThreadOpenaiBaseUrlToConfig(allocator, cfg, thread);
 
     if (params.get("serviceTier")) |service_tier_value| {
         if (service_tier_value != .null and service_tier_value != .string) return error.InvalidTurnContextOverride;
@@ -35780,6 +35785,8 @@ fn handleThreadMethod(
 const ThreadRequestConfigOverrides = struct {
     profile_present: bool = false,
     profile: ?[]const u8 = null,
+    openai_base_url_present: bool = false,
+    openai_base_url: ?[]const u8 = null,
     web_search_mode_present: bool = false,
     web_search_mode: ?config.WebSearchMode = null,
     oss_mode_present: bool = false,
@@ -35794,6 +35801,9 @@ fn validateThreadRequestConfigParam(object: std.json.ObjectMap) ?[]const u8 {
     if (value != .object) return "config must be an object or null";
     if (value.object.get("profile")) |profile| {
         if (profile != .null and profile != .string) return "config.profile must be a string or null";
+    }
+    if (value.object.get("openai_base_url")) |openai_base_url| {
+        if (openai_base_url != .null and openai_base_url != .string) return "config.openai_base_url must be a string or null";
     }
     if (value.object.get("web_search")) |web_search| {
         if (!optionalEnumStringIsValid(web_search, &.{ "disabled", "cached", "live" })) {
@@ -35823,6 +35833,14 @@ fn threadRequestConfigFromParams(params: ?std.json.ObjectMap) !ThreadRequestConf
         result.profile = switch (profile) {
             .null => null,
             .string => |profile_value| profile_value,
+            else => return error.InvalidThreadRequestConfig,
+        };
+    }
+    if (value.object.get("openai_base_url")) |openai_base_url| {
+        result.openai_base_url_present = true;
+        result.openai_base_url = switch (openai_base_url) {
+            .null => null,
+            .string => |base_url| base_url,
             else => return error.InvalidThreadRequestConfig,
         };
     }
@@ -35924,6 +35942,11 @@ fn applyThreadRequestConfigOverrides(
     request_config: ThreadRequestConfigOverrides,
     explicit_model: bool,
 ) !void {
+    if (request_config.openai_base_url_present) {
+        if (request_config.openai_base_url) |base_url| {
+            try replaceConfigOwnedString(allocator, &cfg.openai_base_url, base_url);
+        }
+    }
     if (request_config.web_search_mode_present) cfg.web_search_mode = request_config.web_search_mode;
     if (request_config.oss_provider_present) {
         if (request_config.oss_provider) |provider| {
@@ -35982,6 +36005,38 @@ fn threadOssProviderForRequest(
     return owned;
 }
 
+fn threadOpenaiBaseUrlForRequest(
+    allocator: std.mem.Allocator,
+    request_config: ThreadRequestConfigOverrides,
+) !?[]const u8 {
+    if (request_config.openai_base_url) |base_url| {
+        const owned = try allocator.dupe(u8, base_url);
+        return owned;
+    }
+    return null;
+}
+
+fn forkThreadOpenaiBaseUrl(
+    allocator: std.mem.Allocator,
+    request_config: ThreadRequestConfigOverrides,
+    use_request_profile: bool,
+    source: *const LoadedThread,
+) !?[]const u8 {
+    if (request_config.openai_base_url_present) {
+        if (request_config.openai_base_url) |base_url| {
+            const owned = try allocator.dupe(u8, base_url);
+            return owned;
+        }
+        return null;
+    }
+    if (use_request_profile) return null;
+    if (source.openai_base_url) |base_url| {
+        const owned = try allocator.dupe(u8, base_url);
+        return owned;
+    }
+    return null;
+}
+
 fn forkThreadOssProvider(
     allocator: std.mem.Allocator,
     cfg: config.Config,
@@ -35999,6 +36054,16 @@ fn forkThreadOssProvider(
         return owned;
     }
     return null;
+}
+
+fn applyLoadedThreadOpenaiBaseUrlToConfig(
+    allocator: std.mem.Allocator,
+    cfg: *config.Config,
+    thread: *const LoadedThread,
+) !void {
+    if (thread.openai_base_url) |base_url| {
+        try replaceConfigOwnedString(allocator, &cfg.openai_base_url, base_url);
+    }
 }
 
 fn applyLoadedThreadOssModeToConfig(
@@ -37135,6 +37200,8 @@ fn createLoadedThreadFromStartParams(
     const configured_model_provider = cfg.model_provider_id;
     const model_provider = try allocator.dupe(u8, optionalStringParam(params, "modelProvider") orelse configured_model_provider orelse "openai");
     errdefer allocator.free(model_provider);
+    const openai_base_url = try threadOpenaiBaseUrlForRequest(allocator, request_config);
+    errdefer if (openai_base_url) |value| allocator.free(value);
     const oss_provider = try threadOssProviderForRequest(allocator, cfg, request_config);
     errdefer if (oss_provider) |value| allocator.free(value);
 
@@ -37214,6 +37281,7 @@ fn createLoadedThreadFromStartParams(
         .model_auto_compact_token_limit = cfg.model_auto_compact_token_limit,
         .model_verbosity = model_verbosity,
         .model_provider = model_provider,
+        .openai_base_url = openai_base_url,
         .oss_provider = oss_provider,
         .service_tier = service_tier,
         .active_profile = active_profile,
@@ -37305,6 +37373,8 @@ fn createLoadedThreadFromHistoryParams(
     const configured_model_provider = cfg.model_provider_id;
     const model_provider = try allocator.dupe(u8, optionalStringParam(params, "modelProvider") orelse configured_model_provider orelse "openai");
     errdefer allocator.free(model_provider);
+    const openai_base_url = try threadOpenaiBaseUrlForRequest(allocator, request_config);
+    errdefer if (openai_base_url) |value| allocator.free(value);
     const oss_provider = try threadOssProviderForRequest(allocator, cfg, request_config);
     errdefer if (oss_provider) |value| allocator.free(value);
 
@@ -37371,6 +37441,7 @@ fn createLoadedThreadFromHistoryParams(
         .model_auto_compact_token_limit = cfg.model_auto_compact_token_limit,
         .model_verbosity = model_verbosity,
         .model_provider = model_provider,
+        .openai_base_url = openai_base_url,
         .oss_provider = oss_provider,
         .service_tier = service_tier,
         .active_profile = active_profile,
@@ -37496,6 +37567,8 @@ fn createLoadedThreadFromResumeParams(
         transcript.model_provider orelse configured_model_provider orelse "openai";
     const model_provider = try allocator.dupe(u8, optionalStringParam(params, "modelProvider") orelse default_model_provider);
     errdefer allocator.free(model_provider);
+    const openai_base_url = try threadOpenaiBaseUrlForRequest(allocator, request_config);
+    errdefer if (openai_base_url) |value| allocator.free(value);
     const oss_provider = try threadOssProviderForRequest(allocator, cfg, request_config);
     errdefer if (oss_provider) |value| allocator.free(value);
 
@@ -37554,6 +37627,7 @@ fn createLoadedThreadFromResumeParams(
         .model_auto_compact_token_limit = cfg.model_auto_compact_token_limit,
         .model_verbosity = model_verbosity,
         .model_provider = model_provider,
+        .openai_base_url = openai_base_url,
         .oss_provider = oss_provider,
         .service_tier = service_tier,
         .active_profile = active_profile,
@@ -37683,6 +37757,8 @@ fn createLoadedThreadFromForkParams(
     const default_model_provider = if (use_request_model_runtime) configured_model_provider orelse "openai" else source.model_provider;
     const model_provider = try allocator.dupe(u8, optionalStringParam(params, "modelProvider") orelse default_model_provider);
     errdefer allocator.free(model_provider);
+    const openai_base_url = try forkThreadOpenaiBaseUrl(allocator, request_config, use_request_profile, source);
+    errdefer if (openai_base_url) |value| allocator.free(value);
     const oss_provider = try forkThreadOssProvider(allocator, cfg, request_config, use_request_profile, source);
     errdefer if (oss_provider) |value| allocator.free(value);
 
@@ -37812,6 +37888,7 @@ fn createLoadedThreadFromForkParams(
         .model_auto_compact_token_limit = model_auto_compact_token_limit,
         .model_verbosity = model_verbosity,
         .model_provider = model_provider,
+        .openai_base_url = openai_base_url,
         .oss_provider = oss_provider,
         .service_tier = service_tier,
         .active_profile = active_profile,
@@ -62747,6 +62824,54 @@ test "runtime scalar requirements reject explicit lifecycle overrides" {
     );
 }
 
+test "thread request config supports openai base URL override" {
+    const allocator = std.testing.allocator;
+    var cfg = try testAppServerConfig(allocator, "gpt-5.5");
+    defer cfg.deinit(allocator);
+
+    var params = try std.json.parseFromSlice(
+        std.json.Value,
+        allocator,
+        "{\"ephemeral\":true,\"config\":{\"openai_base_url\":\"http://127.0.0.1:11434/v1\"}}",
+        .{},
+    );
+    defer params.deinit();
+    const request_config = try threadRequestConfigFromParams(params.value.object);
+    try applyThreadRequestConfigOverrides(allocator, &cfg, request_config, false);
+
+    try std.testing.expectEqualStrings("http://127.0.0.1:11434/v1", cfg.openai_base_url);
+
+    var thread = try createLoadedThreadFromStartParams(allocator, cfg, params.value.object);
+    defer thread.deinit(allocator);
+    try std.testing.expectEqualStrings("http://127.0.0.1:11434/v1", thread.openai_base_url.?);
+
+    var turn_cfg = try testAppServerConfig(allocator, "gpt-other");
+    defer turn_cfg.deinit(allocator);
+    var turn_params = try std.json.parseFromSlice(std.json.Value, allocator, "{}", .{});
+    defer turn_params.deinit();
+    try applyTurnStartRuntimeConfigOverrides(allocator, &turn_cfg, &thread, turn_params.value.object);
+    try std.testing.expectEqualStrings("http://127.0.0.1:11434/v1", turn_cfg.openai_base_url);
+
+    var inherited_fork = try createLoadedThreadFromForkParams(allocator, turn_cfg, turn_params.value.object, &thread);
+    defer inherited_fork.deinit(allocator);
+    try std.testing.expectEqualStrings("http://127.0.0.1:11434/v1", inherited_fork.openai_base_url.?);
+
+    var clear_params = try std.json.parseFromSlice(
+        std.json.Value,
+        allocator,
+        "{\"ephemeral\":true,\"config\":{\"openai_base_url\":null}}",
+        .{},
+    );
+    defer clear_params.deinit();
+    var clear_cfg = try testAppServerConfig(allocator, "gpt-reset");
+    defer clear_cfg.deinit(allocator);
+    const clear_request_config = try threadRequestConfigFromParams(clear_params.value.object);
+    try applyThreadRequestConfigOverrides(allocator, &clear_cfg, clear_request_config, false);
+    var cleared_fork = try createLoadedThreadFromForkParams(allocator, clear_cfg, clear_params.value.object, &thread);
+    defer cleared_fork.deinit(allocator);
+    try std.testing.expect(cleared_fork.openai_base_url == null);
+}
+
 test "config write scalar requirements reject disallowed top-level and profile values" {
     const allocator = std.testing.allocator;
     var requirements = ConfigRequirementsReadRequirements{
@@ -63613,6 +63738,7 @@ test "app-server goal reads persist refreshed accounting" {
         .model_auto_compact_token_limit = null,
         .model_verbosity = null,
         .model_provider = "openai",
+        .openai_base_url = null,
         .oss_provider = null,
         .service_tier = null,
         .active_profile = null,

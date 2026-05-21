@@ -674,12 +674,14 @@ const RemoteSlashAction = enum {
 
 const RemoteRequestConfigOverrides = struct {
     profile: ?[]const u8 = null,
+    openai_base_url: ?[]const u8 = null,
     web_search_mode: ?config.WebSearchMode = null,
     oss_mode: bool = false,
     oss_provider: ?[]const u8 = null,
 
     fn isEmpty(self: RemoteRequestConfigOverrides) bool {
         return self.profile == null and
+            self.openai_base_url == null and
             self.web_search_mode == null and
             !self.oss_mode and
             self.oss_provider == null;
@@ -689,6 +691,7 @@ const RemoteRequestConfigOverrides = struct {
 fn remoteRequestConfigOverrides(options: Options) RemoteRequestConfigOverrides {
     return .{
         .profile = options.profile,
+        .openai_base_url = options.runtime_overrides.openai_base_url,
         .web_search_mode = options.runtime_overrides.web_search_mode,
         .oss_mode = options.oss,
         .oss_provider = if (options.oss) options.oss_provider orelse options.runtime_overrides.oss_provider else null,
@@ -1531,9 +1534,7 @@ fn openRemoteLifecycleThread(
 
 fn validateRemoteTuiSupportedOptions(options: Options) !void {
     const overrides = options.runtime_overrides;
-    if (overrides.openai_base_url != null) return rejectUnsupportedRemoteTuiOption("-c openai_base_url");
     if (overrides.chatgpt_base_url != null) return rejectUnsupportedRemoteTuiOption("-c chatgpt_base_url");
-    if (overrides.syntax_theme != null) return rejectUnsupportedRemoteTuiOption("-c syntax_theme");
 }
 
 fn rejectUnsupportedRemoteTuiOption(option: []const u8) error{RemoteTuiUnsupportedOption} {
@@ -1668,6 +1669,9 @@ fn appendRemoteThreadRequestConfig(
     var config_first = true;
     if (request_config.profile) |profile| {
         try appendJsonStringField(allocator, out, &config_first, "profile", profile);
+    }
+    if (request_config.openai_base_url) |base_url| {
+        try appendJsonStringField(allocator, out, &config_first, "openai_base_url", base_url);
     }
     if (request_config.web_search_mode) |mode| {
         try appendJsonStringField(allocator, out, &config_first, "web_search", mode.label());
@@ -4360,11 +4364,14 @@ test "remote TUI validates unsupported local-only options" {
         .oss = true,
         .runtime_overrides = .{ .oss_provider = "lmstudio" },
     });
-    try std.testing.expectError(error.RemoteTuiUnsupportedOption, validateRemoteTuiSupportedOptions(.{
+    try validateRemoteTuiSupportedOptions(.{
         .runtime_overrides = .{ .openai_base_url = "http://127.0.0.1:11434/v1" },
-    }));
-    try std.testing.expectError(error.RemoteTuiUnsupportedOption, validateRemoteTuiSupportedOptions(.{
+    });
+    try validateRemoteTuiSupportedOptions(.{
         .runtime_overrides = .{ .syntax_theme = "dark" },
+    });
+    try std.testing.expectError(error.RemoteTuiUnsupportedOption, validateRemoteTuiSupportedOptions(.{
+        .runtime_overrides = .{ .chatgpt_base_url = "https://chatgpt.example" },
     }));
 }
 
@@ -4476,6 +4483,7 @@ test "remote TUI serializes supported runtime overrides" {
         .sandbox_mode = .workspace_write,
     }, false, .{
         .profile = "research",
+        .openai_base_url = "http://127.0.0.1:11434/v1",
         .web_search_mode = .cached,
     });
     defer allocator.free(thread_resume);
@@ -4492,6 +4500,7 @@ test "remote TUI serializes supported runtime overrides" {
     try std.testing.expectEqualStrings("workspace-write", resume_params.get("sandbox").?.string);
     const resume_config = resume_params.get("config").?.object;
     try std.testing.expectEqualStrings("research", resume_config.get("profile").?.string);
+    try std.testing.expectEqualStrings("http://127.0.0.1:11434/v1", resume_config.get("openai_base_url").?.string);
     try std.testing.expectEqualStrings("cached", resume_config.get("web_search").?.string);
 
     const thread_resume_relative = try renderRemoteThreadLifecycleRequest(allocator, "thread-resume", "thread/resume", "./rollout.jsonl", "/tmp/work", .{}, false, .{});
