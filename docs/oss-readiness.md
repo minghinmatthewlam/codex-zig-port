@@ -34,17 +34,17 @@ parity tracker; implementation parity remains tracked in `docs/parity.md`.
   push CI run `26182591696` passed on pushed head
   `7d2d54d0e65cc85405ed6f9f175d10b4798bfa1b`. Latest checked
   `publish-read-deny-parity-public` code head was
-  `fcfd817da6973d26f2eaee7922d0eeffd03cb6e0`; branch pushes do not start CI
+  `c09aa17dadf96ae4281dd783eb276363849c6e2d`; branch pushes do not start CI
   until opened as a pull request because the workflow runs on `main` pushes and
   PRs.
 - Fresh public clone proof: a clean HTTPS clone from
   `https://github.com/minghinmatthewlam/codex-zig-port` of branch
   `publish-read-deny-parity-public` at pushed head
-  `fcfd817da6973d26f2eaee7922d0eeffd03cb6e0` passed `python3 -m py_compile`
+  `c09aa17dadf96ae4281dd783eb276363849c6e2d` passed `python3 -m py_compile`
   for the app-server, CLI, OSS secret-scan, and TUI smoke scripts,
   `python3 scripts/oss_secret_scan.py`, `zig fmt --check build.zig
   build.zig.zon src/*.zig`, `zig build --summary all`,
-  `zig build test --summary all` with `627/627` tests passed, and
+  `zig build test --summary all` with `628/628` tests passed, and
   `zig build e2e --summary all`.
 - Source hygiene: the current CI and fresh-public-clone scans found no
   high-confidence OpenAI, Anthropic, GitHub, AWS, Google, or Slack token
