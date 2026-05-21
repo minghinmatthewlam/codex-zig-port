@@ -839,6 +839,7 @@ fn appendResponseHistoryToolSearchCall(
     transcript: *Transcript,
     object: std.json.ObjectMap,
 ) !void {
+    if (isServerToolSearchItemWithNullCallId(object)) return;
     const call_id = requiredJsonStringField(object, "call_id") orelse requiredJsonStringField(object, "callId") orelse return error.InvalidHistory;
     const arguments_value = object.get("arguments") orelse return error.InvalidHistory;
     const arguments = try std.json.Stringify.valueAlloc(allocator, arguments_value, .{});
@@ -855,6 +856,7 @@ fn appendResponseHistoryToolSearchOutput(
     transcript: *Transcript,
     object: std.json.ObjectMap,
 ) !void {
+    if (isServerToolSearchItemWithNullCallId(object)) return;
     const call_id = requiredJsonStringField(object, "call_id") orelse requiredJsonStringField(object, "callId") orelse return error.InvalidHistory;
     const tools_value = object.get("tools") orelse return error.InvalidHistory;
     if (tools_value != .array) return error.InvalidHistory;
@@ -865,6 +867,13 @@ fn appendResponseHistoryToolSearchOutput(
         .call_id = call_id,
         .output = tools_json,
     });
+}
+
+fn isServerToolSearchItemWithNullCallId(object: std.json.ObjectMap) bool {
+    const call_id_value = object.get("call_id") orelse object.get("callId") orelse return false;
+    if (call_id_value != .null) return false;
+    const execution = optionalJsonStringField(object, "execution") orelse return false;
+    return std.mem.eql(u8, execution, "server");
 }
 
 const FunctionCallOutputContent = struct {
@@ -1374,6 +1383,9 @@ const ToolSearchArgs = struct {
     limit_configured: bool,
 };
 
+const tool_search_default_limit: usize = 8;
+const tool_search_computer_use_limit: usize = 20;
+
 fn runToolSearchCall(
     allocator: std.mem.Allocator,
     mcp_catalog: mcp_runtime.Catalog,
@@ -1403,8 +1415,8 @@ fn runToolSearchCall(
 fn toolSearchModelError(allocator: std.mem.Allocator, call: api.FunctionCall, message: []const u8) !tools.ToolResult {
     return .{
         .call_id = try allocator.dupe(u8, call.call_id),
-        .summary = try allocator.dupe(u8, "tool_search invalid"),
-        .output = try allocator.dupe(u8, message),
+        .summary = try std.fmt.allocPrint(allocator, "tool_search invalid: {s}", .{message}),
+        .output = try allocator.dupe(u8, "[]"),
     };
 }
 
@@ -1415,7 +1427,7 @@ fn parseToolSearchArgs(value: std.json.Value) !ToolSearchArgs {
     const query = std.mem.trim(u8, query_value.string, " \t\r\n");
     if (query.len == 0) return error.ToolSearchEmptyQuery;
 
-    var limit: usize = 8;
+    var limit: usize = tool_search_default_limit;
     var limit_configured = false;
     if (value.object.get("limit")) |limit_value| {
         limit_configured = true;
@@ -1453,11 +1465,9 @@ fn renderToolSearchMcpResults(
     var matches = std.ArrayList(ToolSearchMatch).empty;
     defer matches.deinit(allocator);
 
-    var has_computer_use = false;
     for (mcp_tools) |tool| {
         const score = toolSearchScore(args.query, tool);
         if (score == 0) continue;
-        if (std.mem.eql(u8, tool.server_name, "computer-use")) has_computer_use = true;
         try matches.append(allocator, .{
             .tool = tool,
             .score = score,
@@ -1466,24 +1476,55 @@ fn renderToolSearchMcpResults(
 
     std.mem.sort(ToolSearchMatch, matches.items, {}, toolSearchMatchLessThan);
 
-    const limit = if (!args.limit_configured and has_computer_use) @as(usize, 20) else args.limit;
+    const limit = toolSearchEffectiveLimit(matches.items, args);
     const result_limit = @min(matches.items.len, limit);
+    var selected = std.ArrayList(ToolSearchMatch).empty;
+    defer selected.deinit(allocator);
+    for (matches.items[0..result_limit]) |match| {
+        if (!args.limit_configured and toolSearchBucketCount(selected.items, match.tool.server_name) >= toolSearchDefaultLimitForBucket(match.tool.server_name)) {
+            continue;
+        }
+        try selected.append(allocator, match);
+    }
+
     var out = std.ArrayList(u8).empty;
     errdefer out.deinit(allocator);
     try out.append(allocator, '[');
     var emitted_servers = std.ArrayList([]const u8).empty;
     defer emitted_servers.deinit(allocator);
     var namespace_count: usize = 0;
-    for (matches.items[0..result_limit]) |match| {
+    for (selected.items) |match| {
         const server_name = match.tool.server_name;
         if (toolSearchServerEmitted(emitted_servers.items, server_name)) continue;
         if (namespace_count > 0) try out.append(allocator, ',');
-        try appendToolSearchMcpNamespaceJson(allocator, &out, server_name, matches.items, result_limit);
+        try appendToolSearchMcpNamespaceJson(allocator, &out, server_name, selected.items);
         try emitted_servers.append(allocator, server_name);
         namespace_count += 1;
     }
     try out.append(allocator, ']');
     return out.toOwnedSlice(allocator);
+}
+
+fn toolSearchEffectiveLimit(matches: []const ToolSearchMatch, args: ToolSearchArgs) usize {
+    if (args.limit_configured) return args.limit;
+    const default_window = @min(matches.len, tool_search_default_limit);
+    for (matches[0..default_window]) |match| {
+        if (std.mem.eql(u8, match.tool.server_name, "computer-use")) return tool_search_computer_use_limit;
+    }
+    return args.limit;
+}
+
+fn toolSearchDefaultLimitForBucket(server_name: []const u8) usize {
+    if (std.mem.eql(u8, server_name, "computer-use")) return tool_search_computer_use_limit;
+    return tool_search_default_limit;
+}
+
+fn toolSearchBucketCount(matches: []const ToolSearchMatch, server_name: []const u8) usize {
+    var count: usize = 0;
+    for (matches) |match| {
+        if (std.mem.eql(u8, match.tool.server_name, server_name)) count += 1;
+    }
+    return count;
 }
 
 fn toolSearchServerEmitted(emitted_servers: []const []const u8, server_name: []const u8) bool {
@@ -1535,7 +1576,6 @@ fn appendToolSearchMcpNamespaceJson(
     out: *std.ArrayList(u8),
     server_name: []const u8,
     matches: []const ToolSearchMatch,
-    result_limit: usize,
 ) !void {
     const namespace_name = try toolSearchNamespaceName(allocator, server_name);
     defer allocator.free(namespace_name);
@@ -1552,7 +1592,7 @@ fn appendToolSearchMcpNamespaceJson(
     try out.appendSlice(allocator, description_json);
     try out.appendSlice(allocator, ",\"tools\":[");
     var first_tool = true;
-    for (matches[0..result_limit]) |match| {
+    for (matches) |match| {
         if (!std.mem.eql(u8, match.tool.server_name, server_name)) continue;
         if (!first_tool) try out.append(allocator, ',');
         try appendToolSearchMcpToolJson(allocator, out, match.tool);
@@ -1664,6 +1704,68 @@ test "runToolSearchCall returns matching mcp namespace tools" {
     try std.testing.expectEqualStrings("function", namespace_tools.items[0].object.get("type").?.string);
     try std.testing.expectEqualStrings("echo", namespace_tools.items[0].object.get("name").?.string);
     try std.testing.expectEqual(true, namespace_tools.items[0].object.get("defer_loading").?.bool);
+}
+
+test "runToolSearchCall returns empty tools array for invalid arguments" {
+    const allocator = std.testing.allocator;
+    const catalog = mcp_runtime.Catalog{ .tools = &.{} };
+    const call = api.FunctionCall{
+        .kind = .tool_search,
+        .call_id = "search-invalid",
+        .name = "tool_search",
+        .arguments = "{\"query\":\"\"}",
+    };
+
+    const result = try runToolSearchCall(allocator, catalog, call);
+    defer result.deinit(allocator);
+
+    try std.testing.expectEqualStrings("search-invalid", result.call_id);
+    try std.testing.expect(std.mem.startsWith(u8, result.summary, "tool_search invalid:"));
+    var parsed = try std.json.parseFromSlice(std.json.Value, allocator, result.output, .{});
+    defer parsed.deinit();
+    try std.testing.expectEqual(@as(usize, 0), parsed.value.array.items.len);
+}
+
+test "runToolSearchCall uses larger default limit for computer-use tools" {
+    const allocator = std.testing.allocator;
+    var owned_tools = std.ArrayList(mcp_runtime.ToolSpec).empty;
+    defer {
+        for (owned_tools.items) |tool| tool.deinit(allocator);
+        owned_tools.deinit(allocator);
+    }
+
+    for (0..25) |index| {
+        const raw_name = try std.fmt.allocPrint(allocator, "tool_{d}", .{index});
+        errdefer allocator.free(raw_name);
+        const callable_name = try std.fmt.allocPrint(allocator, "mcp__computer_use__tool_{d}", .{index});
+        errdefer allocator.free(callable_name);
+        try owned_tools.append(allocator, .{
+            .server_name = try allocator.dupe(u8, "computer-use"),
+            .raw_tool_name = raw_name,
+            .callable_name = callable_name,
+            .description = try allocator.dupe(u8, "computer use desktop tool"),
+            .input_schema_json = try allocator.dupe(u8, "{\"type\":\"object\"}"),
+        });
+    }
+
+    const catalog = mcp_runtime.Catalog{ .tools = owned_tools.items };
+    const call = api.FunctionCall{
+        .kind = .tool_search,
+        .call_id = "search-computer-use",
+        .name = "tool_search",
+        .arguments = "{\"query\":\"computer use\"}",
+    };
+
+    const result = try runToolSearchCall(allocator, catalog, call);
+    defer result.deinit(allocator);
+
+    var parsed = try std.json.parseFromSlice(std.json.Value, allocator, result.output, .{});
+    defer parsed.deinit();
+    const namespaces = parsed.value.array;
+    try std.testing.expectEqual(@as(usize, 1), namespaces.items.len);
+    const namespace = namespaces.items[0].object;
+    try std.testing.expectEqualStrings("mcp__computer_use__", namespace.get("name").?.string);
+    try std.testing.expectEqual(@as(usize, tool_search_computer_use_limit), namespace.get("tools").?.array.items.len);
 }
 
 test "runToolCall applies read-denied roots" {
@@ -2260,6 +2362,38 @@ test "append response history tool_search call and output" {
     try std.testing.expectEqual(api.HistoryItem.Kind.tool_search_output, transcript.history.items[1].kind);
     try std.testing.expectEqualStrings("search-1", transcript.history.items[1].call_id.?);
     try std.testing.expect(std.mem.indexOf(u8, transcript.history.items[1].output.?, "\"name\":\"mcp__demo__\"") != null);
+}
+
+test "append response history skips server tool_search items with null call id" {
+    const allocator = std.testing.allocator;
+    var call_parsed = try std.json.parseFromSlice(std.json.Value, allocator,
+        \\{
+        \\  "type": "tool_search_call",
+        \\  "call_id": null,
+        \\  "status": "completed",
+        \\  "execution": "server",
+        \\  "arguments": {"paths": ["crm"]}
+        \\}
+    , .{});
+    defer call_parsed.deinit();
+    var output_parsed = try std.json.parseFromSlice(std.json.Value, allocator,
+        \\{
+        \\  "type": "tool_search_output",
+        \\  "call_id": null,
+        \\  "status": "completed",
+        \\  "execution": "server",
+        \\  "tools": []
+        \\}
+    , .{});
+    defer output_parsed.deinit();
+
+    var transcript = Transcript{};
+    defer transcript.deinit(allocator);
+
+    try appendResponseHistoryItem(allocator, &transcript, call_parsed.value);
+    try appendResponseHistoryItem(allocator, &transcript, output_parsed.value);
+
+    try std.testing.expectEqual(@as(usize, 0), transcript.history.items.len);
 }
 
 test "append response history message joins text content items" {

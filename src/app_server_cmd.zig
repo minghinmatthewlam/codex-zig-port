@@ -33273,7 +33273,21 @@ fn appendInjectedResponseItem(
 ) !void {
     const before_len = transcript.history.items.len;
     try session_mod.appendResponseHistoryItem(allocator, transcript, item);
-    if (transcript.history.items.len == before_len) return error.UnsupportedInjectedItem;
+    if (transcript.history.items.len == before_len and !isSkippableInjectedResponseItem(item)) return error.UnsupportedInjectedItem;
+}
+
+fn isSkippableInjectedResponseItem(item: std.json.Value) bool {
+    if (item != .object) return false;
+    const object = item.object;
+    const type_value = object.get("type") orelse return false;
+    if (type_value != .string) return false;
+    const is_tool_search = std.mem.eql(u8, type_value.string, "tool_search_call") or
+        std.mem.eql(u8, type_value.string, "tool_search_output");
+    if (!is_tool_search) return false;
+    const execution = object.get("execution") orelse return false;
+    if (execution != .string or !std.mem.eql(u8, execution.string, "server")) return false;
+    const call_id = object.get("call_id") orelse object.get("callId") orelse return false;
+    return call_id == .null;
 }
 
 fn parseInjectedResponseItems(
