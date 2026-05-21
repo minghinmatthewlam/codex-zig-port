@@ -335,6 +335,7 @@ pub const TurnOptions = struct {
     stream_text: bool = false,
     additional_writable_roots: []const []const u8 = &.{},
     read_denied_roots: []const []const u8 = &.{},
+    read_denied_globs: []const []const u8 = &.{},
     include_cwd_write_root: bool = true,
     network_enabled: bool = true,
     output_schema: ?std.json.Value = null,
@@ -789,6 +790,7 @@ pub fn runTurnWithOptions(
                     options,
                     turn_writable_roots.items,
                     options.read_denied_roots,
+                    options.read_denied_globs,
                     turn_network_enabled,
                 );
             defer tool_result.deinit(allocator);
@@ -866,6 +868,7 @@ fn runToolCall(
     options: TurnOptions,
     additional_writable_roots: []const []const u8,
     read_denied_roots: []const []const u8,
+    read_denied_globs: []const []const u8,
     network_enabled: bool,
 ) !tools.ToolResult {
     if (std.mem.eql(u8, call.name, "update_plan")) {
@@ -945,6 +948,7 @@ fn runToolCall(
         .sandbox_mode = cfg.sandbox_mode,
         .additional_writable_roots = additional_writable_roots,
         .read_denied_roots = read_denied_roots,
+        .read_denied_globs = read_denied_globs,
         .include_cwd_write_root = options.include_cwd_write_root,
         .network_enabled = network_enabled,
         .auto_approve = options.auto_approve,
@@ -1038,6 +1042,7 @@ test "runToolCall applies read-denied roots" {
         .{ .workdir = cwd },
         &.{},
         &.{secret_path},
+        &.{},
         true,
     );
     defer result.deinit(allocator);

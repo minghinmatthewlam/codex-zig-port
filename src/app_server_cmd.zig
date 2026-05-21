@@ -575,6 +575,7 @@ const LoadedThread = struct {
     sandbox_mode: []const u8,
     sandbox_writable_roots: config.StringList,
     sandbox_read_denied_roots: config.StringList,
+    sandbox_read_denied_globs: config.StringList,
     sandbox_include_cwd_write_root: bool,
     sandbox_network_enabled: bool,
     sandbox_exclude_tmpdir_env_var: bool,
@@ -629,6 +630,7 @@ const LoadedThread = struct {
         allocator.free(self.sandbox_mode);
         self.sandbox_writable_roots.deinit(allocator);
         self.sandbox_read_denied_roots.deinit(allocator);
+        self.sandbox_read_denied_globs.deinit(allocator);
         if (self.reasoning_effort) |value| allocator.free(value);
         if (self.reasoning_summary) |value| allocator.free(value);
         if (self.personality) |value| allocator.free(value);
@@ -29121,6 +29123,7 @@ fn handleReviewStart(
         .external_auth_refresh_callback = external_auth_refresh_callback,
         .additional_writable_roots = &.{},
         .read_denied_roots = thread.sandbox_read_denied_roots.items,
+        .read_denied_globs = thread.sandbox_read_denied_globs.items,
         .include_cwd_write_root = false,
         .network_enabled = false,
         .developer_messages_after_user = user_prompt_hooks.contexts.items,
@@ -30049,6 +30052,7 @@ fn handleTurnStart(
         .external_auth_refresh_callback = external_auth_refresh_callback,
         .additional_writable_roots = effective_writable_roots.items,
         .read_denied_roots = thread.sandbox_read_denied_roots.items,
+        .read_denied_globs = thread.sandbox_read_denied_globs.items,
         .include_cwd_write_root = thread.sandbox_include_cwd_write_root,
         .network_enabled = thread.sandbox_network_enabled,
         .output_schema = optionalJsonParam(object, "outputSchema"),
@@ -32283,12 +32287,16 @@ fn applyTurnStartRuntimeOverrides(
         var read_denied_roots = try loadedThreadRootsFromProfile(allocator, thread.cwd, profile.read_denied_roots.items);
         var read_denied_roots_moved = false;
         errdefer if (!read_denied_roots_moved) read_denied_roots.deinit(allocator);
+        var read_denied_globs = try loadedThreadGlobsFromProfile(allocator, thread.cwd, profile.read_denied_globs.items);
+        var read_denied_globs_moved = false;
+        errdefer if (!read_denied_globs_moved) read_denied_globs.deinit(allocator);
         try replaceLoadedThreadSandboxProfile(
             allocator,
             thread,
             profile.mode,
             roots,
             read_denied_roots,
+            read_denied_globs,
             profile.include_cwd_write_root,
             profile.network_enabled,
             profile.exclude_tmpdir_env_var,
@@ -32297,6 +32305,7 @@ fn applyTurnStartRuntimeOverrides(
         );
         roots_moved = true;
         read_denied_roots_moved = true;
+        read_denied_globs_moved = true;
     } else if (params.get("sandboxPolicy")) |sandbox_policy| {
         if (sandbox_policy != .null and params.get("sandbox") != null and params.get("sandbox").? != .null) return error.InvalidTurnContextOverride;
         if (sandbox_policy != .null) {
@@ -32309,12 +32318,16 @@ fn applyTurnStartRuntimeOverrides(
             var read_denied_roots = try emptyStringList(allocator);
             var read_denied_roots_moved = false;
             errdefer if (!read_denied_roots_moved) read_denied_roots.deinit(allocator);
+            var read_denied_globs = try emptyStringList(allocator);
+            var read_denied_globs_moved = false;
+            errdefer if (!read_denied_globs_moved) read_denied_globs.deinit(allocator);
             try replaceLoadedThreadSandboxProfile(
                 allocator,
                 thread,
                 sandbox_selection.mode,
                 writable_roots,
                 read_denied_roots,
+                read_denied_globs,
                 true,
                 sandbox_selection.network_enabled,
                 sandbox_selection.exclude_tmpdir_env_var,
@@ -32323,6 +32336,7 @@ fn applyTurnStartRuntimeOverrides(
             );
             writable_roots_moved = true;
             read_denied_roots_moved = true;
+            read_denied_globs_moved = true;
         } else {
             const sandbox_label = optionalStringParam(params, "sandbox") orelse thread.sandbox_mode;
             cfg.sandbox_mode = config.SandboxMode.parse(sandbox_label) catch return error.InvalidTurnContextOverride;
@@ -32518,7 +32532,9 @@ fn parseTurnStartPermissionSelection(
     const id_value = value.object.get("id") orelse return error.InvalidTurnContextOverride;
     if (id_value != .string or id_value.string.len == 0) return error.InvalidTurnContextOverride;
 
-    var profile = config.loadSandboxPermissionProfile(allocator, id_value.string) catch |err| switch (err) {
+    var profile = config.loadSandboxPermissionProfileWithOptions(allocator, id_value.string, .{
+        .allow_read_denied_globs = true,
+    }) catch |err| switch (err) {
         error.OutOfMemory => return err,
         else => return error.InvalidTurnContextOverride,
     };
@@ -32611,6 +32627,34 @@ fn loadedThreadRootsFromProfile(
     return .{ .items = items };
 }
 
+fn loadedThreadGlobsFromProfile(
+    allocator: std.mem.Allocator,
+    cwd: []const u8,
+    patterns: []const []const u8,
+) !config.StringList {
+    var resolved = std.ArrayList([]const u8).empty;
+    var moved = false;
+    errdefer if (!moved) {
+        for (resolved.items) |pattern| allocator.free(pattern);
+        resolved.deinit(allocator);
+    };
+
+    for (patterns) |pattern| {
+        const owned = if (std.fs.path.isAbsolute(pattern))
+            try allocator.dupe(u8, pattern)
+        else
+            try std.fs.path.resolve(allocator, &.{ cwd, pattern });
+        resolved.append(allocator, owned) catch |err| {
+            allocator.free(owned);
+            return err;
+        };
+    }
+
+    const items = try resolved.toOwnedSlice(allocator);
+    moved = true;
+    return .{ .items = items };
+}
+
 fn expectTurnStartSandboxPolicyNetworkDisabled(object: std.json.ObjectMap) !void {
     const value = object.get("networkAccess") orelse return;
     if (value == .null) return;
@@ -32640,12 +32684,15 @@ fn resetLoadedThreadSandboxProfile(
     errdefer roots.deinit(allocator);
     var read_denied_roots = try emptyStringList(allocator);
     errdefer read_denied_roots.deinit(allocator);
+    var read_denied_globs = try emptyStringList(allocator);
+    errdefer read_denied_globs.deinit(allocator);
     try replaceLoadedThreadSandboxProfile(
         allocator,
         thread,
         mode,
         roots,
         read_denied_roots,
+        read_denied_globs,
         true,
         network_enabled,
         false,
@@ -32660,6 +32707,7 @@ fn replaceLoadedThreadSandboxProfile(
     mode: config.SandboxMode,
     roots: config.StringList,
     read_denied_roots: config.StringList,
+    read_denied_globs: config.StringList,
     include_cwd_write_root: bool,
     network_enabled: bool,
     exclude_tmpdir_env_var: bool,
@@ -32671,6 +32719,8 @@ fn replaceLoadedThreadSandboxProfile(
     thread.sandbox_writable_roots = roots;
     thread.sandbox_read_denied_roots.deinit(allocator);
     thread.sandbox_read_denied_roots = read_denied_roots;
+    thread.sandbox_read_denied_globs.deinit(allocator);
+    thread.sandbox_read_denied_globs = read_denied_globs;
     thread.sandbox_include_cwd_write_root = include_cwd_write_root;
     thread.sandbox_network_enabled = network_enabled;
     thread.sandbox_exclude_tmpdir_env_var = exclude_tmpdir_env_var;
@@ -33230,6 +33280,7 @@ fn handleLoadedThreadCompactStart(
         .prompt_for_approval = false,
         .additional_writable_roots = effective_writable_roots.items,
         .read_denied_roots = thread.sandbox_read_denied_roots.items,
+        .read_denied_globs = thread.sandbox_read_denied_globs.items,
         .include_cwd_write_root = thread.sandbox_include_cwd_write_root,
         .network_enabled = thread.sandbox_network_enabled,
         .include_tools = false,
@@ -37109,6 +37160,8 @@ fn createLoadedThreadFromStartParams(
     errdefer sandbox_writable_roots.deinit(allocator);
     var sandbox_read_denied_roots = try emptyStringList(allocator);
     errdefer sandbox_read_denied_roots.deinit(allocator);
+    var sandbox_read_denied_globs = try emptyStringList(allocator);
+    errdefer sandbox_read_denied_globs.deinit(allocator);
 
     const reasoning_effort = if (cfg.model_reasoning_effort) |effort|
         try allocator.dupe(u8, effort.label())
@@ -37170,6 +37223,7 @@ fn createLoadedThreadFromStartParams(
         .sandbox_mode = sandbox_mode,
         .sandbox_writable_roots = sandbox_writable_roots,
         .sandbox_read_denied_roots = sandbox_read_denied_roots,
+        .sandbox_read_denied_globs = sandbox_read_denied_globs,
         .sandbox_include_cwd_write_root = true,
         .sandbox_network_enabled = defaultNetworkEnabledForSandboxModeLabel(sandbox_mode),
         .sandbox_exclude_tmpdir_env_var = false,
@@ -37276,6 +37330,8 @@ fn createLoadedThreadFromHistoryParams(
     errdefer sandbox_writable_roots.deinit(allocator);
     var sandbox_read_denied_roots = try emptyStringList(allocator);
     errdefer sandbox_read_denied_roots.deinit(allocator);
+    var sandbox_read_denied_globs = try emptyStringList(allocator);
+    errdefer sandbox_read_denied_globs.deinit(allocator);
 
     const reasoning_effort = if (cfg.model_reasoning_effort) |effort|
         try allocator.dupe(u8, effort.label())
@@ -37324,6 +37380,7 @@ fn createLoadedThreadFromHistoryParams(
         .sandbox_mode = sandbox_mode,
         .sandbox_writable_roots = sandbox_writable_roots,
         .sandbox_read_denied_roots = sandbox_read_denied_roots,
+        .sandbox_read_denied_globs = sandbox_read_denied_globs,
         .sandbox_include_cwd_write_root = true,
         .sandbox_network_enabled = defaultNetworkEnabledForSandboxModeLabel(sandbox_mode),
         .sandbox_exclude_tmpdir_env_var = false,
@@ -37465,6 +37522,8 @@ fn createLoadedThreadFromResumeParams(
     errdefer sandbox_writable_roots.deinit(allocator);
     var sandbox_read_denied_roots = try emptyStringList(allocator);
     errdefer sandbox_read_denied_roots.deinit(allocator);
+    var sandbox_read_denied_globs = try emptyStringList(allocator);
+    errdefer sandbox_read_denied_globs.deinit(allocator);
 
     const reasoning_effort = if (cfg.model_reasoning_effort) |effort|
         try allocator.dupe(u8, effort.label())
@@ -37504,6 +37563,7 @@ fn createLoadedThreadFromResumeParams(
         .sandbox_mode = sandbox_mode,
         .sandbox_writable_roots = sandbox_writable_roots,
         .sandbox_read_denied_roots = sandbox_read_denied_roots,
+        .sandbox_read_denied_globs = sandbox_read_denied_globs,
         .sandbox_include_cwd_write_root = true,
         .sandbox_network_enabled = defaultNetworkEnabledForSandboxModeLabel(sandbox_mode),
         .sandbox_exclude_tmpdir_env_var = false,
@@ -37667,6 +37727,11 @@ fn createLoadedThreadFromForkParams(
     else
         try source.sandbox_read_denied_roots.clone(allocator);
     errdefer sandbox_read_denied_roots.deinit(allocator);
+    var sandbox_read_denied_globs = if (reset_sandbox_profile)
+        try emptyStringList(allocator)
+    else
+        try source.sandbox_read_denied_globs.clone(allocator);
+    errdefer sandbox_read_denied_globs.deinit(allocator);
     const sandbox_include_cwd_write_root = if (reset_sandbox_profile) true else source.sandbox_include_cwd_write_root;
     const sandbox_network_enabled = if (reset_sandbox_profile) defaultNetworkEnabledForSandboxModeLabel(sandbox_mode) else source.sandbox_network_enabled;
     const sandbox_exclude_tmpdir_env_var = if (reset_sandbox_profile) false else source.sandbox_exclude_tmpdir_env_var;
@@ -37756,6 +37821,7 @@ fn createLoadedThreadFromForkParams(
         .sandbox_mode = sandbox_mode,
         .sandbox_writable_roots = sandbox_writable_roots,
         .sandbox_read_denied_roots = sandbox_read_denied_roots,
+        .sandbox_read_denied_globs = sandbox_read_denied_globs,
         .sandbox_include_cwd_write_root = sandbox_include_cwd_write_root,
         .sandbox_network_enabled = sandbox_network_enabled,
         .sandbox_exclude_tmpdir_env_var = sandbox_exclude_tmpdir_env_var,
@@ -40329,6 +40395,11 @@ fn appendThreadPermissionProfileFileSystemJson(allocator: std.mem.Allocator, res
     for (thread.sandbox_read_denied_roots.items) |root| {
         try result.appendSlice(allocator, ",{\"path\":{\"type\":\"path\",\"path\":");
         try appendJsonString(allocator, result, root);
+        try result.appendSlice(allocator, "},\"access\":\"none\"}");
+    }
+    for (thread.sandbox_read_denied_globs.items) |pattern| {
+        try result.appendSlice(allocator, ",{\"path\":{\"type\":\"glob_pattern\",\"pattern\":");
+        try appendJsonString(allocator, result, pattern);
         try result.appendSlice(allocator, "},\"access\":\"none\"}");
     }
     if (std.mem.eql(u8, thread.sandbox_mode, "workspace-write")) {
@@ -44026,6 +44097,7 @@ const CommandExecSandbox = struct {
     mode: config.SandboxMode,
     writable_roots: []const []const u8 = &.{},
     read_denied_roots: []const []const u8 = &.{},
+    read_denied_globs: []const []const u8 = &.{},
     owned_paths: []const []const u8 = &.{},
     include_cwd_write_root: bool = true,
     network_enabled: bool = true,
@@ -44033,6 +44105,7 @@ const CommandExecSandbox = struct {
     fn deinit(self: *CommandExecSandbox, allocator: std.mem.Allocator) void {
         allocator.free(self.writable_roots);
         allocator.free(self.read_denied_roots);
+        allocator.free(self.read_denied_globs);
         for (self.owned_paths) |path| allocator.free(path);
         allocator.free(self.owned_paths);
         self.* = .{ .mode = .workspace_write };
@@ -44048,12 +44121,14 @@ const CommandExecPermissionProfileSummary = struct {
     slash_tmp_write: bool = false,
     path_writable_roots: std.ArrayList([]const u8) = .empty,
     read_denied_roots: std.ArrayList([]const u8) = .empty,
+    read_denied_globs: std.ArrayList([]const u8) = .empty,
     owned_paths: std.ArrayList([]const u8) = .empty,
     unsupported: bool = false,
 
     fn deinit(self: *CommandExecPermissionProfileSummary, allocator: std.mem.Allocator) void {
         self.path_writable_roots.deinit(allocator);
         self.read_denied_roots.deinit(allocator);
+        self.read_denied_globs.deinit(allocator);
         for (self.owned_paths.items) |path| allocator.free(path);
         self.owned_paths.deinit(allocator);
     }
@@ -44183,6 +44258,7 @@ fn handleCommandExec(allocator: std.mem.Allocator, state: *AppServerState, id_va
             .include_cwd_write_root = command_sandbox.include_cwd_write_root,
             .network_enabled = command_sandbox.network_enabled,
             .read_denied_roots = command_sandbox.read_denied_roots,
+            .read_denied_globs = command_sandbox.read_denied_globs,
         });
         break :blk sandboxed_argv.?.argv;
     } else command;
@@ -46298,7 +46374,7 @@ fn parseCommandExecPermissionProfile(
     if (summary.unsupported or (summary.non_root_read and !summary.root_read)) return error.UnsupportedCommandExecPermissionProfile;
     if (summary.root_write) {
         if (!summary.root_read) return error.UnsupportedCommandExecPermissionProfile;
-        if (summary.read_denied_roots.items.len > 0) {
+        if (summary.read_denied_roots.items.len > 0 or summary.read_denied_globs.items.len > 0) {
             const roots = try allocator.alloc([]const u8, 1);
             roots[0] = "/";
             return try commandExecSandboxFromPermissionSummary(allocator, &summary, .workspace_write, roots, false, network_enabled);
@@ -46337,6 +46413,9 @@ fn commandExecSandboxFromPermissionSummary(
     const read_denied_roots = try summary.read_denied_roots.toOwnedSlice(allocator);
     summary.read_denied_roots = .empty;
     errdefer allocator.free(read_denied_roots);
+    const read_denied_globs = try summary.read_denied_globs.toOwnedSlice(allocator);
+    summary.read_denied_globs = .empty;
+    errdefer allocator.free(read_denied_globs);
 
     const owned_paths = try summary.owned_paths.toOwnedSlice(allocator);
     summary.owned_paths = .empty;
@@ -46346,6 +46425,7 @@ fn commandExecSandboxFromPermissionSummary(
         .mode = mode,
         .writable_roots = writable_roots,
         .read_denied_roots = read_denied_roots,
+        .read_denied_globs = read_denied_globs,
         .owned_paths = owned_paths,
         .include_cwd_write_root = include_cwd_write_root,
         .network_enabled = network_enabled,
@@ -46410,6 +46490,10 @@ fn addCommandExecPermissionProfileEntry(
         return;
     }
     if (std.mem.eql(u8, access_value.string, "read")) {
+        if (try commandExecPermissionPathIsGlobPattern(path)) {
+            summary.unsupported = true;
+            return;
+        }
         if (commandExecPermissionPathIsRoot(path) catch |err| switch (err) {
             error.InvalidCommandExecPermissionProfileEntry => return err,
         }) {
@@ -46423,6 +46507,10 @@ fn addCommandExecPermissionProfileEntry(
         return error.InvalidCommandExecPermissionProfileEntry;
     }
 
+    if (try commandExecPermissionPathIsGlobPattern(path)) {
+        summary.unsupported = true;
+        return;
+    }
     if (try commandExecPermissionPathIsRoot(path)) {
         summary.root_write = true;
         return;
@@ -46463,6 +46551,13 @@ fn addCommandExecPermissionReadDenyRoot(
     path: std.json.Value,
     cwd: ?[]const u8,
 ) !void {
+    if (try commandExecPermissionPathGlobPattern(allocator, path, cwd)) |pattern| {
+        errdefer allocator.free(pattern);
+        try summary.owned_paths.append(allocator, pattern);
+        errdefer _ = summary.owned_paths.pop();
+        try summary.read_denied_globs.append(allocator, pattern);
+        return;
+    }
     if (try commandExecPermissionPathIsRoot(path)) {
         try summary.read_denied_roots.append(allocator, "/");
         return;
@@ -46503,6 +46598,46 @@ fn addCommandExecPermissionReadDenyRoot(
         return;
     }
     summary.unsupported = true;
+}
+
+fn commandExecPermissionPathGlobPattern(
+    allocator: std.mem.Allocator,
+    value: std.json.Value,
+    cwd: ?[]const u8,
+) !?[]const u8 {
+    if (value != .object) return error.InvalidCommandExecPermissionProfileEntry;
+    const type_value = value.object.get("type") orelse return error.InvalidCommandExecPermissionProfileEntry;
+    if (type_value != .string) return error.InvalidCommandExecPermissionProfileEntry;
+    if (!std.mem.eql(u8, type_value.string, "glob_pattern")) return null;
+
+    const pattern_value = value.object.get("pattern") orelse return error.InvalidCommandExecPermissionProfileEntry;
+    if (pattern_value != .string or pattern_value.string.len == 0) return error.InvalidCommandExecPermissionProfileEntry;
+    if (std.fs.path.isAbsolute(pattern_value.string)) return try allocator.dupe(u8, pattern_value.string);
+    if (!commandExecSafeRelativeGlobPattern(pattern_value.string)) return error.InvalidCommandExecPermissionProfileEntry;
+
+    const base = try realPathFileAllocPlain(allocator, cwd orelse ".");
+    defer allocator.free(base);
+    const resolved: []const u8 = try std.fs.path.resolve(allocator, &.{ base, pattern_value.string });
+    return resolved;
+}
+
+fn commandExecPermissionPathIsGlobPattern(value: std.json.Value) !bool {
+    if (value != .object) return error.InvalidCommandExecPermissionProfileEntry;
+    const type_value = value.object.get("type") orelse return error.InvalidCommandExecPermissionProfileEntry;
+    if (type_value != .string) return error.InvalidCommandExecPermissionProfileEntry;
+    if (!std.mem.eql(u8, type_value.string, "glob_pattern")) return false;
+    const pattern_value = value.object.get("pattern") orelse return error.InvalidCommandExecPermissionProfileEntry;
+    if (pattern_value != .string or pattern_value.string.len == 0) return error.InvalidCommandExecPermissionProfileEntry;
+    return true;
+}
+
+fn commandExecSafeRelativeGlobPattern(pattern: []const u8) bool {
+    if (pattern.len == 0 or std.fs.path.isAbsolute(pattern)) return false;
+    var iter = std.mem.splitScalar(u8, pattern, '/');
+    while (iter.next()) |part| {
+        if (part.len == 0 or std.mem.eql(u8, part, ".") or std.mem.eql(u8, part, "..")) return false;
+    }
+    return true;
 }
 
 fn commandExecPermissionPathIsRoot(value: std.json.Value) !bool {
@@ -52171,6 +52306,12 @@ fn reloadLoadedThreadRuntimeConfig(allocator: std.mem.Allocator, state: *AppServ
             thread.sandbox_read_denied_roots.deinit(allocator);
             thread.sandbox_read_denied_roots = read_denied_roots;
             read_denied_roots_moved = true;
+            var read_denied_globs = try emptyStringList(allocator);
+            var read_denied_globs_moved = false;
+            errdefer if (!read_denied_globs_moved) read_denied_globs.deinit(allocator);
+            thread.sandbox_read_denied_globs.deinit(allocator);
+            thread.sandbox_read_denied_globs = read_denied_globs;
+            read_denied_globs_moved = true;
             thread.sandbox_include_cwd_write_root = true;
             thread.sandbox_network_enabled = defaultNetworkEnabledForSandboxMode(cfg.sandbox_mode);
             thread.sandbox_exclude_tmpdir_env_var = false;
@@ -63481,6 +63622,7 @@ test "app-server goal reads persist refreshed accounting" {
         .sandbox_mode = "danger-full-access",
         .sandbox_writable_roots = .{ .items = &.{} },
         .sandbox_read_denied_roots = .{ .items = &.{} },
+        .sandbox_read_denied_globs = .{ .items = &.{} },
         .sandbox_include_cwd_write_root = true,
         .sandbox_network_enabled = true,
         .sandbox_exclude_tmpdir_env_var = false,

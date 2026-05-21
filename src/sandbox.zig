@@ -22,6 +22,7 @@ pub const WrapOptions = struct {
     include_cwd_write_root: bool = true,
     network_enabled: bool = true,
     read_denied_roots: []const []const u8 = &.{},
+    read_denied_globs: []const []const u8 = &.{},
 };
 
 pub fn shouldSandbox(mode: config.SandboxMode) bool {
@@ -114,10 +115,12 @@ pub fn wrapArgvWithPolicy(
         try resolveAdditionalRoots(allocator, additional_writable_roots)
     else
         try allocator.alloc([]const u8, 0);
-    defer freeResolvedRoots(allocator, resolved_roots);
+    defer freeResolvedPaths(allocator, resolved_roots);
 
     const resolved_read_denied_roots = try resolveReadDeniedRoots(allocator, cwd, options.read_denied_roots);
-    defer freeResolvedRoots(allocator, resolved_read_denied_roots);
+    defer freeResolvedPaths(allocator, resolved_read_denied_roots);
+    const resolved_read_denied_globs = try resolveReadDeniedGlobPatterns(allocator, cwd, options.read_denied_globs);
+    defer freeResolvedPaths(allocator, resolved_read_denied_globs);
 
     const profile = try buildProfileWithOptions(
         allocator,
@@ -127,6 +130,7 @@ pub fn wrapArgvWithPolicy(
         options.include_cwd_write_root,
         options.network_enabled,
         resolved_read_denied_roots,
+        resolved_read_denied_globs,
     );
     errdefer allocator.free(profile);
 
@@ -147,7 +151,7 @@ fn buildProfile(
     cwd: []const u8,
     additional_writable_roots: []const []const u8,
 ) ![]const u8 {
-    return buildProfileWithOptions(allocator, mode, cwd, additional_writable_roots, true, true, &.{});
+    return buildProfileWithOptions(allocator, mode, cwd, additional_writable_roots, true, true, &.{}, &.{});
 }
 
 fn buildProfileWithOptions(
@@ -158,10 +162,11 @@ fn buildProfileWithOptions(
     include_cwd_write_root: bool,
     network_enabled: bool,
     read_denied_roots: []const []const u8,
+    read_denied_globs: []const []const u8,
 ) ![]const u8 {
     return switch (mode) {
         .danger_full_access => error.SandboxNotNeeded,
-        .read_only => buildReadOnlyProfile(allocator, network_enabled, read_denied_roots),
+        .read_only => buildReadOnlyProfile(allocator, network_enabled, read_denied_roots, read_denied_globs),
         .workspace_write => blk: {
             var profile = std.ArrayList(u8).empty;
             errdefer profile.deinit(allocator);
@@ -178,18 +183,25 @@ fn buildProfileWithOptions(
                 try appendWritableSubpath(allocator, &profile, root);
             }
             try appendReadDeniedRoots(allocator, &profile, read_denied_roots);
+            try appendReadDeniedGlobPatterns(allocator, &profile, read_denied_globs);
             try appendNetworkPolicy(allocator, &profile, network_enabled);
             break :blk try profile.toOwnedSlice(allocator);
         },
     };
 }
 
-fn buildReadOnlyProfile(allocator: std.mem.Allocator, network_enabled: bool, read_denied_roots: []const []const u8) ![]const u8 {
+fn buildReadOnlyProfile(
+    allocator: std.mem.Allocator,
+    network_enabled: bool,
+    read_denied_roots: []const []const u8,
+    read_denied_globs: []const []const u8,
+) ![]const u8 {
     var profile = std.ArrayList(u8).empty;
     errdefer profile.deinit(allocator);
     try profile.appendSlice(allocator, baseProfile);
     try profile.appendSlice(allocator, readOnlyWritePolicy);
     try appendReadDeniedRoots(allocator, &profile, read_denied_roots);
+    try appendReadDeniedGlobPatterns(allocator, &profile, read_denied_globs);
     try appendNetworkPolicy(allocator, &profile, network_enabled);
     return profile.toOwnedSlice(allocator);
 }
@@ -253,6 +265,79 @@ fn resolveReadDeniedRoots(allocator: std.mem.Allocator, base_cwd: []const u8, ro
     return resolved;
 }
 
+pub fn resolveReadDeniedGlobPatterns(allocator: std.mem.Allocator, base_cwd: []const u8, patterns: []const []const u8) ![]const []const u8 {
+    var resolved = std.ArrayList([]const u8).empty;
+    var moved = false;
+    errdefer if (!moved) {
+        for (resolved.items) |pattern| allocator.free(pattern);
+        resolved.deinit(allocator);
+    };
+
+    for (patterns) |pattern| {
+        const original = if (std.fs.path.isAbsolute(pattern))
+            try allocator.dupe(u8, pattern)
+        else
+            try std.fs.path.join(allocator, &.{ base_cwd, pattern });
+        var original_moved = false;
+        errdefer if (!original_moved) allocator.free(original);
+
+        const canonical = try canonicalizeGlobStaticPrefix(allocator, original);
+        var canonical_moved = false;
+        errdefer if (!canonical_moved) allocator.free(canonical);
+
+        try appendUniqueOwnedPath(allocator, &resolved, original);
+        original_moved = true;
+        try appendUniqueOwnedPath(allocator, &resolved, canonical);
+        canonical_moved = true;
+    }
+
+    const items = try resolved.toOwnedSlice(allocator);
+    moved = true;
+    return items;
+}
+
+fn appendUniqueOwnedPath(allocator: std.mem.Allocator, paths: *std.ArrayList([]const u8), path: []const u8) !void {
+    for (paths.items) |existing| {
+        if (std.mem.eql(u8, existing, path)) {
+            allocator.free(path);
+            return;
+        }
+    }
+    try paths.append(allocator, path);
+}
+
+fn canonicalizeGlobStaticPrefix(allocator: std.mem.Allocator, pattern: []const u8) ![]const u8 {
+    const first_glob = firstGlobCharIndex(pattern) orelse {
+        return realPathAlloc(allocator, pattern) catch |err| switch (err) {
+            error.FileNotFound, error.NotDir, error.AccessDenied => try canonicalMissingPath(allocator, pattern),
+            else => return err,
+        };
+    };
+
+    const static_prefix = pattern[0..first_glob];
+    const prefix_end = if (static_prefix.len > 0 and static_prefix[static_prefix.len - 1] == std.fs.path.sep)
+        static_prefix.len - 1
+    else
+        std.mem.lastIndexOfScalar(u8, static_prefix, std.fs.path.sep) orelse 0;
+    if (prefix_end == 0) return allocator.dupe(u8, pattern);
+
+    const prefix = pattern[0..prefix_end];
+    const suffix = pattern[prefix_end..];
+    const real_prefix = realPathAlloc(allocator, prefix) catch |err| switch (err) {
+        error.FileNotFound, error.NotDir, error.AccessDenied => try canonicalMissingPath(allocator, prefix),
+        else => return err,
+    };
+    defer allocator.free(real_prefix);
+    return std.fmt.allocPrint(allocator, "{s}{s}", .{ real_prefix, suffix });
+}
+
+fn firstGlobCharIndex(value: []const u8) ?usize {
+    for (value, 0..) |byte, index| {
+        if (byte == '*' or byte == '?' or byte == '[' or byte == ']') return index;
+    }
+    return null;
+}
+
 fn canonicalMissingPath(allocator: std.mem.Allocator, absolute_path: []const u8) ![]const u8 {
     var probe_end = absolute_path.len;
     while (probe_end > 0) {
@@ -281,7 +366,7 @@ fn canonicalMissingPath(allocator: std.mem.Allocator, absolute_path: []const u8)
     return allocator.dupe(u8, absolute_path);
 }
 
-fn freeResolvedRoots(allocator: std.mem.Allocator, roots: []const []const u8) void {
+pub fn freeResolvedPaths(allocator: std.mem.Allocator, roots: []const []const u8) void {
     for (roots) |root| allocator.free(root);
     allocator.free(roots);
 }
@@ -311,6 +396,249 @@ fn appendReadDeniedRoots(allocator: std.mem.Allocator, profile: *std.ArrayList(u
         defer allocator.free(block);
         try profile.appendSlice(allocator, block);
     }
+}
+
+fn appendReadDeniedGlobPatterns(allocator: std.mem.Allocator, profile: *std.ArrayList(u8), patterns: []const []const u8) !void {
+    for (patterns) |pattern| {
+        const regex = try seatbeltRegexForUnreadableGlob(allocator, pattern);
+        defer allocator.free(regex);
+        const escaped = try escapeSeatbeltRawRegex(allocator, regex);
+        defer allocator.free(escaped);
+        const block = try std.fmt.allocPrint(
+            allocator,
+            \\(deny file-read* (regex #"{s}"))
+            \\(deny file-write* (regex #"{s}"))
+            \\
+        ,
+            .{ escaped, escaped },
+        );
+        defer allocator.free(block);
+        try profile.appendSlice(allocator, block);
+    }
+}
+
+fn escapeSeatbeltRawRegex(allocator: std.mem.Allocator, value: []const u8) ![]const u8 {
+    var escaped = std.ArrayList(u8).empty;
+    errdefer escaped.deinit(allocator);
+
+    for (value) |byte| {
+        if (byte == '"') try escaped.append(allocator, '\\');
+        try escaped.append(allocator, byte);
+    }
+
+    return escaped.toOwnedSlice(allocator);
+}
+
+fn seatbeltRegexForUnreadableGlob(allocator: std.mem.Allocator, pattern: []const u8) ![]const u8 {
+    var regex = std.ArrayList(u8).empty;
+    errdefer regex.deinit(allocator);
+
+    try regex.append(allocator, '^');
+    var index: usize = 0;
+    var saw_glob = false;
+    while (index < pattern.len) {
+        const byte = pattern[index];
+        switch (byte) {
+            '*' => {
+                saw_glob = true;
+                if (index + 1 < pattern.len and pattern[index + 1] == '*') {
+                    index += 2;
+                    if (index < pattern.len and pattern[index] == '/') {
+                        index += 1;
+                        try regex.appendSlice(allocator, "(.*/)?");
+                    } else {
+                        try regex.appendSlice(allocator, ".*");
+                    }
+                    continue;
+                }
+                try regex.appendSlice(allocator, "[^/]*");
+                index += 1;
+                continue;
+            },
+            '?' => {
+                saw_glob = true;
+                try regex.appendSlice(allocator, "[^/]");
+            },
+            '[' => {
+                saw_glob = true;
+                const class_start = index;
+                appendSeatbeltRegexClass(allocator, &regex, pattern, &index) catch |err| switch (err) {
+                    error.InvalidGlobClass => try regex.appendSlice(allocator, "\\["),
+                    else => return err,
+                };
+                if (index != class_start) continue;
+            },
+            ']' => {
+                saw_glob = true;
+                try regex.appendSlice(allocator, "\\]");
+            },
+            else => try appendRegexEscapedByte(allocator, &regex, byte),
+        }
+        index += 1;
+    }
+    if (!saw_glob) try regex.appendSlice(allocator, "(/.*)?");
+    try regex.append(allocator, '$');
+    return regex.toOwnedSlice(allocator);
+}
+
+fn appendSeatbeltRegexClass(
+    allocator: std.mem.Allocator,
+    regex: *std.ArrayList(u8),
+    pattern: []const u8,
+    index: *usize,
+) !void {
+    var cursor = index.* + 1;
+    var close: ?usize = null;
+    while (cursor < pattern.len) : (cursor += 1) {
+        if (pattern[cursor] == ']') {
+            close = cursor;
+            break;
+        }
+    }
+    const end = close orelse return error.InvalidGlobClass;
+
+    try regex.append(allocator, '[');
+    var class_index = index.* + 1;
+    if (class_index < end) {
+        const first = pattern[class_index];
+        if (first == '!') {
+            try regex.append(allocator, '^');
+            class_index += 1;
+        } else if (first == '^') {
+            try regex.appendSlice(allocator, "\\^");
+            class_index += 1;
+        }
+    }
+    while (class_index < end) : (class_index += 1) {
+        const byte = pattern[class_index];
+        if (byte == '\\') {
+            try regex.appendSlice(allocator, "\\\\");
+        } else {
+            try regex.append(allocator, byte);
+        }
+    }
+    try regex.append(allocator, ']');
+    index.* = end + 1;
+}
+
+fn appendRegexEscapedByte(allocator: std.mem.Allocator, regex: *std.ArrayList(u8), byte: u8) !void {
+    switch (byte) {
+        '.', '+', '(', ')', '{', '}', '^', '$', '|', '\\' => {
+            try regex.append(allocator, '\\');
+            try regex.append(allocator, byte);
+        },
+        else => try regex.append(allocator, byte),
+    }
+}
+
+pub fn readDeniedGlobMatchesPath(pattern: []const u8, path: []const u8) bool {
+    if (pattern.len == 0) return false;
+    return readDeniedGlobMatchesPathAt(pattern, 0, path, 0);
+}
+
+fn readDeniedGlobMatchesPathAt(pattern: []const u8, pattern_index: usize, path: []const u8, path_index: usize) bool {
+    if (pattern_index == pattern.len) return path_index == path.len;
+    if (pattern_index > pattern.len) return false;
+
+    switch (pattern[pattern_index]) {
+        '*' => {
+            if (pattern_index + 1 < pattern.len and pattern[pattern_index + 1] == '*') {
+                const next_pattern_index = pattern_index + 2;
+                if (next_pattern_index < pattern.len and pattern[next_pattern_index] == '/') {
+                    const after_globstar_slash = next_pattern_index + 1;
+                    if (readDeniedGlobMatchesPathAt(pattern, after_globstar_slash, path, path_index)) return true;
+                    var cursor = path_index;
+                    while (cursor < path.len) : (cursor += 1) {
+                        if (path[cursor] == '/' and readDeniedGlobMatchesPathAt(pattern, after_globstar_slash, path, cursor + 1)) return true;
+                    }
+                    return false;
+                }
+
+                var cursor = path_index;
+                while (cursor <= path.len) : (cursor += 1) {
+                    if (readDeniedGlobMatchesPathAt(pattern, next_pattern_index, path, cursor)) return true;
+                    if (cursor == path.len) break;
+                }
+                return false;
+            }
+
+            if (readDeniedGlobMatchesPathAt(pattern, pattern_index + 1, path, path_index)) return true;
+            var cursor = path_index;
+            while (cursor < path.len and path[cursor] != '/') : (cursor += 1) {
+                if (readDeniedGlobMatchesPathAt(pattern, pattern_index + 1, path, cursor + 1)) return true;
+            }
+            return false;
+        },
+        '?' => {
+            if (path_index >= path.len or path[path_index] == '/') return false;
+            return readDeniedGlobMatchesPathAt(pattern, pattern_index + 1, path, path_index + 1);
+        },
+        '[' => {
+            const class_end = globClassEnd(pattern, pattern_index) orelse {
+                if (path_index >= path.len or !globByteEqual('[', path[path_index])) return false;
+                return readDeniedGlobMatchesPathAt(pattern, pattern_index + 1, path, path_index + 1);
+            };
+            if (path_index >= path.len or path[path_index] == '/') return false;
+            if (!globClassMatches(pattern[pattern_index + 1 .. class_end], path[path_index])) return false;
+            return readDeniedGlobMatchesPathAt(pattern, class_end + 1, path, path_index + 1);
+        },
+        else => |byte| {
+            if (path_index >= path.len or !globByteEqual(byte, path[path_index])) return false;
+            return readDeniedGlobMatchesPathAt(pattern, pattern_index + 1, path, path_index + 1);
+        },
+    }
+}
+
+fn globClassEnd(pattern: []const u8, start: usize) ?usize {
+    var cursor = start + 1;
+    while (cursor < pattern.len) : (cursor += 1) {
+        if (pattern[cursor] == ']') return cursor;
+    }
+    return null;
+}
+
+fn globClassMatches(class: []const u8, byte: u8) bool {
+    var index: usize = 0;
+    var negated = false;
+    if (index < class.len and class[index] == '!') {
+        negated = true;
+        index += 1;
+    } else if (index < class.len and class[index] == '^') {
+        index += 1;
+    }
+
+    var matched = false;
+    while (index < class.len) : (index += 1) {
+        const start = class[index];
+        if (index + 2 < class.len and class[index + 1] == '-') {
+            const end = class[index + 2];
+            if (globByteInRange(byte, start, end)) matched = true;
+            index += 2;
+            continue;
+        }
+        if (globByteEqual(start, byte)) matched = true;
+    }
+    return if (negated) !matched else matched;
+}
+
+fn globByteInRange(byte: u8, start: u8, end: u8) bool {
+    const comparable_byte = globComparableByte(byte);
+    const comparable_start = globComparableByte(start);
+    const comparable_end = globComparableByte(end);
+    if (comparable_start <= comparable_end) {
+        return comparable_byte >= comparable_start and comparable_byte <= comparable_end;
+    }
+    return comparable_byte >= comparable_end and comparable_byte <= comparable_start;
+}
+
+fn globByteEqual(left: u8, right: u8) bool {
+    if (left == right) return true;
+    if (builtin.os.tag == .macos) return std.ascii.toLower(left) == std.ascii.toLower(right);
+    return false;
+}
+
+fn globComparableByte(byte: u8) u8 {
+    return if (builtin.os.tag == .macos) std.ascii.toLower(byte) else byte;
 }
 
 fn escapeSeatbeltString(allocator: std.mem.Allocator, value: []const u8) ![]const u8 {
@@ -371,7 +699,7 @@ test "seatbelt string escaping handles quotes and backslashes" {
 
 test "sandbox profile can disable network access" {
     const allocator = std.testing.allocator;
-    const profile = try buildProfileWithOptions(allocator, .workspace_write, "/tmp/codex-workspace", &.{}, true, false, &.{});
+    const profile = try buildProfileWithOptions(allocator, .workspace_write, "/tmp/codex-workspace", &.{}, true, false, &.{}, &.{});
     defer allocator.free(profile);
 
     try std.testing.expect(std.mem.indexOf(u8, profile, "(deny network*)") != null);
@@ -379,11 +707,81 @@ test "sandbox profile can disable network access" {
 
 test "sandbox profile can deny read roots" {
     const allocator = std.testing.allocator;
-    const profile = try buildProfileWithOptions(allocator, .workspace_write, "/tmp/codex-workspace", &.{}, true, true, &.{"/tmp/codex-workspace/secret"});
+    const profile = try buildProfileWithOptions(allocator, .workspace_write, "/tmp/codex-workspace", &.{}, true, true, &.{"/tmp/codex-workspace/secret"}, &.{});
     defer allocator.free(profile);
 
     try std.testing.expect(std.mem.indexOf(u8, profile, "(deny file-read* (literal \"/tmp/codex-workspace/secret\"))") != null);
     try std.testing.expect(std.mem.indexOf(u8, profile, "(deny file-write* (subpath \"/tmp/codex-workspace/secret\"))") != null);
+}
+
+test "sandbox profile can deny read glob patterns" {
+    const allocator = std.testing.allocator;
+    const profile = try buildProfileWithOptions(allocator, .workspace_write, "/tmp/codex-workspace", &.{}, true, true, &.{}, &.{"/tmp/codex-workspace/**/*.secret"});
+    defer allocator.free(profile);
+
+    try std.testing.expect(std.mem.indexOf(u8, profile, "(deny file-read* (regex #\"^/tmp/codex-workspace/(.*/)?[^/]*\\.secret$\"))") != null);
+    try std.testing.expect(std.mem.indexOf(u8, profile, "(deny file-write* (regex #\"^/tmp/codex-workspace/(.*/)?[^/]*\\.secret$\"))") != null);
+}
+
+test "read-denied glob matcher mirrors seatbelt translation" {
+    try std.testing.expect(readDeniedGlobMatchesPath("/tmp/repo/**/*.env", "/tmp/repo/.env"));
+    try std.testing.expect(readDeniedGlobMatchesPath("/tmp/repo/**/*.env", "/tmp/repo/nested/child.env"));
+    try std.testing.expect(!readDeniedGlobMatchesPath("/tmp/repo/**/*.env", "/tmp/repo/nested/child.env.bak"));
+    try std.testing.expect(readDeniedGlobMatchesPath("/tmp/repo/*/file[0-9]?.txt", "/tmp/repo/a/file5x.txt"));
+    try std.testing.expect(!readDeniedGlobMatchesPath("/tmp/repo/*/file[0-9]?.txt", "/tmp/repo/a/b/file5x.txt"));
+    try std.testing.expect(readDeniedGlobMatchesPath("/tmp/repo/[*.env", "/tmp/repo/[file.env"));
+    try std.testing.expect(!readDeniedGlobMatchesPath("/tmp/repo/[*.env", "/tmp/repo/file.env"));
+}
+
+test "relative read-denied globs resolve against cwd override" {
+    const allocator = std.testing.allocator;
+    var dir = std.testing.tmpDir(.{});
+    defer dir.cleanup();
+    var io_instance: std.Io.Threaded = .init(allocator, .{});
+    defer io_instance.deinit();
+
+    try dir.dir.createDirPath(io_instance.io(), "workspace/nested");
+
+    const root = try dir.dir.realPathFileAlloc(std.Io.Threaded.global_single_threaded.io(), ".", allocator);
+    defer allocator.free(root);
+    const workspace = try std.fs.path.join(allocator, &.{ root, "workspace" });
+    defer allocator.free(workspace);
+
+    const argv = [_][]const u8{ "/bin/echo", "ok" };
+    var wrapped = try wrapArgvWithPolicy(allocator, .workspace_write, argv[0..], &.{}, .{
+        .cwd_override = workspace,
+        .read_denied_globs = &.{"**/*.secret"},
+    });
+    defer wrapped.deinit(allocator);
+
+    try std.testing.expect(std.mem.indexOf(u8, wrapped.profile, "(deny file-read* (regex #\"^") != null);
+    try std.testing.expect(std.mem.indexOf(u8, wrapped.profile, "/(.*/)?[^/]*\\.secret$\"))") != null);
+}
+
+test "read-denied glob resolver includes canonicalized static prefix" {
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
+
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var dir = std.testing.tmpDir(.{});
+    defer dir.cleanup();
+
+    try dir.dir.createDirPath(io, "target/nested");
+    try dir.dir.symLink(io, "target", "alias", .{ .is_directory = true });
+
+    const root = try dir.dir.realPathFileAlloc(io, ".", allocator);
+    defer allocator.free(root);
+    const alias_pattern = try std.fs.path.join(allocator, &.{ root, "alias", "**/*.secret" });
+    defer allocator.free(alias_pattern);
+    const target_pattern = try std.fs.path.join(allocator, &.{ root, "target", "**/*.secret" });
+    defer allocator.free(target_pattern);
+
+    const resolved = try resolveReadDeniedGlobPatterns(allocator, root, &.{alias_pattern});
+    defer freeResolvedPaths(allocator, resolved);
+
+    try std.testing.expectEqual(@as(usize, 2), resolved.len);
+    try std.testing.expectEqualStrings(alias_pattern, resolved[0]);
+    try std.testing.expectEqualStrings(target_pattern, resolved[1]);
 }
 
 test "relative read-denied roots resolve against cwd override" {
@@ -627,7 +1025,7 @@ test "workspace-write sandbox can omit cwd write root" {
     defer allocator.free(extra_target);
 
     const additional_roots = [_][]const u8{extra_root};
-    const profile = try buildProfileWithOptions(allocator, .workspace_write, cwd_root, additional_roots[0..], false, true, &.{});
+    const profile = try buildProfileWithOptions(allocator, .workspace_write, cwd_root, additional_roots[0..], false, true, &.{}, &.{});
     defer allocator.free(profile);
     const script = try std.fmt.allocPrint(
         allocator,

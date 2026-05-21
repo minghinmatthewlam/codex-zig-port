@@ -85,7 +85,9 @@ pub fn runWithOptions(allocator: std.mem.Allocator, args: *std.process.Args.Iter
     try config.applyRuntimeOverrides(&cfg, allocator, options.runtime_overrides);
     if (parsed.mode) |mode| cfg.sandbox_mode = mode;
     if (parsed.permissions_profile) |profile| {
-        sandbox_profile = try config.loadSandboxPermissionProfile(allocator, profile);
+        sandbox_profile = try config.loadSandboxPermissionProfileWithOptions(allocator, profile, .{
+            .allow_read_denied_globs = true,
+        });
         cfg.sandbox_mode = sandbox_profile.?.mode;
     }
 
@@ -112,7 +114,8 @@ pub fn runWithOptions(allocator: std.mem.Allocator, args: *std.process.Args.Iter
     const include_cwd_write_root = if (sandbox_profile) |profile| profile.include_cwd_write_root else true;
     const network_enabled = if (sandbox_profile) |profile| profile.network_enabled else true;
     const read_denied_roots = if (sandbox_profile) |profile| profile.read_denied_roots.items else &.{};
-    try runCommand(allocator, parsed.command, cfg.sandbox_mode, additional_writable_roots, include_cwd_write_root, network_enabled, read_denied_roots);
+    const read_denied_globs = if (sandbox_profile) |profile| profile.read_denied_globs.items else &.{};
+    try runCommand(allocator, parsed.command, cfg.sandbox_mode, additional_writable_roots, include_cwd_write_root, network_enabled, read_denied_roots, read_denied_globs);
 }
 
 fn parseSandboxKind(subcommand: []const u8) ?SandboxKind {
@@ -226,6 +229,7 @@ fn runCommand(
     include_cwd_write_root: bool,
     network_enabled: bool,
     read_denied_roots: []const []const u8,
+    read_denied_globs: []const []const u8,
 ) !void {
     var io_instance: std.Io.Threaded = .init(allocator, .{});
     defer io_instance.deinit();
@@ -237,6 +241,7 @@ fn runCommand(
             .include_cwd_write_root = include_cwd_write_root,
             .network_enabled = network_enabled,
             .read_denied_roots = read_denied_roots,
+            .read_denied_globs = read_denied_globs,
         });
         break :blk sandboxed_argv.?.argv;
     } else argv;

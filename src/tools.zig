@@ -148,6 +148,7 @@ pub const Policy = struct {
     sandbox_mode: config.SandboxMode = .workspace_write,
     additional_writable_roots: []const []const u8 = &.{},
     read_denied_roots: []const []const u8 = &.{},
+    read_denied_globs: []const []const u8 = &.{},
     include_cwd_write_root: bool = true,
     network_enabled: bool = true,
     auto_approve: bool = false,
@@ -225,7 +226,7 @@ pub fn runFunctionCall(allocator: std.mem.Allocator, call: api.FunctionCall, pol
         var parsed = try std.json.parseFromSlice(ApplyPatchArgs, allocator, call.arguments, .{ .ignore_unknown_fields = true });
         defer parsed.deinit();
         if (try permissionResult(allocator, call.call_id, policy, .apply_patch, parsed.value.patch, policy.workdir, false)) |result| return result;
-        return runApplyPatch(allocator, call.call_id, parsed.value.patch, policy.workdir, policy.read_denied_roots);
+        return runApplyPatch(allocator, call.call_id, parsed.value.patch, policy.workdir, policy.read_denied_roots, policy.read_denied_globs);
     }
 
     return .{
@@ -315,6 +316,14 @@ fn approvalScopeKey(allocator: std.mem.Allocator, policy: Policy) ![]const u8 {
         try out.appendSlice(allocator, root_json);
     }
     try out.append(allocator, ']');
+    try out.appendSlice(allocator, ";read-denied-globs=[");
+    for (policy.read_denied_globs, 0..) |pattern, index| {
+        if (index > 0) try out.append(allocator, ',');
+        const pattern_json = try std.json.Stringify.valueAlloc(allocator, pattern, .{});
+        defer allocator.free(pattern_json);
+        try out.appendSlice(allocator, pattern_json);
+    }
+    try out.append(allocator, ']');
     return out.toOwnedSlice(allocator);
 }
 
@@ -374,6 +383,7 @@ fn runExecCommand(
             .sandbox_mode = policy.sandbox_mode,
             .additional_writable_roots = policy.additional_writable_roots,
             .read_denied_roots = policy.read_denied_roots,
+            .read_denied_globs = policy.read_denied_globs,
             .include_cwd_write_root = policy.include_cwd_write_root,
             .network_enabled = policy.network_enabled,
             .workdir = args.workdir orelse policy.workdir,
@@ -387,6 +397,7 @@ fn runExecCommand(
         .sandbox_mode = policy.sandbox_mode,
         .additional_writable_roots = policy.additional_writable_roots,
         .read_denied_roots = policy.read_denied_roots,
+        .read_denied_globs = policy.read_denied_globs,
         .include_cwd_write_root = policy.include_cwd_write_root,
         .network_enabled = policy.network_enabled,
         .workdir = args.workdir orelse policy.workdir,
@@ -399,6 +410,7 @@ const ExecSessionOptions = struct {
     sandbox_mode: config.SandboxMode,
     additional_writable_roots: []const []const u8 = &.{},
     read_denied_roots: []const []const u8 = &.{},
+    read_denied_globs: []const []const u8 = &.{},
     include_cwd_write_root: bool = true,
     network_enabled: bool = true,
     workdir: ?[]const u8 = null,
@@ -516,6 +528,7 @@ fn startExecSession(argv: []const []const u8, options: ExecSessionOptions) !usiz
                 .include_cwd_write_root = options.include_cwd_write_root,
                 .network_enabled = options.network_enabled,
                 .read_denied_roots = options.read_denied_roots,
+                .read_denied_globs = options.read_denied_globs,
             },
         );
         break :blk sandboxed_argv.?.argv;
@@ -611,6 +624,7 @@ fn runApplyPatch(
     patch: []const u8,
     workdir: ?[]const u8,
     read_denied_roots: []const []const u8,
+    read_denied_globs: []const []const u8,
 ) !ToolResult {
     const io = std.Io.Threaded.global_single_threaded.io();
     var opened_dir: ?std.Io.Dir = null;
@@ -623,7 +637,7 @@ fn runApplyPatch(
         break :blk opened_dir.?;
     } else std.Io.Dir.cwd();
 
-    if (try patchReadDeniedPath(allocator, root_dir, patch, read_denied_roots)) |denied_path| {
+    if (try patchReadDeniedPath(allocator, root_dir, patch, read_denied_roots, read_denied_globs)) |denied_path| {
         defer allocator.free(denied_path);
         return blockedByReadDeniedPatchPath(allocator, call_id, denied_path);
     }
@@ -663,8 +677,9 @@ fn patchReadDeniedPath(
     root: std.Io.Dir,
     patch: []const u8,
     read_denied_roots: []const []const u8,
+    read_denied_globs: []const []const u8,
 ) !?[]const u8 {
-    if (read_denied_roots.len == 0) return null;
+    if (read_denied_roots.len == 0 and read_denied_globs.len == 0) return null;
 
     var lines = std.ArrayList([]const u8).empty;
     defer lines.deinit(allocator);
@@ -674,6 +689,8 @@ fn patchReadDeniedPath(
 
     const resolved_denied_roots = try resolvePatchReadDeniedRoots(allocator, root_path, read_denied_roots);
     defer freeResolvedRoots(allocator, resolved_denied_roots);
+    const resolved_denied_globs = try sandbox.resolveReadDeniedGlobPatterns(allocator, root_path, read_denied_globs);
+    defer sandbox.freeResolvedPaths(allocator, resolved_denied_globs);
 
     const patch_text = normalizePatchText(patch);
     var raw_lines = std.mem.splitScalar(u8, patch_text, '\n');
@@ -693,7 +710,7 @@ fn patchReadDeniedPath(
         if (std.mem.startsWith(u8, line, "*** Add File: ")) {
             const path = try resolvePatchPath(allocator, root_path, line["*** Add File: ".len..]);
             defer path.deinit(allocator);
-            if (try patchPathReadDenied(allocator, root_path, path.value, resolved_denied_roots)) |denied_path| return denied_path;
+            if (try patchPathReadDenied(allocator, root_path, path.value, resolved_denied_roots, resolved_denied_globs)) |denied_path| return denied_path;
             index += 1;
             skipPatchBody(lines.items, &index);
             continue;
@@ -702,14 +719,14 @@ fn patchReadDeniedPath(
         if (std.mem.startsWith(u8, line, "*** Update File: ")) {
             const path = try resolvePatchPath(allocator, root_path, line["*** Update File: ".len..]);
             defer path.deinit(allocator);
-            if (try patchPathReadDenied(allocator, root_path, path.value, resolved_denied_roots)) |denied_path| return denied_path;
+            if (try patchPathReadDenied(allocator, root_path, path.value, resolved_denied_roots, resolved_denied_globs)) |denied_path| return denied_path;
             index += 1;
             if (index < lines.items.len) {
                 const directive = patchDirective(lines.items[index]);
                 if (std.mem.startsWith(u8, directive, "*** Move to: ")) {
                     const target_path = try resolvePatchPath(allocator, root_path, directive["*** Move to: ".len..]);
                     defer target_path.deinit(allocator);
-                    if (try patchPathReadDenied(allocator, root_path, target_path.value, resolved_denied_roots)) |denied_path| return denied_path;
+                    if (try patchPathReadDenied(allocator, root_path, target_path.value, resolved_denied_roots, resolved_denied_globs)) |denied_path| return denied_path;
                     index += 1;
                 }
             }
@@ -720,7 +737,7 @@ fn patchReadDeniedPath(
         if (std.mem.startsWith(u8, line, "*** Delete File: ")) {
             const path = try resolvePatchPath(allocator, root_path, line["*** Delete File: ".len..]);
             defer path.deinit(allocator);
-            if (try patchPathReadDenied(allocator, root_path, path.value, resolved_denied_roots)) |denied_path| return denied_path;
+            if (try patchPathReadDenied(allocator, root_path, path.value, resolved_denied_roots, resolved_denied_globs)) |denied_path| return denied_path;
             index += 1;
             continue;
         }
@@ -761,12 +778,19 @@ fn patchPathReadDenied(
     root_path: []const u8,
     path: []const u8,
     read_denied_roots: []const []const u8,
+    read_denied_globs: []const []const u8,
 ) !?[]const u8 {
     const absolute_path = try resolvePatchAbsolutePath(allocator, root_path, path);
     defer allocator.free(absolute_path);
 
     for (read_denied_roots) |denied_root| {
         if (pathIsAtOrUnderRoot(absolute_path, denied_root)) {
+            const denied_path: []const u8 = try allocator.dupe(u8, absolute_path);
+            return denied_path;
+        }
+    }
+    for (read_denied_globs) |denied_glob| {
+        if (sandbox.readDeniedGlobMatchesPath(denied_glob, absolute_path)) {
             const denied_path: []const u8 = try allocator.dupe(u8, absolute_path);
             return denied_path;
         }
@@ -855,6 +879,7 @@ fn runArgv(
         .sandbox_mode = policy.sandbox_mode,
         .additional_writable_roots = policy.additional_writable_roots,
         .read_denied_roots = policy.read_denied_roots,
+        .read_denied_globs = policy.read_denied_globs,
         .include_cwd_write_root = policy.include_cwd_write_root,
         .network_enabled = policy.network_enabled,
         .workdir = policy.workdir,
@@ -865,6 +890,7 @@ const RunArgvOptions = struct {
     sandbox_mode: config.SandboxMode,
     additional_writable_roots: []const []const u8 = &.{},
     read_denied_roots: []const []const u8 = &.{},
+    read_denied_globs: []const []const u8 = &.{},
     include_cwd_write_root: bool = true,
     network_enabled: bool = true,
     workdir: ?[]const u8 = null,
@@ -894,6 +920,7 @@ fn runArgvWithOptions(
                 .include_cwd_write_root = options.include_cwd_write_root,
                 .network_enabled = options.network_enabled,
                 .read_denied_roots = options.read_denied_roots,
+                .read_denied_globs = options.read_denied_globs,
             },
         );
         break :blk sandboxed_argv.?.argv;
@@ -3116,6 +3143,52 @@ test "apply_patch blocks read-denied source paths" {
     try std.testing.expectEqualStrings("blocked by sandbox", result.summary);
     try std.testing.expect(std.mem.indexOf(u8, result.output, "secret.txt") != null);
     const content = try dir.dir.readFileAlloc(std.Io.Threaded.global_single_threaded.io(), "secret.txt", allocator, .limited(1024));
+    defer allocator.free(content);
+    try std.testing.expectEqualStrings("secret\n", content);
+}
+
+test "apply_patch blocks read-denied glob paths" {
+    const allocator = std.testing.allocator;
+    var dir = std.testing.tmpDir(.{});
+    defer dir.cleanup();
+    const io = std.Io.Threaded.global_single_threaded.io();
+
+    try dir.dir.createDirPath(io, "nested");
+    try dir.dir.writeFile(io, .{
+        .sub_path = "nested/token.secret",
+        .data = "secret\n",
+    });
+    const cwd = try dir.dir.realPathFileAlloc(io, ".", allocator);
+    defer allocator.free(cwd);
+
+    const patch =
+        \\*** Begin Patch
+        \\*** Update File: nested/token.secret
+        \\@@
+        \\-secret
+        \\+changed
+        \\*** End Patch
+    ;
+    const args = try applyPatchArgumentsForTest(allocator, patch);
+    defer allocator.free(args);
+    const call = api.FunctionCall{
+        .call_id = "call-read-denied-glob-patch",
+        .name = "apply_patch",
+        .arguments = args,
+    };
+
+    const result = try runFunctionCall(allocator, call, .{
+        .approval_policy = .never,
+        .sandbox_mode = .workspace_write,
+        .auto_approve = true,
+        .workdir = cwd,
+        .read_denied_globs = &.{"**/*.secret"},
+    });
+    defer result.deinit(allocator);
+
+    try std.testing.expectEqualStrings("blocked by sandbox", result.summary);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "token.secret") != null);
+    const content = try dir.dir.readFileAlloc(io, "nested/token.secret", allocator, .limited(1024));
     defer allocator.free(content);
     try std.testing.expectEqualStrings("secret\n", content);
 }
