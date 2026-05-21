@@ -114,7 +114,10 @@ pub fn localPluginDataRoot(allocator: std.mem.Allocator, codex_home: []const u8,
 
 fn activePluginVersion(allocator: std.mem.Allocator, plugin_base_root: []const u8) !?[]const u8 {
     const io = std.Io.Threaded.global_single_threaded.io();
-    var dir = std.Io.Dir.openDirAbsolute(io, plugin_base_root, .{ .iterate = true }) catch |err| switch (err) {
+    var dir = (if (std.fs.path.isAbsolute(plugin_base_root))
+        std.Io.Dir.openDirAbsolute(io, plugin_base_root, .{ .iterate = true })
+    else
+        std.Io.Dir.cwd().openDir(io, plugin_base_root, .{ .iterate = true })) catch |err| switch (err) {
         error.FileNotFound, error.NotDir => return null,
         else => return err,
     };
@@ -144,7 +147,8 @@ fn isValidPluginVersionSegment(value: []const u8) bool {
     if (value.len == 0) return false;
     if (std.mem.eql(u8, value, ".") or std.mem.eql(u8, value, "..")) return false;
     for (value) |byte| {
-        if (byte == '/' or byte == '\\') return false;
+        if (std.ascii.isAlphanumeric(byte) or byte == '-' or byte == '_' or byte == '.' or byte == '+') continue;
+        return false;
     }
     return true;
 }
@@ -352,6 +356,23 @@ test "plugin config resolves active versioned plugin roots" {
     const local = (try localPluginRoot(allocator, codex_home, "computer-use@openai-bundled")).?;
     defer allocator.free(local);
     try std.testing.expect(std.mem.endsWith(u8, local, "plugins/cache/openai-bundled/computer-use/local"));
+}
+
+test "plugin config resolves active versioned plugin roots from relative codex home" {
+    const allocator = std.testing.allocator;
+    var dir = std.testing.tmpDir(.{});
+    defer dir.cleanup();
+    const io = std.Io.Threaded.global_single_threaded.io();
+
+    try dir.dir.createDirPath(io, "home/plugins/cache/openai-bundled/computer-use/1.0.793");
+    try dir.dir.createDirPath(io, "home/plugins/cache/openai-bundled/computer-use/zzz!");
+
+    const codex_home = try std.fmt.allocPrint(allocator, ".zig-cache/tmp/{s}/home", .{dir.sub_path[0..]});
+    defer allocator.free(codex_home);
+
+    const versioned = (try localPluginRoot(allocator, codex_home, "computer-use@openai-bundled")).?;
+    defer allocator.free(versioned);
+    try std.testing.expect(std.mem.endsWith(u8, versioned, "plugins/cache/openai-bundled/computer-use/1.0.793"));
 }
 
 test "plugin config removal drops plugin table and child tables" {
