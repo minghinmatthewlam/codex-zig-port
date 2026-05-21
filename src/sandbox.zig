@@ -852,21 +852,21 @@ fn appendSeatbeltRegexClass(
             class_index += 1;
         }
     }
-    var literal_hyphen_count: usize = 0;
+    var saw_literal_hyphen = false;
     while (class_index < end) : (class_index += 1) {
         const byte = pattern[class_index];
-        if (class_index + 2 < end and pattern[class_index + 1] == '-') {
+        if (class_index + 2 < end and pattern[class_index + 1] == '-' and byte != '-' and pattern[class_index + 2] != '-') {
             try appendSeatbeltRegexClassRange(allocator, regex, byte, pattern[class_index + 2]);
             class_index += 2;
         } else if (byte == '-') {
-            literal_hyphen_count += 1;
+            saw_literal_hyphen = true;
         } else if (byte == '\\') {
             try regex.appendSlice(allocator, "\\\\");
         } else {
             try appendSeatbeltRegexClassByteFolded(allocator, regex, byte);
         }
     }
-    while (literal_hyphen_count > 0) : (literal_hyphen_count -= 1) {
+    if (saw_literal_hyphen) {
         try regex.append(allocator, '-');
     }
     try regex.append(allocator, ']');
@@ -1035,7 +1035,7 @@ fn globClassMatches(class: []const u8, byte: u8) bool {
     var matched = false;
     while (index < class.len) : (index += 1) {
         const start = class[index];
-        if (index + 2 < class.len and class[index + 1] == '-') {
+        if (index + 2 < class.len and class[index + 1] == '-' and start != '-' and class[index + 2] != '-') {
             const end = class[index + 2];
             if (globByteInRange(byte, start, end)) matched = true;
             index += 2;
@@ -1391,6 +1391,8 @@ test "seatbelt glob regex keeps literal hyphen classes valid" {
     const profile = try buildProfileWithOptions(allocator, .workspace_write, "/tmp/codex-workspace", &.{}, &.{}, true, false, true, &.{}, &.{
         "/tmp/codex-workspace/**/*[A-Za-z0-9_-].secret",
         "/tmp/codex-workspace/**/*[a-b-c].secret",
+        "/tmp/codex-workspace/**/*[-a-b-].secret",
+        "/tmp/codex-workspace/**/*[a--].secret",
     }, 0);
     defer allocator.free(profile);
 
@@ -1429,6 +1431,10 @@ test "read-denied glob matcher mirrors seatbelt translation" {
     try std.testing.expect(readDeniedGlobMatchesPath("/tmp/repo/[^a].env", "/tmp/repo/^.env"));
     try std.testing.expect(readDeniedGlobMatchesPath("/tmp/repo/[^a].env", "/tmp/repo/a.env"));
     try std.testing.expect(!readDeniedGlobMatchesPath("/tmp/repo/[^a].env", "/tmp/repo/b.env"));
+    try std.testing.expect(readDeniedGlobMatchesPath("/tmp/repo/*[-a-b-].env", "/tmp/repo/-.env"));
+    try std.testing.expect(readDeniedGlobMatchesPath("/tmp/repo/*[a--].env", "/tmp/repo/a.env"));
+    try std.testing.expect(readDeniedGlobMatchesPath("/tmp/repo/*[a--].env", "/tmp/repo/-.env"));
+    try std.testing.expect(!readDeniedGlobMatchesPath("/tmp/repo/*[a--].env", "/tmp/repo/0.env"));
 }
 
 test "relative read-denied globs resolve against cwd override" {
