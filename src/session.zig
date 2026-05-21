@@ -532,18 +532,8 @@ fn appendResponseHistoryMessage(
     if (content_value != .array) return error.InvalidHistory;
 
     var content_type = defaultHistoryContentType(role_value.string);
-    var text: []const u8 = "";
-    for (content_value.array.items) |content_item| {
-        if (content_item != .object) continue;
-        const content_object = content_item.object;
-        if (content_object.get("type")) |type_value| {
-            if (type_value == .string) content_type = type_value.string;
-        }
-        const text_value = content_object.get("text") orelse continue;
-        if (text_value != .string) continue;
-        text = text_value.string;
-        break;
-    }
+    const text = try responseMessageTextFromContentItems(allocator, content_value.array.items, &content_type);
+    defer allocator.free(text);
 
     try transcript.appendHistoryItem(allocator, .{
         .kind = .message,
@@ -551,6 +541,32 @@ fn appendResponseHistoryMessage(
         .content_type = content_type,
         .text = text,
     });
+}
+
+fn responseMessageTextFromContentItems(
+    allocator: std.mem.Allocator,
+    items: []const std.json.Value,
+    content_type: *[]const u8,
+) ![]const u8 {
+    var segments = std.ArrayList([]const u8).empty;
+    defer segments.deinit(allocator);
+
+    for (items) |item| {
+        if (item != .object) continue;
+        const object = item.object;
+        const text_value = object.get("text") orelse continue;
+        if (text_value != .string) continue;
+        if (segments.items.len == 0) {
+            if (object.get("type")) |type_value| {
+                if (type_value == .string) content_type.* = type_value.string;
+            }
+        }
+        if (std.mem.trim(u8, text_value.string, " \t\r\n").len == 0) continue;
+        try segments.append(allocator, text_value.string);
+    }
+
+    if (segments.items.len == 0) return try allocator.dupe(u8, "");
+    return try std.mem.join(allocator, "\n", segments.items);
 }
 
 fn appendResponseHistoryFunctionCall(
@@ -1513,6 +1529,33 @@ test "append response history function call output accepts text content items" {
     try std.testing.expectEqual(api.HistoryItem.Kind.function_call_output, transcript.history.items[0].kind);
     try std.testing.expectEqualStrings("call-structured", transcript.history.items[0].call_id.?);
     try std.testing.expectEqualStrings("line one\nline two", transcript.history.items[0].output.?);
+}
+
+test "append response history message joins text content items" {
+    const allocator = std.testing.allocator;
+    var parsed = try std.json.parseFromSlice(std.json.Value, allocator,
+        \\{
+        \\  "type": "message",
+        \\  "role": "assistant",
+        \\  "content": [
+        \\    {"type": "output_text", "text": "first fragment"},
+        \\    {"type": "output_text", "text": "  "},
+        \\    {"type": "output_text", "text": "second fragment"}
+        \\  ]
+        \\}
+    , .{});
+    defer parsed.deinit();
+
+    var transcript = Transcript{};
+    defer transcript.deinit(allocator);
+
+    try appendResponseHistoryItem(allocator, &transcript, parsed.value);
+
+    try std.testing.expectEqual(@as(usize, 1), transcript.history.items.len);
+    try std.testing.expectEqual(api.HistoryItem.Kind.message, transcript.history.items[0].kind);
+    try std.testing.expectEqualStrings("assistant", transcript.history.items[0].role.?);
+    try std.testing.expectEqualStrings("output_text", transcript.history.items[0].content_type.?);
+    try std.testing.expectEqualStrings("first fragment\nsecond fragment", transcript.history.items[0].text.?);
 }
 
 test "append response history function call output rejects non-text content items" {

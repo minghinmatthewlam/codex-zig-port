@@ -5942,11 +5942,17 @@ def run_turn_start_rpc_smoke(binary: Path) -> None:
                 assert "Smoke Renamed Thread" in stored_after_name
                 assert "Standalone Skill" not in stored_after_name
 
-                injected_text = "Injected assistant context for next turn"
+                injected_text_first = "Injected assistant context for next turn"
+                injected_text_second = "Additional injected assistant context"
+                injected_text = f"{injected_text_first}\n{injected_text_second}"
                 injected_item = {
                     "type": "message",
                     "role": "assistant",
-                    "content": [{"type": "output_text", "text": injected_text}],
+                    "content": [
+                        {"type": "output_text", "text": injected_text_first},
+                        {"type": "output_text", "text": "   "},
+                        {"type": "output_text", "text": injected_text_second},
+                    ],
                 }
                 injected_call_id = "call_injected_structured"
                 injected_tool_output = (
@@ -5993,7 +5999,8 @@ def run_turn_start_rpc_smoke(binary: Path) -> None:
                 assert inject_loaded["id"] == "thread-inject-loaded"
                 assert inject_loaded["result"] == {}
                 stored_after_inject = rollout_path.read_text(encoding="utf-8")
-                assert injected_text in stored_after_inject
+                assert injected_text_first in stored_after_inject
+                assert injected_text_second in stored_after_inject
                 assert injected_call_id in stored_after_inject
                 assert "structured output line one" in stored_after_inject
                 assert "structured output line two" in stored_after_inject
@@ -6086,7 +6093,8 @@ def run_turn_start_rpc_smoke(binary: Path) -> None:
                 assert injected_call_index < injected_output_index
                 assert injected_output_index < prompt_index
                 stored_after_inject_turn = rollout_path.read_text(encoding="utf-8")
-                assert injected_text in stored_after_inject_turn
+                assert injected_text_first in stored_after_inject_turn
+                assert injected_text_second in stored_after_inject_turn
                 assert injected_call_id in stored_after_inject_turn
                 assert "structured output line one" in stored_after_inject_turn
                 assert "structured output line two" in stored_after_inject_turn
