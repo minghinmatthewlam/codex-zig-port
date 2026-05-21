@@ -34,13 +34,13 @@ parity tracker; implementation parity remains tracked in `docs/parity.md`.
   push CI run `26182591696` passed on pushed head
   `7d2d54d0e65cc85405ed6f9f175d10b4798bfa1b`. Latest checked
   `publish-read-deny-parity-public` code head was
-  `c27bd6fe78e5b26aab59c17af299d83a2b165260`; branch pushes do not start CI
+  `4f50a6172b8617d329866961fedc9e22a02283b5`; branch pushes do not start CI
   until opened as a pull request because the workflow runs on `main` pushes and
   PRs.
 - Fresh public clone proof: a clean HTTPS clone from
   `https://github.com/minghinmatthewlam/codex-zig-port` of branch
   `publish-read-deny-parity-public` at pushed code head
-  `c27bd6fe78e5b26aab59c17af299d83a2b165260` passed `python3 -m py_compile`
+  `4f50a6172b8617d329866961fedc9e22a02283b5` passed `python3 -m py_compile`
   for the app-server, CLI, OSS secret-scan, TUI, and real computer-use smoke
   scripts,
   `python3 scripts/oss_secret_scan.py`, `zig fmt --check build.zig
