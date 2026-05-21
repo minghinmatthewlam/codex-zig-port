@@ -34,17 +34,18 @@ parity tracker; implementation parity remains tracked in `docs/parity.md`.
   push CI run `26182591696` passed on pushed head
   `7d2d54d0e65cc85405ed6f9f175d10b4798bfa1b`. Latest checked
   `publish-read-deny-parity-public` code head was
-  `55a10f8966d3c88f237aaff0f2241b558b3662a6`; branch pushes do not start CI
+  `c27bd6fe78e5b26aab59c17af299d83a2b165260`; branch pushes do not start CI
   until opened as a pull request because the workflow runs on `main` pushes and
   PRs.
 - Fresh public clone proof: a clean HTTPS clone from
   `https://github.com/minghinmatthewlam/codex-zig-port` of branch
   `publish-read-deny-parity-public` at pushed code head
-  `55a10f8966d3c88f237aaff0f2241b558b3662a6` passed `python3 -m py_compile`
-  for the app-server, CLI, OSS secret-scan, and TUI smoke scripts,
+  `c27bd6fe78e5b26aab59c17af299d83a2b165260` passed `python3 -m py_compile`
+  for the app-server, CLI, OSS secret-scan, TUI, and real computer-use smoke
+  scripts,
   `python3 scripts/oss_secret_scan.py`, `zig fmt --check build.zig
   build.zig.zon src/*.zig`, `zig build --summary all`,
-  `zig build test --summary all` with `664/664` tests passed,
+  `zig build test --summary all` with `673/673` tests passed,
   `zig build e2e --summary all`, and
   `python3 scripts/real_computer_use_mcp_smoke.py zig-out/bin/codex-zig`
   with the bundled `computer-use` plugin calling `get_app_state` and listing
