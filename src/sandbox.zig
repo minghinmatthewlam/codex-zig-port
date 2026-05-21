@@ -578,7 +578,7 @@ fn globStaticDirectoryPrefix(pattern: []const u8) ?[]const u8 {
     if (static_prefix[static_prefix.len - 1] == std.fs.path.sep) {
         var end = static_prefix.len;
         while (end > 0 and static_prefix[end - 1] == std.fs.path.sep) : (end -= 1) {}
-        if (end == 0) return null;
+        if (end == 0) return static_prefix[0..1];
         return static_prefix[0..end];
     }
     return std.fs.path.dirname(static_prefix);
@@ -958,6 +958,16 @@ test "sandbox profile keeps glob data write allow scoped to writable roots" {
     try std.testing.expect(std.mem.indexOf(u8, profile, "(deny file-read* (regex #\"^/tmp/codex-workspace/(.*/)?[^/]*\\.secret$\"))") != null);
     try std.testing.expect(std.mem.indexOf(u8, profile, "(deny file-write* (regex #\"^/tmp/codex-workspace/(.*/)?[^/]*\\.secret$\"))") != null);
     try std.testing.expect(std.mem.indexOf(u8, profile, "(allow file-write-data (regex #\"^/tmp/codex-workspace/(.*/)?[^/]*\\.secret$\"))") == null);
+}
+
+test "sandbox profile keeps root slash glob data write allow" {
+    const allocator = std.testing.allocator;
+    const profile = try buildProfileWithOptions(allocator, .workspace_write, "/tmp/codex-workspace", &.{"/"}, false, true, &.{}, &.{"/**/*.secret"}, 0);
+    defer allocator.free(profile);
+
+    try std.testing.expect(std.mem.indexOf(u8, profile, "(deny file-read* (regex #\"^/(.*/)?[^/]*\\.secret$\"))") != null);
+    try std.testing.expect(std.mem.indexOf(u8, profile, "(deny file-write* (regex #\"^/(.*/)?[^/]*\\.secret$\"))") != null);
+    try std.testing.expect(std.mem.indexOf(u8, profile, "(allow file-write-data (regex #\"^/(.*/)?[^/]*\\.secret$\"))") != null);
 }
 
 test "sandbox profile skips glob data write allow when explicit read root overlaps" {
