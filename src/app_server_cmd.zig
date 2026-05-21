@@ -26791,7 +26791,7 @@ fn handleAppServerApprovalRequest(ctx: *anyopaque, request: tool_runner.Approval
             continue;
         }
 
-        if (try renderPendingApprovalJsonRpcResponse(context.allocator, payload, context.thread_id)) |response_payload| {
+        if (try renderPendingApprovalJsonRpcResponse(context.allocator, payload, context.thread_id, context.turn_id)) |response_payload| {
             defer context.allocator.free(response_payload);
             try context.transport.send_payload(context.transport.ctx, response_payload);
         }
@@ -27177,6 +27177,7 @@ fn renderPendingApprovalJsonRpcResponse(
     allocator: std.mem.Allocator,
     payload: []const u8,
     pending_thread_id: []const u8,
+    pending_turn_id: ?[]const u8,
 ) !?[]const u8 {
     var parsed = std.json.parseFromSlice(std.json.Value, allocator, payload, .{}) catch {
         return try renderJsonRpcError(allocator, null, -32700, "Parse error");
@@ -27195,7 +27196,7 @@ fn renderPendingApprovalJsonRpcResponse(
             const rollback_thread_id = requiredThreadIdParam(params.object) catch break :blk false;
             break :blk std.mem.eql(u8, rollback_thread_id, pending_thread_id);
         };
-        if (matches_pending_thread) {
+        if (matches_pending_thread and pending_turn_id != null) {
             return try renderJsonRpcError(allocator, id_value, -32600, "thread rollback is unavailable while a turn is active");
         }
     }
@@ -27209,10 +27210,25 @@ test "pending approval response rejects rollback for pending thread" {
         allocator,
         "{\"jsonrpc\":\"2.0\",\"id\":\"rollback-active\",\"method\":\"thread/rollback\",\"params\":{\"threadId\":\"019e48c8-17f2-70c2-bc07-97aa02c7bc83\",\"numTurns\":1}}",
         thread_id,
+        "turn-id",
     )).?;
     defer allocator.free(response);
 
     try std.testing.expect(std.mem.indexOf(u8, response, "thread rollback is unavailable while a turn is active") != null);
+}
+
+test "pending approval response keeps generic pending error without active turn" {
+    const allocator = std.testing.allocator;
+    const thread_id = "019e48c8-17f2-70c2-bc07-97aa02c7bc83";
+    const response = (try renderPendingApprovalJsonRpcResponse(
+        allocator,
+        "{\"jsonrpc\":\"2.0\",\"id\":\"rollback-idle\",\"method\":\"thread/rollback\",\"params\":{\"threadId\":\"019e48c8-17f2-70c2-bc07-97aa02c7bc83\",\"numTurns\":1}}",
+        thread_id,
+        null,
+    )).?;
+    defer allocator.free(response);
+
+    try std.testing.expect(std.mem.indexOf(u8, response, "cannot process request while approval is pending") != null);
 }
 
 fn handleAppServerGoalTool(ctx: *anyopaque, call: api.FunctionCall) !tool_runner.ToolResult {
@@ -27384,7 +27400,7 @@ fn handleAppServerRequestPermissions(ctx: *anyopaque, request: session_mod.Reque
             continue;
         }
 
-        if (try renderPendingApprovalJsonRpcResponse(context.allocator, payload, context.thread.id)) |response_payload| {
+        if (try renderPendingApprovalJsonRpcResponse(context.allocator, payload, context.thread.id, context.turn_id)) |response_payload| {
             defer context.allocator.free(response_payload);
             try context.transport.send_payload(context.transport.ctx, response_payload);
         }
@@ -27681,7 +27697,7 @@ fn handleAppServerRequestUserInput(ctx: *anyopaque, request: session_mod.Request
             continue;
         }
 
-        if (try renderPendingApprovalJsonRpcResponse(context.allocator, payload, context.thread_id)) |response_payload| {
+        if (try renderPendingApprovalJsonRpcResponse(context.allocator, payload, context.thread_id, context.turn_id)) |response_payload| {
             defer context.allocator.free(response_payload);
             try context.transport.send_payload(context.transport.ctx, response_payload);
         }
@@ -27910,7 +27926,7 @@ fn handleAppServerExternalAuthRefresh(
             continue;
         }
 
-        if (try renderPendingApprovalJsonRpcResponse(context.allocator, payload, context.thread_id)) |response_payload| {
+        if (try renderPendingApprovalJsonRpcResponse(context.allocator, payload, context.thread_id, context.turn_id)) |response_payload| {
             defer context.allocator.free(response_payload);
             try context.transport.send_payload(context.transport.ctx, response_payload);
         }
@@ -28050,7 +28066,7 @@ fn handleAppServerMcpElicitation(ctx: *anyopaque, request: mcp_runtime.Elicitati
             }
         }
 
-        if (try renderPendingApprovalJsonRpcResponse(context.allocator, payload, context.thread_id)) |response_payload| {
+        if (try renderPendingApprovalJsonRpcResponse(context.allocator, payload, context.thread_id, context.turn_id)) |response_payload| {
             defer context.allocator.free(response_payload);
             try context.transport.send_payload(context.transport.ctx, response_payload);
         }
