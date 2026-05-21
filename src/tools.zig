@@ -3193,6 +3193,51 @@ test "apply_patch blocks read-denied glob paths" {
     try std.testing.expectEqualStrings("secret\n", content);
 }
 
+test "apply_patch glob matcher treats leading caret class as literal" {
+    const allocator = std.testing.allocator;
+    var dir = std.testing.tmpDir(.{});
+    defer dir.cleanup();
+    const io = std.Io.Threaded.global_single_threaded.io();
+
+    try dir.dir.writeFile(io, .{
+        .sub_path = "^.secret",
+        .data = "secret\n",
+    });
+    const cwd = try dir.dir.realPathFileAlloc(io, ".", allocator);
+    defer allocator.free(cwd);
+
+    const patch =
+        \\*** Begin Patch
+        \\*** Update File: ^.secret
+        \\@@
+        \\-secret
+        \\+changed
+        \\*** End Patch
+    ;
+    const args = try applyPatchArgumentsForTest(allocator, patch);
+    defer allocator.free(args);
+    const call = api.FunctionCall{
+        .call_id = "call-read-denied-caret-glob-patch",
+        .name = "apply_patch",
+        .arguments = args,
+    };
+
+    const result = try runFunctionCall(allocator, call, .{
+        .approval_policy = .never,
+        .sandbox_mode = .workspace_write,
+        .auto_approve = true,
+        .workdir = cwd,
+        .read_denied_globs = &.{"[^a].secret"},
+    });
+    defer result.deinit(allocator);
+
+    try std.testing.expectEqualStrings("blocked by sandbox", result.summary);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "^.secret") != null);
+    const content = try dir.dir.readFileAlloc(io, "^.secret", allocator, .limited(1024));
+    defer allocator.free(content);
+    try std.testing.expectEqualStrings("secret\n", content);
+}
+
 test "apply_patch blocks case-only read-denied source aliases on macos" {
     if (builtin.os.tag != .macos) return error.SkipZigTest;
 

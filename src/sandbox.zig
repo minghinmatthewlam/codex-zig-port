@@ -705,8 +705,6 @@ fn globClassMatches(class: []const u8, byte: u8) bool {
     if (index < class.len and class[index] == '!') {
         negated = true;
         index += 1;
-    } else if (index < class.len and class[index] == '^') {
-        index += 1;
     }
 
     var matched = false;
@@ -887,6 +885,9 @@ test "read-denied glob matcher mirrors seatbelt translation" {
     try std.testing.expect(!readDeniedGlobMatchesPath("/tmp/repo/*/file[0-9]?.txt", "/tmp/repo/a/b/file5x.txt"));
     try std.testing.expect(readDeniedGlobMatchesPath("/tmp/repo/[*.env", "/tmp/repo/[file.env"));
     try std.testing.expect(!readDeniedGlobMatchesPath("/tmp/repo/[*.env", "/tmp/repo/file.env"));
+    try std.testing.expect(readDeniedGlobMatchesPath("/tmp/repo/[^a].env", "/tmp/repo/^.env"));
+    try std.testing.expect(readDeniedGlobMatchesPath("/tmp/repo/[^a].env", "/tmp/repo/a.env"));
+    try std.testing.expect(!readDeniedGlobMatchesPath("/tmp/repo/[^a].env", "/tmp/repo/b.env"));
 }
 
 test "relative read-denied globs resolve against cwd override" {
