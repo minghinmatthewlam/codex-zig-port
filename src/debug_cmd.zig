@@ -543,7 +543,7 @@ fn renderModels(allocator: std.mem.Allocator, options: Options, bundled: bool) !
 }
 
 fn stringifyModels(allocator: std.mem.Allocator, models: []const model_catalog.Entry) ![]const u8 {
-    return std.json.Stringify.valueAlloc(allocator, ModelsResponse{ .models = models }, .{ .whitespace = .indent_2 });
+    return std.json.Stringify.valueAlloc(allocator, ModelsResponse{ .models = models }, .{});
 }
 
 pub fn printHelp() void {
@@ -678,6 +678,7 @@ test "debug models renders configured model" {
     try std.testing.expectEqualStrings("gpt-test", model.get("slug").?.string);
     try std.testing.expectEqualStrings("medium", model.get("default_reasoning_level").?.string);
     try std.testing.expectEqual(@as(usize, 4), model.get("supported_reasoning_levels").?.array.items.len);
+    try std.testing.expect(std.mem.indexOfScalar(u8, rendered, '\n') == null);
 }
 
 test "debug models bundled ignores configured model" {

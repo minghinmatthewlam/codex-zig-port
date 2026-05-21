@@ -10069,6 +10069,22 @@ def run_debug_prompt_input_image_smoke(binary: Path) -> None:
         shutil.rmtree(temp_root, ignore_errors=True)
 
 
+def run_debug_models_smoke(binary: Path) -> None:
+    result = subprocess.run(
+        [str(binary.resolve()), "debug", "models", "--bundled"],
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        timeout=5,
+        check=True,
+    )
+    assert result.stderr == ""
+    assert result.stdout.count("\n") == 1
+    payload = json.loads(result.stdout)
+    assert payload["models"][0]["slug"] == "gpt-5.5"
+    assert payload["models"][0]["supported_reasoning_levels"][0]["effort"] == "low"
+
+
 def run_debug_app_server_send_message_smoke(binary: Path) -> None:
     temp_root = Path(tempfile.mkdtemp(prefix="codex-zig-debug-app-server-", dir="/tmp"))
     server, base_url = start_exec_responses_server()
@@ -10346,6 +10362,7 @@ def main() -> None:
     run_removed_top_level_command_smoke(binary)
     run_sandbox_permission_profile_smoke(binary)
     run_debug_prompt_input_image_smoke(binary)
+    run_debug_models_smoke(binary)
     run_debug_app_server_send_message_smoke(binary)
     run_debug_trace_reduce_smoke(binary)
     print("cli-completion-snapshot-e2e: ok")
@@ -10386,6 +10403,7 @@ def main() -> None:
     print("cli-removed-top-level-e2e: ok")
     print("cli-sandbox-permission-profile-e2e: ok")
     print("cli-debug-prompt-input-image-e2e: ok")
+    print("cli-debug-models-e2e: ok")
     print("cli-debug-app-server-send-message-e2e: ok")
     print("cli-debug-trace-reduce-e2e: ok")
 
