@@ -790,7 +790,7 @@ fn seatbeltRegexForUnreadableGlob(allocator: std.mem.Allocator, pattern: []const
                 saw_glob = true;
                 try regex.appendSlice(allocator, "\\]");
             },
-            else => try appendRegexEscapedByte(allocator, &regex, byte),
+            else => try appendRegexEscapedByteFolded(allocator, &regex, byte),
         }
         index += 1;
     }
@@ -829,14 +829,57 @@ fn appendSeatbeltRegexClass(
     }
     while (class_index < end) : (class_index += 1) {
         const byte = pattern[class_index];
-        if (byte == '\\') {
+        if (class_index + 2 < end and pattern[class_index + 1] == '-') {
+            try appendSeatbeltRegexClassRange(allocator, regex, byte, pattern[class_index + 2]);
+            class_index += 2;
+        } else if (byte == '\\') {
             try regex.appendSlice(allocator, "\\\\");
         } else {
-            try regex.append(allocator, byte);
+            try appendSeatbeltRegexClassByteFolded(allocator, regex, byte);
         }
     }
     try regex.append(allocator, ']');
     index.* = end + 1;
+}
+
+fn appendSeatbeltRegexClassRange(allocator: std.mem.Allocator, regex: *std.ArrayList(u8), start: u8, end: u8) !void {
+    if (builtin.os.tag == .macos and (std.ascii.isAlphabetic(start) or std.ascii.isAlphabetic(end))) {
+        const lower_start = std.ascii.toLower(start);
+        const lower_end = std.ascii.toLower(end);
+        const lo = @min(lower_start, lower_end);
+        const hi = @max(lower_start, lower_end);
+        try appendSeatbeltRegexClassRangeRaw(allocator, regex, lo, hi);
+        try appendSeatbeltRegexClassRangeRaw(allocator, regex, std.ascii.toUpper(lo), std.ascii.toUpper(hi));
+        return;
+    }
+
+    try appendSeatbeltRegexClassRangeRaw(allocator, regex, start, end);
+}
+
+fn appendSeatbeltRegexClassRangeRaw(allocator: std.mem.Allocator, regex: *std.ArrayList(u8), start: u8, end: u8) !void {
+    try appendSeatbeltRegexClassByteRaw(allocator, regex, start);
+    try regex.append(allocator, '-');
+    try appendSeatbeltRegexClassByteRaw(allocator, regex, end);
+}
+
+fn appendSeatbeltRegexClassByteFolded(allocator: std.mem.Allocator, regex: *std.ArrayList(u8), byte: u8) !void {
+    if (builtin.os.tag == .macos and std.ascii.isAlphabetic(byte)) {
+        try appendSeatbeltRegexClassByteRaw(allocator, regex, std.ascii.toLower(byte));
+        try appendSeatbeltRegexClassByteRaw(allocator, regex, std.ascii.toUpper(byte));
+        return;
+    }
+
+    try appendSeatbeltRegexClassByteRaw(allocator, regex, byte);
+}
+
+fn appendSeatbeltRegexClassByteRaw(allocator: std.mem.Allocator, regex: *std.ArrayList(u8), byte: u8) !void {
+    switch (byte) {
+        '\\', '^', ']', '-' => {
+            try regex.append(allocator, '\\');
+            try regex.append(allocator, byte);
+        },
+        else => try regex.append(allocator, byte),
+    }
 }
 
 fn appendRegexEscapedByte(allocator: std.mem.Allocator, regex: *std.ArrayList(u8), byte: u8) !void {
@@ -847,6 +890,40 @@ fn appendRegexEscapedByte(allocator: std.mem.Allocator, regex: *std.ArrayList(u8
         },
         else => try regex.append(allocator, byte),
     }
+}
+
+fn appendRegexEscapedByteFolded(allocator: std.mem.Allocator, regex: *std.ArrayList(u8), byte: u8) !void {
+    if (builtin.os.tag == .macos and std.ascii.isAlphabetic(byte)) {
+        try regex.append(allocator, '[');
+        try regex.append(allocator, std.ascii.toLower(byte));
+        try regex.append(allocator, std.ascii.toUpper(byte));
+        try regex.append(allocator, ']');
+        return;
+    }
+
+    try appendRegexEscapedByte(allocator, regex, byte);
+}
+
+fn profileGlobRuleNeedle(allocator: std.mem.Allocator, effect: []const u8, pattern: []const u8) ![]const u8 {
+    const regex = try seatbeltRegexForUnreadableGlob(allocator, pattern);
+    defer allocator.free(regex);
+    const escaped = try escapeSeatbeltRawRegex(allocator, regex);
+    defer allocator.free(escaped);
+    return std.fmt.allocPrint(allocator, "({s} (regex #\"{s}\"))", .{ effect, escaped });
+}
+
+fn expectProfileGlobRule(profile: []const u8, effect: []const u8, pattern: []const u8) !void {
+    const allocator = std.testing.allocator;
+    const needle = try profileGlobRuleNeedle(allocator, effect, pattern);
+    defer allocator.free(needle);
+    try std.testing.expect(std.mem.indexOf(u8, profile, needle) != null);
+}
+
+fn expectProfileOmitsGlobRule(profile: []const u8, effect: []const u8, pattern: []const u8) !void {
+    const allocator = std.testing.allocator;
+    const needle = try profileGlobRuleNeedle(allocator, effect, pattern);
+    defer allocator.free(needle);
+    try std.testing.expect(std.mem.indexOf(u8, profile, needle) == null);
 }
 
 pub fn readDeniedGlobMatchesPath(pattern: []const u8, path: []const u8) bool {
@@ -1214,9 +1291,9 @@ test "sandbox profile can deny read glob patterns" {
     const profile = try buildProfileWithOptions(allocator, .workspace_write, "/tmp/codex-workspace", &.{}, &.{}, true, false, true, &.{}, &.{"/tmp/codex-workspace/**/*.secret"}, 0);
     defer allocator.free(profile);
 
-    try std.testing.expect(std.mem.indexOf(u8, profile, "(deny file-read* (regex #\"^/tmp/codex-workspace/(.*/)?[^/]*\\.secret$\"))") != null);
-    try std.testing.expect(std.mem.indexOf(u8, profile, "(deny file-write* (regex #\"^/tmp/codex-workspace/(.*/)?[^/]*\\.secret$\"))") != null);
-    try std.testing.expect(std.mem.indexOf(u8, profile, "(allow file-write-data (regex #\"^/tmp/codex-workspace/(.*/)?[^/]*\\.secret$\"))") != null);
+    try expectProfileGlobRule(profile, "deny file-read*", "/tmp/codex-workspace/**/*.secret");
+    try expectProfileGlobRule(profile, "deny file-write*", "/tmp/codex-workspace/**/*.secret");
+    try expectProfileGlobRule(profile, "allow file-write-data", "/tmp/codex-workspace/**/*.secret");
 }
 
 test "sandbox profile keeps glob data write allow scoped to writable roots" {
@@ -1224,9 +1301,9 @@ test "sandbox profile keeps glob data write allow scoped to writable roots" {
     const profile = try buildProfileWithOptions(allocator, .workspace_write, "/tmp/codex-workspace", &.{"/tmp/codex-extra"}, &.{}, false, false, true, &.{}, &.{"/tmp/codex-workspace/**/*.secret"}, 0);
     defer allocator.free(profile);
 
-    try std.testing.expect(std.mem.indexOf(u8, profile, "(deny file-read* (regex #\"^/tmp/codex-workspace/(.*/)?[^/]*\\.secret$\"))") != null);
-    try std.testing.expect(std.mem.indexOf(u8, profile, "(deny file-write* (regex #\"^/tmp/codex-workspace/(.*/)?[^/]*\\.secret$\"))") != null);
-    try std.testing.expect(std.mem.indexOf(u8, profile, "(allow file-write-data (regex #\"^/tmp/codex-workspace/(.*/)?[^/]*\\.secret$\"))") == null);
+    try expectProfileGlobRule(profile, "deny file-read*", "/tmp/codex-workspace/**/*.secret");
+    try expectProfileGlobRule(profile, "deny file-write*", "/tmp/codex-workspace/**/*.secret");
+    try expectProfileOmitsGlobRule(profile, "allow file-write-data", "/tmp/codex-workspace/**/*.secret");
 }
 
 test "sandbox profile keeps root slash glob data write allow" {
@@ -1234,9 +1311,9 @@ test "sandbox profile keeps root slash glob data write allow" {
     const profile = try buildProfileWithOptions(allocator, .workspace_write, "/tmp/codex-workspace", &.{"/"}, &.{}, false, false, true, &.{}, &.{"/**/*.secret"}, 0);
     defer allocator.free(profile);
 
-    try std.testing.expect(std.mem.indexOf(u8, profile, "(deny file-read* (regex #\"^/(.*/)?[^/]*\\.secret$\"))") != null);
-    try std.testing.expect(std.mem.indexOf(u8, profile, "(deny file-write* (regex #\"^/(.*/)?[^/]*\\.secret$\"))") != null);
-    try std.testing.expect(std.mem.indexOf(u8, profile, "(allow file-write-data (regex #\"^/(.*/)?[^/]*\\.secret$\"))") != null);
+    try expectProfileGlobRule(profile, "deny file-read*", "/**/*.secret");
+    try expectProfileGlobRule(profile, "deny file-write*", "/**/*.secret");
+    try expectProfileGlobRule(profile, "allow file-write-data", "/**/*.secret");
 }
 
 test "sandbox profile skips glob data write allow when explicit read root overlaps" {
@@ -1244,7 +1321,7 @@ test "sandbox profile skips glob data write allow when explicit read root overla
     const profile = try buildProfileWithOptions(allocator, .workspace_write, "/tmp/codex-workspace", &.{}, &.{}, true, false, true, &.{"/tmp/codex-workspace/secret-dir"}, &.{"/tmp/codex-workspace/**/*.secret"}, 0);
     defer allocator.free(profile);
 
-    try std.testing.expect(std.mem.indexOf(u8, profile, "(allow file-write-data (regex #\"^/tmp/codex-workspace/(.*/)?[^/]*\\.secret$\"))") == null);
+    try expectProfileOmitsGlobRule(profile, "allow file-write-data", "/tmp/codex-workspace/**/*.secret");
     try std.testing.expect(std.mem.indexOf(u8, profile, "(deny file-write* (subpath \"/tmp/codex-workspace/secret-dir\"))") != null);
 }
 
@@ -1253,7 +1330,19 @@ test "sandbox profile keeps literal glob data write allow outside explicit read 
     const profile = try buildProfileWithOptions(allocator, .workspace_write, "/tmp/codex-workspace", &.{}, &.{}, true, false, true, &.{"/tmp/codex-workspace/private2"}, &.{"/tmp/codex-workspace/private"}, 0);
     defer allocator.free(profile);
 
-    try std.testing.expect(std.mem.indexOf(u8, profile, "(allow file-write-data (regex #\"^/tmp/codex-workspace/private(/.*)?$\"))") != null);
+    try expectProfileGlobRule(profile, "allow file-write-data", "/tmp/codex-workspace/private");
+}
+
+test "seatbelt glob regex folds ascii literals and classes on macos" {
+    const allocator = std.testing.allocator;
+    const regex = try seatbeltRegexForUnreadableGlob(allocator, "/tmp/**/[a-c]x[!d].secret");
+    defer allocator.free(regex);
+
+    const expected = if (builtin.os.tag == .macos)
+        "^/[tT][mM][pP]/(.*/)?[a-cA-C][xX][^dD]\\.[sS][eE][cC][rR][eE][tT]$"
+    else
+        "^/tmp/(.*/)?[a-c]x[^d]\\.secret$";
+    try std.testing.expectEqualStrings(expected, regex);
 }
 
 test "read-denied glob matcher mirrors seatbelt translation" {
@@ -1293,8 +1382,11 @@ test "relative read-denied globs resolve against cwd override" {
     });
     defer wrapped.deinit(allocator);
 
+    const resolved_pattern = try std.fs.path.join(allocator, &.{ workspace, "**/*.secret" });
+    defer allocator.free(resolved_pattern);
+
     try std.testing.expect(std.mem.indexOf(u8, wrapped.profile, "(deny file-read* (regex #\"^") != null);
-    try std.testing.expect(std.mem.indexOf(u8, wrapped.profile, "/(.*/)?[^/]*\\.secret$\"))") != null);
+    try expectProfileGlobRule(wrapped.profile, "deny file-read*", resolved_pattern);
 }
 
 test "read-denied glob resolver includes canonicalized static prefix" {

@@ -9345,10 +9345,12 @@ def run_sandbox_permission_profile_smoke(binary: Path) -> None:
         nested = workspace / "nested"
         nested.mkdir()
         glob_secret = nested / "token.secret"
+        glob_secret_upper = nested / "TOKEN.SECRET"
         root_glob_secret = workspace / "root.secret"
         secret.write_text("secret", encoding="utf-8")
         public.write_text("public", encoding="utf-8")
         glob_secret.write_text("glob-secret", encoding="utf-8")
+        glob_secret_upper.write_text("upper-glob-secret", encoding="utf-8")
         root_glob_secret.write_text("root-glob-secret", encoding="utf-8")
 
         read_only_denied = subprocess.run(
@@ -9781,6 +9783,30 @@ def run_sandbox_permission_profile_smoke(binary: Path) -> None:
         )
         assert denied_glob_read.returncode != 0
         assert denied_glob_read.stdout == ""
+
+        denied_glob_case_read = subprocess.run(
+            [
+                str(binary.resolve()),
+                "sandbox",
+                "macos",
+                "--permissions-profile",
+                "glob-deny-profile",
+                "--cd",
+                str(workspace),
+                "--",
+                "/bin/cat",
+                "nested/TOKEN.SECRET",
+            ],
+            cwd=temp_root,
+            env=env,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=5,
+            check=False,
+        )
+        assert denied_glob_case_read.returncode != 0
+        assert denied_glob_case_read.stdout == ""
 
         allowed_glob_write = subprocess.run(
             [
