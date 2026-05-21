@@ -9163,9 +9163,11 @@ def run_sandbox_permission_profile_smoke(binary: Path) -> None:
         nested = workspace / "nested"
         nested.mkdir()
         glob_secret = nested / "token.secret"
+        root_glob_secret = workspace / "root.secret"
         secret.write_text("secret", encoding="utf-8")
         public.write_text("public", encoding="utf-8")
         glob_secret.write_text("glob-secret", encoding="utf-8")
+        root_glob_secret.write_text("root-glob-secret", encoding="utf-8")
 
         read_only_denied = subprocess.run(
             [
@@ -9365,6 +9367,13 @@ def run_sandbox_permission_profile_smoke(binary: Path) -> None:
                     '":project_roots" = { "." = "write", "**/*.secret" = "none" }',
                     "",
                     "[permissions.glob-deny-profile.network]",
+                    "enabled = true",
+                    "",
+                    "[permissions.overlap-glob-deny-profile.filesystem]",
+                    '":root" = "read"',
+                    '":project_roots" = { "." = "write", "nested" = "none", "**/*.secret" = "none" }',
+                    "",
+                    "[permissions.overlap-glob-deny-profile.network]",
                     "enabled = true",
                     "",
                     "[permissions.extra-only-glob-deny-profile.filesystem]",
@@ -9687,6 +9696,32 @@ def run_sandbox_permission_profile_smoke(binary: Path) -> None:
         )
         assert extra_only_glob_denied_write.returncode != 0
         assert (extra / "extra-only.txt").read_text(encoding="utf-8") == "extra"
+        assert glob_secret.read_text(encoding="utf-8") == "nope"
+
+        overlap_glob_denied_write = subprocess.run(
+            [
+                str(binary.resolve()),
+                "sandbox",
+                "macos",
+                "--permissions-profile",
+                "overlap-glob-deny-profile",
+                "--cd",
+                str(workspace),
+                "--",
+                "/bin/sh",
+                "-c",
+                "printf root-ok > root.secret; printf leak > nested/token.secret",
+            ],
+            cwd=temp_root,
+            env=env,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=5,
+            check=False,
+        )
+        assert overlap_glob_denied_write.returncode != 0
+        assert root_glob_secret.read_text(encoding="utf-8") == "root-glob-secret"
         assert glob_secret.read_text(encoding="utf-8") == "nope"
 
         allowed_glob_neighbor = subprocess.run(

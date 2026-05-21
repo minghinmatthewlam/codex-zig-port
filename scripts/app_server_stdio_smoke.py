@@ -29853,6 +29853,58 @@ def run_command_exec_rpc_smoke(binary: Path) -> None:
         assert not child_cwd.joinpath("glob-link.txt").exists()
         assert not child_cwd.joinpath("glob-rename.txt").exists()
 
+        glob_read_deny_overlap_permission_profile = {
+            "type": "managed",
+            "fileSystem": {
+                "type": "restricted",
+                "globScanMaxDepth": 2,
+                "entries": [
+                    {
+                        "path": {"type": "special", "value": {"kind": "root"}},
+                        "access": "read",
+                    },
+                    {
+                        "path": {"type": "special", "value": {"kind": "project_roots"}},
+                        "access": "write",
+                    },
+                    {
+                        "path": {"type": "path", "path": str(glob_read_denied_dir)},
+                        "access": "none",
+                    },
+                    {
+                        "path": {"type": "glob_pattern", "pattern": "**/*.secret"},
+                        "access": "none",
+                    },
+                ],
+            },
+            "network": {"enabled": False},
+        }
+        permission_profile_glob_read_deny_overlap = request_stdio_app_server(
+            binary,
+            {
+                "jsonrpc": "2.0",
+                "id": "command-exec-permission-profile-glob-read-deny-overlap",
+                "method": "command/exec",
+                "params": {
+                    "command": [
+                        "/bin/sh",
+                        "-c",
+                        "! /bin/sh -c 'printf leak > glob-denied/token.secret' && printf glob-read-deny-overlap",
+                    ],
+                    "cwd": str(child_cwd),
+                    "permissionProfile": glob_read_deny_overlap_permission_profile,
+                },
+            },
+            env,
+        )
+        assert (
+            permission_profile_glob_read_deny_overlap["id"]
+            == "command-exec-permission-profile-glob-read-deny-overlap"
+        )
+        assert permission_profile_glob_read_deny_overlap["result"]["exitCode"] == 0
+        assert permission_profile_glob_read_deny_overlap["result"]["stdout"] == "glob-read-deny-overlap"
+        assert glob_read_denied_target.read_text(encoding="utf-8") == "nope"
+
         unsupported_permission_profile = request_stdio_app_server(
             binary,
             {
