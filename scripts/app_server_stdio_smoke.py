@@ -5945,11 +5945,17 @@ def run_turn_start_rpc_smoke(binary: Path) -> None:
                 injected_text_first = "Injected assistant context for next turn"
                 injected_text_second = "Additional injected assistant context"
                 injected_text = f"{injected_text_first}\n{injected_text_second}"
+                injected_image_url = "data:image/png;base64,aW5qZWN0ZWQ="
                 injected_item = {
                     "type": "message",
                     "role": "assistant",
                     "content": [
                         {"type": "output_text", "text": injected_text_first},
+                        {
+                            "type": "input_image",
+                            "image_url": injected_image_url,
+                            "detail": "low",
+                        },
                         {"type": "output_text", "text": "   "},
                         {"type": "output_text", "text": injected_text_second},
                     ],
@@ -6001,6 +6007,7 @@ def run_turn_start_rpc_smoke(binary: Path) -> None:
                 stored_after_inject = rollout_path.read_text(encoding="utf-8")
                 assert injected_text_first in stored_after_inject
                 assert injected_text_second in stored_after_inject
+                assert injected_image_url in stored_after_inject
                 assert injected_call_id in stored_after_inject
                 assert "structured output line one" in stored_after_inject
                 assert "structured output line two" in stored_after_inject
@@ -6054,6 +6061,18 @@ def run_turn_start_rpc_smoke(binary: Path) -> None:
                     ),
                     None,
                 )
+                injected_image_index = next(
+                    (
+                        index
+                        for index, item in enumerate(after_inject_input)
+                        if any(
+                            content.get("image_url") == injected_image_url
+                            and content.get("detail") == "low"
+                            for content in item.get("content", [])
+                        )
+                    ),
+                    None,
+                )
                 injected_call_index = next(
                     (
                         index
@@ -6086,6 +6105,7 @@ def run_turn_start_rpc_smoke(binary: Path) -> None:
                     None,
                 )
                 assert injected_index is not None
+                assert injected_image_index == injected_index
                 assert injected_call_index is not None
                 assert injected_output_index is not None
                 assert prompt_index is not None
@@ -6095,6 +6115,7 @@ def run_turn_start_rpc_smoke(binary: Path) -> None:
                 stored_after_inject_turn = rollout_path.read_text(encoding="utf-8")
                 assert injected_text_first in stored_after_inject_turn
                 assert injected_text_second in stored_after_inject_turn
+                assert injected_image_url in stored_after_inject_turn
                 assert injected_call_id in stored_after_inject_turn
                 assert "structured output line one" in stored_after_inject_turn
                 assert "structured output line two" in stored_after_inject_turn

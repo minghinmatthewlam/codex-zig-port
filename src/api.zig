@@ -114,6 +114,7 @@ pub const HistoryItem = struct {
     role: ?[]const u8 = null,
     text: ?[]const u8 = null,
     content_type: ?[]const u8 = null,
+    images: []const HistoryImage = &.{},
     call_id: ?[]const u8 = null,
     name: ?[]const u8 = null,
     arguments: ?[]const u8 = null,
@@ -123,6 +124,8 @@ pub const HistoryItem = struct {
         if (self.role) |value| allocator.free(value);
         if (self.text) |value| allocator.free(value);
         if (self.content_type) |value| allocator.free(value);
+        for (self.images) |image| image.deinit(allocator);
+        if (self.images.len > 0) allocator.free(self.images);
         if (self.call_id) |value| allocator.free(value);
         if (self.name) |value| allocator.free(value);
         if (self.arguments) |value| allocator.free(value);
@@ -134,6 +137,16 @@ pub const HistoryItem = struct {
         function_call,
         function_call_output,
     };
+};
+
+pub const HistoryImage = struct {
+    image_url: []const u8,
+    detail: ?[]const u8 = null,
+
+    pub fn deinit(self: HistoryImage, allocator: std.mem.Allocator) void {
+        allocator.free(self.image_url);
+        if (self.detail) |value| allocator.free(value);
+    }
 };
 
 const ContentItem = struct {
@@ -635,7 +648,8 @@ pub fn buildRequestBodyWithOptions(
                 const include_images = image_message_index != null and
                     image_message_index.? == history_index and
                     options.input_images.len > 0;
-                const content_len: usize = if (include_images) 1 + options.input_images.len else 1;
+                const extra_input_images_len: usize = if (include_images) options.input_images.len else 0;
+                const content_len: usize = 1 + item.images.len + extra_input_images_len;
                 const content = try allocator.alloc(ContentItem, content_len);
                 var content_owned = true;
                 errdefer if (content_owned) allocator.free(content);
@@ -643,9 +657,18 @@ pub fn buildRequestBodyWithOptions(
                     .type = content_type,
                     .text = text,
                 };
+                var content_index: usize = 1;
+                for (item.images) |image| {
+                    content[content_index] = .{
+                        .type = "input_image",
+                        .image_url = image.image_url,
+                        .detail = image.detail,
+                    };
+                    content_index += 1;
+                }
                 if (include_images) {
                     for (options.input_images, 0..) |image_url, image_index| {
-                        content[1 + image_index] = .{
+                        content[content_index + image_index] = .{
                             .type = "input_image",
                             .image_url = image_url,
                             .detail = "auto",
@@ -1934,6 +1957,64 @@ test "builds input images on latest user message" {
     try std.testing.expectEqualStrings("input_image", content.items[1].object.get("type").?.string);
     try std.testing.expectEqualStrings("data:image/png;base64,aGVsbG8=", content.items[1].object.get("image_url").?.string);
     try std.testing.expectEqualStrings("auto", content.items[1].object.get("detail").?.string);
+}
+
+test "builds persisted history images on their original message" {
+    const allocator = std.testing.allocator;
+    const cfg = config.Config{
+        .codex_home = ".",
+        .active_profile = null,
+        .model = "demo-model",
+        .openai_base_url = "https://example.invalid/v1",
+        .chatgpt_base_url = "https://example.invalid/backend-api/codex",
+        .oss_provider = null,
+        .installation_id = "install-test",
+        .approval_policy = .on_request,
+        .sandbox_mode = .workspace_write,
+        .web_search_mode = null,
+        .model_reasoning_effort = null,
+        .service_tier = null,
+        .syntax_theme = null,
+        .personality = null,
+        .tui_status_line = null,
+        .tui_terminal_title = null,
+        .tui_alternate_screen = .auto,
+    };
+    const history_images = [_]HistoryImage{.{
+        .image_url = "https://example.invalid/injected.png",
+        .detail = "low",
+    }};
+    const history = [_]HistoryItem{
+        .{
+            .kind = .message,
+            .role = "user",
+            .content_type = "input_text",
+            .text = "injected image context",
+            .images = history_images[0..],
+        },
+        .{
+            .kind = .message,
+            .role = "user",
+            .content_type = "input_text",
+            .text = "latest prompt",
+        },
+    };
+
+    const body = try buildRequestBodyWithOptions(allocator, cfg, history[0..], .{});
+    defer allocator.free(body);
+
+    var parsed = try std.json.parseFromSlice(std.json.Value, allocator, body, .{});
+    defer parsed.deinit();
+    const input = parsed.value.object.get("input").?.array.items;
+    const first_content = input[0].object.get("content").?.array.items;
+    const second_content = input[1].object.get("content").?.array.items;
+
+    try std.testing.expectEqual(@as(usize, 2), first_content.len);
+    try std.testing.expectEqualStrings("input_text", first_content[0].object.get("type").?.string);
+    try std.testing.expectEqualStrings("input_image", first_content[1].object.get("type").?.string);
+    try std.testing.expectEqualStrings("https://example.invalid/injected.png", first_content[1].object.get("image_url").?.string);
+    try std.testing.expectEqualStrings("low", first_content[1].object.get("detail").?.string);
+    try std.testing.expectEqual(@as(usize, 1), second_content.len);
 }
 
 test "builds web search tool from config mode" {

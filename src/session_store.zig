@@ -22,6 +22,7 @@ const StoredLine = struct {
     role: ?[]const u8 = null,
     content_type: ?[]const u8 = null,
     text: ?[]const u8 = null,
+    images: ?[]const api.HistoryImage = null,
     call_id: ?[]const u8 = null,
     name: ?[]const u8 = null,
     arguments: ?[]const u8 = null,
@@ -588,12 +589,53 @@ fn appendTranscriptLine(allocator: std.mem.Allocator, transcript: *session.Trans
 }
 
 fn appendStoredMessage(allocator: std.mem.Allocator, transcript: *session.Transcript, object: std.json.ObjectMap) !void {
+    const images = try storedHistoryImages(allocator, object.get("images"));
+    defer freeStoredHistoryImages(allocator, images);
     try transcript.appendHistoryItem(allocator, .{
         .kind = .message,
         .role = jsonStringField(object, "role") orelse return error.InvalidSessionLine,
         .content_type = jsonStringField(object, "content_type") orelse return error.InvalidSessionLine,
         .text = jsonStringField(object, "text") orelse return error.InvalidSessionLine,
+        .images = images,
     });
+}
+
+fn storedHistoryImages(allocator: std.mem.Allocator, value: ?std.json.Value) ![]const api.HistoryImage {
+    const images_value = value orelse return &.{};
+    if (images_value == .null) return &.{};
+    if (images_value != .array) return error.InvalidSessionLine;
+    var images = std.ArrayList(api.HistoryImage).empty;
+    errdefer {
+        for (images.items) |image| image.deinit(allocator);
+        images.deinit(allocator);
+    }
+
+    for (images_value.array.items) |item| {
+        if (item != .object) return error.InvalidSessionLine;
+        const image_url = jsonStringField(item.object, "image_url") orelse return error.InvalidSessionLine;
+        const image_url_copy = try allocator.dupe(u8, image_url);
+        var image_url_owned = true;
+        errdefer if (image_url_owned) allocator.free(image_url_copy);
+        const detail = if (jsonStringField(item.object, "detail")) |value_raw|
+            try allocator.dupe(u8, value_raw)
+        else
+            null;
+        var detail_owned = true;
+        errdefer if (detail_owned) if (detail) |value_raw| allocator.free(value_raw);
+        try images.append(allocator, .{
+            .image_url = image_url_copy,
+            .detail = detail,
+        });
+        image_url_owned = false;
+        detail_owned = false;
+    }
+
+    return images.toOwnedSlice(allocator);
+}
+
+fn freeStoredHistoryImages(allocator: std.mem.Allocator, images: []const api.HistoryImage) void {
+    for (images) |image| image.deinit(allocator);
+    if (images.len > 0) allocator.free(images);
 }
 
 fn appendStoredFunctionCall(allocator: std.mem.Allocator, transcript: *session.Transcript, object: std.json.ObjectMap) !void {
@@ -1371,6 +1413,7 @@ fn storedLineFromHistoryItem(item: api.HistoryItem) !StoredLine {
             .role = item.role orelse return error.InvalidSessionItem,
             .content_type = item.content_type orelse return error.InvalidSessionItem,
             .text = item.text orelse return error.InvalidSessionItem,
+            .images = if (item.images.len > 0) item.images else null,
         },
         .function_call => .{
             .type = "function_call",
@@ -1444,7 +1487,17 @@ test "session store round trips transcript jsonl" {
         .created_at = 100,
         .updated_at = 120,
     });
-    try transcript.appendUserMessage(allocator, "hello");
+    const history_images = [_]api.HistoryImage{.{
+        .image_url = "data:image/png;base64,cm91bmR0cmlw",
+        .detail = "low",
+    }};
+    try transcript.appendHistoryItem(allocator, .{
+        .kind = .message,
+        .role = "user",
+        .content_type = "input_text",
+        .text = "hello",
+        .images = history_images[0..],
+    });
     try transcript.appendAssistantMessage(allocator, "hi");
     try transcript.appendHistoryItem(allocator, .{
         .kind = .function_call,
@@ -1504,6 +1557,9 @@ test "session store round trips transcript jsonl" {
     try std.testing.expectEqual(api.HistoryItem.Kind.message, loaded.history.items[0].kind);
     try std.testing.expectEqualStrings("user", loaded.history.items[0].role.?);
     try std.testing.expectEqualStrings("hello", loaded.history.items[0].text.?);
+    try std.testing.expectEqual(@as(usize, 1), loaded.history.items[0].images.len);
+    try std.testing.expectEqualStrings("data:image/png;base64,cm91bmR0cmlw", loaded.history.items[0].images[0].image_url);
+    try std.testing.expectEqualStrings("low", loaded.history.items[0].images[0].detail.?);
     try std.testing.expectEqual(api.HistoryItem.Kind.function_call, loaded.history.items[2].kind);
     try std.testing.expectEqualStrings("shell_command", loaded.history.items[2].name.?);
     try std.testing.expectEqualStrings("stdout:\n/tmp\n", loaded.history.items[3].output.?);

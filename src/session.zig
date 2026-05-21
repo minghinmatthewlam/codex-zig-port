@@ -215,6 +215,7 @@ pub const Transcript = struct {
         owned.role = if (item.role) |value| try allocator.dupe(u8, value) else null;
         owned.text = if (item.text) |value| try allocator.dupe(u8, value) else null;
         owned.content_type = if (item.content_type) |value| try allocator.dupe(u8, value) else null;
+        owned.images = try cloneHistoryImages(allocator, item.images);
         owned.call_id = if (item.call_id) |value| try allocator.dupe(u8, value) else null;
         owned.name = if (item.name) |value| try allocator.dupe(u8, value) else null;
         owned.arguments = if (item.arguments) |value| try allocator.dupe(u8, value) else null;
@@ -308,6 +309,28 @@ pub const Transcript = struct {
         self.* = replacement;
     }
 };
+
+fn cloneHistoryImages(allocator: std.mem.Allocator, images: []const api.HistoryImage) ![]const api.HistoryImage {
+    if (images.len == 0) return &.{};
+    const owned = try allocator.alloc(api.HistoryImage, images.len);
+    var initialized: usize = 0;
+    errdefer {
+        for (owned[0..initialized]) |image| image.deinit(allocator);
+        allocator.free(owned);
+    }
+
+    for (images, 0..) |image, index| {
+        const image_url = try allocator.dupe(u8, image.image_url);
+        errdefer allocator.free(image_url);
+        const detail = if (image.detail) |value| try allocator.dupe(u8, value) else null;
+        owned[index] = .{
+            .image_url = image_url,
+            .detail = detail,
+        };
+        initialized += 1;
+    }
+    return owned;
+}
 
 pub const TokenUsage = struct {
     input_tokens: i64 = 0,
@@ -531,42 +554,92 @@ fn appendResponseHistoryMessage(
     const content_value = object.get("content") orelse return error.InvalidHistory;
     if (content_value != .array) return error.InvalidHistory;
 
-    var content_type = defaultHistoryContentType(role_value.string);
-    const text = try responseMessageTextFromContentItems(allocator, content_value.array.items, &content_type);
-    defer allocator.free(text);
+    var content = try responseMessageContentFromItems(allocator, content_value.array.items, defaultHistoryContentType(role_value.string));
+    defer content.deinit(allocator);
 
     try transcript.appendHistoryItem(allocator, .{
         .kind = .message,
         .role = role_value.string,
-        .content_type = content_type,
-        .text = text,
+        .content_type = content.content_type,
+        .text = content.text,
+        .images = content.images,
     });
 }
 
-fn responseMessageTextFromContentItems(
+const ResponseMessageContent = struct {
+    text: []const u8,
+    content_type: []const u8,
+    images: []const api.HistoryImage,
+
+    fn deinit(self: ResponseMessageContent, allocator: std.mem.Allocator) void {
+        allocator.free(self.text);
+        for (self.images) |image| image.deinit(allocator);
+        if (self.images.len > 0) allocator.free(self.images);
+    }
+};
+
+fn responseMessageContentFromItems(
     allocator: std.mem.Allocator,
     items: []const std.json.Value,
-    content_type: *[]const u8,
-) ![]const u8 {
+    default_content_type: []const u8,
+) !ResponseMessageContent {
     var segments = std.ArrayList([]const u8).empty;
     defer segments.deinit(allocator);
+    var images = std.ArrayList(api.HistoryImage).empty;
+    errdefer {
+        for (images.items) |image| image.deinit(allocator);
+        images.deinit(allocator);
+    }
+    var content_type = default_content_type;
 
     for (items) |item| {
         if (item != .object) continue;
         const object = item.object;
+        const type_value = object.get("type");
+        if (type_value != null and type_value.? == .string and std.mem.eql(u8, type_value.?.string, "input_image")) {
+            const image_url_value = object.get("image_url") orelse continue;
+            if (image_url_value != .string) continue;
+            const image_url = try allocator.dupe(u8, image_url_value.string);
+            var image_url_owned = true;
+            errdefer if (image_url_owned) allocator.free(image_url);
+            const detail_value = object.get("detail");
+            const detail = if (detail_value != null and detail_value.? == .string)
+                try allocator.dupe(u8, detail_value.?.string)
+            else
+                null;
+            var detail_owned = true;
+            errdefer if (detail_owned) if (detail) |value| allocator.free(value);
+            try images.append(allocator, .{
+                .image_url = image_url,
+                .detail = detail,
+            });
+            image_url_owned = false;
+            detail_owned = false;
+            continue;
+        }
+
         const text_value = object.get("text") orelse continue;
         if (text_value != .string) continue;
         if (segments.items.len == 0) {
-            if (object.get("type")) |type_value| {
-                if (type_value == .string) content_type.* = type_value.string;
+            if (type_value) |value| {
+                if (value == .string) content_type = value.string;
             }
         }
         if (std.mem.trim(u8, text_value.string, " \t\r\n").len == 0) continue;
         try segments.append(allocator, text_value.string);
     }
 
-    if (segments.items.len == 0) return try allocator.dupe(u8, "");
-    return try std.mem.join(allocator, "\n", segments.items);
+    const text = if (segments.items.len == 0)
+        try allocator.dupe(u8, "")
+    else
+        try std.mem.join(allocator, "\n", segments.items);
+    errdefer allocator.free(text);
+    const owned_images = try images.toOwnedSlice(allocator);
+    return .{
+        .text = text,
+        .content_type = content_type,
+        .images = owned_images,
+    };
 }
 
 fn appendResponseHistoryFunctionCall(
@@ -1539,6 +1612,7 @@ test "append response history message joins text content items" {
         \\  "role": "assistant",
         \\  "content": [
         \\    {"type": "output_text", "text": "first fragment"},
+        \\    {"type": "input_image", "image_url": "https://example.invalid/context.png", "detail": "high"},
         \\    {"type": "output_text", "text": "  "},
         \\    {"type": "output_text", "text": "second fragment"}
         \\  ]
@@ -1556,6 +1630,9 @@ test "append response history message joins text content items" {
     try std.testing.expectEqualStrings("assistant", transcript.history.items[0].role.?);
     try std.testing.expectEqualStrings("output_text", transcript.history.items[0].content_type.?);
     try std.testing.expectEqualStrings("first fragment\nsecond fragment", transcript.history.items[0].text.?);
+    try std.testing.expectEqual(@as(usize, 1), transcript.history.items[0].images.len);
+    try std.testing.expectEqualStrings("https://example.invalid/context.png", transcript.history.items[0].images[0].image_url);
+    try std.testing.expectEqualStrings("high", transcript.history.items[0].images[0].detail.?);
 }
 
 test "append response history function call output rejects non-text content items" {
