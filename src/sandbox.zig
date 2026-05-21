@@ -729,13 +729,20 @@ fn globStaticDirectoryPrefix(pattern: []const u8) ?[]const u8 {
 }
 
 fn pathWithinRoot(path: []const u8, root: []const u8) bool {
-    if (pathBytesEqual(path, root)) return true;
+    if (std.mem.eql(u8, path, root)) return true;
     if (path.len <= root.len) return false;
-    if (!pathStartsWith(path, root)) return false;
+    if (!std.mem.startsWith(u8, path, root)) return false;
     return (root.len > 0 and root[root.len - 1] == std.fs.path.sep) or path[root.len] == std.fs.path.sep;
 }
 
-fn pathBytesEqual(left: []const u8, right: []const u8) bool {
+fn readDeniedLiteralWithinRoot(path: []const u8, root: []const u8) bool {
+    if (readDeniedPathBytesEqual(path, root)) return true;
+    if (path.len <= root.len) return false;
+    if (!readDeniedPathStartsWith(path, root)) return false;
+    return (root.len > 0 and root[root.len - 1] == std.fs.path.sep) or path[root.len] == std.fs.path.sep;
+}
+
+fn readDeniedPathBytesEqual(left: []const u8, right: []const u8) bool {
     if (left.len != right.len) return false;
     if (builtin.os.tag != .macos) return std.mem.eql(u8, left, right);
     for (left, right) |left_byte, right_byte| {
@@ -744,7 +751,7 @@ fn pathBytesEqual(left: []const u8, right: []const u8) bool {
     return true;
 }
 
-fn pathStartsWith(path: []const u8, prefix: []const u8) bool {
+fn readDeniedPathStartsWith(path: []const u8, prefix: []const u8) bool {
     if (path.len < prefix.len) return false;
     if (builtin.os.tag != .macos) return std.mem.startsWith(u8, path, prefix);
     for (path[0..prefix.len], prefix) |path_byte, prefix_byte| {
@@ -845,16 +852,22 @@ fn appendSeatbeltRegexClass(
             class_index += 1;
         }
     }
+    var literal_hyphen_count: usize = 0;
     while (class_index < end) : (class_index += 1) {
         const byte = pattern[class_index];
         if (class_index + 2 < end and pattern[class_index + 1] == '-') {
             try appendSeatbeltRegexClassRange(allocator, regex, byte, pattern[class_index + 2]);
             class_index += 2;
+        } else if (byte == '-') {
+            literal_hyphen_count += 1;
         } else if (byte == '\\') {
             try regex.appendSlice(allocator, "\\\\");
         } else {
             try appendSeatbeltRegexClassByteFolded(allocator, regex, byte);
         }
+    }
+    while (literal_hyphen_count > 0) : (literal_hyphen_count -= 1) {
+        try regex.append(allocator, '-');
     }
     try regex.append(allocator, ']');
     index.* = end + 1;
@@ -946,7 +959,7 @@ fn expectProfileOmitsGlobRule(profile: []const u8, effect: []const u8, pattern: 
 
 pub fn readDeniedGlobMatchesPath(pattern: []const u8, path: []const u8) bool {
     if (pattern.len == 0) return false;
-    if (firstGlobCharIndex(pattern) == null) return pathWithinRoot(path, pattern);
+    if (firstGlobCharIndex(pattern) == null) return readDeniedLiteralWithinRoot(path, pattern);
     return readDeniedGlobMatchesPathAt(pattern, 0, path, 0);
 }
 
@@ -1324,6 +1337,16 @@ test "sandbox profile keeps glob data write allow scoped to writable roots" {
     try expectProfileOmitsGlobRule(profile, "allow file-write-data", "/tmp/codex-workspace/**/*.secret");
 }
 
+test "sandbox profile keeps glob data write allow case-sensitive" {
+    const allocator = std.testing.allocator;
+    const profile = try buildProfileWithOptions(allocator, .workspace_write, "/tmp/codex-workspace", &.{}, &.{}, true, false, true, &.{}, &.{"/tmp/CODEX-WORKSPACE/**/*.secret"}, 0);
+    defer allocator.free(profile);
+
+    try expectProfileGlobRule(profile, "deny file-read*", "/tmp/CODEX-WORKSPACE/**/*.secret");
+    try expectProfileGlobRule(profile, "deny file-write*", "/tmp/CODEX-WORKSPACE/**/*.secret");
+    try expectProfileOmitsGlobRule(profile, "allow file-write-data", "/tmp/CODEX-WORKSPACE/**/*.secret");
+}
+
 test "sandbox profile keeps root slash glob data write allow" {
     const allocator = std.testing.allocator;
     const profile = try buildProfileWithOptions(allocator, .workspace_write, "/tmp/codex-workspace", &.{"/"}, &.{}, false, false, true, &.{}, &.{"/**/*.secret"}, 0);
@@ -1363,9 +1386,12 @@ test "seatbelt glob regex folds ascii literals and classes on macos" {
     try std.testing.expectEqualStrings(expected, regex);
 }
 
-test "seatbelt glob regex keeps trailing hyphen classes valid" {
+test "seatbelt glob regex keeps literal hyphen classes valid" {
     const allocator = std.testing.allocator;
-    const profile = try buildProfileWithOptions(allocator, .workspace_write, "/tmp/codex-workspace", &.{}, &.{}, true, false, true, &.{}, &.{"/tmp/codex-workspace/**/*[A-Za-z0-9_-].secret"}, 0);
+    const profile = try buildProfileWithOptions(allocator, .workspace_write, "/tmp/codex-workspace", &.{}, &.{}, true, false, true, &.{}, &.{
+        "/tmp/codex-workspace/**/*[A-Za-z0-9_-].secret",
+        "/tmp/codex-workspace/**/*[a-b-c].secret",
+    }, 0);
     defer allocator.free(profile);
 
     try std.testing.expect(std.mem.indexOf(u8, profile, "\\-]") == null);
