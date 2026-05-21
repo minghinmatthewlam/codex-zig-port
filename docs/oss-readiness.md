@@ -1,6 +1,6 @@
 # OSS Readiness
 
-Last checked: 2026-05-20.
+Last checked: 2026-05-21.
 
 This file records the public-readiness state for the repository. It is not a
 parity tracker; implementation parity remains tracked in `docs/parity.md`.
@@ -14,12 +14,13 @@ parity tracker; implementation parity remains tracked in `docs/parity.md`.
 - Community files: `README.md`, `CONTRIBUTING.md`, `SECURITY.md`,
   `.github/CODE_OF_CONDUCT.md`, issue templates, PR template, and CODEOWNERS
 - GitHub community profile: 100% by the repository community-profile API.
-- Security settings: GitHub API checks through 2026-05-20 show secret scanning,
+- Security settings: GitHub API checks through 2026-05-21 show secret scanning,
   push protection, and Dependabot security updates enabled. GitHub reports
   non-provider pattern scanning and secret validity checks as disabled.
   `SECURITY.md` is exposed through the repository security-policy URL. CodeQL
-  Python code scanning is configured; checked CodeQL run `26166666758` passed
-  on pushed head `b99963bdbc1bed794de440c71c7ed152818e679a`.
+  Python code scanning is configured; latest checked `main` CodeQL run
+  `26182591636` passed on pushed head
+  `7d2d54d0e65cc85405ed6f9f175d10b4798bfa1b`.
   Open-alert queries for
   CodeQL, Dependabot, and secret scanning returned empty arrays after the
   token-shaped smoke-fixture cleanup. Historical CodeQL alerts remain visible
@@ -29,16 +30,22 @@ parity tracker; implementation parity remains tracked in `docs/parity.md`.
 - CI: GitHub Actions runs formatting, Python smoke-script compilation, unit
   tests, and product-surface smoke tests on macOS with a direct Zig 0.16.0
   install from `ziglang.org` rather than a deprecated Node-based setup action.
-  It also runs the repository OSS secret-scan script. Checked push run
-  `26166666757` passed on pushed head
-  `b99963bdbc1bed794de440c71c7ed152818e679a`.
+  It also runs the repository OSS secret-scan script. Latest checked `main`
+  push CI run `26182591696` passed on pushed head
+  `7d2d54d0e65cc85405ed6f9f175d10b4798bfa1b`. The current
+  `publish-read-deny-parity-public` branch is pushed at
+  `4766f8e192e4c2945edbf171e86f61ff7c91336a`; branch pushes do not start CI
+  until opened as a pull request because the workflow runs on `main` pushes and
+  PRs.
 - Fresh public clone proof: a clean HTTPS clone from
-  `https://github.com/minghinmatthewlam/codex-zig-port` at pushed head
-  `b99963bdbc1bed794de440c71c7ed152818e679a` passed `python3 -m py_compile`
+  `https://github.com/minghinmatthewlam/codex-zig-port` of branch
+  `publish-read-deny-parity-public` at pushed head
+  `4766f8e192e4c2945edbf171e86f61ff7c91336a` passed `python3 -m py_compile`
   for the app-server, CLI, OSS secret-scan, and TUI smoke scripts,
   `python3 scripts/oss_secret_scan.py`, `zig fmt --check build.zig
-  build.zig.zon src/*.zig`, `zig build`, `zig build test`, and
-  `zig build e2e`.
+  build.zig.zon src/*.zig`, `zig build --summary all`,
+  `zig build test --summary all` with `619/619` tests passed, and
+  `zig build e2e --summary all`.
 - Source hygiene: the current CI and fresh-public-clone scans found no
   high-confidence OpenAI, Anthropic, GitHub, AWS, Google, or Slack token
   patterns and no private-key blocks in tracked source, scripts, docs, tests,
