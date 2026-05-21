@@ -196,7 +196,9 @@ fn buildProfileWithOptions(
                 try appendWritableSubpath(allocator, &profile, root);
             }
             try appendReadDeniedRoots(allocator, &profile, read_denied_roots);
-            try appendReadDeniedGlobPatterns(allocator, &profile, read_denied_globs);
+            const writable_roots = try workspaceWriteRootsForGlobExceptions(allocator, cwd, additional_writable_roots, include_cwd_write_root);
+            defer allocator.free(writable_roots);
+            try appendReadDeniedGlobPatterns(allocator, &profile, read_denied_globs, writable_roots);
             try appendNetworkPolicy(allocator, &profile, network_enabled);
             try appendUnixSocketPolicy(allocator, &profile, unix_socket_path_count);
             break :blk try profile.toOwnedSlice(allocator);
@@ -216,7 +218,7 @@ fn buildReadOnlyProfile(
     try profile.appendSlice(allocator, baseProfile);
     try profile.appendSlice(allocator, readOnlyWritePolicy);
     try appendReadDeniedRoots(allocator, &profile, read_denied_roots);
-    try appendReadDeniedGlobPatterns(allocator, &profile, read_denied_globs);
+    try appendReadDeniedGlobPatterns(allocator, &profile, read_denied_globs, &.{});
     try appendNetworkPolicy(allocator, &profile, network_enabled);
     try appendUnixSocketPolicy(allocator, &profile, unix_socket_path_count);
     return profile.toOwnedSlice(allocator);
@@ -500,23 +502,82 @@ fn appendReadDeniedRoots(allocator: std.mem.Allocator, profile: *std.ArrayList(u
     }
 }
 
-fn appendReadDeniedGlobPatterns(allocator: std.mem.Allocator, profile: *std.ArrayList(u8), patterns: []const []const u8) !void {
+fn appendReadDeniedGlobPatterns(
+    allocator: std.mem.Allocator,
+    profile: *std.ArrayList(u8),
+    patterns: []const []const u8,
+    writable_roots: []const []const u8,
+) !void {
     for (patterns) |pattern| {
         const regex = try seatbeltRegexForUnreadableGlob(allocator, pattern);
         defer allocator.free(regex);
         const escaped = try escapeSeatbeltRawRegex(allocator, regex);
         defer allocator.free(escaped);
-        const block = try std.fmt.allocPrint(
-            allocator,
-            \\(deny file-read* (regex #"{s}"))
-            \\(deny file-write* (regex #"{s}"))
-            \\
-        ,
-            .{ escaped, escaped },
-        );
+        // Allow overwriting existing glob-denied files only when the glob is wholly
+        // inside a writable root. Directory-entry operations remain blocked.
+        const block = if (globPatternUnderAnyRoot(pattern, writable_roots))
+            try std.fmt.allocPrint(
+                allocator,
+                \\(deny file-read* (regex #"{s}"))
+                \\(deny file-write* (regex #"{s}"))
+                \\(allow file-write-data (regex #"{s}"))
+                \\
+            ,
+                .{ escaped, escaped, escaped },
+            )
+        else
+            try std.fmt.allocPrint(
+                allocator,
+                \\(deny file-read* (regex #"{s}"))
+                \\(deny file-write* (regex #"{s}"))
+                \\
+            ,
+                .{ escaped, escaped },
+            );
         defer allocator.free(block);
         try profile.appendSlice(allocator, block);
     }
+}
+
+fn workspaceWriteRootsForGlobExceptions(
+    allocator: std.mem.Allocator,
+    cwd: []const u8,
+    additional_writable_roots: []const []const u8,
+    include_cwd_write_root: bool,
+) ![]const []const u8 {
+    const cwd_count: usize = if (include_cwd_write_root) 1 else 0;
+    const roots = try allocator.alloc([]const u8, cwd_count + additional_writable_roots.len);
+    if (include_cwd_write_root) roots[0] = cwd;
+    @memcpy(roots[cwd_count..], additional_writable_roots);
+    return roots;
+}
+
+fn globPatternUnderAnyRoot(pattern: []const u8, roots: []const []const u8) bool {
+    const prefix = globStaticDirectoryPrefix(pattern) orelse return false;
+    for (roots) |root| {
+        if (pathWithinRoot(prefix, root)) return true;
+    }
+    return false;
+}
+
+fn globStaticDirectoryPrefix(pattern: []const u8) ?[]const u8 {
+    const first_glob = firstGlobCharIndex(pattern) orelse return std.fs.path.dirname(pattern);
+    const static_prefix = pattern[0..first_glob];
+    if (static_prefix.len == 0) return null;
+    if (static_prefix[static_prefix.len - 1] == std.fs.path.sep) {
+        var end = static_prefix.len;
+        while (end > 0 and static_prefix[end - 1] == std.fs.path.sep) : (end -= 1) {}
+        if (end == 0) return null;
+        return static_prefix[0..end];
+    }
+    return std.fs.path.dirname(static_prefix);
+}
+
+fn pathWithinRoot(path: []const u8, root: []const u8) bool {
+    if (std.mem.eql(u8, path, root)) return true;
+    if (path.len <= root.len) return false;
+    if (!std.mem.startsWith(u8, path, root)) return false;
+    return (root.len > 0 and root[root.len - 1] == std.fs.path.sep) or path[root.len] == std.fs.path.sep;
 }
 
 fn escapeSeatbeltRawRegex(allocator: std.mem.Allocator, value: []const u8) ![]const u8 {
@@ -875,6 +936,17 @@ test "sandbox profile can deny read glob patterns" {
 
     try std.testing.expect(std.mem.indexOf(u8, profile, "(deny file-read* (regex #\"^/tmp/codex-workspace/(.*/)?[^/]*\\.secret$\"))") != null);
     try std.testing.expect(std.mem.indexOf(u8, profile, "(deny file-write* (regex #\"^/tmp/codex-workspace/(.*/)?[^/]*\\.secret$\"))") != null);
+    try std.testing.expect(std.mem.indexOf(u8, profile, "(allow file-write-data (regex #\"^/tmp/codex-workspace/(.*/)?[^/]*\\.secret$\"))") != null);
+}
+
+test "sandbox profile keeps glob data write allow scoped to writable roots" {
+    const allocator = std.testing.allocator;
+    const profile = try buildProfileWithOptions(allocator, .workspace_write, "/tmp/codex-workspace", &.{"/tmp/codex-extra"}, false, true, &.{}, &.{"/tmp/codex-workspace/**/*.secret"}, 0);
+    defer allocator.free(profile);
+
+    try std.testing.expect(std.mem.indexOf(u8, profile, "(deny file-read* (regex #\"^/tmp/codex-workspace/(.*/)?[^/]*\\.secret$\"))") != null);
+    try std.testing.expect(std.mem.indexOf(u8, profile, "(deny file-write* (regex #\"^/tmp/codex-workspace/(.*/)?[^/]*\\.secret$\"))") != null);
+    try std.testing.expect(std.mem.indexOf(u8, profile, "(allow file-write-data (regex #\"^/tmp/codex-workspace/(.*/)?[^/]*\\.secret$\"))") == null);
 }
 
 test "read-denied glob matcher mirrors seatbelt translation" {
