@@ -27270,7 +27270,7 @@ fn handleAppServerGoalTool(ctx: *anyopaque, call: api.FunctionCall) !tool_runner
 
     if (std.mem.eql(u8, call.name, "get_goal")) {
         if (try refreshLoadedThreadGoalAccountingAndPersistAt(context.allocator, context.thread, currentUnixSeconds())) {
-            _ = try saveLoadedThreadGoalToStateDb(context.allocator, context.codex_home, context.thread);
+            _ = try saveLoadedThreadGoalToStateDb(context.allocator, context.codex_home, context.thread, false);
         }
         const output = try renderGoalToolResponse(context.allocator, context.thread, .omit);
         defer context.allocator.free(output);
@@ -27294,8 +27294,8 @@ fn handleAppServerGoalTool(ctx: *anyopaque, call: api.FunctionCall) !tool_runner
         if (validateCreateGoalToolParams(object)) |message| {
             return goalToolResult(context.allocator, call.call_id, "goal invalid", message);
         }
-        try setLoadedThreadGoal(context.allocator, context.thread, object);
-        _ = try saveLoadedThreadGoalToStateDb(context.allocator, context.codex_home, context.thread);
+        const replaced_goal = try setLoadedThreadGoal(context.allocator, context.thread, object);
+        _ = try saveLoadedThreadGoalToStateDb(context.allocator, context.codex_home, context.thread, replaced_goal);
         try queueThreadGoalUpdatedTurnNotification(context);
         const output = try renderGoalToolResponse(context.allocator, context.thread, .omit);
         defer context.allocator.free(output);
@@ -27306,11 +27306,11 @@ fn handleAppServerGoalTool(ctx: *anyopaque, call: api.FunctionCall) !tool_runner
         if (validateUpdateGoalToolParams(object)) |message| {
             return goalToolResult(context.allocator, call.call_id, "goal invalid", message);
         }
-        setLoadedThreadGoal(context.allocator, context.thread, object) catch |err| switch (err) {
+        const replaced_goal = setLoadedThreadGoal(context.allocator, context.thread, object) catch |err| switch (err) {
             error.MissingThreadGoal => return goalToolResult(context.allocator, call.call_id, "goal rejected", "cannot update goal because this thread has no goal"),
             else => return err,
         };
-        _ = try saveLoadedThreadGoalToStateDb(context.allocator, context.codex_home, context.thread);
+        _ = try saveLoadedThreadGoalToStateDb(context.allocator, context.codex_home, context.thread, replaced_goal);
         try queueThreadGoalUpdatedTurnNotification(context);
         const output = try renderGoalToolResponse(context.allocator, context.thread, .include);
         defer context.allocator.free(output);
@@ -33279,7 +33279,7 @@ fn refreshLoadedThreadAfterTurnAndAccountGoal(
     const goal_accounting_changed = refreshLoadedThreadGoalAccountingAt(thread, accounting_at);
     if (goal_accounting_changed) {
         try syncLoadedThreadGoalToTranscript(allocator, thread);
-        _ = try saveLoadedThreadGoalToStateDb(allocator, codex_home, thread);
+        _ = try saveLoadedThreadGoalToStateDb(allocator, codex_home, thread, false);
     }
     return goal_accounting_changed;
 }
@@ -33434,22 +33434,25 @@ fn setLoadedThreadGoal(
     allocator: std.mem.Allocator,
     thread: *LoadedThread,
     object: std.json.ObjectMap,
-) !void {
+) !bool {
     const now = currentUnixSeconds();
     const objective = loadedThreadGoalObjective(object);
     const status = loadedThreadGoalStatus(object);
     const token_budget = loadedThreadGoalTokenBudget(object);
 
     if (objective) |value| {
-        if (thread.goal != null) _ = refreshLoadedThreadGoalAccountingAt(thread, now);
+        const accounting_changed = if (thread.goal != null) refreshLoadedThreadGoalAccountingAt(thread, now) else false;
         if (thread.goal) |*existing| {
             if (std.mem.eql(u8, existing.objective, value) and !std.mem.eql(u8, existing.status, "complete")) {
-                if (status) |next_status| {
-                    const was_active = std.mem.eql(u8, existing.status, "active");
+                _ = accounting_changed;
+                const requested_status = status orelse "active";
+                const next_status = loadedThreadGoalUpdatedStatus(existing.status, requested_status, existing.tokens_used, if (token_budget.present) token_budget.value else existing.token_budget);
+                const was_active = std.mem.eql(u8, existing.status, "active");
+                if (!std.mem.eql(u8, existing.status, next_status)) {
                     const status_copy = try allocator.dupe(u8, next_status);
                     allocator.free(existing.status);
                     existing.status = status_copy;
-                    if (!was_active and std.mem.eql(u8, next_status, "active")) {
+                    if (!was_active and std.mem.eql(u8, existing.status, "active")) {
                         resetLoadedThreadGoalAccountingBaselines(existing, thread, now);
                     }
                 }
@@ -33457,7 +33460,7 @@ fn setLoadedThreadGoal(
                 existing.updated_at = now;
                 thread.updated_at = now;
                 try persistLoadedThreadGoal(allocator, thread);
-                return;
+                return false;
             }
             existing.deinit(allocator);
             thread.goal = null;
@@ -33466,7 +33469,7 @@ fn setLoadedThreadGoal(
         const objective_copy = try allocator.dupe(u8, value);
         var objective_copy_moved = false;
         errdefer if (!objective_copy_moved) allocator.free(objective_copy);
-        const status_copy = try allocator.dupe(u8, status orelse "active");
+        const status_copy = try allocator.dupe(u8, loadedThreadGoalStatusAfterBudgetLimit(status orelse "active", 0, if (token_budget.present) token_budget.value else null));
         var status_copy_moved = false;
         errdefer if (!status_copy_moved) allocator.free(status_copy);
 
@@ -33486,24 +33489,28 @@ fn setLoadedThreadGoal(
         status_copy_moved = true;
         thread.updated_at = now;
         try persistLoadedThreadGoal(allocator, thread);
-        return;
+        return true;
     }
 
     _ = refreshLoadedThreadGoalAccountingAt(thread, now);
     const existing = if (thread.goal) |*goal| goal else return error.MissingThreadGoal;
-    if (status) |next_status| {
+    if (status != null or token_budget.present) {
         const was_active = std.mem.eql(u8, existing.status, "active");
-        const status_copy = try allocator.dupe(u8, next_status);
-        allocator.free(existing.status);
-        existing.status = status_copy;
-        if (!was_active and std.mem.eql(u8, next_status, "active")) {
-            resetLoadedThreadGoalAccountingBaselines(existing, thread, now);
+        const next_status = loadedThreadGoalUpdatedStatus(existing.status, status, existing.tokens_used, if (token_budget.present) token_budget.value else existing.token_budget);
+        if (!std.mem.eql(u8, existing.status, next_status)) {
+            const status_copy = try allocator.dupe(u8, next_status);
+            allocator.free(existing.status);
+            existing.status = status_copy;
+            if (!was_active and std.mem.eql(u8, existing.status, "active")) {
+                resetLoadedThreadGoalAccountingBaselines(existing, thread, now);
+            }
         }
     }
     if (token_budget.present) existing.token_budget = token_budget.value;
     existing.updated_at = now;
     thread.updated_at = now;
     try persistLoadedThreadGoal(allocator, thread);
+    return false;
 }
 
 fn loadedThreadGoalObjective(object: std.json.ObjectMap) ?[]const u8 {
@@ -33527,6 +33534,25 @@ fn loadedThreadGoalTokenBudget(object: std.json.ObjectMap) LoadedThreadGoalToken
     const value = object.get("tokenBudget") orelse object.get("token_budget") orelse return .{ .present = false, .value = null };
     if (value == .null) return .{ .present = true, .value = null };
     return .{ .present = true, .value = value.integer };
+}
+
+fn loadedThreadGoalStatusAfterBudgetLimit(status: []const u8, tokens_used: i64, token_budget: ?i64) []const u8 {
+    if (std.mem.eql(u8, status, "active")) {
+        if (token_budget) |budget| {
+            if (tokens_used >= budget) return "budgetLimited";
+        }
+    }
+    return status;
+}
+
+fn loadedThreadGoalUpdatedStatus(existing_status: []const u8, status: ?[]const u8, tokens_used: i64, token_budget: ?i64) []const u8 {
+    if (status) |requested_status| {
+        if (std.mem.eql(u8, existing_status, "budgetLimited") and std.mem.eql(u8, requested_status, "paused")) {
+            return "budgetLimited";
+        }
+        return loadedThreadGoalStatusAfterBudgetLimit(requested_status, tokens_used, token_budget);
+    }
+    return loadedThreadGoalStatusAfterBudgetLimit(existing_status, tokens_used, token_budget);
 }
 
 fn clearLoadedThreadGoal(allocator: std.mem.Allocator, thread: *LoadedThread) !bool {
@@ -33625,7 +33651,7 @@ fn syncLoadedThreadGoalToTranscript(allocator: std.mem.Allocator, thread: *Loade
     });
 }
 
-fn saveLoadedThreadGoalToStateDb(allocator: std.mem.Allocator, codex_home: []const u8, thread: *const LoadedThread) !bool {
+fn saveLoadedThreadGoalToStateDb(allocator: std.mem.Allocator, codex_home: []const u8, thread: *const LoadedThread, replace_goal_id: bool) !bool {
     const goal = thread.goal orelse return false;
     return thread_state.saveThreadGoalSnapshot(allocator, codex_home, thread.id, .{
         .objective = goal.objective,
@@ -33635,7 +33661,7 @@ fn saveLoadedThreadGoalToStateDb(allocator: std.mem.Allocator, codex_home: []con
         .time_used_seconds = goal.time_used_seconds,
         .created_at = goal.created_at,
         .updated_at = goal.updated_at,
-    });
+    }, replace_goal_id);
 }
 
 fn loadedThreadGoalFromSessionGoal(allocator: std.mem.Allocator, maybe_goal: ?session_mod.ThreadGoal) !?LoadedThreadGoal {
@@ -33906,7 +33932,7 @@ fn handleLoadedThreadCompactStart(
     const goal_accounting_changed = refreshLoadedThreadGoalAccountingAt(thread, completed_at);
     if (goal_accounting_changed) {
         try syncLoadedThreadGoalToTranscript(allocator, thread);
-        _ = try saveLoadedThreadGoalToStateDb(allocator, cfg.codex_home, thread);
+        _ = try saveLoadedThreadGoalToStateDb(allocator, cfg.codex_home, thread, false);
     }
     if (thread.path) |path| {
         try session_store.saveTranscript(allocator, path, &thread.transcript);
@@ -36013,7 +36039,7 @@ fn handleThreadMethod(
                 defer allocator.free(message);
                 return renderJsonRpcError(allocator, id_value, -32600, message);
             }
-            setLoadedThreadGoal(allocator, thread, object) catch |err| switch (err) {
+            const replaced_goal = setLoadedThreadGoal(allocator, thread, object) catch |err| switch (err) {
                 error.MissingThreadGoal => {
                     const message = try std.fmt.allocPrint(allocator, "cannot update goal for thread {s}: no goal exists", .{thread_id});
                     defer allocator.free(message);
@@ -36021,7 +36047,7 @@ fn handleThreadMethod(
                 },
                 else => return renderJsonRpcErrorForFailure(allocator, id_value, "thread/goal/set failed", err),
             };
-            _ = saveLoadedThreadGoalToStateDb(allocator, cfg.codex_home, thread) catch |err| {
+            _ = saveLoadedThreadGoalToStateDb(allocator, cfg.codex_home, thread, replaced_goal) catch |err| {
                 return renderJsonRpcErrorForFailure(allocator, id_value, "thread/goal/set failed to persist state goal", err);
             };
             const result = try renderThreadGoalSetResponse(allocator, thread);
@@ -36073,7 +36099,7 @@ fn handleThreadMethod(
             if (refreshLoadedThreadGoalAccountingAndPersistAt(allocator, thread, currentUnixSeconds()) catch |err| {
                 return renderJsonRpcErrorForFailure(allocator, id_value, "thread/goal/get failed", err);
             }) {
-                _ = saveLoadedThreadGoalToStateDb(allocator, cfg.codex_home, thread) catch |err| {
+                _ = saveLoadedThreadGoalToStateDb(allocator, cfg.codex_home, thread, false) catch |err| {
                     return renderJsonRpcErrorForFailure(allocator, id_value, "thread/goal/get failed to persist state goal", err);
                 };
             }
@@ -40877,7 +40903,7 @@ fn setStateThreadGoalFromParams(
         if (existing) |goal| {
             if (std.mem.eql(u8, goal.objective, value) and !std.mem.eql(u8, goal.status, "complete")) {
                 return (try thread_state.updateThreadGoal(allocator, codex_home, thread_id, .{
-                    .status = status,
+                    .status = status orelse "active",
                     .token_budget_present = token_budget.present,
                     .token_budget = token_budget.value,
                 })) orelse error.MissingThreadGoal;

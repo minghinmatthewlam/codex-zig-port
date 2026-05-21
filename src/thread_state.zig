@@ -153,6 +153,29 @@ const SAVE_THREAD_GOAL_SNAPSHOT_QUERY =
     \\    updated_at_ms = excluded.updated_at_ms
 ;
 
+const SAVE_REPLACED_THREAD_GOAL_SNAPSHOT_QUERY =
+    \\INSERT INTO thread_goals (
+    \\    thread_id,
+    \\    goal_id,
+    \\    objective,
+    \\    status,
+    \\    token_budget,
+    \\    tokens_used,
+    \\    time_used_seconds,
+    \\    created_at_ms,
+    \\    updated_at_ms
+    \\) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    \\ON CONFLICT(thread_id) DO UPDATE SET
+    \\    goal_id = excluded.goal_id,
+    \\    objective = excluded.objective,
+    \\    status = excluded.status,
+    \\    token_budget = excluded.token_budget,
+    \\    tokens_used = excluded.tokens_used,
+    \\    time_used_seconds = excluded.time_used_seconds,
+    \\    created_at_ms = excluded.created_at_ms,
+    \\    updated_at_ms = excluded.updated_at_ms
+;
+
 const DELETE_THREAD_GOAL_QUERY =
     \\DELETE FROM thread_goals
     \\WHERE thread_id = ?
@@ -619,6 +642,7 @@ pub fn updateThreadGoal(
     update: ThreadGoalUpdate,
 ) !?ThreadGoal {
     var existing = (try findThreadGoalByThreadId(allocator, codex_home, thread_id)) orelse return null;
+    if (update.status == null and !update.token_budget_present) return existing;
     defer existing.deinit(allocator);
 
     var status = update.status orelse existing.status;
@@ -646,10 +670,12 @@ pub fn saveThreadGoalSnapshot(
     codex_home: []const u8,
     thread_id: []const u8,
     snapshot: ThreadGoalSnapshot,
+    replace_goal_id: bool,
 ) !bool {
     if (!try stateDbThreadExists(allocator, codex_home, thread_id)) return false;
 
-    const statement = try prepareStateUpdate(allocator, codex_home, SAVE_THREAD_GOAL_SNAPSHOT_QUERY) orelse return false;
+    const query = if (replace_goal_id) SAVE_REPLACED_THREAD_GOAL_SNAPSHOT_QUERY else SAVE_THREAD_GOAL_SNAPSHOT_QUERY;
+    const statement = try prepareStateUpdate(allocator, codex_home, query) orelse return false;
     errdefer statement.deinit();
     const goal_id = try generateUuidString(allocator);
     defer allocator.free(goal_id);
