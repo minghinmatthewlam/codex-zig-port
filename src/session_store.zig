@@ -13,6 +13,8 @@ const StoredLine = struct {
     title: ?[]const u8 = null,
     memory_mode: ?[]const u8 = null,
     cwd: ?[]const u8 = null,
+    openai_base_url: ?[]const u8 = null,
+    chatgpt_base_url: ?[]const u8 = null,
     git: ?StoredGitInfo = null,
     goal: ?StoredGoalInfo = null,
     total_token_usage: ?StoredTokenUsage = null,
@@ -185,12 +187,14 @@ pub fn saveTranscript(allocator: std.mem.Allocator, path: []const u8, transcript
     var output = std.ArrayList(u8).empty;
     defer output.deinit(allocator);
 
-    if (transcript.title != null or transcript.memory_mode != null or transcript.cwd != null or transcriptHasGitInfo(transcript) or transcript.goal != null or transcript.token_usage != null) {
+    if (transcript.title != null or transcript.memory_mode != null or transcript.cwd != null or transcript.openai_base_url != null or transcript.chatgpt_base_url != null or transcriptHasGitInfo(transcript) or transcript.goal != null or transcript.token_usage != null) {
         try appendStoredLineJson(allocator, &output, .{
             .type = "metadata",
             .title = transcript.title,
             .memory_mode = transcript.memory_mode,
             .cwd = transcript.cwd,
+            .openai_base_url = transcript.openai_base_url,
+            .chatgpt_base_url = transcript.chatgpt_base_url,
             .git = storedGitInfoFromTranscript(transcript),
             .goal = storedGoalInfoFromTranscript(transcript),
             .total_token_usage = storedTotalTokenUsageFromTranscript(transcript),
@@ -411,6 +415,8 @@ fn appendThreadSessionMetaFromTranscript(
             .source = transcript.source orelse "cli",
             .thread_source = transcript.thread_source orelse "user",
             .model_provider = transcript.model_provider orelse "openai",
+            .openai_base_url = transcript.openai_base_url,
+            .chatgpt_base_url = transcript.chatgpt_base_url,
             .memory_mode = effective_memory_mode,
             .git = git,
         },
@@ -551,6 +557,8 @@ fn appendTranscriptLine(allocator: std.mem.Allocator, transcript: *session.Trans
         if (jsonStringField(object, "title")) |title| try transcript.setTitle(allocator, title);
         if (jsonStringField(object, "memory_mode")) |value| try transcript.setMemoryMode(allocator, value);
         if (jsonStringField(object, "cwd")) |value| try transcript.setCwd(allocator, value);
+        if (jsonStringField(object, "openai_base_url")) |value| try transcript.setOpenaiBaseUrl(allocator, value);
+        if (jsonStringField(object, "chatgpt_base_url")) |value| try transcript.setChatgptBaseUrl(allocator, value);
         try applyGitInfo(allocator, transcript, object.get("git"));
         try applyGoalInfo(allocator, transcript, object.get("goal"));
         applyStoredTokenUsageInfo(transcript, object);
@@ -812,6 +820,8 @@ fn applyRolloutSessionMeta(
     if (jsonStringField(object, "source")) |value| try transcript.setSource(allocator, value);
     if (jsonStringField(object, "thread_source")) |value| try transcript.setThreadSource(allocator, value);
     if (jsonStringField(object, "model_provider")) |value| try transcript.setModelProvider(allocator, value);
+    if (jsonStringField(object, "openai_base_url")) |value| try transcript.setOpenaiBaseUrl(allocator, value);
+    if (jsonStringField(object, "chatgpt_base_url")) |value| try transcript.setChatgptBaseUrl(allocator, value);
     if (jsonStringField(object, "cwd")) |value| try transcript.setCwd(allocator, value);
     if (jsonStringField(object, "cli_version")) |value| try transcript.setCliVersion(allocator, value);
     if (jsonStringField(object, "memory_mode")) |value| try transcript.setMemoryMode(allocator, value);
@@ -1629,6 +1639,8 @@ test "session store round trips transcript jsonl" {
     try transcript.setTitle(allocator, "demo transcript");
     try transcript.setMemoryMode(allocator, "disabled");
     try transcript.setCwd(allocator, root);
+    try transcript.setOpenaiBaseUrl(allocator, "http://127.0.0.1:11434/v1");
+    try transcript.setChatgptBaseUrl(allocator, "http://127.0.0.1:8080/backend-api/codex");
     try transcript.setGitSha(allocator, "abc123");
     try transcript.setGitBranch(allocator, "main");
     try transcript.setGitOriginUrl(allocator, "https://example.test/repo.git");
@@ -1740,6 +1752,8 @@ test "session store round trips transcript jsonl" {
     try std.testing.expectEqualStrings("demo transcript", loaded.title.?);
     try std.testing.expectEqualStrings("disabled", loaded.memory_mode.?);
     try std.testing.expectEqualStrings(root, loaded.cwd.?);
+    try std.testing.expectEqualStrings("http://127.0.0.1:11434/v1", loaded.openai_base_url.?);
+    try std.testing.expectEqualStrings("http://127.0.0.1:8080/backend-api/codex", loaded.chatgpt_base_url.?);
     try std.testing.expectEqualStrings("abc123", loaded.git_sha.?);
     try std.testing.expectEqualStrings("main", loaded.git_branch.?);
     try std.testing.expectEqualStrings("https://example.test/repo.git", loaded.git_origin_url.?);

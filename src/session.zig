@@ -48,6 +48,8 @@ pub const Transcript = struct {
     source: ?[]const u8 = null,
     thread_source: ?[]const u8 = null,
     model_provider: ?[]const u8 = null,
+    openai_base_url: ?[]const u8 = null,
+    chatgpt_base_url: ?[]const u8 = null,
     cwd: ?[]const u8 = null,
     cli_version: ?[]const u8 = null,
     memory_mode: ?[]const u8 = null,
@@ -76,6 +78,8 @@ pub const Transcript = struct {
         clearOptionalString(allocator, &self.source);
         clearOptionalString(allocator, &self.thread_source);
         clearOptionalString(allocator, &self.model_provider);
+        clearOptionalString(allocator, &self.openai_base_url);
+        clearOptionalString(allocator, &self.chatgpt_base_url);
         clearOptionalString(allocator, &self.cwd);
         clearOptionalString(allocator, &self.cli_version);
         clearOptionalString(allocator, &self.memory_mode);
@@ -102,6 +106,22 @@ pub const Transcript = struct {
 
     pub fn setModelProvider(self: *Transcript, allocator: std.mem.Allocator, value: []const u8) !void {
         try replaceOptionalString(allocator, &self.model_provider, value);
+    }
+
+    pub fn setOpenaiBaseUrl(self: *Transcript, allocator: std.mem.Allocator, value: []const u8) !void {
+        try replaceOptionalString(allocator, &self.openai_base_url, value);
+    }
+
+    pub fn clearOpenaiBaseUrl(self: *Transcript, allocator: std.mem.Allocator) void {
+        clearOptionalString(allocator, &self.openai_base_url);
+    }
+
+    pub fn setChatgptBaseUrl(self: *Transcript, allocator: std.mem.Allocator, value: []const u8) !void {
+        try replaceOptionalString(allocator, &self.chatgpt_base_url, value);
+    }
+
+    pub fn clearChatgptBaseUrl(self: *Transcript, allocator: std.mem.Allocator) void {
+        clearOptionalString(allocator, &self.chatgpt_base_url);
     }
 
     pub fn setCwd(self: *Transcript, allocator: std.mem.Allocator, value: []const u8) !void {
@@ -180,6 +200,8 @@ pub const Transcript = struct {
         if (self.source) |value| try copy.setSource(allocator, value);
         if (self.thread_source) |value| try copy.setThreadSource(allocator, value);
         if (self.model_provider) |value| try copy.setModelProvider(allocator, value);
+        if (self.openai_base_url) |value| try copy.setOpenaiBaseUrl(allocator, value);
+        if (self.chatgpt_base_url) |value| try copy.setChatgptBaseUrl(allocator, value);
         if (self.cwd) |value| try copy.setCwd(allocator, value);
         if (self.cli_version) |value| try copy.setCliVersion(allocator, value);
         if (self.memory_mode) |value| try copy.setMemoryMode(allocator, value);

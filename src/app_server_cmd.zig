@@ -36149,6 +36149,48 @@ fn threadBaseUrlForRequest(
     return null;
 }
 
+fn resumeThreadOpenaiBaseUrlForRequest(
+    allocator: std.mem.Allocator,
+    request_config: ThreadRequestConfigOverrides,
+    reset_provider_state: bool,
+    transcript: *const session_mod.Transcript,
+) !?[]const u8 {
+    return resumeThreadBaseUrlForRequest(
+        allocator,
+        request_config.openai_base_url_present,
+        request_config.openai_base_url,
+        reset_provider_state,
+        transcript.openai_base_url,
+    );
+}
+
+fn resumeThreadChatgptBaseUrlForRequest(
+    allocator: std.mem.Allocator,
+    request_config: ThreadRequestConfigOverrides,
+    reset_provider_state: bool,
+    transcript: *const session_mod.Transcript,
+) !?[]const u8 {
+    return resumeThreadBaseUrlForRequest(
+        allocator,
+        request_config.chatgpt_base_url_present,
+        request_config.chatgpt_base_url,
+        reset_provider_state,
+        transcript.chatgpt_base_url,
+    );
+}
+
+fn resumeThreadBaseUrlForRequest(
+    allocator: std.mem.Allocator,
+    request_base_url_present: bool,
+    request_base_url: ?[]const u8,
+    reset_provider_state: bool,
+    saved_base_url: ?[]const u8,
+) !?[]const u8 {
+    if (request_base_url_present) return threadBaseUrlForRequest(allocator, request_base_url);
+    if (reset_provider_state) return null;
+    return threadBaseUrlForRequest(allocator, saved_base_url);
+}
+
 fn forkThreadOpenaiBaseUrl(
     allocator: std.mem.Allocator,
     request_config: ThreadRequestConfigOverrides,
@@ -36237,6 +36279,24 @@ fn applyLoadedThreadBaseUrlsToConfig(
 ) !void {
     try applyLoadedThreadOpenaiBaseUrlToConfig(allocator, cfg, thread);
     try applyLoadedThreadChatgptBaseUrlToConfig(allocator, cfg, thread);
+}
+
+fn syncTranscriptBaseUrls(
+    allocator: std.mem.Allocator,
+    transcript: *session_mod.Transcript,
+    openai_base_url: ?[]const u8,
+    chatgpt_base_url: ?[]const u8,
+) !void {
+    if (openai_base_url) |value| {
+        try transcript.setOpenaiBaseUrl(allocator, value);
+    } else {
+        transcript.clearOpenaiBaseUrl(allocator);
+    }
+    if (chatgpt_base_url) |value| {
+        try transcript.setChatgptBaseUrl(allocator, value);
+    } else {
+        transcript.clearChatgptBaseUrl(allocator);
+    }
 }
 
 fn applyLoadedThreadOssModeToConfig(
@@ -37441,6 +37501,7 @@ fn createLoadedThreadFromStartParams(
     try transcript.setId(allocator, thread_id);
     try transcript.setSource(allocator, source);
     try transcript.setModelProvider(allocator, model_provider);
+    try syncTranscriptBaseUrls(allocator, &transcript, openai_base_url, chatgpt_base_url);
     try transcript.setCwd(allocator, cwd);
     try transcript.setCliVersion(allocator, cli_version);
     if (thread_source) |value| try transcript.setThreadSource(allocator, value);
@@ -37606,6 +37667,7 @@ fn createLoadedThreadFromHistoryParams(
     try transcript.setId(allocator, thread_id);
     try transcript.setSource(allocator, source);
     try transcript.setModelProvider(allocator, model_provider);
+    try syncTranscriptBaseUrls(allocator, &transcript, openai_base_url, chatgpt_base_url);
     try transcript.setCwd(allocator, cwd);
     try transcript.setCliVersion(allocator, cli_version);
 
@@ -37747,9 +37809,9 @@ fn createLoadedThreadFromResumeParams(
         transcript.model_provider orelse configured_model_provider orelse "openai";
     const model_provider = try allocator.dupe(u8, optionalStringParam(params, "modelProvider") orelse default_model_provider);
     errdefer allocator.free(model_provider);
-    const openai_base_url = try threadOpenaiBaseUrlForRequest(allocator, request_config);
+    const openai_base_url = try resumeThreadOpenaiBaseUrlForRequest(allocator, request_config, use_request_model_provider, transcript);
     errdefer if (openai_base_url) |value| allocator.free(value);
-    const chatgpt_base_url = try threadChatgptBaseUrlForRequest(allocator, request_config);
+    const chatgpt_base_url = try resumeThreadChatgptBaseUrlForRequest(allocator, request_config, use_request_model_provider, transcript);
     errdefer if (chatgpt_base_url) |value| allocator.free(value);
     const oss_provider = try threadOssProviderForRequest(allocator, cfg, request_config);
     errdefer if (oss_provider) |value| allocator.free(value);
@@ -37764,6 +37826,7 @@ fn createLoadedThreadFromResumeParams(
     errdefer allocator.free(cwd);
     try transcript_copy.setCwd(allocator, cwd);
     try transcript_copy.setModelProvider(allocator, model_provider);
+    try syncTranscriptBaseUrls(allocator, &transcript_copy, openai_base_url, chatgpt_base_url);
 
     const approval_policy = try allocator.dupe(u8, optionalStringParam(params, "approvalPolicy") orelse cfg.approval_policy.label());
     errdefer allocator.free(approval_policy);
@@ -38060,6 +38123,7 @@ fn createLoadedThreadFromForkParams(
     try transcript.setForkedFromId(allocator, source.id);
     try transcript.setSource(allocator, source_label);
     try transcript.setModelProvider(allocator, model_provider);
+    try syncTranscriptBaseUrls(allocator, &transcript, openai_base_url, chatgpt_base_url);
     try transcript.setCwd(allocator, cwd);
     try transcript.setCliVersion(allocator, cli_version);
     if (thread_source) |value| try transcript.setThreadSource(allocator, value);
@@ -63195,6 +63259,41 @@ test "thread request config supports model provider and base URL overrides" {
     defer inherited_fork.deinit(allocator);
     try std.testing.expectEqualStrings("http://127.0.0.1:11434/v1", inherited_fork.openai_base_url.?);
     try std.testing.expectEqualStrings("http://127.0.0.1:8080/backend-api/codex", inherited_fork.chatgpt_base_url.?);
+
+    var persisted_params = try std.json.parseFromSlice(
+        std.json.Value,
+        allocator,
+        "{\"config\":{\"model_provider\":\"mock_provider\",\"openai_base_url\":\"http://127.0.0.1:11434/v1\",\"chatgpt_base_url\":\"http://127.0.0.1:8080/backend-api/codex\"}}",
+        .{},
+    );
+    defer persisted_params.deinit();
+    var persisted_thread = try createLoadedThreadFromStartParams(allocator, cfg, persisted_params.value.object);
+    defer persisted_thread.deinit(allocator);
+    try session_store.saveTranscript(allocator, persisted_thread.path.?, &persisted_thread.transcript);
+
+    var loaded_transcript = try session_store.loadTranscript(allocator, persisted_thread.path.?);
+    defer loaded_transcript.deinit(allocator);
+    try std.testing.expectEqualStrings("http://127.0.0.1:11434/v1", loaded_transcript.openai_base_url.?);
+    try std.testing.expectEqualStrings("http://127.0.0.1:8080/backend-api/codex", loaded_transcript.chatgpt_base_url.?);
+
+    var resumed_cfg = try testAppServerConfig(allocator, "gpt-resumed-custom-url");
+    defer resumed_cfg.deinit(allocator);
+    var resumed_thread = try createLoadedThreadFromResumeParams(
+        allocator,
+        resumed_cfg,
+        turn_params.value.object,
+        persisted_thread.path.?,
+        &loaded_transcript,
+    );
+    defer resumed_thread.deinit(allocator);
+    try std.testing.expectEqualStrings("http://127.0.0.1:11434/v1", resumed_thread.openai_base_url.?);
+    try std.testing.expectEqualStrings("http://127.0.0.1:8080/backend-api/codex", resumed_thread.chatgpt_base_url.?);
+
+    var resumed_turn_cfg = try testAppServerConfig(allocator, "gpt-resumed-turn");
+    defer resumed_turn_cfg.deinit(allocator);
+    try applyLoadedThreadRuntimeToConfig(allocator, &resumed_turn_cfg, &resumed_thread);
+    try std.testing.expectEqualStrings("http://127.0.0.1:11434/v1", resumed_turn_cfg.openai_base_url);
+    try std.testing.expectEqualStrings("http://127.0.0.1:8080/backend-api/codex", resumed_turn_cfg.chatgpt_base_url);
 
     var clear_params = try std.json.parseFromSlice(
         std.json.Value,
