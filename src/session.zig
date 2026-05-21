@@ -1595,7 +1595,7 @@ fn appendToolSearchMcpNamespaceJson(
     for (matches) |match| {
         if (!std.mem.eql(u8, match.tool.server_name, server_name)) continue;
         if (!first_tool) try out.append(allocator, ',');
-        try appendToolSearchMcpToolJson(allocator, out, match.tool);
+        try appendToolSearchMcpToolJson(allocator, out, match.tool, namespace_name);
         first_tool = false;
     }
     try out.appendSlice(allocator, "]}");
@@ -1605,8 +1605,10 @@ fn appendToolSearchMcpToolJson(
     allocator: std.mem.Allocator,
     out: *std.ArrayList(u8),
     tool: mcp_runtime.ToolSpec,
+    namespace_name: []const u8,
 ) !void {
-    const name_json = try std.json.Stringify.valueAlloc(allocator, tool.raw_tool_name, .{});
+    const model_name = toolSearchMcpCallableLeafName(tool, namespace_name);
+    const name_json = try std.json.Stringify.valueAlloc(allocator, model_name, .{});
     defer allocator.free(name_json);
     const description = if (tool.description.len > 0) tool.description else "Call a configured MCP server tool.";
     const description_json = try std.json.Stringify.valueAlloc(allocator, description, .{});
@@ -1626,6 +1628,14 @@ fn appendToolSearchMcpToolJson(
     try out.appendSlice(allocator, ",\"strict\":false,\"defer_loading\":true,\"parameters\":");
     try out.appendSlice(allocator, schema_json);
     try out.append(allocator, '}');
+}
+
+fn toolSearchMcpCallableLeafName(tool: mcp_runtime.ToolSpec, namespace_name: []const u8) []const u8 {
+    if (std.mem.startsWith(u8, tool.callable_name, namespace_name)) {
+        const leaf = tool.callable_name[namespace_name.len..];
+        if (leaf.len > 0) return leaf;
+    }
+    return tool.callable_name;
 }
 
 fn toolSearchNamespaceName(allocator: std.mem.Allocator, server_name: []const u8) ![]const u8 {
@@ -1704,6 +1714,43 @@ test "runToolSearchCall returns matching mcp namespace tools" {
     try std.testing.expectEqualStrings("function", namespace_tools.items[0].object.get("type").?.string);
     try std.testing.expectEqualStrings("echo", namespace_tools.items[0].object.get("name").?.string);
     try std.testing.expectEqual(true, namespace_tools.items[0].object.get("defer_loading").?.bool);
+}
+
+test "runToolSearchCall advertises sanitized mcp callable leaf names" {
+    const allocator = std.testing.allocator;
+    var mcp_tools = [_]mcp_runtime.ToolSpec{.{
+        .server_name = "demo",
+        .raw_tool_name = "read-file",
+        .callable_name = "mcp__demo__read_file",
+        .description = "Read a file through MCP",
+        .input_schema_json = "{\"type\":\"object\"}",
+    }};
+    const catalog = mcp_runtime.Catalog{ .tools = mcp_tools[0..] };
+    const call = api.FunctionCall{
+        .kind = .tool_search,
+        .call_id = "search-sanitized",
+        .name = "tool_search",
+        .arguments = "{\"query\":\"read-file\"}",
+    };
+
+    const result = try runToolSearchCall(allocator, catalog, call);
+    defer result.deinit(allocator);
+
+    var parsed = try std.json.parseFromSlice(std.json.Value, allocator, result.output, .{});
+    defer parsed.deinit();
+    const namespace = parsed.value.array.items[0].object;
+    try std.testing.expectEqualStrings("mcp__demo__", namespace.get("name").?.string);
+    const namespace_tools = namespace.get("tools").?.array;
+    try std.testing.expectEqual(@as(usize, 1), namespace_tools.items.len);
+    try std.testing.expectEqualStrings("read_file", namespace_tools.items[0].object.get("name").?.string);
+
+    const resolved = (try findMcpToolForFunctionCall(allocator, catalog, .{
+        .call_id = "call-sanitized",
+        .namespace = "mcp__demo__",
+        .name = namespace_tools.items[0].object.get("name").?.string,
+        .arguments = "{}",
+    })).?;
+    try std.testing.expectEqualStrings("read-file", resolved.raw_tool_name);
 }
 
 test "runToolSearchCall returns empty tools array for invalid arguments" {
