@@ -353,7 +353,8 @@ Long-term exact parity is tracked in `docs/parity.md`.
 
 ## License
 
-This project is licensed under the MIT License. See `LICENSE`.
+This project is licensed under the MIT License. See `LICENSE`. Third-party
+notices for adapted source files are listed in `THIRD_PARTY_NOTICES.md`.
 
 ## Requirements
 
