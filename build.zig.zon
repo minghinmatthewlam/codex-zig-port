@@ -13,6 +13,8 @@
         "CONTRIBUTING.md",
         "SECURITY.md",
         "LICENSE",
+        "THIRD_PARTY_NOTICES.md",
+        "LICENSES",
     },
     .fingerprint = 0xa4ff9bdee8395f0c,
 }

@@ -59,8 +59,9 @@ parity tracker; implementation parity remains tracked in `docs/parity.md`.
   `gitleaks`, `trufflehog`, and the local CodeQL CLI were not installed on the
   local machine during the latest check, so the local scan used the repository
   script plus GitHub's enabled secret scanning and CodeQL runs.
-- Package boundary: `build.zig.zon` lists only source, test, script, and public
-  documentation paths so local ignored artifacts are not part of a Zig package.
+- Package boundary: `build.zig.zon` lists only source, test, script, public
+  documentation, and license/notice paths so local ignored artifacts are not
+  part of a Zig package.
 - Third-party notices: Apache-2.0 SBPL files adapted from upstream OpenAI Codex
   are listed in `THIRD_PARTY_NOTICES.md`, with a copy of the Apache-2.0 license
   under `LICENSES/`.
