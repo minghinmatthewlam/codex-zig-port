@@ -3193,6 +3193,45 @@ test "apply_patch blocks read-denied glob paths" {
     try std.testing.expectEqualStrings("secret\n", content);
 }
 
+test "apply_patch blocks case-only read-denied literal glob aliases on macos" {
+    if (builtin.os.tag != .macos) return error.SkipZigTest;
+
+    const allocator = std.testing.allocator;
+    var dir = std.testing.tmpDir(.{});
+    defer dir.cleanup();
+    const io = std.Io.Threaded.global_single_threaded.io();
+
+    const cwd = try dir.dir.realPathFileAlloc(io, ".", allocator);
+    defer allocator.free(cwd);
+
+    const patch =
+        \\*** Begin Patch
+        \\*** Add File: secret/new.txt
+        \\+secret
+        \\*** End Patch
+    ;
+    const args = try applyPatchArgumentsForTest(allocator, patch);
+    defer allocator.free(args);
+    const call = api.FunctionCall{
+        .call_id = "call-read-denied-literal-glob-case-patch",
+        .name = "apply_patch",
+        .arguments = args,
+    };
+
+    const result = try runFunctionCall(allocator, call, .{
+        .approval_policy = .never,
+        .sandbox_mode = .workspace_write,
+        .auto_approve = true,
+        .workdir = cwd,
+        .read_denied_globs = &.{"Secret"},
+    });
+    defer result.deinit(allocator);
+
+    try std.testing.expectEqualStrings("blocked by sandbox", result.summary);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "blocked by read-denied path") != null);
+    try std.testing.expectError(error.FileNotFound, dir.dir.access(io, "secret/new.txt", .{}));
+}
+
 test "apply_patch glob matcher treats leading caret class as literal" {
     const allocator = std.testing.allocator;
     var dir = std.testing.tmpDir(.{});

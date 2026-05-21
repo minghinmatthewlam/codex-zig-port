@@ -729,10 +729,28 @@ fn globStaticDirectoryPrefix(pattern: []const u8) ?[]const u8 {
 }
 
 fn pathWithinRoot(path: []const u8, root: []const u8) bool {
-    if (std.mem.eql(u8, path, root)) return true;
+    if (pathBytesEqual(path, root)) return true;
     if (path.len <= root.len) return false;
-    if (!std.mem.startsWith(u8, path, root)) return false;
+    if (!pathStartsWith(path, root)) return false;
     return (root.len > 0 and root[root.len - 1] == std.fs.path.sep) or path[root.len] == std.fs.path.sep;
+}
+
+fn pathBytesEqual(left: []const u8, right: []const u8) bool {
+    if (left.len != right.len) return false;
+    if (builtin.os.tag != .macos) return std.mem.eql(u8, left, right);
+    for (left, right) |left_byte, right_byte| {
+        if (std.ascii.toLower(left_byte) != std.ascii.toLower(right_byte)) return false;
+    }
+    return true;
+}
+
+fn pathStartsWith(path: []const u8, prefix: []const u8) bool {
+    if (path.len < prefix.len) return false;
+    if (builtin.os.tag != .macos) return std.mem.startsWith(u8, path, prefix);
+    for (path[0..prefix.len], prefix) |path_byte, prefix_byte| {
+        if (std.ascii.toLower(path_byte) != std.ascii.toLower(prefix_byte)) return false;
+    }
+    return true;
 }
 
 fn escapeSeatbeltRawRegex(allocator: std.mem.Allocator, value: []const u8) ![]const u8 {
@@ -874,7 +892,7 @@ fn appendSeatbeltRegexClassByteFolded(allocator: std.mem.Allocator, regex: *std.
 
 fn appendSeatbeltRegexClassByteRaw(allocator: std.mem.Allocator, regex: *std.ArrayList(u8), byte: u8) !void {
     switch (byte) {
-        '\\', '^', ']', '-' => {
+        '\\', '^', ']' => {
             try regex.append(allocator, '\\');
             try regex.append(allocator, byte);
         },
@@ -1345,10 +1363,36 @@ test "seatbelt glob regex folds ascii literals and classes on macos" {
     try std.testing.expectEqualStrings(expected, regex);
 }
 
+test "seatbelt glob regex keeps trailing hyphen classes valid" {
+    const allocator = std.testing.allocator;
+    const profile = try buildProfileWithOptions(allocator, .workspace_write, "/tmp/codex-workspace", &.{}, &.{}, true, false, true, &.{}, &.{"/tmp/codex-workspace/**/*[A-Za-z0-9_-].secret"}, 0);
+    defer allocator.free(profile);
+
+    try std.testing.expect(std.mem.indexOf(u8, profile, "\\-]") == null);
+    if (builtin.os.tag != .macos) return;
+
+    const argv = [_][]const u8{ sandbox_exec_path, "-p", profile, "--", "/usr/bin/true" };
+    var io_instance: std.Io.Threaded = .init(allocator, .{});
+    defer io_instance.deinit();
+    const result = try std.process.run(allocator, io_instance.io(), .{
+        .argv = argv[0..],
+        .stdout_limit = .limited(4096),
+        .stderr_limit = .limited(4096),
+    });
+    defer allocator.free(result.stdout);
+    defer allocator.free(result.stderr);
+
+    try std.testing.expectEqual(@as(u8, 0), switch (result.term) {
+        .exited => |code| code,
+        else => 255,
+    });
+}
+
 test "read-denied glob matcher mirrors seatbelt translation" {
     try std.testing.expect(readDeniedGlobMatchesPath("/tmp/repo/private", "/tmp/repo/private"));
     try std.testing.expect(readDeniedGlobMatchesPath("/tmp/repo/private", "/tmp/repo/private/token"));
     try std.testing.expect(!readDeniedGlobMatchesPath("/tmp/repo/private", "/tmp/repo/private2/token"));
+    try std.testing.expectEqual(builtin.os.tag == .macos, readDeniedGlobMatchesPath("/tmp/repo/Private", "/tmp/repo/private/token"));
     try std.testing.expect(readDeniedGlobMatchesPath("/tmp/repo/**/*.env", "/tmp/repo/.env"));
     try std.testing.expect(readDeniedGlobMatchesPath("/tmp/repo/**/*.env", "/tmp/repo/nested/child.env"));
     try std.testing.expect(!readDeniedGlobMatchesPath("/tmp/repo/**/*.env", "/tmp/repo/nested/child.env.bak"));
