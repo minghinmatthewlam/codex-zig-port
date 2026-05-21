@@ -7931,6 +7931,8 @@ def run_turn_start_rpc_smoke(binary: Path) -> None:
                 turn_glob_read_deny_dir.mkdir()
                 turn_glob_read_deny_secret = turn_glob_read_deny_dir / "token.secret"
                 turn_glob_read_deny_public = resolved_cwd / "glob-public.txt"
+                turn_glob_read_deny_link = resolved_cwd / "glob-link.txt"
+                turn_glob_read_deny_rename = resolved_cwd / "glob-rename.txt"
                 turn_glob_read_deny_allowed = (
                     resolved_cwd / "glob-read-deny-allowed.txt"
                 )
@@ -7941,7 +7943,9 @@ def run_turn_start_rpc_smoke(binary: Path) -> None:
                 turn_glob_read_deny_command = (
                     "! cat nested/token.secret "
                     "&& cat glob-public.txt "
-                    "&& ! /bin/sh -c 'printf nope > nested/token.secret' "
+                    "&& /bin/sh -c 'printf glob-overwrite > nested/token.secret' "
+                    "&& ! ln nested/token.secret glob-link.txt "
+                    "&& ! mv nested/token.secret glob-rename.txt "
                     "&& ! rm nested/token.secret "
                     "&& printf ok > glob-read-deny-allowed.txt "
                     "&& printf turn-glob-read-deny-ok"
@@ -8011,8 +8015,10 @@ def run_turn_start_rpc_smoke(binary: Path) -> None:
                 ], glob_read_deny_output["output"]
                 assert (
                     turn_glob_read_deny_secret.read_text(encoding="utf-8")
-                    == "glob-secret"
+                    == "glob-overwrite"
                 )
+                assert not turn_glob_read_deny_link.exists()
+                assert not turn_glob_read_deny_rename.exists()
                 assert (
                     turn_glob_read_deny_allowed.read_text(encoding="utf-8") == "ok"
                 )
@@ -29831,7 +29837,7 @@ def run_command_exec_rpc_smoke(binary: Path) -> None:
                     "command": [
                         "/bin/sh",
                         "-c",
-                        "printf allowed > allowed-glob-read-deny.txt && ! cat glob-denied/token.secret && ! /bin/sh -c 'printf nope > glob-denied/token.secret' && ! rm glob-denied/token.secret && printf glob-read-deny",
+                        "printf allowed > allowed-glob-read-deny.txt && ! cat glob-denied/token.secret && /bin/sh -c 'printf nope > glob-denied/token.secret' && ! ln glob-denied/token.secret glob-link.txt && ! mv glob-denied/token.secret glob-rename.txt && ! rm glob-denied/token.secret && printf glob-read-deny",
                     ],
                     "cwd": str(child_cwd),
                     "permissionProfile": glob_read_deny_permission_profile,
@@ -29843,7 +29849,9 @@ def run_command_exec_rpc_smoke(binary: Path) -> None:
         assert permission_profile_glob_read_deny["result"]["exitCode"] == 0
         assert permission_profile_glob_read_deny["result"]["stdout"] == "glob-read-deny"
         assert child_cwd.joinpath("allowed-glob-read-deny.txt").read_text(encoding="utf-8") == "allowed"
-        assert glob_read_denied_target.read_text(encoding="utf-8") == "glob-secret"
+        assert glob_read_denied_target.read_text(encoding="utf-8") == "nope"
+        assert not child_cwd.joinpath("glob-link.txt").exists()
+        assert not child_cwd.joinpath("glob-rename.txt").exists()
 
         unsupported_permission_profile = request_stdio_app_server(
             binary,

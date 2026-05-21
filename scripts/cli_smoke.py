@@ -9367,6 +9367,14 @@ def run_sandbox_permission_profile_smoke(binary: Path) -> None:
                     "[permissions.glob-deny-profile.network]",
                     "enabled = true",
                     "",
+                    "[permissions.extra-only-glob-deny-profile.filesystem]",
+                    '":root" = "read"',
+                    f"{json.dumps(str(extra))} = \"write\"",
+                    f"{json.dumps(str(workspace / '**/*.secret'))} = \"none\"",
+                    "",
+                    "[permissions.extra-only-glob-deny-profile.network]",
+                    "enabled = true",
+                    "",
                     "[permissions.minimal-profile.filesystem]",
                     '":minimal" = "read"',
                     "",
@@ -9554,7 +9562,7 @@ def run_sandbox_permission_profile_smoke(binary: Path) -> None:
         assert denied_glob_read.returncode != 0
         assert denied_glob_read.stdout == ""
 
-        denied_glob_write = subprocess.run(
+        allowed_glob_write = subprocess.run(
             [
                 str(binary.resolve()),
                 "sandbox",
@@ -9576,8 +9584,60 @@ def run_sandbox_permission_profile_smoke(binary: Path) -> None:
             timeout=5,
             check=False,
         )
-        assert denied_glob_write.returncode != 0
-        assert glob_secret.read_text(encoding="utf-8") == "glob-secret"
+        assert allowed_glob_write.returncode == 0
+        assert glob_secret.read_text(encoding="utf-8") == "nope"
+
+        denied_glob_link = subprocess.run(
+            [
+                str(binary.resolve()),
+                "sandbox",
+                "macos",
+                "--permissions-profile",
+                "glob-deny-profile",
+                "--cd",
+                str(workspace),
+                "--",
+                "/bin/ln",
+                "nested/token.secret",
+                "glob-link.txt",
+            ],
+            cwd=temp_root,
+            env=env,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=5,
+            check=False,
+        )
+        assert denied_glob_link.returncode != 0
+        assert not (workspace / "glob-link.txt").exists()
+        assert glob_secret.read_text(encoding="utf-8") == "nope"
+
+        denied_glob_rename = subprocess.run(
+            [
+                str(binary.resolve()),
+                "sandbox",
+                "macos",
+                "--permissions-profile",
+                "glob-deny-profile",
+                "--cd",
+                str(workspace),
+                "--",
+                "/bin/mv",
+                "nested/token.secret",
+                "glob-rename.txt",
+            ],
+            cwd=temp_root,
+            env=env,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=5,
+            check=False,
+        )
+        assert denied_glob_rename.returncode != 0
+        assert not (workspace / "glob-rename.txt").exists()
+        assert glob_secret.read_text(encoding="utf-8") == "nope"
 
         denied_glob_unlink = subprocess.run(
             [
@@ -9601,7 +9661,33 @@ def run_sandbox_permission_profile_smoke(binary: Path) -> None:
             check=False,
         )
         assert denied_glob_unlink.returncode != 0
-        assert glob_secret.read_text(encoding="utf-8") == "glob-secret"
+        assert glob_secret.read_text(encoding="utf-8") == "nope"
+
+        extra_only_glob_denied_write = subprocess.run(
+            [
+                str(binary.resolve()),
+                "sandbox",
+                "macos",
+                "--permissions-profile",
+                "extra-only-glob-deny-profile",
+                "--cd",
+                str(workspace),
+                "--",
+                "/bin/sh",
+                "-c",
+                f"printf extra > {extra / 'extra-only.txt'}; printf leak > nested/token.secret",
+            ],
+            cwd=temp_root,
+            env=env,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=5,
+            check=False,
+        )
+        assert extra_only_glob_denied_write.returncode != 0
+        assert (extra / "extra-only.txt").read_text(encoding="utf-8") == "extra"
+        assert glob_secret.read_text(encoding="utf-8") == "nope"
 
         allowed_glob_neighbor = subprocess.run(
             [
