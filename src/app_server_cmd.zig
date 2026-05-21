@@ -26791,7 +26791,7 @@ fn handleAppServerApprovalRequest(ctx: *anyopaque, request: tool_runner.Approval
             continue;
         }
 
-        if (try renderPendingApprovalJsonRpcResponse(context.allocator, payload)) |response_payload| {
+        if (try renderPendingApprovalJsonRpcResponse(context.allocator, payload, context.thread_id)) |response_payload| {
             defer context.allocator.free(response_payload);
             try context.transport.send_payload(context.transport.ctx, response_payload);
         }
@@ -27176,6 +27176,7 @@ fn sendServerRequestResolvedForRequest(
 fn renderPendingApprovalJsonRpcResponse(
     allocator: std.mem.Allocator,
     payload: []const u8,
+    pending_thread_id: []const u8,
 ) !?[]const u8 {
     var parsed = std.json.parseFromSlice(std.json.Value, allocator, payload, .{}) catch {
         return try renderJsonRpcError(allocator, null, -32700, "Parse error");
@@ -27187,7 +27188,31 @@ fn renderPendingApprovalJsonRpcResponse(
     if (!isJsonRpcRequestIdValue(id_value)) return try renderJsonRpcError(allocator, null, -32600, "Invalid Request");
     const method = object.get("method") orelse return null;
     if (method != .string) return try renderJsonRpcError(allocator, id_value, -32600, "Invalid Request");
+    if (std.mem.eql(u8, method.string, "thread/rollback")) {
+        const matches_pending_thread = blk: {
+            const params = object.get("params") orelse break :blk false;
+            if (params != .object) break :blk false;
+            const rollback_thread_id = requiredThreadIdParam(params.object) catch break :blk false;
+            break :blk std.mem.eql(u8, rollback_thread_id, pending_thread_id);
+        };
+        if (matches_pending_thread) {
+            return try renderJsonRpcError(allocator, id_value, -32600, "thread rollback is unavailable while a turn is active");
+        }
+    }
     return try renderJsonRpcError(allocator, id_value, -32600, "cannot process request while approval is pending");
+}
+
+test "pending approval response rejects rollback for pending thread" {
+    const allocator = std.testing.allocator;
+    const thread_id = "019e48c8-17f2-70c2-bc07-97aa02c7bc83";
+    const response = (try renderPendingApprovalJsonRpcResponse(
+        allocator,
+        "{\"jsonrpc\":\"2.0\",\"id\":\"rollback-active\",\"method\":\"thread/rollback\",\"params\":{\"threadId\":\"019e48c8-17f2-70c2-bc07-97aa02c7bc83\",\"numTurns\":1}}",
+        thread_id,
+    )).?;
+    defer allocator.free(response);
+
+    try std.testing.expect(std.mem.indexOf(u8, response, "thread rollback is unavailable while a turn is active") != null);
 }
 
 fn handleAppServerGoalTool(ctx: *anyopaque, call: api.FunctionCall) !tool_runner.ToolResult {
@@ -27359,7 +27384,7 @@ fn handleAppServerRequestPermissions(ctx: *anyopaque, request: session_mod.Reque
             continue;
         }
 
-        if (try renderPendingApprovalJsonRpcResponse(context.allocator, payload)) |response_payload| {
+        if (try renderPendingApprovalJsonRpcResponse(context.allocator, payload, context.thread.id)) |response_payload| {
             defer context.allocator.free(response_payload);
             try context.transport.send_payload(context.transport.ctx, response_payload);
         }
@@ -27656,7 +27681,7 @@ fn handleAppServerRequestUserInput(ctx: *anyopaque, request: session_mod.Request
             continue;
         }
 
-        if (try renderPendingApprovalJsonRpcResponse(context.allocator, payload)) |response_payload| {
+        if (try renderPendingApprovalJsonRpcResponse(context.allocator, payload, context.thread_id)) |response_payload| {
             defer context.allocator.free(response_payload);
             try context.transport.send_payload(context.transport.ctx, response_payload);
         }
@@ -27885,7 +27910,7 @@ fn handleAppServerExternalAuthRefresh(
             continue;
         }
 
-        if (try renderPendingApprovalJsonRpcResponse(context.allocator, payload)) |response_payload| {
+        if (try renderPendingApprovalJsonRpcResponse(context.allocator, payload, context.thread_id)) |response_payload| {
             defer context.allocator.free(response_payload);
             try context.transport.send_payload(context.transport.ctx, response_payload);
         }
@@ -28025,7 +28050,7 @@ fn handleAppServerMcpElicitation(ctx: *anyopaque, request: mcp_runtime.Elicitati
             }
         }
 
-        if (try renderPendingApprovalJsonRpcResponse(context.allocator, payload)) |response_payload| {
+        if (try renderPendingApprovalJsonRpcResponse(context.allocator, payload, context.thread_id)) |response_payload| {
             defer context.allocator.free(response_payload);
             try context.transport.send_payload(context.transport.ctx, response_payload);
         }
@@ -32838,6 +32863,7 @@ fn refreshLoadedThreadAfterUnpersistedTurn(
 }
 
 fn rollbackLoadedThread(allocator: std.mem.Allocator, thread: *LoadedThread, num_turns: u32) !bool {
+    if (thread.status == .active) return error.RollbackWhileTurnActive;
     const path = thread.path orelse return error.RollbackRequiresPersistedHistory;
     var goal_cleared = false;
     if (rollbackCutIndex(&thread.transcript, num_turns)) |cut_index| {
@@ -32873,6 +32899,21 @@ fn rollbackCutIndex(transcript: *const session_mod.Transcript, num_turns: u32) ?
         }
     }
     return earliest_user_index;
+}
+
+test "thread rollback rejects active loaded threads before history checks" {
+    const allocator = std.testing.allocator;
+    var cfg = try testAppServerConfig(allocator, "gpt-active-rollback");
+    defer cfg.deinit(allocator);
+
+    var params = try std.json.parseFromSlice(std.json.Value, allocator, "{\"ephemeral\":true}", .{});
+    defer params.deinit();
+
+    var thread = try createLoadedThreadFromStartParams(allocator, cfg, params.value.object);
+    defer thread.deinit(allocator);
+    thread.status = .active;
+
+    try std.testing.expectError(error.RollbackWhileTurnActive, rollbackLoadedThread(allocator, &thread, 1));
 }
 
 fn trimTranscriptHistoryFrom(allocator: std.mem.Allocator, transcript: *session_mod.Transcript, cut_index: usize) void {
@@ -35313,6 +35354,7 @@ fn handleThreadMethod(
         const thread = &state.loaded_threads.items[thread_index];
         const goal_cleared = rollbackLoadedThread(allocator, thread, num_turns) catch |err| {
             return switch (err) {
+                error.RollbackWhileTurnActive => renderJsonRpcError(allocator, id_value, -32600, "thread rollback is unavailable while a turn is active"),
                 error.RollbackRequiresPersistedHistory => renderJsonRpcError(allocator, id_value, -32600, "thread rollback requires persisted thread history"),
                 else => renderJsonRpcErrorForFailure(allocator, id_value, "thread/rollback failed", err),
             };
