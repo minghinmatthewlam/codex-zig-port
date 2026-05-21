@@ -32215,10 +32215,13 @@ fn applyTurnStartRuntimeConfigOverrides(
         cfg.sandbox_mode = config.SandboxMode.parse(sandbox_label) catch return error.InvalidTurnContextOverride;
     }
 
+    const requested_model_provider = optionalStringParam(params, "modelProvider");
     try config.applyRuntimeOverrides(cfg, allocator, .{
-        .model_provider_id = optionalStringParam(params, "modelProvider") orelse thread.model_provider,
+        .model_provider_id = requested_model_provider orelse thread.model_provider,
     });
-    try applyLoadedThreadBaseUrlsToConfig(allocator, cfg, thread);
+    if (requested_model_provider == null) {
+        try applyLoadedThreadBaseUrlsToConfig(allocator, cfg, thread);
+    }
 
     if (params.get("serviceTier")) |service_tier_value| {
         if (service_tier_value != .null and service_tier_value != .string) return error.InvalidTurnContextOverride;
@@ -32423,9 +32426,11 @@ fn applyTurnStartRuntimeOverrides(
         }
     }
 
-    if (optionalStringParam(params, "modelProvider")) |model_provider| {
+    const requested_model_provider = optionalStringParam(params, "modelProvider");
+    if (requested_model_provider) |model_provider| {
         try replaceOwnedString(allocator, &thread.model_provider, model_provider);
         try thread.transcript.setModelProvider(allocator, model_provider);
+        clearLoadedThreadBaseUrls(allocator, thread);
         thread.runtime_overrides.model_provider = true;
     }
     if (!provider_config_prepared) {
@@ -36281,6 +36286,13 @@ fn applyLoadedThreadBaseUrlsToConfig(
     try applyLoadedThreadChatgptBaseUrlToConfig(allocator, cfg, thread);
 }
 
+fn clearLoadedThreadBaseUrls(allocator: std.mem.Allocator, thread: *LoadedThread) void {
+    clearOptionalOwnedString(allocator, &thread.openai_base_url);
+    clearOptionalOwnedString(allocator, &thread.chatgpt_base_url);
+    thread.transcript.clearOpenaiBaseUrl(allocator);
+    thread.transcript.clearChatgptBaseUrl(allocator);
+}
+
 fn syncTranscriptBaseUrls(
     allocator: std.mem.Allocator,
     transcript: *session_mod.Transcript,
@@ -37802,16 +37814,18 @@ fn createLoadedThreadFromResumeParams(
     errdefer if (model_verbosity) |value| allocator.free(value);
 
     const configured_model_provider = cfg.model_provider_id;
+    const requested_model_provider = optionalStringParam(params, "modelProvider");
     const use_request_model_provider = use_request_profile or request_config.model_provider_present;
+    const reset_provider_state = use_request_model_provider or requested_model_provider != null;
     const default_model_provider = if (use_request_model_provider)
         configured_model_provider orelse "openai"
     else
         transcript.model_provider orelse configured_model_provider orelse "openai";
-    const model_provider = try allocator.dupe(u8, optionalStringParam(params, "modelProvider") orelse default_model_provider);
+    const model_provider = try allocator.dupe(u8, requested_model_provider orelse default_model_provider);
     errdefer allocator.free(model_provider);
-    const openai_base_url = try resumeThreadOpenaiBaseUrlForRequest(allocator, request_config, use_request_model_provider, transcript);
+    const openai_base_url = try resumeThreadOpenaiBaseUrlForRequest(allocator, request_config, reset_provider_state, transcript);
     errdefer if (openai_base_url) |value| allocator.free(value);
-    const chatgpt_base_url = try resumeThreadChatgptBaseUrlForRequest(allocator, request_config, use_request_model_provider, transcript);
+    const chatgpt_base_url = try resumeThreadChatgptBaseUrlForRequest(allocator, request_config, reset_provider_state, transcript);
     errdefer if (chatgpt_base_url) |value| allocator.free(value);
     const oss_provider = try threadOssProviderForRequest(allocator, cfg, request_config);
     errdefer if (oss_provider) |value| allocator.free(value);
@@ -37982,8 +37996,9 @@ fn createLoadedThreadFromForkParams(
 
     const request_config = try threadRequestConfigFromParams(params);
     const use_request_profile = request_config.profile_present;
+    const requested_model_provider = optionalStringParam(params, "modelProvider");
     const use_request_model_runtime = use_request_profile or request_config.oss_mode_present or request_config.model_provider_present;
-    const reset_provider_state = use_request_model_runtime;
+    const reset_provider_state = use_request_model_runtime or requested_model_provider != null;
     const use_request_config_for_web_search = request_config.profile_present or request_config.web_search_mode_present;
 
     const default_model = if (use_request_model_runtime) cfg.model else source.model;
@@ -38003,7 +38018,7 @@ fn createLoadedThreadFromForkParams(
 
     const configured_model_provider = if (use_request_model_runtime) cfg.model_provider_id else null;
     const default_model_provider = if (use_request_model_runtime) configured_model_provider orelse "openai" else source.model_provider;
-    const model_provider = try allocator.dupe(u8, optionalStringParam(params, "modelProvider") orelse default_model_provider);
+    const model_provider = try allocator.dupe(u8, requested_model_provider orelse default_model_provider);
     errdefer allocator.free(model_provider);
     const openai_base_url = try forkThreadOpenaiBaseUrl(allocator, request_config, reset_provider_state, source);
     errdefer if (openai_base_url) |value| allocator.free(value);
@@ -63407,6 +63422,63 @@ test "thread request config supports model provider and base URL overrides" {
     try std.testing.expect(provider_reset_fork.chatgpt_base_url == null);
     try std.testing.expect(provider_reset_fork.oss_provider == null);
     try std.testing.expect(provider_reset_fork.runtime_overrides.model_provider);
+
+    var top_level_provider_params = try std.json.parseFromSlice(
+        std.json.Value,
+        allocator,
+        "{\"modelProvider\":\"mock_provider\"}",
+        .{},
+    );
+    defer top_level_provider_params.deinit();
+
+    var top_level_turn_cfg = try testAppServerConfig(allocator, "gpt-top-level-turn");
+    defer top_level_turn_cfg.deinit(allocator);
+    try replaceConfigOwnedString(allocator, &top_level_turn_cfg.codex_home, codex_home_z);
+    try applyTurnStartRuntimeConfigOverrides(allocator, &top_level_turn_cfg, &thread, top_level_provider_params.value.object);
+    try std.testing.expectEqualStrings("mock_provider", top_level_turn_cfg.model_provider_id.?);
+    try std.testing.expectEqualStrings("http://127.0.0.1:7654/v1", top_level_turn_cfg.openai_base_url);
+
+    var top_level_resume_cfg = try testAppServerConfig(allocator, "gpt-top-level-resume");
+    defer top_level_resume_cfg.deinit(allocator);
+    try replaceConfigOwnedString(allocator, &top_level_resume_cfg.codex_home, codex_home_z);
+    var top_level_resume = try createLoadedThreadFromResumeParams(
+        allocator,
+        top_level_resume_cfg,
+        top_level_provider_params.value.object,
+        "/tmp/codex-zig-top-level-provider-resume.jsonl",
+        &thread.transcript,
+    );
+    defer top_level_resume.deinit(allocator);
+    try std.testing.expectEqualStrings("mock_provider", top_level_resume.model_provider);
+    try std.testing.expect(top_level_resume.openai_base_url == null);
+    try std.testing.expect(top_level_resume.chatgpt_base_url == null);
+    try std.testing.expect(top_level_resume.transcript.openai_base_url == null);
+    try std.testing.expect(top_level_resume.transcript.chatgpt_base_url == null);
+
+    var top_level_fork_cfg = try testAppServerConfig(allocator, "gpt-top-level-fork");
+    defer top_level_fork_cfg.deinit(allocator);
+    try replaceConfigOwnedString(allocator, &top_level_fork_cfg.codex_home, codex_home_z);
+    var top_level_fork = try createLoadedThreadFromForkParams(allocator, top_level_fork_cfg, top_level_provider_params.value.object, &thread);
+    defer top_level_fork.deinit(allocator);
+    try std.testing.expectEqualStrings("mock_provider", top_level_fork.model_provider);
+    try std.testing.expect(top_level_fork.openai_base_url == null);
+    try std.testing.expect(top_level_fork.chatgpt_base_url == null);
+    try std.testing.expect(top_level_fork.transcript.openai_base_url == null);
+    try std.testing.expect(top_level_fork.transcript.chatgpt_base_url == null);
+
+    var mutable_provider_thread = try createLoadedThreadFromStartParams(allocator, cfg, params.value.object);
+    defer mutable_provider_thread.deinit(allocator);
+    try std.testing.expectEqualStrings("http://127.0.0.1:11434/v1", mutable_provider_thread.openai_base_url.?);
+    var mutable_turn_cfg = try testAppServerConfig(allocator, "gpt-mutable-turn");
+    defer mutable_turn_cfg.deinit(allocator);
+    try replaceConfigOwnedString(allocator, &mutable_turn_cfg.codex_home, codex_home_z);
+    try applyTurnStartRuntimeOverrides(allocator, &mutable_turn_cfg, &mutable_provider_thread, top_level_provider_params.value.object, false);
+    try std.testing.expectEqualStrings("mock_provider", mutable_turn_cfg.model_provider_id.?);
+    try std.testing.expectEqualStrings("http://127.0.0.1:7654/v1", mutable_turn_cfg.openai_base_url);
+    try std.testing.expect(mutable_provider_thread.openai_base_url == null);
+    try std.testing.expect(mutable_provider_thread.chatgpt_base_url == null);
+    try std.testing.expect(mutable_provider_thread.transcript.openai_base_url == null);
+    try std.testing.expect(mutable_provider_thread.transcript.chatgpt_base_url == null);
 
     var provider_thread = try createLoadedThreadFromStartParams(allocator, provider_cfg, provider_params.value.object);
     defer provider_thread.deinit(allocator);
