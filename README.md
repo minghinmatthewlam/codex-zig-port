@@ -389,6 +389,13 @@ zig build test
 zig build e2e
 ```
 
+Optional machine-local computer-use proof, when the bundled
+`computer-use@openai-bundled` plugin is installed:
+
+```sh
+python3 scripts/real_computer_use_mcp_smoke.py zig-out/bin/codex-zig
+```
+
 The `e2e` step starts a local mock Responses server, launches the real
 `zig-out/bin/codex-zig` binary in a pseudo-terminal, verifies top-level
 `-i/--image` initial-prompt attachment on the interactive path, verifies

@@ -755,6 +755,12 @@ before CLI `mcp list`, `mcpServerStatus/list`, resource reads, tool calls, and
 MCP catalog loading consume them. Cloud/MDM sourcing and broader plugin
 requirement fields remain planned.
 
+Additional real computer-use proof: `scripts/real_computer_use_mcp_smoke.py`
+runs `codex-zig app-server` against a temporary `CODEX_HOME`, symlinks the
+locally installed `computer-use@openai-bundled` plugin cache, verifies
+`mcpServerStatus/list` exposes the bundled tools, and calls `get_app_state`
+through `mcpServer/tool/call`.
+
 `approvals_reviewer` is covered as a runtime config scalar, raw CLI config
 override, app-server `config/read`/write field, and loaded-thread reload value.
 
