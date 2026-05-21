@@ -29746,7 +29746,7 @@ fn handleTurnStart(
     };
     defer credentials.deinit(allocator);
 
-    applyTurnStartRuntimeOverrides(allocator, &cfg, thread, object) catch |err| switch (err) {
+    applyTurnStartRuntimeOverrides(allocator, &cfg, thread, object, true) catch |err| switch (err) {
         error.InvalidTurnContextOverride => return try renderJsonRpcError(allocator, id_value, -32602, "invalid turn context override"),
         else => return err,
     };
@@ -31837,7 +31837,7 @@ test "turn-start preserves loaded thread model controls" {
     var turn_params = try std.json.parseFromSlice(std.json.Value, allocator, "{}", .{});
     defer turn_params.deinit();
 
-    try applyTurnStartRuntimeOverrides(allocator, &turn_cfg, &thread, turn_params.value.object);
+    try applyTurnStartRuntimeOverrides(allocator, &turn_cfg, &thread, turn_params.value.object, false);
     try std.testing.expectEqual(@as(?i64, 1234), turn_cfg.model_context_window);
     try std.testing.expectEqual(@as(?i64, 567), turn_cfg.model_auto_compact_token_limit);
     try std.testing.expectEqual(config.Verbosity.high, turn_cfg.model_verbosity.?);
@@ -31963,7 +31963,7 @@ fn applyLoadedThreadRuntimeToConfig(
     } else {
         cfg.model_verbosity = null;
     }
-    try replaceConfigOptionalString(allocator, &cfg.model_provider_id, thread.model_provider);
+    try config.applyRuntimeOverrides(cfg, allocator, .{ .model_provider_id = thread.model_provider });
     try applyLoadedThreadBaseUrlsToConfig(allocator, cfg, thread);
     cfg.web_search_mode = thread.web_search_mode;
     cfg.approval_policy = config.ApprovalPolicy.parse(thread.approval_policy) catch return error.InvalidLoadedThreadRuntime;
@@ -32163,11 +32163,9 @@ fn applyTurnStartRuntimeConfigOverrides(
         cfg.sandbox_mode = config.SandboxMode.parse(sandbox_label) catch return error.InvalidTurnContextOverride;
     }
 
-    try replaceConfigOptionalString(
-        allocator,
-        &cfg.model_provider_id,
-        optionalStringParam(params, "modelProvider") orelse thread.model_provider,
-    );
+    try config.applyRuntimeOverrides(cfg, allocator, .{
+        .model_provider_id = optionalStringParam(params, "modelProvider") orelse thread.model_provider,
+    });
     try applyLoadedThreadBaseUrlsToConfig(allocator, cfg, thread);
 
     if (params.get("serviceTier")) |service_tier_value| {
@@ -32227,6 +32225,7 @@ fn applyTurnStartRuntimeOverrides(
     cfg: *config.Config,
     thread: *LoadedThread,
     params: std.json.ObjectMap,
+    provider_config_prepared: bool,
 ) !void {
     const collaboration_mode = try parseTurnStartCollaborationMode(params);
 
@@ -32377,7 +32376,9 @@ fn applyTurnStartRuntimeOverrides(
         try thread.transcript.setModelProvider(allocator, model_provider);
         thread.runtime_overrides.model_provider = true;
     }
-    try replaceConfigOptionalString(allocator, &cfg.model_provider_id, thread.model_provider);
+    if (!provider_config_prepared) {
+        try config.applyRuntimeOverrides(cfg, allocator, .{ .model_provider_id = thread.model_provider });
+    }
     try applyLoadedThreadBaseUrlsToConfig(allocator, cfg, thread);
 
     if (params.get("serviceTier")) |service_tier_value| {
@@ -33258,7 +33259,7 @@ fn handleLoadedThreadCompactStart(
 
     var empty_params = try std.json.parseFromSlice(std.json.Value, allocator, "{}", .{});
     defer empty_params.deinit();
-    applyTurnStartRuntimeOverrides(allocator, &cfg, thread, empty_params.value.object) catch |err| switch (err) {
+    applyTurnStartRuntimeOverrides(allocator, &cfg, thread, empty_params.value.object, false) catch |err| switch (err) {
         error.InvalidTurnContextOverride => return renderJsonRpcError(allocator, id_value, -32602, "invalid compact thread runtime config"),
         else => return err,
     };
@@ -35787,6 +35788,8 @@ fn handleThreadMethod(
 const ThreadRequestConfigOverrides = struct {
     profile_present: bool = false,
     profile: ?[]const u8 = null,
+    model_provider_present: bool = false,
+    model_provider: ?[]const u8 = null,
     openai_base_url_present: bool = false,
     openai_base_url: ?[]const u8 = null,
     chatgpt_base_url_present: bool = false,
@@ -35805,6 +35808,9 @@ fn validateThreadRequestConfigParam(object: std.json.ObjectMap) ?[]const u8 {
     if (value != .object) return "config must be an object or null";
     if (value.object.get("profile")) |profile| {
         if (profile != .null and profile != .string) return "config.profile must be a string or null";
+    }
+    if (value.object.get("model_provider")) |model_provider| {
+        if (model_provider != .null and model_provider != .string) return "config.model_provider must be a string or null";
     }
     if (value.object.get("openai_base_url")) |openai_base_url| {
         if (openai_base_url != .null and openai_base_url != .string) return "config.openai_base_url must be a string or null";
@@ -35840,6 +35846,14 @@ fn threadRequestConfigFromParams(params: ?std.json.ObjectMap) !ThreadRequestConf
         result.profile = switch (profile) {
             .null => null,
             .string => |profile_value| profile_value,
+            else => return error.InvalidThreadRequestConfig,
+        };
+    }
+    if (value.object.get("model_provider")) |model_provider| {
+        result.model_provider_present = true;
+        result.model_provider = switch (model_provider) {
+            .null => null,
+            .string => |provider| provider,
             else => return error.InvalidThreadRequestConfig,
         };
     }
@@ -35957,6 +35971,11 @@ fn applyThreadRequestConfigOverrides(
     request_config: ThreadRequestConfigOverrides,
     explicit_model: bool,
 ) !void {
+    if (request_config.model_provider_present) {
+        try config.applyRuntimeOverrides(cfg, allocator, .{
+            .model_provider_id = request_config.model_provider orelse "openai",
+        });
+    }
     if (request_config.openai_base_url_present) {
         if (request_config.openai_base_url) |base_url| {
             try replaceConfigOwnedString(allocator, &cfg.openai_base_url, base_url);
@@ -37382,7 +37401,7 @@ fn createLoadedThreadFromStartParams(
             .model_context_window = false,
             .model_auto_compact_token_limit = false,
             .model_verbosity = false,
-            .model_provider = paramPresent(params, "modelProvider"),
+            .model_provider = paramPresent(params, "modelProvider") or request_config.model_provider_present,
             .service_tier = paramPresent(params, "serviceTier"),
             .approval_policy = paramPresent(params, "approvalPolicy"),
             .approvals_reviewer = paramPresent(params, "approvalsReviewer"),
@@ -37545,7 +37564,7 @@ fn createLoadedThreadFromHistoryParams(
             .model_context_window = false,
             .model_auto_compact_token_limit = false,
             .model_verbosity = false,
-            .model_provider = paramPresent(params, "modelProvider"),
+            .model_provider = paramPresent(params, "modelProvider") or request_config.model_provider_present,
             .service_tier = paramPresent(params, "serviceTier"),
             .approval_policy = paramPresent(params, "approvalPolicy"),
             .approvals_reviewer = paramPresent(params, "approvalsReviewer"),
@@ -37638,7 +37657,8 @@ fn createLoadedThreadFromResumeParams(
     errdefer if (model_verbosity) |value| allocator.free(value);
 
     const configured_model_provider = cfg.model_provider_id;
-    const default_model_provider = if (use_request_profile)
+    const use_request_model_provider = use_request_profile or request_config.model_provider_present;
+    const default_model_provider = if (use_request_model_provider)
         configured_model_provider orelse "openai"
     else
         transcript.model_provider orelse configured_model_provider orelse "openai";
@@ -37660,6 +37680,7 @@ fn createLoadedThreadFromResumeParams(
     const cwd = try threadResumeCwd(allocator, transcript, params);
     errdefer allocator.free(cwd);
     try transcript_copy.setCwd(allocator, cwd);
+    try transcript_copy.setModelProvider(allocator, model_provider);
 
     const approval_policy = try allocator.dupe(u8, optionalStringParam(params, "approvalPolicy") orelse cfg.approval_policy.label());
     errdefer allocator.free(approval_policy);
@@ -37734,7 +37755,7 @@ fn createLoadedThreadFromResumeParams(
             .model_context_window = false,
             .model_auto_compact_token_limit = false,
             .model_verbosity = false,
-            .model_provider = paramPresent(params, "modelProvider") or (!use_request_profile and transcript.model_provider != null),
+            .model_provider = paramPresent(params, "modelProvider") or request_config.model_provider_present or (!use_request_profile and transcript.model_provider != null),
             .service_tier = paramPresent(params, "serviceTier"),
             .approval_policy = paramPresent(params, "approvalPolicy"),
             .approvals_reviewer = paramPresent(params, "approvalsReviewer"),
@@ -37815,7 +37836,7 @@ fn createLoadedThreadFromForkParams(
 
     const request_config = try threadRequestConfigFromParams(params);
     const use_request_profile = request_config.profile_present;
-    const use_request_model_runtime = use_request_profile or request_config.oss_mode_present;
+    const use_request_model_runtime = use_request_profile or request_config.oss_mode_present or request_config.model_provider_present;
     const use_request_config_for_web_search = request_config.profile_present or request_config.web_search_mode_present;
 
     const default_model = if (use_request_model_runtime) cfg.model else source.model;
@@ -37998,7 +38019,7 @@ fn createLoadedThreadFromForkParams(
             .model_context_window = !use_request_profile and source.runtime_overrides.model_context_window,
             .model_auto_compact_token_limit = !use_request_profile and source.runtime_overrides.model_auto_compact_token_limit,
             .model_verbosity = !use_request_profile and source.runtime_overrides.model_verbosity,
-            .model_provider = paramPresent(params, "modelProvider") or (!use_request_profile and source.runtime_overrides.model_provider),
+            .model_provider = paramPresent(params, "modelProvider") or request_config.model_provider_present or (!use_request_profile and source.runtime_overrides.model_provider),
             .service_tier = paramPresent(params, "serviceTier") or (!use_request_profile and source.runtime_overrides.service_tier),
             .approval_policy = paramPresent(params, "approvalPolicy") or (!use_request_profile and source.runtime_overrides.approval_policy),
             .approvals_reviewer = paramPresent(params, "approvalsReviewer") or (!use_request_profile and source.runtime_overrides.approvals_reviewer),
@@ -62907,26 +62928,46 @@ test "runtime scalar requirements reject explicit lifecycle overrides" {
     );
 }
 
-test "thread request config supports base URL overrides" {
+test "thread request config supports model provider and base URL overrides" {
     const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var dir = std.testing.tmpDir(.{});
+    defer dir.cleanup();
+    try dir.dir.writeFile(io, .{
+        .sub_path = "config.toml",
+        .data =
+        \\[model_providers.mock_provider]
+        \\base_url = "http://127.0.0.1:7654/v1"
+        \\env_key = "MOCK_PROVIDER_KEY"
+        \\requires_openai_auth = false
+        \\
+        ,
+    });
+    const codex_home_z = try dir.dir.realPathFileAlloc(io, ".", allocator);
+    defer allocator.free(codex_home_z);
+
     var cfg = try testAppServerConfig(allocator, "gpt-5.5");
     defer cfg.deinit(allocator);
+    try replaceConfigOwnedString(allocator, &cfg.codex_home, codex_home_z);
 
     var params = try std.json.parseFromSlice(
         std.json.Value,
         allocator,
-        "{\"ephemeral\":true,\"config\":{\"openai_base_url\":\"http://127.0.0.1:11434/v1\",\"chatgpt_base_url\":\"http://127.0.0.1:8080/backend-api/codex\"}}",
+        "{\"ephemeral\":true,\"config\":{\"model_provider\":\"mock_provider\",\"openai_base_url\":\"http://127.0.0.1:11434/v1\",\"chatgpt_base_url\":\"http://127.0.0.1:8080/backend-api/codex\"}}",
         .{},
     );
     defer params.deinit();
     const request_config = try threadRequestConfigFromParams(params.value.object);
     try applyThreadRequestConfigOverrides(allocator, &cfg, request_config, false);
 
+    try std.testing.expectEqualStrings("mock_provider", cfg.model_provider_id.?);
     try std.testing.expectEqualStrings("http://127.0.0.1:11434/v1", cfg.openai_base_url);
     try std.testing.expectEqualStrings("http://127.0.0.1:8080/backend-api/codex", cfg.chatgpt_base_url);
 
     var thread = try createLoadedThreadFromStartParams(allocator, cfg, params.value.object);
     defer thread.deinit(allocator);
+    try std.testing.expectEqualStrings("mock_provider", thread.model_provider);
+    try std.testing.expect(thread.runtime_overrides.model_provider);
     try std.testing.expectEqualStrings("http://127.0.0.1:11434/v1", thread.openai_base_url.?);
     try std.testing.expectEqualStrings("http://127.0.0.1:8080/backend-api/codex", thread.chatgpt_base_url.?);
 
@@ -62958,6 +62999,119 @@ test "thread request config supports base URL overrides" {
     defer cleared_fork.deinit(allocator);
     try std.testing.expect(cleared_fork.openai_base_url == null);
     try std.testing.expect(cleared_fork.chatgpt_base_url == null);
+
+    var source_params = try std.json.parseFromSlice(
+        std.json.Value,
+        allocator,
+        "{\"ephemeral\":true}",
+        .{},
+    );
+    defer source_params.deinit();
+    var source_cfg = try testAppServerConfig(allocator, "gpt-source");
+    defer source_cfg.deinit(allocator);
+    var source_thread = try createLoadedThreadFromStartParams(allocator, source_cfg, source_params.value.object);
+    defer source_thread.deinit(allocator);
+    try std.testing.expectEqualStrings("openai", source_thread.model_provider);
+
+    var clear_provider_params = try std.json.parseFromSlice(
+        std.json.Value,
+        allocator,
+        "{\"ephemeral\":true,\"config\":{\"model_provider\":null}}",
+        .{},
+    );
+    defer clear_provider_params.deinit();
+    const clear_provider_request_config = try threadRequestConfigFromParams(clear_provider_params.value.object);
+    var clear_provider_cfg = try testAppServerConfig(allocator, "gpt-clear-provider");
+    defer clear_provider_cfg.deinit(allocator);
+    try replaceConfigOwnedString(allocator, &clear_provider_cfg.codex_home, codex_home_z);
+    try config.applyRuntimeOverrides(&clear_provider_cfg, allocator, .{ .model_provider_id = "mock_provider" });
+    try std.testing.expectEqualStrings("mock_provider", clear_provider_cfg.model_provider_id.?);
+    try applyThreadRequestConfigOverrides(allocator, &clear_provider_cfg, clear_provider_request_config, false);
+    try std.testing.expectEqualStrings("openai", clear_provider_cfg.model_provider_id.?);
+    try std.testing.expectEqualStrings("https://api.openai.com/v1", clear_provider_cfg.openai_base_url);
+    try std.testing.expect(clear_provider_cfg.model_provider_env_key == null);
+
+    var clear_provider_resume = try createLoadedThreadFromResumeParams(
+        allocator,
+        clear_provider_cfg,
+        clear_provider_params.value.object,
+        "/tmp/codex-zig-provider-clear-resume.jsonl",
+        &source_thread.transcript,
+    );
+    defer clear_provider_resume.deinit(allocator);
+    try std.testing.expectEqualStrings("openai", clear_provider_resume.model_provider);
+    try std.testing.expect(clear_provider_resume.runtime_overrides.model_provider);
+
+    var clear_provider_fork = try createLoadedThreadFromForkParams(allocator, clear_provider_cfg, clear_provider_params.value.object, &source_thread);
+    defer clear_provider_fork.deinit(allocator);
+    try std.testing.expectEqualStrings("openai", clear_provider_fork.model_provider);
+    try std.testing.expect(clear_provider_fork.runtime_overrides.model_provider);
+
+    var provider_params = try std.json.parseFromSlice(
+        std.json.Value,
+        allocator,
+        "{\"ephemeral\":true,\"config\":{\"model_provider\":\"mock_provider\"}}",
+        .{},
+    );
+    defer provider_params.deinit();
+    const provider_request_config = try threadRequestConfigFromParams(provider_params.value.object);
+    var provider_cfg = try testAppServerConfig(allocator, "gpt-provider");
+    defer provider_cfg.deinit(allocator);
+    try replaceConfigOwnedString(allocator, &provider_cfg.codex_home, codex_home_z);
+    try applyThreadRequestConfigOverrides(allocator, &provider_cfg, provider_request_config, false);
+    try std.testing.expectEqualStrings("mock_provider", provider_cfg.model_provider_id.?);
+    try std.testing.expectEqualStrings("http://127.0.0.1:7654/v1", provider_cfg.openai_base_url);
+    try std.testing.expectEqualStrings("MOCK_PROVIDER_KEY", provider_cfg.model_provider_env_key.?);
+    try std.testing.expect(!provider_cfg.model_provider_requires_openai_auth);
+
+    var provider_resume_cfg = try testAppServerConfig(allocator, "gpt-resume");
+    defer provider_resume_cfg.deinit(allocator);
+    try replaceConfigOwnedString(allocator, &provider_resume_cfg.codex_home, codex_home_z);
+    try applyThreadRequestConfigOverrides(allocator, &provider_resume_cfg, provider_request_config, false);
+    var provider_resume = try createLoadedThreadFromResumeParams(
+        allocator,
+        provider_resume_cfg,
+        provider_params.value.object,
+        "/tmp/codex-zig-provider-resume.jsonl",
+        &source_thread.transcript,
+    );
+    defer provider_resume.deinit(allocator);
+    try std.testing.expectEqualStrings("mock_provider", provider_resume.model_provider);
+    try std.testing.expectEqualStrings("mock_provider", provider_resume.transcript.model_provider.?);
+    try std.testing.expect(provider_resume.runtime_overrides.model_provider);
+
+    var provider_fork_cfg = try testAppServerConfig(allocator, "gpt-fork");
+    defer provider_fork_cfg.deinit(allocator);
+    try replaceConfigOwnedString(allocator, &provider_fork_cfg.codex_home, codex_home_z);
+    try applyThreadRequestConfigOverrides(allocator, &provider_fork_cfg, provider_request_config, false);
+    var provider_fork = try createLoadedThreadFromForkParams(allocator, provider_fork_cfg, provider_params.value.object, &source_thread);
+    defer provider_fork.deinit(allocator);
+    try std.testing.expectEqualStrings("mock_provider", provider_fork.model_provider);
+    try std.testing.expect(provider_fork.runtime_overrides.model_provider);
+
+    var provider_thread = try createLoadedThreadFromStartParams(allocator, provider_cfg, provider_params.value.object);
+    defer provider_thread.deinit(allocator);
+    try std.testing.expectEqualStrings("mock_provider", provider_thread.model_provider);
+    try std.testing.expect(provider_thread.openai_base_url == null);
+    try std.testing.expect(provider_thread.runtime_overrides.model_provider);
+
+    var provider_turn_cfg = try testAppServerConfig(allocator, "gpt-turn");
+    defer provider_turn_cfg.deinit(allocator);
+    try replaceConfigOwnedString(allocator, &provider_turn_cfg.codex_home, codex_home_z);
+    try applyTurnStartRuntimeConfigOverrides(allocator, &provider_turn_cfg, &provider_thread, turn_params.value.object);
+    try std.testing.expectEqualStrings("mock_provider", provider_turn_cfg.model_provider_id.?);
+    try std.testing.expectEqualStrings("http://127.0.0.1:7654/v1", provider_turn_cfg.openai_base_url);
+    try std.testing.expectEqualStrings("MOCK_PROVIDER_KEY", provider_turn_cfg.model_provider_env_key.?);
+    try std.testing.expect(!provider_turn_cfg.model_provider_requires_openai_auth);
+
+    var loaded_cfg = try testAppServerConfig(allocator, "gpt-loaded");
+    defer loaded_cfg.deinit(allocator);
+    try replaceConfigOwnedString(allocator, &loaded_cfg.codex_home, codex_home_z);
+    try applyLoadedThreadRuntimeToConfig(allocator, &loaded_cfg, &provider_thread);
+    try std.testing.expectEqualStrings("mock_provider", loaded_cfg.model_provider_id.?);
+    try std.testing.expectEqualStrings("http://127.0.0.1:7654/v1", loaded_cfg.openai_base_url);
+    try std.testing.expectEqualStrings("MOCK_PROVIDER_KEY", loaded_cfg.model_provider_env_key.?);
+    try std.testing.expect(!loaded_cfg.model_provider_requires_openai_auth);
 }
 
 test "config write scalar requirements reject disallowed top-level and profile values" {

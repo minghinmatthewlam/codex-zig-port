@@ -673,6 +673,7 @@ const RemoteSlashAction = enum {
 
 const RemoteRequestConfigOverrides = struct {
     profile: ?[]const u8 = null,
+    model_provider_id: ?[]const u8 = null,
     openai_base_url: ?[]const u8 = null,
     chatgpt_base_url: ?[]const u8 = null,
     web_search_mode: ?config.WebSearchMode = null,
@@ -681,6 +682,7 @@ const RemoteRequestConfigOverrides = struct {
 
     fn isEmpty(self: RemoteRequestConfigOverrides) bool {
         return self.profile == null and
+            self.model_provider_id == null and
             self.openai_base_url == null and
             self.chatgpt_base_url == null and
             self.web_search_mode == null and
@@ -692,6 +694,7 @@ const RemoteRequestConfigOverrides = struct {
 fn remoteRequestConfigOverrides(options: Options) RemoteRequestConfigOverrides {
     return .{
         .profile = options.profile,
+        .model_provider_id = options.runtime_overrides.model_provider_id,
         .openai_base_url = options.runtime_overrides.openai_base_url,
         .chatgpt_base_url = options.runtime_overrides.chatgpt_base_url,
         .web_search_mode = options.runtime_overrides.web_search_mode,
@@ -1661,6 +1664,9 @@ fn appendRemoteThreadRequestConfig(
     var config_first = true;
     if (request_config.profile) |profile| {
         try appendJsonStringField(allocator, out, &config_first, "profile", profile);
+    }
+    if (request_config.model_provider_id) |model_provider_id| {
+        try appendJsonStringField(allocator, out, &config_first, "model_provider", model_provider_id);
     }
     if (request_config.openai_base_url) |base_url| {
         try appendJsonStringField(allocator, out, &config_first, "openai_base_url", base_url);
@@ -4374,6 +4380,7 @@ test "remote TUI serializes supported runtime overrides" {
         .personality = .friendly,
     }, false, .{
         .profile = "work",
+        .model_provider_id = "mock-provider",
         .chatgpt_base_url = "https://chatgpt.example/backend-api/codex",
         .web_search_mode = .live,
     });
@@ -4389,6 +4396,7 @@ test "remote TUI serializes supported runtime overrides" {
     try std.testing.expectEqualStrings("friendly", thread_params.get("personality").?.string);
     const thread_config = thread_params.get("config").?.object;
     try std.testing.expectEqualStrings("work", thread_config.get("profile").?.string);
+    try std.testing.expectEqualStrings("mock-provider", thread_config.get("model_provider").?.string);
     try std.testing.expectEqualStrings("https://chatgpt.example/backend-api/codex", thread_config.get("chatgpt_base_url").?.string);
     try std.testing.expectEqualStrings("live", thread_config.get("web_search").?.string);
 
@@ -4454,6 +4462,7 @@ test "remote TUI serializes supported runtime overrides" {
         .sandbox_mode = .workspace_write,
     }, false, .{
         .profile = "research",
+        .model_provider_id = "resume-provider",
         .openai_base_url = "http://127.0.0.1:11434/v1",
         .chatgpt_base_url = "https://chatgpt.example/backend-api/codex",
         .web_search_mode = .cached,
@@ -4472,6 +4481,7 @@ test "remote TUI serializes supported runtime overrides" {
     try std.testing.expectEqualStrings("workspace-write", resume_params.get("sandbox").?.string);
     const resume_config = resume_params.get("config").?.object;
     try std.testing.expectEqualStrings("research", resume_config.get("profile").?.string);
+    try std.testing.expectEqualStrings("resume-provider", resume_config.get("model_provider").?.string);
     try std.testing.expectEqualStrings("http://127.0.0.1:11434/v1", resume_config.get("openai_base_url").?.string);
     try std.testing.expectEqualStrings("https://chatgpt.example/backend-api/codex", resume_config.get("chatgpt_base_url").?.string);
     try std.testing.expectEqualStrings("cached", resume_config.get("web_search").?.string);

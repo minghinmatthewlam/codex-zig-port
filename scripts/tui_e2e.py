@@ -3119,6 +3119,8 @@ def run_remote_wss_tui_smoke(
                 "openai_base_url='http://127.0.0.1:11434/v1'",
                 "-c",
                 "chatgpt_base_url='http://127.0.0.1:9090/backend-api/codex'",
+                "-c",
+                "model_provider='mock-provider'",
                 "--search",
                 "--add-dir",
                 extra_root.name,
@@ -3152,6 +3154,7 @@ def run_remote_wss_tui_smoke(
         request_config = thread_requests[-1]["params"].get("config")
         if request_config != {
             "profile": "remote-work",
+            "model_provider": "mock-provider",
             "openai_base_url": "http://127.0.0.1:11434/v1",
             "chatgpt_base_url": "http://127.0.0.1:9090/backend-api/codex",
             "web_search": "live",
