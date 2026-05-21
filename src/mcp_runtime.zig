@@ -1,7 +1,12 @@
 const std = @import("std");
 
+const auth_mod = @import("auth.zig");
+const config = @import("config.zig");
 const env = @import("env.zig");
 const mcp_cmd = @import("mcp_cmd.zig");
+
+const codex_apps_mcp_server_name = "codex_apps";
+const codex_connectors_token_env_var = "CODEX_CONNECTORS_TOKEN";
 
 pub const ToolSpec = struct {
     server_name: []const u8,
@@ -9,6 +14,9 @@ pub const ToolSpec = struct {
     callable_name: []const u8,
     description: []const u8,
     input_schema_json: []const u8,
+    connector_id: ?[]const u8 = null,
+    connector_name: ?[]const u8 = null,
+    namespace_description: ?[]const u8 = null,
 
     pub fn deinit(self: ToolSpec, allocator: std.mem.Allocator) void {
         allocator.free(self.server_name);
@@ -16,6 +24,9 @@ pub const ToolSpec = struct {
         allocator.free(self.callable_name);
         allocator.free(self.description);
         allocator.free(self.input_schema_json);
+        if (self.connector_id) |value| allocator.free(value);
+        if (self.connector_name) |value| allocator.free(value);
+        if (self.namespace_description) |value| allocator.free(value);
     }
 };
 
@@ -64,6 +75,7 @@ pub const LoadCatalogOptions = struct {
     startup_status_callback: ?StartupStatusCallback = null,
     elicitation_callback: ?ElicitationCallback = null,
     server_filter: ServerFilter = .all,
+    server_name_filter: ?[]const u8 = null,
 };
 
 pub const CallOutput = struct {
@@ -234,6 +246,9 @@ pub fn loadCatalogWithOptions(
 
     for (servers.items.items) |server| {
         if (!server.enabled) continue;
+        if (options.server_name_filter) |server_name_filter| {
+            if (!std.mem.eql(u8, server.name, server_name_filter)) continue;
+        }
         switch (options.server_filter) {
             .all => {},
             .required => if (!server.required) continue,
@@ -257,6 +272,43 @@ pub fn loadCatalogWithOptions(
     }
 
     return .{ .tools = try specs.toOwnedSlice(allocator) };
+}
+
+pub fn loadCatalogForServer(
+    allocator: std.mem.Allocator,
+    codex_home: []const u8,
+    server: mcp_cmd.McpServer,
+    options: LoadCatalogOptions,
+) !Catalog {
+    var specs = std.ArrayList(ToolSpec).empty;
+    errdefer {
+        for (specs.items) |spec| spec.deinit(allocator);
+        specs.deinit(allocator);
+    }
+
+    if (server.enabled) {
+        try appendServerTools(allocator, codex_home, server, &specs, options);
+    }
+
+    return .{ .tools = try specs.toOwnedSlice(allocator) };
+}
+
+pub fn loadHostOwnedCodexAppsCatalog(allocator: std.mem.Allocator, codex_home: []const u8) !Catalog {
+    var cfg = try config.loadWithOptions(allocator, .{});
+    defer cfg.deinit(allocator);
+
+    var credentials = auth_mod.loadCliAuthNoRefreshForConfig(allocator, &cfg) catch |err| switch (err) {
+        error.OutOfMemory => return err,
+        else => return .{ .tools = try allocator.alloc(ToolSpec, 0) },
+    };
+    defer credentials.deinit(allocator);
+    if (!credentialsUseCodexBackend(credentials)) {
+        return .{ .tools = try allocator.alloc(ToolSpec, 0) };
+    }
+
+    var server = try hostOwnedCodexAppsServer(allocator, cfg.chatgpt_base_url, credentials);
+    defer server.deinit(allocator);
+    return loadCatalogForServer(allocator, codex_home, server, .{});
 }
 
 pub fn callTool(
@@ -924,14 +976,66 @@ fn appendToolSpecsFromToolsValue(
         const description_copy = try allocator.dupe(u8, description);
         errdefer allocator.free(description_copy);
 
+        var connector_id: ?[]const u8 = null;
+        errdefer if (connector_id) |value| allocator.free(value);
+        var connector_name: ?[]const u8 = null;
+        errdefer if (connector_name) |value| allocator.free(value);
+        var namespace_description: ?[]const u8 = null;
+        errdefer if (namespace_description) |value| allocator.free(value);
+        if (std.mem.eql(u8, server.name, codex_apps_mcp_server_name)) {
+            connector_id = try mcpToolMetaStringField(allocator, tool_value.object, "connector_id");
+            connector_name = try mcpToolMetaStringFieldAny(allocator, tool_value.object, &.{ "connector_name", "connector_display_name" });
+            namespace_description = try mcpToolMetaStringFieldAny(allocator, tool_value.object, &.{ "connector_description", "connectorDescription" });
+        }
+
         try specs.append(allocator, .{
             .server_name = server_name,
             .raw_tool_name = raw_tool_name,
             .callable_name = callable_name,
             .description = description_copy,
             .input_schema_json = input_schema_json,
+            .connector_id = connector_id,
+            .connector_name = connector_name,
+            .namespace_description = namespace_description,
         });
+        connector_id = null;
+        connector_name = null;
+        namespace_description = null;
     }
+}
+
+fn mcpToolMetaStringFieldAny(
+    allocator: std.mem.Allocator,
+    tool_object: std.json.ObjectMap,
+    fields: []const []const u8,
+) !?[]const u8 {
+    for (fields) |field| {
+        if (try mcpToolMetaStringField(allocator, tool_object, field)) |value| return value;
+    }
+    return null;
+}
+
+fn mcpToolMetaStringField(
+    allocator: std.mem.Allocator,
+    tool_object: std.json.ObjectMap,
+    field: []const u8,
+) !?[]const u8 {
+    const meta = mcpToolMetaObject(tool_object) orelse return null;
+    const value = meta.get(field) orelse return null;
+    if (value != .string) return null;
+    const trimmed = std.mem.trim(u8, value.string, " \t\r\n");
+    if (trimmed.len == 0) return null;
+    return try allocator.dupe(u8, trimmed);
+}
+
+fn mcpToolMetaObject(tool_object: std.json.ObjectMap) ?std.json.ObjectMap {
+    if (tool_object.get("_meta")) |meta| {
+        if (meta == .object) return meta.object;
+    }
+    if (tool_object.get("meta")) |meta| {
+        if (meta == .object) return meta.object;
+    }
+    return null;
 }
 
 fn callServerTool(
@@ -1719,6 +1823,102 @@ fn mcpAuthorizationHeader(
     return null;
 }
 
+fn hostOwnedCodexAppsServer(
+    allocator: std.mem.Allocator,
+    chatgpt_base_url: []const u8,
+    credentials: auth_mod.Credentials,
+) !mcp_cmd.McpServer {
+    const name = try allocator.dupe(u8, codex_apps_mcp_server_name);
+    var name_owned_by_server = false;
+    errdefer if (!name_owned_by_server) allocator.free(name);
+    const url = try codexAppsMcpUrlForBaseUrl(allocator, chatgpt_base_url, null);
+    var url_owned_by_server = false;
+    errdefer if (!url_owned_by_server) allocator.free(url);
+    const bearer_token_env_var = try codexAppsBearerTokenEnvVar(allocator);
+    var bearer_token_env_var_owned_by_server = false;
+    errdefer if (!bearer_token_env_var_owned_by_server) {
+        if (bearer_token_env_var) |value| allocator.free(value);
+    };
+
+    var server = mcp_cmd.McpServer{
+        .name = name,
+        .kind = .streamable_http,
+        .url = url,
+        .bearer_token_env_var = bearer_token_env_var,
+        .enabled = true,
+        .required = false,
+    };
+    name_owned_by_server = true;
+    url_owned_by_server = true;
+    bearer_token_env_var_owned_by_server = true;
+    errdefer server.deinit(allocator);
+
+    if (server.bearer_token_env_var == null) {
+        const header_value = try auth_mod.authorizationHeader(allocator, credentials);
+        defer allocator.free(header_value);
+        try appendConfiguredHeader(allocator, &server.http_headers, "Authorization", header_value);
+        if (credentials.account_id) |account_id| {
+            try appendConfiguredHeader(allocator, &server.http_headers, "ChatGPT-Account-ID", account_id);
+        }
+        if (credentials.fedramp) {
+            try appendConfiguredHeader(allocator, &server.http_headers, "X-OpenAI-Fedramp", "true");
+        }
+        server.http_headers_configured = true;
+    }
+
+    return server;
+}
+
+fn credentialsUseCodexBackend(credentials: auth_mod.Credentials) bool {
+    return switch (credentials.mode) {
+        .chatgpt, .chatgpt_auth_tokens, .agent_identity => true,
+        .api_key, .local_oss => false,
+    };
+}
+
+fn codexAppsBearerTokenEnvVar(allocator: std.mem.Allocator) !?[]const u8 {
+    const value = try env.getOwned(allocator, codex_connectors_token_env_var) orelse return null;
+    defer allocator.free(value);
+    if (std.mem.trim(u8, value, " \t\r\n").len == 0) return null;
+    return try allocator.dupe(u8, codex_connectors_token_env_var);
+}
+
+fn codexAppsMcpUrlForBaseUrl(
+    allocator: std.mem.Allocator,
+    raw_base_url: []const u8,
+    path_override: ?[]const u8,
+) ![]const u8 {
+    const base_url = try normalizeCodexAppsBaseUrl(allocator, raw_base_url);
+    defer allocator.free(base_url);
+
+    var resolved_base = base_url;
+    var default_path: []const u8 = "apps";
+    var owns_resolved_base = false;
+    if (std.mem.endsWith(u8, base_url, "/backend-api/codex")) {
+        resolved_base = base_url[0 .. base_url.len - "/codex".len];
+        default_path = "wham/apps";
+    } else if (std.mem.indexOf(u8, base_url, "/backend-api") != null) {
+        default_path = "wham/apps";
+    } else if (std.mem.indexOf(u8, base_url, "/api/codex") == null) {
+        resolved_base = try std.fmt.allocPrint(allocator, "{s}/api/codex", .{base_url});
+        owns_resolved_base = true;
+    }
+    defer if (owns_resolved_base) allocator.free(resolved_base);
+
+    const path = std.mem.trimStart(u8, path_override orelse default_path, "/");
+    return std.fmt.allocPrint(allocator, "{s}/{s}", .{ resolved_base, path });
+}
+
+fn normalizeCodexAppsBaseUrl(allocator: std.mem.Allocator, raw_base_url: []const u8) ![]const u8 {
+    const base_url = std.mem.trimEnd(u8, raw_base_url, "/");
+    if ((std.mem.startsWith(u8, base_url, "https://chatgpt.com") or std.mem.startsWith(u8, base_url, "https://chat.openai.com")) and
+        std.mem.indexOf(u8, base_url, "/backend-api") == null)
+    {
+        return std.fmt.allocPrint(allocator, "{s}/backend-api", .{base_url});
+    }
+    return allocator.dupe(u8, base_url);
+}
+
 fn configuredHttpHeaders(allocator: std.mem.Allocator, server: mcp_cmd.McpServer) !std.ArrayList(mcp_cmd.KeyValue) {
     var headers = std.ArrayList(mcp_cmd.KeyValue).empty;
     errdefer {
@@ -2405,6 +2605,78 @@ test "mcp canonical tool names sanitize server and tool" {
     const name = try canonicalToolName(allocator, "server.one", "tool-two");
     defer allocator.free(name);
     try std.testing.expectEqualStrings("mcp__server_one__tool_two", name);
+}
+
+test "mcp codex apps URL strips default codex backend segment" {
+    const allocator = std.testing.allocator;
+    const url = try codexAppsMcpUrlForBaseUrl(allocator, "https://chatgpt.com/backend-api/codex", null);
+    defer allocator.free(url);
+    try std.testing.expectEqualStrings("https://chatgpt.com/backend-api/wham/apps", url);
+}
+
+test "mcp codex apps URL keeps api codex base for non-backend hosts" {
+    const allocator = std.testing.allocator;
+    const url = try codexAppsMcpUrlForBaseUrl(allocator, "http://127.0.0.1:8080/api/codex", null);
+    defer allocator.free(url);
+    try std.testing.expectEqualStrings("http://127.0.0.1:8080/api/codex/apps", url);
+}
+
+test "mcp codex apps tool metadata is preserved from tool meta" {
+    const allocator = std.testing.allocator;
+    var parsed = try std.json.parseFromSlice(
+        std.json.Value,
+        allocator,
+        \\{"tools":[{"name":"drive.search","description":"Search Drive","inputSchema":{"type":"object"},"_meta":{"connector_id":" drive ","connector_display_name":"Drive","connectorDescription":" Drive files "}}]}
+    ,
+        .{},
+    );
+    defer parsed.deinit();
+
+    var specs = std.ArrayList(ToolSpec).empty;
+    defer {
+        for (specs.items) |spec| spec.deinit(allocator);
+        specs.deinit(allocator);
+    }
+    try appendToolSpecsFromToolsValue(
+        allocator,
+        .{ .name = "codex_apps", .kind = .stdio },
+        parsed.value.object.get("tools").?,
+        &specs,
+    );
+
+    try std.testing.expectEqual(@as(usize, 1), specs.items.len);
+    try std.testing.expectEqualStrings("drive", specs.items[0].connector_id.?);
+    try std.testing.expectEqualStrings("Drive", specs.items[0].connector_name.?);
+    try std.testing.expectEqualStrings("Drive files", specs.items[0].namespace_description.?);
+}
+
+test "mcp connector metadata is ignored for non codex apps servers" {
+    const allocator = std.testing.allocator;
+    var parsed = try std.json.parseFromSlice(
+        std.json.Value,
+        allocator,
+        \\{"tools":[{"name":"drive.search","_meta":{"connector_id":"drive","connector_name":"Drive","connector_description":"Drive files"}}]}
+    ,
+        .{},
+    );
+    defer parsed.deinit();
+
+    var specs = std.ArrayList(ToolSpec).empty;
+    defer {
+        for (specs.items) |spec| spec.deinit(allocator);
+        specs.deinit(allocator);
+    }
+    try appendToolSpecsFromToolsValue(
+        allocator,
+        .{ .name = "other", .kind = .stdio },
+        parsed.value.object.get("tools").?,
+        &specs,
+    );
+
+    try std.testing.expectEqual(@as(usize, 1), specs.items.len);
+    try std.testing.expect(specs.items[0].connector_id == null);
+    try std.testing.expect(specs.items[0].connector_name == null);
+    try std.testing.expect(specs.items[0].namespace_description == null);
 }
 
 test "mcp call result renders text content" {
