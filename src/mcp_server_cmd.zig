@@ -515,6 +515,7 @@ fn cloneConfig(allocator: std.mem.Allocator, source: config.Config) !config.Conf
 
     return .{
         .codex_home = codex_home,
+        .ignore_user_config = source.ignore_user_config,
         .active_profile = active_profile,
         .model = model,
         .review_model = review_model,

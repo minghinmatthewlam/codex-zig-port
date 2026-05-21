@@ -245,6 +245,7 @@ fn appendDebugAppServerChildOptions(
     if (overrides.review_model) |value| try appendConfigOverrideArg(allocator, argv, owned_args, "review_model", value);
     if (overrides.model_context_window) |value| try appendConfigOverrideIntArg(allocator, argv, owned_args, "model_context_window", value);
     if (overrides.model_auto_compact_token_limit) |value| try appendConfigOverrideIntArg(allocator, argv, owned_args, "model_auto_compact_token_limit", value);
+    if (overrides.model_provider_id) |value| try appendConfigOverrideArg(allocator, argv, owned_args, "model_provider", value);
     if (overrides.openai_base_url) |value| try appendConfigOverrideArg(allocator, argv, owned_args, "openai_base_url", value);
     if (overrides.chatgpt_base_url) |value| try appendConfigOverrideArg(allocator, argv, owned_args, "chatgpt_base_url", value);
     if (overrides.oss_provider) |value| try appendConfigOverrideArg(allocator, argv, owned_args, "oss_provider", value);
@@ -702,6 +703,7 @@ test "debug app-server forwards model config overrides" {
         .runtime_overrides = .{
             .model_context_window = 128000,
             .model_auto_compact_token_limit = 96000,
+            .model_provider_id = "mock-provider",
             .model_reasoning_summary = .detailed,
             .model_verbosity = .high,
         },
@@ -714,6 +716,8 @@ test "debug app-server forwards model config overrides" {
         "model_context_window=128000",
         "-c",
         "model_auto_compact_token_limit=96000",
+        "-c",
+        "model_provider=mock-provider",
         "-c",
         "model_reasoning_summary=detailed",
         "-c",

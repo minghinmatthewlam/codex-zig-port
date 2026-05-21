@@ -8,6 +8,7 @@ pub const DEFAULT_BACKGROUND_TERMINAL_MAX_TIMEOUT_MS: u64 = 300_000;
 
 pub const Config = struct {
     codex_home: []const u8,
+    ignore_user_config: bool = false,
     active_profile: ?[]const u8,
     model: []const u8,
     review_model: ?[]const u8 = null,
@@ -179,6 +180,7 @@ pub const RuntimeOverrides = struct {
     review_model: ?[]const u8 = null,
     model_context_window: ?i64 = null,
     model_auto_compact_token_limit: ?i64 = null,
+    model_provider_id: ?[]const u8 = null,
     openai_base_url: ?[]const u8 = null,
     chatgpt_base_url: ?[]const u8 = null,
     oss_provider: ?[]const u8 = null,
@@ -203,6 +205,7 @@ pub fn mergeRuntimeOverrides(base: RuntimeOverrides, overrides: RuntimeOverrides
     if (overrides.review_model) |value| merged.review_model = value;
     if (overrides.model_context_window) |value| merged.model_context_window = value;
     if (overrides.model_auto_compact_token_limit) |value| merged.model_auto_compact_token_limit = value;
+    if (overrides.model_provider_id) |value| merged.model_provider_id = value;
     if (overrides.openai_base_url) |value| merged.openai_base_url = value;
     if (overrides.chatgpt_base_url) |value| merged.chatgpt_base_url = value;
     if (overrides.oss_provider) |value| merged.oss_provider = value;
@@ -340,6 +343,9 @@ pub fn applyRuntimeOverrides(
     if (overrides.model_auto_compact_token_limit) |value| {
         cfg.model_auto_compact_token_limit = value;
     }
+    if (overrides.model_provider_id) |model_provider_id| {
+        try applyModelProviderOverride(cfg, allocator, model_provider_id);
+    }
     if (overrides.openai_base_url) |openai_base_url| {
         const next_openai_base_url = try allocator.dupe(u8, openai_base_url);
         allocator.free(cfg.openai_base_url);
@@ -406,6 +412,66 @@ pub fn applyRuntimeOverrides(
     }
 }
 
+fn applyModelProviderOverride(
+    cfg: *Config,
+    allocator: std.mem.Allocator,
+    model_provider_id: []const u8,
+) !void {
+    const config_bytes = if (cfg.ignore_user_config)
+        null
+    else
+        try readConfigToml(allocator, cfg.codex_home);
+    defer if (config_bytes) |bytes| allocator.free(bytes);
+    const config_view = ConfigView{ .bytes = config_bytes orelse "" };
+    const active_profile = cfg.active_profile;
+    const provider_id: ?[]const u8 = model_provider_id;
+
+    const next_model_provider_id = try allocator.dupe(u8, model_provider_id);
+    errdefer allocator.free(next_model_provider_id);
+    const next_requires_openai_auth = resolveModelProviderRequiresOpenAiAuth(config_view, provider_id);
+    const next_base_urls = try resolveBaseUrlsForProvider(allocator, config_view, active_profile, provider_id);
+    errdefer allocator.free(next_base_urls.openai);
+    errdefer allocator.free(next_base_urls.chatgpt);
+    const next_wire_api = try resolveModelProviderWireApiForProvider(allocator, config_view, provider_id);
+    var next_auth = try resolveModelProviderAuthForProvider(allocator, config_view, provider_id);
+    errdefer next_auth.deinit(allocator);
+    var next_query_params = try resolveModelProviderQueryParamsForProvider(allocator, config_view, provider_id);
+    errdefer if (next_query_params) |*value| value.deinit(allocator);
+    var next_headers = try resolveModelProviderHeadersForProvider(allocator, config_view, provider_id);
+    errdefer next_headers.deinit(allocator);
+
+    if (cfg.model_provider_id) |existing| allocator.free(existing);
+    cfg.model_provider_id = next_model_provider_id;
+    cfg.model_provider_requires_openai_auth = next_requires_openai_auth;
+
+    allocator.free(cfg.openai_base_url);
+    cfg.openai_base_url = next_base_urls.openai;
+    allocator.free(cfg.chatgpt_base_url);
+    cfg.chatgpt_base_url = next_base_urls.chatgpt;
+    cfg.model_provider_wire_api = next_wire_api;
+
+    if (cfg.model_provider_env_key) |existing| allocator.free(existing);
+    cfg.model_provider_env_key = next_auth.env_key;
+    next_auth.env_key = null;
+    if (cfg.model_provider_bearer_token) |existing| allocator.free(existing);
+    cfg.model_provider_bearer_token = next_auth.bearer_token;
+    next_auth.bearer_token = null;
+    if (cfg.model_provider_auth_command) |*existing| existing.deinit(allocator);
+    cfg.model_provider_auth_command = next_auth.command;
+    next_auth.command = null;
+
+    if (cfg.model_provider_query_params) |*existing| existing.deinit(allocator);
+    cfg.model_provider_query_params = next_query_params;
+    next_query_params = null;
+
+    if (cfg.model_provider_http_headers) |*existing| existing.deinit(allocator);
+    cfg.model_provider_http_headers = next_headers.http_headers;
+    next_headers.http_headers = null;
+    if (cfg.model_provider_env_http_headers) |*existing| existing.deinit(allocator);
+    cfg.model_provider_env_http_headers = next_headers.env_http_headers;
+    next_headers.env_http_headers = null;
+}
+
 pub fn applyRawConfigOverride(
     runtime_overrides: *RuntimeOverrides,
     profile_override: *?[]const u8,
@@ -426,6 +492,8 @@ pub fn applyRawConfigOverride(
         runtime_overrides.model_context_window = std.fmt.parseInt(i64, value, 10) catch return error.InvalidConfigOverride;
     } else if (std.mem.eql(u8, key, "model_auto_compact_token_limit")) {
         runtime_overrides.model_auto_compact_token_limit = std.fmt.parseInt(i64, value, 10) catch return error.InvalidConfigOverride;
+    } else if (std.mem.eql(u8, key, "model_provider")) {
+        runtime_overrides.model_provider_id = value;
     } else if (std.mem.eql(u8, key, "openai_base_url")) {
         runtime_overrides.openai_base_url = value;
     } else if (std.mem.eql(u8, key, "chatgpt_base_url")) {
@@ -945,6 +1013,7 @@ pub fn loadWithOptions(allocator: std.mem.Allocator, options: LoadOptions) !Conf
 
     return .{
         .codex_home = codex_home,
+        .ignore_user_config = options.ignore_user_config,
         .active_profile = active_profile,
         .model = model,
         .review_model = review_model,
@@ -1055,6 +1124,17 @@ fn resolveModelAutoCompactTokenLimit(config_view: ConfigView) !?i64 {
 }
 
 fn resolveBaseUrls(allocator: std.mem.Allocator, config_view: ConfigView, active_profile: ?[]const u8) !BaseUrls {
+    const model_provider = try resolveModelProviderId(allocator, config_view, active_profile);
+    defer if (model_provider) |value| allocator.free(value);
+    return resolveBaseUrlsForProvider(allocator, config_view, active_profile, model_provider);
+}
+
+fn resolveBaseUrlsForProvider(
+    allocator: std.mem.Allocator,
+    config_view: ConfigView,
+    active_profile: ?[]const u8,
+    model_provider: ?[]const u8,
+) !BaseUrls {
     if (try env.getOwned(allocator, "CODEX_ZIG_BASE_URL")) |value| {
         errdefer allocator.free(value);
         return .{
@@ -1068,8 +1148,6 @@ fn resolveBaseUrls(allocator: std.mem.Allocator, config_view: ConfigView, active
     var explicit_chatgpt = try config_view.getScopedString(allocator, active_profile, "chatgpt_base_url");
     errdefer if (explicit_chatgpt) |value| allocator.free(value);
 
-    const model_provider = try resolveModelProviderId(allocator, config_view, active_profile);
-    defer if (model_provider) |value| allocator.free(value);
     const provider_base_url = if (model_provider) |provider|
         try config_view.getModelProviderString(allocator, provider, "base_url")
     else
@@ -1109,8 +1187,11 @@ fn resolveModelProviderRequiresOpenAiAuth(config_view: ConfigView, model_provide
 fn resolveModelProviderWireApi(allocator: std.mem.Allocator, config_view: ConfigView, active_profile: ?[]const u8) !ModelProviderWireApi {
     const model_provider = try resolveModelProviderId(allocator, config_view, active_profile);
     defer if (model_provider) |value| allocator.free(value);
-    const provider = model_provider orelse return .responses;
+    return resolveModelProviderWireApiForProvider(allocator, config_view, model_provider);
+}
 
+fn resolveModelProviderWireApiForProvider(allocator: std.mem.Allocator, config_view: ConfigView, model_provider: ?[]const u8) !ModelProviderWireApi {
+    const provider = model_provider orelse return .responses;
     const wire_api = try config_view.getModelProviderString(allocator, provider, "wire_api");
     defer if (wire_api) |value| allocator.free(value);
     const value = wire_api orelse return .responses;
@@ -1142,8 +1223,11 @@ const ModelProviderHeaders = struct {
 fn resolveModelProviderAuth(allocator: std.mem.Allocator, config_view: ConfigView, active_profile: ?[]const u8) !ModelProviderAuth {
     const model_provider = try resolveModelProviderId(allocator, config_view, active_profile);
     defer if (model_provider) |value| allocator.free(value);
-    const provider = model_provider orelse return .{};
+    return resolveModelProviderAuthForProvider(allocator, config_view, model_provider);
+}
 
+fn resolveModelProviderAuthForProvider(allocator: std.mem.Allocator, config_view: ConfigView, model_provider: ?[]const u8) !ModelProviderAuth {
+    const provider = model_provider orelse return .{};
     const env_key = try config_view.getModelProviderString(allocator, provider, "env_key");
     errdefer if (env_key) |value| allocator.free(value);
     const bearer_token = try config_view.getModelProviderString(allocator, provider, "experimental_bearer_token");
@@ -1164,8 +1248,11 @@ fn resolveModelProviderAuth(allocator: std.mem.Allocator, config_view: ConfigVie
 fn resolveModelProviderHeaders(allocator: std.mem.Allocator, config_view: ConfigView, active_profile: ?[]const u8) !ModelProviderHeaders {
     const model_provider = try resolveModelProviderId(allocator, config_view, active_profile);
     defer if (model_provider) |value| allocator.free(value);
-    const provider = model_provider orelse return .{};
+    return resolveModelProviderHeadersForProvider(allocator, config_view, model_provider);
+}
 
+fn resolveModelProviderHeadersForProvider(allocator: std.mem.Allocator, config_view: ConfigView, model_provider: ?[]const u8) !ModelProviderHeaders {
+    const provider = model_provider orelse return .{};
     var http_headers = try config_view.getModelProviderStringMap(allocator, provider, "http_headers");
     errdefer if (http_headers) |*value| value.deinit(allocator);
     var env_http_headers = try config_view.getModelProviderStringMap(allocator, provider, "env_http_headers");
@@ -1180,8 +1267,11 @@ fn resolveModelProviderHeaders(allocator: std.mem.Allocator, config_view: Config
 fn resolveModelProviderQueryParams(allocator: std.mem.Allocator, config_view: ConfigView, active_profile: ?[]const u8) !?StringMap {
     const model_provider = try resolveModelProviderId(allocator, config_view, active_profile);
     defer if (model_provider) |value| allocator.free(value);
-    const provider = model_provider orelse return null;
+    return resolveModelProviderQueryParamsForProvider(allocator, config_view, model_provider);
+}
 
+fn resolveModelProviderQueryParamsForProvider(allocator: std.mem.Allocator, config_view: ConfigView, model_provider: ?[]const u8) !?StringMap {
+    const provider = model_provider orelse return null;
     return config_view.getModelProviderStringMap(allocator, provider, "query_params");
 }
 
@@ -3891,6 +3981,7 @@ test "raw cli config overrides map supported fields" {
     try applyRawConfigOverride(&runtime, &profile, "review_model=gpt-review");
     try applyRawConfigOverride(&runtime, &profile, "model_context_window=128000");
     try applyRawConfigOverride(&runtime, &profile, "model_auto_compact_token_limit=96000");
+    try applyRawConfigOverride(&runtime, &profile, "model_provider=mock-provider");
     try applyRawConfigOverride(&runtime, &profile, "openai_base_url='http://127.0.0.1:1'");
     try applyRawConfigOverride(&runtime, &profile, "chatgpt_base_url=http://127.0.0.1:2");
     try applyRawConfigOverride(&runtime, &profile, "oss_provider=ollama");
@@ -3914,6 +4005,7 @@ test "raw cli config overrides map supported fields" {
     try std.testing.expectEqualStrings("gpt-review", runtime.review_model.?);
     try std.testing.expectEqual(@as(i64, 128000), runtime.model_context_window.?);
     try std.testing.expectEqual(@as(i64, 96000), runtime.model_auto_compact_token_limit.?);
+    try std.testing.expectEqualStrings("mock-provider", runtime.model_provider_id.?);
     try std.testing.expectEqualStrings("http://127.0.0.1:1", runtime.openai_base_url.?);
     try std.testing.expectEqualStrings("http://127.0.0.1:2", runtime.chatgpt_base_url.?);
     try std.testing.expectEqualStrings("ollama", runtime.oss_provider.?);
@@ -3936,6 +4028,117 @@ test "raw cli config override rejects missing assignment" {
     var runtime = RuntimeOverrides{};
     var profile: ?[]const u8 = null;
     try std.testing.expectError(error.InvalidConfigOverride, applyRawConfigOverride(&runtime, &profile, "model"));
+}
+
+test "runtime model_provider override refreshes provider settings" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var dir = std.testing.tmpDir(.{});
+    defer dir.cleanup();
+
+    try dir.dir.writeFile(io, .{
+        .sub_path = "config.toml",
+        .data =
+        \\[model_providers.mock]
+        \\base_url = "http://127.0.0.1:7654/v1"
+        \\env_key = "MOCK_PROVIDER_KEY"
+        \\wire_api = "responses"
+        \\requires_openai_auth = false
+        \\
+        ,
+    });
+
+    const codex_home_z = try dir.dir.realPathFileAlloc(io, ".", allocator);
+    defer allocator.free(codex_home_z);
+    const codex_home = try allocator.dupe(u8, codex_home_z);
+    var cfg = Config{
+        .codex_home = codex_home,
+        .active_profile = null,
+        .model = try allocator.dupe(u8, "gpt-test"),
+        .model_provider_id = try allocator.dupe(u8, "openai"),
+        .model_provider_requires_openai_auth = true,
+        .openai_base_url = try allocator.dupe(u8, "https://api.openai.com/v1"),
+        .chatgpt_base_url = try allocator.dupe(u8, "https://chatgpt.com/backend-api/codex"),
+        .oss_provider = null,
+        .installation_id = try allocator.dupe(u8, "install"),
+        .approval_policy = .on_request,
+        .approvals_reviewer = .user,
+        .sandbox_mode = .workspace_write,
+        .web_search_mode = null,
+        .model_reasoning_effort = null,
+        .service_tier = null,
+        .syntax_theme = null,
+        .personality = null,
+        .tui_status_line = null,
+        .tui_terminal_title = null,
+        .tui_alternate_screen = .auto,
+    };
+    defer cfg.deinit(allocator);
+
+    try applyRuntimeOverrides(&cfg, allocator, .{ .model_provider_id = "mock" });
+
+    try std.testing.expectEqualStrings("mock", cfg.model_provider_id.?);
+    try std.testing.expect(!cfg.model_provider_requires_openai_auth);
+    try std.testing.expectEqualStrings("http://127.0.0.1:7654/v1", cfg.openai_base_url);
+    try std.testing.expectEqualStrings("http://127.0.0.1:7654/v1", cfg.chatgpt_base_url);
+    try std.testing.expectEqual(ModelProviderWireApi.responses, cfg.model_provider_wire_api);
+    try std.testing.expectEqualStrings("MOCK_PROVIDER_KEY", cfg.model_provider_env_key.?);
+}
+
+test "runtime model_provider override honors ignored user config" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var dir = std.testing.tmpDir(.{});
+    defer dir.cleanup();
+
+    try dir.dir.writeFile(io, .{
+        .sub_path = "config.toml",
+        .data =
+        \\[model_providers.mock]
+        \\base_url = "http://ignored.example/v1"
+        \\env_key = "IGNORED_PROVIDER_KEY"
+        \\requires_openai_auth = false
+        \\[model_providers.mock.http_headers]
+        \\"X-Ignored" = "secret"
+        \\
+        ,
+    });
+
+    const codex_home_z = try dir.dir.realPathFileAlloc(io, ".", allocator);
+    defer allocator.free(codex_home_z);
+    const codex_home = try allocator.dupe(u8, codex_home_z);
+    var cfg = Config{
+        .codex_home = codex_home,
+        .ignore_user_config = true,
+        .active_profile = null,
+        .model = try allocator.dupe(u8, "gpt-test"),
+        .model_provider_id = null,
+        .model_provider_requires_openai_auth = true,
+        .openai_base_url = try allocator.dupe(u8, "https://api.openai.com/v1"),
+        .chatgpt_base_url = try allocator.dupe(u8, "https://chatgpt.com/backend-api/codex"),
+        .oss_provider = null,
+        .installation_id = try allocator.dupe(u8, "install"),
+        .approval_policy = .on_request,
+        .approvals_reviewer = .user,
+        .sandbox_mode = .workspace_write,
+        .web_search_mode = null,
+        .model_reasoning_effort = null,
+        .service_tier = null,
+        .syntax_theme = null,
+        .personality = null,
+        .tui_status_line = null,
+        .tui_terminal_title = null,
+        .tui_alternate_screen = .auto,
+    };
+    defer cfg.deinit(allocator);
+
+    try applyRuntimeOverrides(&cfg, allocator, .{ .model_provider_id = "mock" });
+
+    try std.testing.expectEqualStrings("mock", cfg.model_provider_id.?);
+    try std.testing.expectEqualStrings("https://api.openai.com/v1", cfg.openai_base_url);
+    try std.testing.expectEqualStrings("https://chatgpt.com/backend-api/codex", cfg.chatgpt_base_url);
+    try std.testing.expect(cfg.model_provider_env_key == null);
+    try std.testing.expect(cfg.model_provider_http_headers == null);
 }
 
 test "instructions config key resolves as base instructions" {
