@@ -5,6 +5,7 @@ const net = std.Io.net;
 
 const cli_utils = @import("cli_utils.zig");
 const remote_ws_client = @import("remote_ws_client.zig");
+const sandbox_mod = @import("sandbox.zig");
 
 extern "c" fn openpty(
     amaster: *c_int,
@@ -3098,10 +3099,13 @@ const FsSandboxResolveMode = enum {
 
 const FsSandboxPolicy = struct {
     entries: std.ArrayList(FsSandboxEntry) = .empty,
+    glob_patterns: std.ArrayList([]const u8) = .empty,
 
     fn deinit(self: *FsSandboxPolicy, allocator: std.mem.Allocator) void {
         for (self.entries.items) |entry| entry.deinit(allocator);
         self.entries.deinit(allocator);
+        for (self.glob_patterns.items) |pattern| allocator.free(pattern);
+        self.glob_patterns.deinit(allocator);
     }
 
     fn allowsRead(self: *const FsSandboxPolicy, logical_path: []const u8, resolved_path: []const u8) bool {
@@ -3146,7 +3150,16 @@ const FsSandboxPolicy = struct {
                 }
             }
         }
+        if (self.globDenies(logical_path, resolved_path)) return .none;
         return best_access;
+    }
+
+    fn globDenies(self: *const FsSandboxPolicy, logical_path: []const u8, resolved_path: []const u8) bool {
+        for (self.glob_patterns.items) |pattern| {
+            if (sandbox_mod.readDeniedGlobMatchesPath(pattern, logical_path)) return true;
+            if (!std.mem.eql(u8, logical_path, resolved_path) and sandbox_mod.readDeniedGlobMatchesPath(pattern, resolved_path)) return true;
+        }
+        return false;
     }
 };
 
@@ -4700,6 +4713,7 @@ fn fsSandboxPolicyOrError(allocator: std.mem.Allocator, id_value: std.json.Value
         error.InvalidFsSandboxContext => return .{ .response = try renderJsonRpcError(allocator, id_value, -32602, "filesystem sandbox context must be a supported FileSystemSandboxContext") },
         error.FsSandboxContextRequiresCwd => return .{ .response = try renderJsonRpcError(allocator, id_value, -32600, "file system sandbox context with dynamic permissions requires cwd") },
         error.UnsupportedFsSandboxContext => return .{ .response = try renderJsonRpcError(allocator, id_value, -32600, "filesystem sandbox context includes unsupported filesystem policy entries") },
+        else => return err,
     };
     return .{ .policy = policy };
 }
@@ -4755,8 +4769,45 @@ fn parseFsSandboxEntry(allocator: std.mem.Allocator, policy: *FsSandboxPolicy, v
     const access = parseFsSandboxAccess(access_value.string) orelse return error.InvalidFsSandboxContext;
 
     const path_value = value.object.get("path") orelse return error.InvalidFsSandboxContext;
+    if (try parseFsSandboxGlobEntry(allocator, policy, path_value, access, cwd)) return;
     const path = try parseFsSandboxPath(allocator, path_value, cwd) orelse return;
     try appendFsSandboxEntry(allocator, policy, path, access);
+}
+
+fn parseFsSandboxGlobEntry(allocator: std.mem.Allocator, policy: *FsSandboxPolicy, value: std.json.Value, access: FsSandboxAccess, cwd: ?[]const u8) !bool {
+    if (value != .object) return error.InvalidFsSandboxContext;
+    const type_value = value.object.get("type") orelse return error.InvalidFsSandboxContext;
+    if (type_value != .string) return error.InvalidFsSandboxContext;
+    if (!std.mem.eql(u8, type_value.string, "glob_pattern")) return false;
+    if (access != .none) return error.UnsupportedFsSandboxContext;
+
+    const pattern_value = value.object.get("pattern") orelse return error.InvalidFsSandboxContext;
+    if (pattern_value != .string) return error.InvalidFsSandboxContext;
+    const base_cwd = if (std.fs.path.isAbsolute(pattern_value.string))
+        std.fs.path.sep_str
+    else
+        cwd orelse return error.FsSandboxContextRequiresCwd;
+
+    const resolved_patterns = try sandbox_mod.resolveReadDeniedGlobPatterns(allocator, base_cwd, &.{pattern_value.string});
+    defer allocator.free(resolved_patterns);
+    for (resolved_patterns) |pattern| {
+        try appendFsSandboxGlobPattern(allocator, policy, pattern);
+    }
+    return true;
+}
+
+fn appendFsSandboxGlobPattern(allocator: std.mem.Allocator, policy: *FsSandboxPolicy, pattern: []const u8) !void {
+    var moved = false;
+    errdefer if (!moved) allocator.free(pattern);
+    for (policy.glob_patterns.items) |existing| {
+        if (std.mem.eql(u8, existing, pattern)) {
+            allocator.free(pattern);
+            moved = true;
+            return;
+        }
+    }
+    try policy.glob_patterns.append(allocator, pattern);
+    moved = true;
 }
 
 fn appendFsSandboxEntry(allocator: std.mem.Allocator, policy: *FsSandboxPolicy, path: []const u8, access: FsSandboxAccess) !void {
@@ -4822,7 +4873,7 @@ fn parseFsSandboxPath(allocator: std.mem.Allocator, value: std.json.Value, cwd: 
     if (std.mem.eql(u8, type_value.string, "special")) {
         return parseFsSandboxSpecialPath(allocator, value.object, cwd);
     }
-    if (std.mem.eql(u8, type_value.string, "glob_pattern")) return error.UnsupportedFsSandboxContext;
+    if (std.mem.eql(u8, type_value.string, "glob_pattern")) return error.InvalidFsSandboxContext;
     return error.InvalidFsSandboxContext;
 }
 
