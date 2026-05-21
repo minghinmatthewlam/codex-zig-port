@@ -100,6 +100,9 @@ The first demo slice targets macOS and focuses on the interactive CLI surface:
   discovery, dynamic client registration, PKCE browser callback handling,
   token exchange, fallback credential writes, and retry without scopes when a
   provider rejects metadata-discovered scopes
+- start the same CLI MCP OAuth flow from `codex-zig mcp add --url` after the
+  server entry is written when the streamable HTTP server advertises OAuth
+  metadata
 - remove file-backed and macOS keychain-backed MCP OAuth credentials for
   streamable HTTP servers with `codex-zig mcp logout`
 - report bearer-token, file-backed OAuth, macOS keychain-backed OAuth, and

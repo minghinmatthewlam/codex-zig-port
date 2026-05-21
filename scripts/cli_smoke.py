@@ -8785,6 +8785,45 @@ def run_mcp_oauth_login_logout_smoke(binary: Path) -> None:
         credentials = json.loads((codex_home / ".credentials.json").read_text(encoding="utf-8"))
         assert credentials[retry_key]["access_token"] == "mock-access-token"
 
+        add_home = temp_root / "add-codex-home"
+        add_home.mkdir()
+        (add_home / "config.toml").write_text(
+            'mcp_oauth_credentials_store = "file"\n',
+            encoding="utf-8",
+        )
+        add_env = env.copy()
+        add_env["CODEX_HOME"] = str(add_home)
+        add_env["CODEX_MCP_OAUTH_SKIP_BROWSER"] = "1"
+        added_key = mcp_oauth_store_key("added", remote_url)
+        add_login = subprocess.Popen(
+            [str(binary.resolve()), "mcp", "add", "added", "--url", remote_url],
+            cwd=temp_root,
+            env=add_env,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+        add_stdout_lines: list[str] = []
+        added_authorization_url = read_mcp_oauth_authorization_url(
+            add_login, add_stdout_lines
+        )
+        assert added_authorization_url, "".join(add_stdout_lines)
+        with urllib.request.urlopen(added_authorization_url, timeout=5) as response:
+            assert b"MCP login complete" in response.read()
+        add_remaining_stdout, add_login_stderr = add_login.communicate(timeout=5)
+        add_login_stdout = "".join(add_stdout_lines) + add_remaining_stdout
+        assert add_login.returncode == 0, add_login_stderr
+        assert "Added global MCP server 'added'." in add_login_stdout
+        assert "Detected OAuth support. Starting OAuth flow…" in add_login_stdout
+        assert "Successfully logged in." in add_login_stdout
+        add_config = (add_home / "config.toml").read_text(encoding="utf-8")
+        assert "[mcp_servers.added]" in add_config
+        assert f'url = "{remote_url}"' in add_config
+        added_credentials = json.loads(
+            (add_home / ".credentials.json").read_text(encoding="utf-8")
+        )
+        assert added_credentials[added_key]["access_token"] == "mock-access-token"
+
         removed = subprocess.run(
             [str(binary.resolve()), "mcp", "logout", "remote"],
             cwd=temp_root,

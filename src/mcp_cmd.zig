@@ -493,6 +493,13 @@ fn runAdd(
     const message = try std.fmt.allocPrint(allocator, "Added global MCP server '{s}'.\n", .{name});
     defer allocator.free(message);
     try cli_utils.writeStdout(message);
+
+    const added_server = servers.get(name) orelse return;
+    if (added_server.kind == .streamable_http and added_server.url != null and (streamableHttpSupportsOAuth(allocator, added_server.url.?) catch false)) {
+        try cli_utils.writeStdout("Detected OAuth support. Starting OAuth flow…\n");
+        try performMcpOAuthLogin(allocator, codex_home, original_config, added_server.*, &.{}, true);
+        try cli_utils.writeStdout("Successfully logged in.\n");
+    }
 }
 
 fn runRemove(
