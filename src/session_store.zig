@@ -571,6 +571,16 @@ fn appendTranscriptLine(allocator: std.mem.Allocator, transcript: *session.Trans
         return;
     }
 
+    if (std.mem.eql(u8, line_type, "tool_search_call")) {
+        try appendStoredToolSearchCall(allocator, transcript, object);
+        return;
+    }
+
+    if (std.mem.eql(u8, line_type, "tool_search_output")) {
+        try appendStoredToolSearchOutput(allocator, transcript, object);
+        return;
+    }
+
     if (std.mem.eql(u8, line_type, "session_meta")) {
         const payload = object.get("payload") orelse return;
         try applyRolloutSessionMeta(allocator, transcript, payload);
@@ -765,6 +775,22 @@ fn appendStoredFunctionCallOutput(allocator: std.mem.Allocator, transcript: *ses
         .call_id = jsonStringField(object, "call_id") orelse return error.InvalidSessionLine,
         .output = jsonStringField(object, "output") orelse owned_output orelse return error.InvalidSessionLine,
         .output_content = if (output_content_present) output_content else null,
+    });
+}
+
+fn appendStoredToolSearchCall(allocator: std.mem.Allocator, transcript: *session.Transcript, object: std.json.ObjectMap) !void {
+    try transcript.appendHistoryItem(allocator, .{
+        .kind = .tool_search_call,
+        .call_id = jsonStringField(object, "call_id") orelse return error.InvalidSessionLine,
+        .arguments = jsonStringField(object, "arguments") orelse return error.InvalidSessionLine,
+    });
+}
+
+fn appendStoredToolSearchOutput(allocator: std.mem.Allocator, transcript: *session.Transcript, object: std.json.ObjectMap) !void {
+    try transcript.appendHistoryItem(allocator, .{
+        .kind = .tool_search_output,
+        .call_id = jsonStringField(object, "call_id") orelse return error.InvalidSessionLine,
+        .output = jsonStringField(object, "output") orelse return error.InvalidSessionLine,
     });
 }
 
@@ -1541,6 +1567,16 @@ fn storedLineFromHistoryItem(item: api.HistoryItem) !StoredLine {
             .output = item.output orelse return error.InvalidSessionItem,
             .output_content = item.output_content,
         },
+        .tool_search_call => .{
+            .type = "tool_search_call",
+            .call_id = item.call_id orelse return error.InvalidSessionItem,
+            .arguments = item.arguments orelse return error.InvalidSessionItem,
+        },
+        .tool_search_output => .{
+            .type = "tool_search_output",
+            .call_id = item.call_id orelse return error.InvalidSessionItem,
+            .output = item.output orelse return error.InvalidSessionItem,
+        },
     };
 }
 
@@ -1650,6 +1686,16 @@ test "session store round trips transcript jsonl" {
         .output = "stdout:\n/tmp\n",
         .output_content = output_content[0..],
     });
+    try transcript.appendHistoryItem(allocator, .{
+        .kind = .tool_search_call,
+        .call_id = "search-1",
+        .arguments = "{\"query\":\"echo\"}",
+    });
+    try transcript.appendHistoryItem(allocator, .{
+        .kind = .tool_search_output,
+        .call_id = "search-1",
+        .output = "[{\"type\":\"namespace\",\"name\":\"mcp__demo__\"}]",
+    });
     transcript.token_usage = .{
         .total = .{
             .input_tokens = 90,
@@ -1697,7 +1743,7 @@ test "session store round trips transcript jsonl" {
     try std.testing.expectEqual(@as(i64, 12), loaded.token_usage.?.total.reasoning_output_tokens);
     try std.testing.expectEqual(@as(i64, 50), loaded.token_usage.?.last.total_tokens);
     try std.testing.expectEqual(@as(i64, 200000), loaded.token_usage.?.model_context_window.?);
-    try std.testing.expectEqual(@as(usize, 5), loaded.history.items.len);
+    try std.testing.expectEqual(@as(usize, 7), loaded.history.items.len);
     try std.testing.expectEqual(api.HistoryItem.Kind.message, loaded.history.items[0].kind);
     try std.testing.expectEqualStrings("user", loaded.history.items[0].role.?);
     try std.testing.expectEqualStrings("hello\nafter image", loaded.history.items[0].text.?);
@@ -1714,6 +1760,12 @@ test "session store round trips transcript jsonl" {
     try std.testing.expectEqualStrings("stdout:\n/tmp\n", loaded.history.items[4].output_content.?[0].text.?);
     try std.testing.expectEqualStrings("data:image/png;base64,b3V0", loaded.history.items[4].output_content.?[1].image_url.?);
     try std.testing.expectEqualStrings("high", loaded.history.items[4].output_content.?[1].detail.?);
+    try std.testing.expectEqual(api.HistoryItem.Kind.tool_search_call, loaded.history.items[5].kind);
+    try std.testing.expectEqualStrings("search-1", loaded.history.items[5].call_id.?);
+    try std.testing.expectEqualStrings("{\"query\":\"echo\"}", loaded.history.items[5].arguments.?);
+    try std.testing.expectEqual(api.HistoryItem.Kind.tool_search_output, loaded.history.items[6].kind);
+    try std.testing.expectEqualStrings("search-1", loaded.history.items[6].call_id.?);
+    try std.testing.expectEqualStrings("[{\"type\":\"namespace\",\"name\":\"mcp__demo__\"}]", loaded.history.items[6].output.?);
 }
 
 test "session store rollback clears transcript metadata goal" {

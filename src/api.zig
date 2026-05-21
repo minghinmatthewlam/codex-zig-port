@@ -9,6 +9,7 @@ const model_catalog = @import("model_catalog.zig");
 const mcp_runtime = @import("mcp_runtime.zig");
 
 pub const FunctionCall = struct {
+    kind: Kind = .function,
     call_id: []const u8,
     name: []const u8,
     arguments: []const u8,
@@ -18,6 +19,11 @@ pub const FunctionCall = struct {
         allocator.free(self.name);
         allocator.free(self.arguments);
     }
+
+    pub const Kind = enum {
+        function,
+        tool_search,
+    };
 };
 
 pub const ReasoningEventKind = enum {
@@ -144,6 +150,8 @@ pub const HistoryItem = struct {
         message,
         function_call,
         function_call_output,
+        tool_search_call,
+        tool_search_output,
     };
 };
 
@@ -185,14 +193,29 @@ const FunctionCallOutputBody = union(enum) {
     }
 };
 
+const InputArguments = union(enum) {
+    string: []const u8,
+    value: std.json.Value,
+
+    pub fn jsonStringify(self: InputArguments, writer: anytype) !void {
+        switch (self) {
+            .string => |value| try writer.write(value),
+            .value => |value| try writer.write(value),
+        }
+    }
+};
+
 const InputItem = struct {
     type: []const u8,
     role: ?[]const u8 = null,
     content: ?[]const ContentItem = null,
     call_id: ?[]const u8 = null,
     name: ?[]const u8 = null,
-    arguments: ?[]const u8 = null,
+    arguments: ?InputArguments = null,
     output: ?FunctionCallOutputBody = null,
+    status: ?[]const u8 = null,
+    execution: ?[]const u8 = null,
+    tools: ?std.json.Value = null,
 };
 
 const Tool = struct {
@@ -201,6 +224,7 @@ const Tool = struct {
     description: ?[]const u8 = null,
     parameters: ?std.json.Value = null,
     external_web_access: ?bool = null,
+    execution: ?[]const u8 = null,
 };
 
 const Request = struct {
@@ -657,6 +681,12 @@ pub fn buildRequestBodyWithOptions(
     history: []const HistoryItem,
     options: RequestBodyOptions,
 ) ![]const u8 {
+    var parsed_parameter_values = std.ArrayList(std.json.Parsed(std.json.Value)).empty;
+    defer {
+        for (parsed_parameter_values.items) |*parsed| parsed.deinit();
+        parsed_parameter_values.deinit(allocator);
+    }
+
     var inputs = std.ArrayList(InputItem).empty;
     defer inputs.deinit(allocator);
 
@@ -702,7 +732,7 @@ pub fn buildRequestBodyWithOptions(
                 .type = "function_call",
                 .call_id = item.call_id,
                 .name = item.name,
-                .arguments = item.arguments,
+                .arguments = if (item.arguments) |arguments| .{ .string = arguments } else null,
             }),
             .function_call_output => try inputs.append(allocator, .{
                 .type = "function_call_output",
@@ -714,21 +744,43 @@ pub fn buildRequestBodyWithOptions(
                 else
                     null,
             }),
+            .tool_search_call => {
+                const arguments = item.arguments orelse "{}";
+                const parsed_arguments = try appendParsedJsonValue(allocator, &parsed_parameter_values, arguments);
+                try inputs.append(allocator, .{
+                    .type = "tool_search_call",
+                    .call_id = item.call_id,
+                    .execution = "client",
+                    .arguments = .{ .value = parsed_arguments },
+                });
+            },
+            .tool_search_output => {
+                const tools = item.output orelse "[]";
+                const parsed_tools = try appendParsedJsonValue(allocator, &parsed_parameter_values, tools);
+                try inputs.append(allocator, .{
+                    .type = "tool_search_output",
+                    .call_id = item.call_id,
+                    .status = "completed",
+                    .execution = "client",
+                    .tools = parsed_tools,
+                });
+            },
         }
-    }
-
-    var parsed_parameter_values = std.ArrayList(std.json.Parsed(std.json.Value)).empty;
-    defer {
-        for (parsed_parameter_values.items) |*parsed| parsed.deinit();
-        parsed_parameter_values.deinit(allocator);
     }
 
     var tools_list = std.ArrayList(Tool).empty;
     defer tools_list.deinit(allocator);
+    var tool_search_description: ?[]const u8 = null;
+    defer if (tool_search_description) |description| allocator.free(description);
     const shell_tools_enabled = options.feature_overrides.get("shell_tool") orelse true;
     const write_stdin_tool_enabled = shell_tools_enabled and (options.feature_overrides.get("write_stdin_tool") orelse true);
     const mcp_resource_tools_enabled = options.feature_overrides.get("mcp_resource_tools") orelse true;
     const configured_mcp_tools_enabled = options.feature_overrides.get("mcp_tools") orelse true;
+    const tool_search_enabled = options.feature_overrides.get("tool_search") orelse true;
+    const defer_mcp_tools_behind_tool_search = configured_mcp_tools_enabled and
+        tool_search_enabled and
+        (options.feature_overrides.get("tool_search_always_defer_mcp_tools") orelse false) and
+        options.mcp_tools.len > 0;
     const request_permissions_tool_enabled = options.feature_overrides.get("request_permissions_tool") orelse false;
     const request_user_input_tool_enabled = options.feature_overrides.get("request_user_input_tool") orelse false;
     const default_mode_request_user_input_enabled = options.feature_overrides.get("default_mode_request_user_input") orelse false;
@@ -852,6 +904,17 @@ pub fn buildRequestBodyWithOptions(
                 \\{"type":"object","properties":{"server":{"type":"string","description":"MCP server name exactly as configured. Must match the 'server' field returned by list_mcp_resources."},"uri":{"type":"string","description":"Resource URI to read. Must be one of the URIs returned by list_mcp_resources."}},"required":["server","uri"],"additionalProperties":false}
             ),
         };
+        if (defer_mcp_tools_behind_tool_search) {
+            tool_search_description = try renderToolSearchDescription(allocator, options.mcp_tools);
+        }
+        const tool_search_tool = Tool{
+            .type = "tool_search",
+            .execution = "client",
+            .description = tool_search_description,
+            .parameters = try appendParsedJsonValue(allocator, &parsed_parameter_values,
+                \\{"type":"object","properties":{"query":{"type":"string","description":"Search query for deferred tools."},"limit":{"type":"number","description":"Maximum number of tools to return (defaults to 8)."}},"required":["query"],"additionalProperties":false}
+            ),
+        };
         if (shell_tools_enabled) {
             try tools_list.append(allocator, exec_command_tool);
             if (write_stdin_tool_enabled) try tools_list.append(allocator, write_stdin_tool);
@@ -884,7 +947,10 @@ pub fn buildRequestBodyWithOptions(
                 });
             }
         }
-        if (configured_mcp_tools_enabled) {
+        if (defer_mcp_tools_behind_tool_search) {
+            try tools_list.append(allocator, tool_search_tool);
+        }
+        if (configured_mcp_tools_enabled and !defer_mcp_tools_behind_tool_search) {
             for (options.mcp_tools) |mcp_tool| {
                 const parameters = appendParsedJsonValue(allocator, &parsed_parameter_values, mcp_tool.input_schema_json) catch
                     try appendParsedJsonValue(allocator, &parsed_parameter_values, "{\"type\":\"object\"}");
@@ -1001,6 +1067,45 @@ fn appendParsedJsonValue(
     return parsed_values.items[parsed_values.items.len - 1].value;
 }
 
+fn renderToolSearchDescription(allocator: std.mem.Allocator, mcp_tools: []const mcp_runtime.ToolSpec) ![]const u8 {
+    var server_names = std.ArrayList([]const u8).empty;
+    defer server_names.deinit(allocator);
+    for (mcp_tools) |tool| {
+        var seen = false;
+        for (server_names.items) |name| {
+            if (std.mem.eql(u8, name, tool.server_name)) {
+                seen = true;
+                break;
+            }
+        }
+        if (!seen) try server_names.append(allocator, tool.server_name);
+    }
+
+    var out = std.ArrayList(u8).empty;
+    errdefer out.deinit(allocator);
+    try out.appendSlice(allocator,
+        \\# Tool discovery
+        \\
+        \\Searches over deferred tool metadata and exposes matching tools for the next model call.
+        \\
+        \\You have access to tools from the following sources:
+        \\
+    );
+    if (server_names.items.len == 0) {
+        try out.appendSlice(allocator, "- None currently enabled.\n");
+    } else {
+        for (server_names.items) |name| {
+            try out.appendSlice(allocator, "- MCP server ");
+            try out.appendSlice(allocator, name);
+            try out.append(allocator, '\n');
+        }
+    }
+    try out.appendSlice(allocator,
+        \\Some of the tools may not have been provided to you upfront, and you should use this tool (`tool_search`) to search for the required tools. For MCP tool discovery, always use `tool_search` instead of `list_mcp_resources` or `list_mcp_resource_templates`.
+    );
+    return out.toOwnedSlice(allocator);
+}
+
 pub fn parseSseResponse(allocator: std.mem.Allocator, bytes: []const u8) !ParsedResponse {
     var text = std.ArrayList(u8).empty;
     defer text.deinit(allocator);
@@ -1076,17 +1181,30 @@ pub fn parseSseResponse(allocator: std.mem.Allocator, bytes: []const u8) !Parsed
             const item = item_value.object;
             const item_type = item.get("type") orelse continue;
             if (item_type != .string) continue;
-            if (!std.mem.eql(u8, item_type.string, "function_call")) continue;
-
-            const call_id = item.get("call_id") orelse continue;
-            const name = item.get("name") orelse continue;
-            const arguments = item.get("arguments") orelse continue;
-            if (call_id != .string or name != .string or arguments != .string) continue;
-            try calls.append(allocator, .{
-                .call_id = try allocator.dupe(u8, call_id.string),
-                .name = try allocator.dupe(u8, name.string),
-                .arguments = try allocator.dupe(u8, arguments.string),
-            });
+            if (std.mem.eql(u8, item_type.string, "function_call")) {
+                const call_id = item.get("call_id") orelse continue;
+                const name = item.get("name") orelse continue;
+                const arguments = item.get("arguments") orelse continue;
+                if (call_id != .string or name != .string or arguments != .string) continue;
+                try calls.append(allocator, .{
+                    .kind = .function,
+                    .call_id = try allocator.dupe(u8, call_id.string),
+                    .name = try allocator.dupe(u8, name.string),
+                    .arguments = try allocator.dupe(u8, arguments.string),
+                });
+            } else if (std.mem.eql(u8, item_type.string, "tool_search_call")) {
+                const call_id = item.get("call_id") orelse continue;
+                const arguments = item.get("arguments") orelse continue;
+                if (call_id != .string) continue;
+                const arguments_json = try std.json.Stringify.valueAlloc(allocator, arguments, .{});
+                errdefer allocator.free(arguments_json);
+                try calls.append(allocator, .{
+                    .kind = .tool_search,
+                    .call_id = try allocator.dupe(u8, call_id.string),
+                    .name = try allocator.dupe(u8, "tool_search"),
+                    .arguments = arguments_json,
+                });
+            }
         }
     }
 
@@ -1616,6 +1734,21 @@ test "parses SSE text and function call" {
     try std.testing.expectEqualStrings("shell_command", parsed.function_calls[0].name);
     try std.testing.expectEqual(@as(usize, 1), parsed.raw_response_items.len);
     try std.testing.expect(std.mem.indexOf(u8, parsed.raw_response_items[0], "\"call_id\":\"c1\"") != null);
+}
+
+test "parses SSE tool_search call" {
+    const allocator = std.testing.allocator;
+    const body =
+        "data: {\"type\":\"response.output_item.done\",\"item\":{\"type\":\"tool_search_call\",\"call_id\":\"search-1\",\"execution\":\"client\",\"arguments\":{\"query\":\"echo\"}}}\n" ++
+        "data: [DONE]\n";
+    var parsed = try parseSseResponse(allocator, body);
+    defer parsed.deinit(allocator);
+
+    try std.testing.expectEqual(@as(usize, 1), parsed.function_calls.len);
+    try std.testing.expectEqual(FunctionCall.Kind.tool_search, parsed.function_calls[0].kind);
+    try std.testing.expectEqualStrings("search-1", parsed.function_calls[0].call_id);
+    try std.testing.expectEqualStrings("tool_search", parsed.function_calls[0].name);
+    try std.testing.expect(std.mem.indexOf(u8, parsed.function_calls[0].arguments, "\"query\":\"echo\"") != null);
 }
 
 test "parses SSE reasoning events" {
@@ -2295,6 +2428,144 @@ test "builds mcp function tools from catalog" {
     }
 
     try std.testing.expect(found);
+}
+
+test "feature flag defers mcp tools behind tool_search" {
+    const allocator = std.testing.allocator;
+    const cfg = config.Config{
+        .codex_home = ".",
+        .active_profile = null,
+        .model = "demo-model",
+        .openai_base_url = "https://example.invalid/v1",
+        .chatgpt_base_url = "https://example.invalid/backend-api/codex",
+        .oss_provider = null,
+        .installation_id = "install-test",
+        .approval_policy = .on_request,
+        .sandbox_mode = .workspace_write,
+        .web_search_mode = null,
+        .model_reasoning_effort = null,
+        .service_tier = null,
+        .syntax_theme = null,
+        .personality = null,
+        .tui_status_line = null,
+        .tui_terminal_title = null,
+        .tui_alternate_screen = .auto,
+    };
+    const history = [_]HistoryItem{.{
+        .kind = .message,
+        .role = "user",
+        .content_type = "input_text",
+        .text = "use mcp",
+    }};
+    const mcp_tools = [_]mcp_runtime.ToolSpec{.{
+        .server_name = "demo",
+        .raw_tool_name = "echo",
+        .callable_name = "mcp__demo__echo",
+        .description = "Echo through MCP",
+        .input_schema_json = "{\"type\":\"object\",\"properties\":{\"message\":{\"type\":\"string\"}}}",
+    }};
+    var feature_overrides = features_cmd.FeatureOverrides{};
+    defer feature_overrides.deinit(allocator);
+    try feature_overrides.put(allocator, "tool_search", true);
+    try feature_overrides.put(allocator, "tool_search_always_defer_mcp_tools", true);
+
+    const body = try buildRequestBodyWithOptions(allocator, cfg, history[0..], .{
+        .mcp_tools = mcp_tools[0..],
+        .feature_overrides = feature_overrides,
+    });
+    defer allocator.free(body);
+
+    var parsed = try std.json.parseFromSlice(std.json.Value, allocator, body, .{});
+    defer parsed.deinit();
+    const tools = parsed.value.object.get("tools").?.array;
+
+    var found_tool_search = false;
+    for (tools.items) |tool| {
+        const object = tool.object;
+        const tool_type = object.get("type") orelse continue;
+        if (tool_type != .string or !std.mem.eql(u8, tool_type.string, "tool_search")) continue;
+        found_tool_search = true;
+        try std.testing.expectEqualStrings("client", object.get("execution").?.string);
+        const description = object.get("description") orelse return error.MissingToolSearchDescription;
+        if (description != .string) return error.UnexpectedToolSearchDescription;
+        try std.testing.expect(std.mem.indexOf(u8, description.string, "MCP server demo") != null);
+        try std.testing.expectEqualStrings("object", object.get("parameters").?.object.get("type").?.string);
+        try std.testing.expect(object.get("parameters").?.object.get("properties").?.object.get("query") != null);
+    }
+
+    try std.testing.expect(found_tool_search);
+    try std.testing.expect(std.mem.indexOf(u8, body, "\"name\":\"mcp__demo__echo\"") == null);
+}
+
+test "serializes tool_search history items" {
+    const allocator = std.testing.allocator;
+    const cfg = config.Config{
+        .codex_home = ".",
+        .active_profile = null,
+        .model = "demo-model",
+        .openai_base_url = "https://example.invalid/v1",
+        .chatgpt_base_url = "https://example.invalid/backend-api/codex",
+        .oss_provider = null,
+        .installation_id = "install-test",
+        .approval_policy = .on_request,
+        .sandbox_mode = .workspace_write,
+        .web_search_mode = null,
+        .model_reasoning_effort = null,
+        .service_tier = null,
+        .syntax_theme = null,
+        .personality = null,
+        .tui_status_line = null,
+        .tui_terminal_title = null,
+        .tui_alternate_screen = .auto,
+    };
+    const history = [_]HistoryItem{
+        .{
+            .kind = .message,
+            .role = "user",
+            .content_type = "input_text",
+            .text = "find echo",
+        },
+        .{
+            .kind = .tool_search_call,
+            .call_id = "search-1",
+            .arguments = "{\"query\":\"echo\"}",
+        },
+        .{
+            .kind = .tool_search_output,
+            .call_id = "search-1",
+            .output = "[{\"type\":\"function\",\"name\":\"mcp__demo__echo\"}]",
+        },
+    };
+
+    const body = try buildRequestBodyWithOptions(allocator, cfg, history[0..], .{});
+    defer allocator.free(body);
+
+    var parsed = try std.json.parseFromSlice(std.json.Value, allocator, body, .{});
+    defer parsed.deinit();
+    const inputs = parsed.value.object.get("input").?.array;
+
+    var found_call = false;
+    var found_output = false;
+    for (inputs.items) |input| {
+        const object = input.object;
+        const item_type = object.get("type") orelse continue;
+        if (item_type != .string) continue;
+        if (std.mem.eql(u8, item_type.string, "tool_search_call")) {
+            found_call = true;
+            try std.testing.expectEqualStrings("search-1", object.get("call_id").?.string);
+            try std.testing.expectEqualStrings("client", object.get("execution").?.string);
+            try std.testing.expectEqualStrings("echo", object.get("arguments").?.object.get("query").?.string);
+        } else if (std.mem.eql(u8, item_type.string, "tool_search_output")) {
+            found_output = true;
+            try std.testing.expectEqualStrings("search-1", object.get("call_id").?.string);
+            try std.testing.expectEqualStrings("completed", object.get("status").?.string);
+            try std.testing.expectEqualStrings("client", object.get("execution").?.string);
+            try std.testing.expectEqualStrings("mcp__demo__echo", object.get("tools").?.array.items[0].object.get("name").?.string);
+        }
+    }
+
+    try std.testing.expect(found_call);
+    try std.testing.expect(found_output);
 }
 
 test "runtime feature overrides can disable configured mcp function tools" {

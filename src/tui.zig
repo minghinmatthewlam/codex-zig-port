@@ -496,6 +496,8 @@ fn renderLocalRemoteControlSnapshotJson(
             .message => item.text orelse "",
             .function_call => item.arguments orelse "",
             .function_call_output => item.output orelse "",
+            .tool_search_call => item.arguments orelse "",
+            .tool_search_output => item.output orelse "",
         };
         const trimmed_text = std.mem.trim(u8, text, " \t\r\n");
         if (trimmed_text.len == 0) continue;
@@ -539,7 +541,7 @@ fn remoteControlRoleForItem(item: api.HistoryItem) []const u8 {
             if (std.mem.eql(u8, role, "assistant")) break :blk "assistant";
             break :blk "status";
         },
-        .function_call, .function_call_output => "tool",
+        .function_call, .function_call_output, .tool_search_call, .tool_search_output => "tool",
     };
 }
 
@@ -4031,6 +4033,14 @@ fn printHistory(transcript: *const session.Transcript, limit: usize) void {
             },
             .function_call_output => {
                 std.debug.print("tool output: {s}\n", .{item.call_id orelse "unknown"});
+                printIndented(item.output orelse "", 800);
+            },
+            .tool_search_call => {
+                std.debug.print("tool search: {s}\n", .{item.call_id orelse "unknown"});
+                printIndented(item.arguments orelse "", 800);
+            },
+            .tool_search_output => {
+                std.debug.print("tool search output: {s}\n", .{item.call_id orelse "unknown"});
                 printIndented(item.output orelse "", 800);
             },
         }
