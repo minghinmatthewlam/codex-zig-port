@@ -261,10 +261,14 @@ fn appendDebugAppServerChildOptions(
 }
 
 fn applyDebugAppServerChildEnvOverrides(env_map: *std.process.Environ.Map, overrides: config.RuntimeOverrides) !void {
-    // The app-server loads config inside request handlers, so base-url overrides
-    // need the existing env hook in addition to the forwarded argv flags.
-    const base_url = overrides.chatgpt_base_url orelse overrides.openai_base_url orelse return;
-    try env_map.put("CODEX_ZIG_BASE_URL", base_url);
+    // The app-server loads config inside request handlers, so provider/base-url
+    // overrides need env hooks in addition to the forwarded argv flags.
+    if (overrides.chatgpt_base_url orelse overrides.openai_base_url) |base_url| {
+        try env_map.put("CODEX_ZIG_BASE_URL", base_url);
+    }
+    if (overrides.model_provider_id) |model_provider| {
+        try env_map.put("CODEX_ZIG_MODEL_PROVIDER", model_provider);
+    }
 }
 
 fn appendConfigOverrideArg(
@@ -727,4 +731,13 @@ test "debug app-server forwards model config overrides" {
     for (expected, argv.items) |expected_arg, actual_arg| {
         try std.testing.expectEqualStrings(expected_arg, actual_arg);
     }
+
+    var env_map = std.process.Environ.Map.init(allocator);
+    defer env_map.deinit();
+    try applyDebugAppServerChildEnvOverrides(&env_map, .{
+        .model_provider_id = "mock-provider",
+        .openai_base_url = "http://127.0.0.1:7654/v1",
+    });
+    try std.testing.expectEqualStrings("mock-provider", env_map.get("CODEX_ZIG_MODEL_PROVIDER").?);
+    try std.testing.expectEqualStrings("http://127.0.0.1:7654/v1", env_map.get("CODEX_ZIG_BASE_URL").?);
 }

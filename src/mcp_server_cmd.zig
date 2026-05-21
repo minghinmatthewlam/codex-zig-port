@@ -294,6 +294,14 @@ const Server = struct {
     }
 
     fn applyToolConfigObject(self: *Server, cfg: *config.Config, object: std.json.ObjectMap) !void {
+        var runtime_overrides = config.RuntimeOverrides{};
+        var profile_override: ?[]const u8 = null;
+        var raw_overrides = std.ArrayList([]const u8).empty;
+        defer {
+            for (raw_overrides.items) |raw| self.allocator.free(raw);
+            raw_overrides.deinit(self.allocator);
+        }
+
         var iter = object.iterator();
         while (iter.next()) |entry| {
             if (std.mem.eql(u8, entry.key_ptr.*, "base_instructions")) {
@@ -321,12 +329,15 @@ const Server = struct {
                 continue;
             }
             const raw = try renderRawConfigOverride(self.allocator, entry.key_ptr.*, entry.value_ptr.*);
-            defer self.allocator.free(raw);
-            var runtime_overrides = config.RuntimeOverrides{};
-            var profile_override: ?[]const u8 = null;
-            try config.applyRawConfigOverride(&runtime_overrides, &profile_override, raw);
-            try config.applyRuntimeOverrides(cfg, self.allocator, runtime_overrides);
+            var raw_owned = true;
+            errdefer if (raw_owned) self.allocator.free(raw);
+            try raw_overrides.append(self.allocator, raw);
+            raw_owned = false;
+            var entry_overrides = config.RuntimeOverrides{};
+            try config.applyRawConfigOverride(&entry_overrides, &profile_override, raw);
+            runtime_overrides = config.mergeRuntimeOverrides(runtime_overrides, entry_overrides);
         }
+        try config.applyRuntimeOverrides(cfg, self.allocator, runtime_overrides);
     }
 
     fn findSession(self: *Server, thread_id: []const u8) ?*SavedSession {
@@ -733,6 +744,71 @@ test "mcp server turn config applies direct call overrides" {
     try std.testing.expectEqualStrings("base override", cfg.base_instructions.?);
     try std.testing.expectEqualStrings("developer override", cfg.developer_instructions.?);
     try std.testing.expectEqualStrings("compact override", cfg.compact_prompt.?);
+}
+
+test "mcp server batches provider and base URL config overrides" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var dir = std.testing.tmpDir(.{});
+    defer dir.cleanup();
+    try dir.dir.writeFile(io, .{
+        .sub_path = "config.toml",
+        .data =
+        \\[model_providers.mock_provider]
+        \\base_url = "http://127.0.0.1:7654/v1"
+        \\env_key = "MOCK_PROVIDER_KEY"
+        \\requires_openai_auth = false
+        \\
+        ,
+    });
+    const codex_home = try dir.dir.realPathFileAlloc(io, ".", allocator);
+    defer allocator.free(codex_home);
+
+    const source = config.Config{
+        .codex_home = codex_home,
+        .active_profile = null,
+        .model = "base-model",
+        .openai_base_url = "https://example.invalid/v1",
+        .chatgpt_base_url = "https://example.invalid/backend-api/codex",
+        .oss_provider = null,
+        .installation_id = "install-test",
+        .approval_policy = .on_request,
+        .sandbox_mode = .workspace_write,
+        .web_search_mode = null,
+        .model_reasoning_effort = null,
+        .service_tier = null,
+        .syntax_theme = null,
+        .personality = null,
+        .tui_status_line = null,
+        .tui_terminal_title = null,
+        .tui_alternate_screen = .auto,
+    };
+    var credentials = try auth.localOssCredentials(allocator);
+    defer credentials.deinit(allocator);
+    var server = Server{
+        .allocator = allocator,
+        .cfg = source,
+        .credentials = credentials,
+        .runtime_overrides = .{},
+        .oss = false,
+        .oss_provider = null,
+        .additional_writable_roots = &.{},
+    };
+    var parsed = try std.json.parseFromSlice(
+        std.json.Value,
+        allocator,
+        "{\"config\":{\"openai_base_url\":\"http://127.0.0.1:11434/v1\",\"model_provider\":\"mock_provider\"}}",
+        .{},
+    );
+    defer parsed.deinit();
+
+    var cfg = try server.turnConfig(parsed.value);
+    defer cfg.deinit(allocator);
+
+    try std.testing.expectEqualStrings("mock_provider", cfg.model_provider_id.?);
+    try std.testing.expectEqualStrings("http://127.0.0.1:11434/v1", cfg.openai_base_url);
+    try std.testing.expectEqualStrings("http://127.0.0.1:7654/v1", cfg.chatgpt_base_url);
+    try std.testing.expectEqualStrings("MOCK_PROVIDER_KEY", cfg.model_provider_env_key.?);
 }
 
 test "mcp server turn profile reads config object before loading" {
