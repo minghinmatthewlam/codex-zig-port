@@ -71,7 +71,14 @@ const AppListEntry = struct {
     id: []const u8,
     name: []const u8,
     description: ?[]const u8,
+    logo_url: ?[]const u8 = null,
+    logo_url_dark: ?[]const u8 = null,
+    distribution_channel: ?[]const u8 = null,
+    branding_json: ?[]const u8 = null,
+    app_metadata_json: ?[]const u8 = null,
+    labels_json: ?[]const u8 = null,
     install_url: ?[]const u8,
+    is_accessible: bool = false,
     is_enabled: bool,
     plugin_display_names: std.ArrayList([]const u8),
 
@@ -79,10 +86,26 @@ const AppListEntry = struct {
         allocator.free(self.id);
         allocator.free(self.name);
         if (self.description) |value| allocator.free(value);
+        if (self.logo_url) |value| allocator.free(value);
+        if (self.logo_url_dark) |value| allocator.free(value);
+        if (self.distribution_channel) |value| allocator.free(value);
+        if (self.branding_json) |value| allocator.free(value);
+        if (self.app_metadata_json) |value| allocator.free(value);
+        if (self.labels_json) |value| allocator.free(value);
         if (self.install_url) |value| allocator.free(value);
         for (self.plugin_display_names.items) |value| allocator.free(value);
         self.plugin_display_names.deinit(allocator);
     }
+};
+
+const AppListEntryFields = struct {
+    logo_url: ?[]const u8 = null,
+    logo_url_dark: ?[]const u8 = null,
+    distribution_channel: ?[]const u8 = null,
+    branding_json: ?[]const u8 = null,
+    app_metadata_json: ?[]const u8 = null,
+    labels_json: ?[]const u8 = null,
+    is_accessible: bool = false,
 };
 
 pub const AppRequirements = struct {
@@ -105,6 +128,30 @@ pub fn renderAppsListResponse(
     config_bytes: []const u8,
     app_requirements: ?AppRequirements,
     cwds: []const []const u8,
+    start: usize,
+    limit: ?usize,
+    total_out: *usize,
+) !?[]const u8 {
+    return renderAppsListResponseWithRemoteDirectoryPages(
+        allocator,
+        codex_home,
+        config_bytes,
+        app_requirements,
+        cwds,
+        &.{},
+        start,
+        limit,
+        total_out,
+    );
+}
+
+pub fn renderAppsListResponseWithRemoteDirectoryPages(
+    allocator: std.mem.Allocator,
+    codex_home: []const u8,
+    config_bytes: []const u8,
+    app_requirements: ?AppRequirements,
+    cwds: []const []const u8,
+    remote_directory_pages: []const []const u8,
     start: usize,
     limit: ?usize,
     total_out: *usize,
@@ -138,6 +185,10 @@ pub fn renderAppsListResponse(
         for (cwds) |cwd| {
             try collectAppsForRoot(allocator, config_bytes, cwd, enabled_ids, &seen_plugin_ids, &apps);
         }
+    }
+
+    for (remote_directory_pages) |page| {
+        try collectAppsFromRemoteDirectoryPage(allocator, config_bytes, page, &apps);
     }
 
     if (app_requirements) |requirements| {
@@ -1356,6 +1407,58 @@ fn collectAppsFromMarketplaceEntry(
     _ = try collectAppsFromPluginRoot(allocator, config_bytes, plugin_root, display_name, apps);
 }
 
+fn collectAppsFromRemoteDirectoryPage(
+    allocator: std.mem.Allocator,
+    config_bytes: []const u8,
+    page: []const u8,
+    apps: *std.ArrayList(AppListEntry),
+) !void {
+    var parsed = std.json.parseFromSlice(std.json.Value, allocator, page, .{}) catch return;
+    defer parsed.deinit();
+
+    const app_values = remoteDirectoryAppValues(parsed.value) orelse return;
+    for (app_values) |app_value| {
+        if (app_value != .object) continue;
+        const object = app_value.object;
+        if (remoteDirectoryAppIsHidden(object)) continue;
+        const app_id = normalizedRemoteDirectoryString(stringField(object, "id") orelse stringField(object, "appId") orelse stringField(object, "slug")) orelse continue;
+        if (app_id[0] == '$') continue;
+        const name = normalizedRemoteDirectoryString(stringField(object, "name") orelse stringField(object, "title")) orelse app_id;
+        const description = normalizedRemoteDirectoryString(stringField(object, "description"));
+        const raw_install_url = normalizedRemoteDirectoryString(stringFieldAlias(object, "installUrl", "install_url"));
+        const generated_install_url = if (raw_install_url == null) try remoteDirectoryInstallUrl(allocator, name, app_id) else null;
+        defer if (generated_install_url) |value| allocator.free(value);
+        const install_url = raw_install_url orelse generated_install_url;
+
+        const branding_json = try optionalRawJsonField(allocator, object, "branding");
+        defer if (branding_json) |value| allocator.free(value);
+        const app_metadata_json = try optionalRawJsonFieldAlias(allocator, object, "appMetadata", "app_metadata");
+        defer if (app_metadata_json) |value| allocator.free(value);
+        const labels_json = try optionalRawJsonField(allocator, object, "labels");
+        defer if (labels_json) |value| allocator.free(value);
+
+        try upsertAppListEntry(
+            allocator,
+            apps,
+            app_id,
+            name,
+            description,
+            install_url,
+            "",
+            appEnabledFromConfig(config_bytes, app_id),
+            .{
+                .logo_url = normalizedRemoteDirectoryString(stringFieldAlias(object, "logoUrl", "logo_url")),
+                .logo_url_dark = normalizedRemoteDirectoryString(stringFieldAlias(object, "logoUrlDark", "logo_url_dark")),
+                .distribution_channel = normalizedRemoteDirectoryString(stringFieldAlias(object, "distributionChannel", "distribution_channel")),
+                .branding_json = branding_json,
+                .app_metadata_json = app_metadata_json,
+                .labels_json = labels_json,
+                .is_accessible = boolFieldAlias(object, "isAccessible", "is_accessible") orelse false,
+            },
+        );
+    }
+}
+
 fn collectAppsFromPluginRoot(
     allocator: std.mem.Allocator,
     config_bytes: []const u8,
@@ -1386,7 +1489,7 @@ fn collectAppsFromPluginRoot(
         const default_install_url = try std.fmt.allocPrint(allocator, "https://chatgpt.com/apps/{s}/{s}", .{ app_id, app_id });
         defer allocator.free(default_install_url);
         const install_url = raw_install_url orelse default_install_url;
-        try upsertAppListEntry(allocator, apps, app_id, name, description, install_url, plugin_display_name, appEnabledFromConfig(config_bytes, app_id));
+        try upsertAppListEntry(allocator, apps, app_id, name, description, install_url, plugin_display_name, appEnabledFromConfig(config_bytes, app_id), .{});
         added = true;
     }
     return added;
@@ -1406,6 +1509,7 @@ fn upsertAppListEntry(
     install_url: ?[]const u8,
     plugin_display_name: []const u8,
     is_enabled: bool,
+    fields: AppListEntryFields,
 ) !void {
     for (apps.items) |*app| {
         if (!std.mem.eql(u8, app.id, app_id)) continue;
@@ -1420,6 +1524,25 @@ fn upsertAppListEntry(
         if (app.install_url == null and install_url != null) {
             app.install_url = try allocator.dupe(u8, install_url.?);
         }
+        if (app.logo_url == null and fields.logo_url != null) {
+            app.logo_url = try allocator.dupe(u8, fields.logo_url.?);
+        }
+        if (app.logo_url_dark == null and fields.logo_url_dark != null) {
+            app.logo_url_dark = try allocator.dupe(u8, fields.logo_url_dark.?);
+        }
+        if (app.distribution_channel == null and fields.distribution_channel != null) {
+            app.distribution_channel = try allocator.dupe(u8, fields.distribution_channel.?);
+        }
+        if (app.branding_json == null and fields.branding_json != null) {
+            app.branding_json = try allocator.dupe(u8, fields.branding_json.?);
+        }
+        if (app.app_metadata_json == null and fields.app_metadata_json != null) {
+            app.app_metadata_json = try allocator.dupe(u8, fields.app_metadata_json.?);
+        }
+        if (app.labels_json == null and fields.labels_json != null) {
+            app.labels_json = try allocator.dupe(u8, fields.labels_json.?);
+        }
+        app.is_accessible = app.is_accessible or fields.is_accessible;
         app.is_enabled = app.is_enabled and is_enabled;
         try appendUniquePluginDisplayName(allocator, &app.plugin_display_names, plugin_display_name);
         return;
@@ -1433,12 +1556,31 @@ fn upsertAppListEntry(
     errdefer if (owned_description) |value| allocator.free(value);
     var owned_install_url: ?[]const u8 = if (install_url) |value| try allocator.dupe(u8, value) else null;
     errdefer if (owned_install_url) |value| allocator.free(value);
+    var owned_logo_url: ?[]const u8 = if (fields.logo_url) |value| try allocator.dupe(u8, value) else null;
+    errdefer if (owned_logo_url) |value| allocator.free(value);
+    var owned_logo_url_dark: ?[]const u8 = if (fields.logo_url_dark) |value| try allocator.dupe(u8, value) else null;
+    errdefer if (owned_logo_url_dark) |value| allocator.free(value);
+    var owned_distribution_channel: ?[]const u8 = if (fields.distribution_channel) |value| try allocator.dupe(u8, value) else null;
+    errdefer if (owned_distribution_channel) |value| allocator.free(value);
+    var owned_branding_json: ?[]const u8 = if (fields.branding_json) |value| try allocator.dupe(u8, value) else null;
+    errdefer if (owned_branding_json) |value| allocator.free(value);
+    var owned_app_metadata_json: ?[]const u8 = if (fields.app_metadata_json) |value| try allocator.dupe(u8, value) else null;
+    errdefer if (owned_app_metadata_json) |value| allocator.free(value);
+    var owned_labels_json: ?[]const u8 = if (fields.labels_json) |value| try allocator.dupe(u8, value) else null;
+    errdefer if (owned_labels_json) |value| allocator.free(value);
 
     var app = AppListEntry{
         .id = owned_id.?,
         .name = owned_name.?,
         .description = owned_description,
+        .logo_url = owned_logo_url,
+        .logo_url_dark = owned_logo_url_dark,
+        .distribution_channel = owned_distribution_channel,
+        .branding_json = owned_branding_json,
+        .app_metadata_json = owned_app_metadata_json,
+        .labels_json = owned_labels_json,
         .install_url = owned_install_url,
+        .is_accessible = fields.is_accessible,
         .is_enabled = is_enabled,
         .plugin_display_names = .empty,
     };
@@ -1446,6 +1588,12 @@ fn upsertAppListEntry(
     owned_name = null;
     owned_description = null;
     owned_install_url = null;
+    owned_logo_url = null;
+    owned_logo_url_dark = null;
+    owned_distribution_channel = null;
+    owned_branding_json = null;
+    owned_app_metadata_json = null;
+    owned_labels_json = null;
     errdefer app.deinit(allocator);
     try appendUniquePluginDisplayName(allocator, &app.plugin_display_names, plugin_display_name);
     try apps.append(allocator, app);
@@ -1877,9 +2025,23 @@ fn appendAppListEntryJson(allocator: std.mem.Allocator, out: *std.ArrayList(u8),
     try appendJsonString(allocator, out, app.name);
     try out.appendSlice(allocator, ",\"description\":");
     try appendOptionalStringJson(allocator, out, app.description);
-    try out.appendSlice(allocator, ",\"logoUrl\":null,\"logoUrlDark\":null,\"distributionChannel\":null,\"branding\":null,\"appMetadata\":null,\"labels\":null,\"installUrl\":");
+    try out.appendSlice(allocator, ",\"logoUrl\":");
+    try appendOptionalStringJson(allocator, out, app.logo_url);
+    try out.appendSlice(allocator, ",\"logoUrlDark\":");
+    try appendOptionalStringJson(allocator, out, app.logo_url_dark);
+    try out.appendSlice(allocator, ",\"distributionChannel\":");
+    try appendOptionalStringJson(allocator, out, app.distribution_channel);
+    try out.appendSlice(allocator, ",\"branding\":");
+    try appendOptionalRawJson(allocator, out, app.branding_json);
+    try out.appendSlice(allocator, ",\"appMetadata\":");
+    try appendOptionalRawJson(allocator, out, app.app_metadata_json);
+    try out.appendSlice(allocator, ",\"labels\":");
+    try appendOptionalRawJson(allocator, out, app.labels_json);
+    try out.appendSlice(allocator, ",\"installUrl\":");
     try appendOptionalStringJson(allocator, out, app.install_url);
-    try out.appendSlice(allocator, ",\"isAccessible\":false,\"isEnabled\":");
+    try out.appendSlice(allocator, ",\"isAccessible\":");
+    try appendBool(allocator, out, app.is_accessible);
+    try out.appendSlice(allocator, ",\"isEnabled\":");
     try appendBool(allocator, out, app.is_enabled);
     try out.appendSlice(allocator, ",\"pluginDisplayNames\":[");
     for (app.plugin_display_names.items, 0..) |name, index| {
@@ -2349,6 +2511,70 @@ fn valueFieldOpt(object_opt: ?std.json.ObjectMap, field: []const u8) ?std.json.V
     return object.get(field);
 }
 
+fn remoteDirectoryAppValues(value: std.json.Value) ?[]std.json.Value {
+    if (value == .array) return value.array.items;
+    if (value != .object) return null;
+    if (value.object.get("data")) |data| {
+        if (data == .array) return data.array.items;
+    }
+    if (value.object.get("apps")) |apps| {
+        if (apps == .array) return apps.array.items;
+    }
+    if (value.object.get("items")) |items| {
+        if (items == .array) return items.array.items;
+    }
+    return null;
+}
+
+fn remoteDirectoryAppIsHidden(object: std.json.ObjectMap) bool {
+    const visibility = stringField(object, "visibility") orelse return false;
+    return std.ascii.eqlIgnoreCase(visibility, "HIDDEN");
+}
+
+fn normalizedRemoteDirectoryString(value_opt: ?[]const u8) ?[]const u8 {
+    const value = value_opt orelse return null;
+    const trimmed = std.mem.trim(u8, value, " \t\r\n");
+    if (trimmed.len == 0) return null;
+    return trimmed;
+}
+
+fn remoteDirectoryInstallUrl(allocator: std.mem.Allocator, name: []const u8, app_id: []const u8) ![]const u8 {
+    var slug = std.ArrayList(u8).empty;
+    defer slug.deinit(allocator);
+    for (name) |byte| {
+        if (std.ascii.isAlphanumeric(byte)) {
+            try slug.append(allocator, std.ascii.toLower(byte));
+        } else {
+            try slug.append(allocator, '-');
+        }
+    }
+    const trimmed_slug = std.mem.trim(u8, slug.items, "-");
+    return std.fmt.allocPrint(allocator, "https://chatgpt.com/apps/{s}/{s}", .{
+        if (trimmed_slug.len == 0) "app" else trimmed_slug,
+        app_id,
+    });
+}
+
+fn optionalRawJsonField(allocator: std.mem.Allocator, object: std.json.ObjectMap, field: []const u8) !?[]const u8 {
+    const value = object.get(field) orelse return null;
+    if (value == .null) return null;
+    const raw: []const u8 = try std.json.Stringify.valueAlloc(allocator, value, .{});
+    return raw;
+}
+
+fn optionalRawJsonFieldAlias(allocator: std.mem.Allocator, object: std.json.ObjectMap, field: []const u8, alias: []const u8) !?[]const u8 {
+    if (try optionalRawJsonField(allocator, object, field)) |value| return value;
+    return optionalRawJsonField(allocator, object, alias);
+}
+
+fn appendOptionalRawJson(allocator: std.mem.Allocator, out: *std.ArrayList(u8), value: ?[]const u8) !void {
+    if (value) |raw| {
+        try out.appendSlice(allocator, raw);
+    } else {
+        try out.appendSlice(allocator, "null");
+    }
+}
+
 fn stringFieldOpt(object_opt: ?std.json.ObjectMap, field: []const u8) ?[]const u8 {
     const object = object_opt orelse return null;
     return stringField(object, field);
@@ -2367,6 +2593,18 @@ fn stringField(object: std.json.ObjectMap, field: []const u8) ?[]const u8 {
     const value = object.get(field) orelse return null;
     if (value != .string) return null;
     return value.string;
+}
+
+fn boolField(object: std.json.ObjectMap, field: []const u8) ?bool {
+    const value = object.get(field) orelse return null;
+    return switch (value) {
+        .bool => |boolean| boolean,
+        else => null,
+    };
+}
+
+fn boolFieldAlias(object: std.json.ObjectMap, field: []const u8, alias: []const u8) ?bool {
+    return boolField(object, field) orelse boolField(object, alias);
 }
 
 fn containsString(values: []const []const u8, needle: []const u8) bool {
@@ -2478,6 +2716,34 @@ test "app requirements parser ignores app-shaped keys inside array tables" {
     try std.testing.expect(!requirements.disables("slack"));
     try std.testing.expect(!requirements.disables("zoom"));
     try std.testing.expect(requirements.disables("calendar"));
+}
+
+test "apps list includes remote directory metadata" {
+    const allocator = std.testing.allocator;
+    const page =
+        \\{"data":[{"id":"linear","name":"Linear","description":"Plan work","logoUrl":"https://example.com/linear-light.png","logoUrlDark":"https://example.com/linear-dark.png","distributionChannel":"workspace-directory","branding":{"primaryColor":"#111111"},"appMetadata":{"category":"productivity"},"labels":{"tier":"beta"},"installUrl":"https://chatgpt.com/apps/linear","isAccessible":true}]}
+    ;
+    const config_bytes =
+        \\[apps.linear]
+        \\enabled = false
+    ;
+
+    var total: usize = 0;
+    const rendered_opt = try renderAppsListResponseWithRemoteDirectoryPages(allocator, "/tmp/codex-home", config_bytes, null, &.{}, &.{page}, 0, null, &total);
+    try std.testing.expect(rendered_opt != null);
+    const rendered = rendered_opt.?;
+    defer allocator.free(rendered);
+
+    try std.testing.expectEqual(@as(usize, 1), total);
+    try std.testing.expect(std.mem.indexOf(u8, rendered, "\"id\":\"linear\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rendered, "\"logoUrl\":\"https://example.com/linear-light.png\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rendered, "\"logoUrlDark\":\"https://example.com/linear-dark.png\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rendered, "\"distributionChannel\":\"workspace-directory\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rendered, "\"branding\":{\"primaryColor\":\"#111111\"}") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rendered, "\"appMetadata\":{\"category\":\"productivity\"}") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rendered, "\"labels\":{\"tier\":\"beta\"}") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rendered, "\"isAccessible\":true") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rendered, "\"isEnabled\":false") != null);
 }
 
 test "plugin list renders local marketplaces with installed state and manifest metadata" {
