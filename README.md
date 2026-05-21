@@ -393,7 +393,7 @@ Optional machine-local computer-use proof, when the bundled
 `computer-use@openai-bundled` plugin is installed:
 
 ```sh
-python3 scripts/real_computer_use_mcp_smoke.py zig-out/bin/codex-zig
+zig build computer-use-smoke
 ```
 
 The `e2e` step starts a local mock Responses server, launches the real

@@ -50,4 +50,9 @@ pub fn build(b: *std.Build) void {
     cli_e2e_cmd.step.dependOn(&app_server_e2e_cmd.step);
     const e2e_step = b.step("e2e", "Run product-surface E2E smoke tests");
     e2e_step.dependOn(&cli_e2e_cmd.step);
+
+    const computer_use_smoke_cmd = b.addSystemCommand(&.{ "python3", "scripts/real_computer_use_mcp_smoke.py" });
+    computer_use_smoke_cmd.step.dependOn(b.getInstallStep());
+    const computer_use_smoke_step = b.step("computer-use-smoke", "Run real computer-use MCP smoke test");
+    computer_use_smoke_step.dependOn(&computer_use_smoke_cmd.step);
 }
