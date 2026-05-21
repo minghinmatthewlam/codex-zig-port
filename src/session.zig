@@ -1458,9 +1458,11 @@ fn parseToolSearchArgs(value: std.json.Value) !ToolSearchArgs {
         limit = switch (limit_value) {
             .integer => |number| if (number > 0) @intCast(number) else return error.ToolSearchInvalidLimit,
             .float => |number| blk: {
-                if (number <= 0) return error.ToolSearchInvalidLimit;
+                if (!std.math.isFinite(number) or number <= 0) return error.ToolSearchInvalidLimit;
                 const truncated = @trunc(number);
                 if (truncated != number) return error.ToolSearchInvalidLimit;
+                const max_exclusive = @as(f64, @floatFromInt(std.math.maxInt(usize))) + 1.0;
+                if (truncated >= max_exclusive) return error.ToolSearchInvalidLimit;
                 break :blk @intFromFloat(truncated);
             },
             .number_string => |text| std.fmt.parseUnsigned(usize, text, 10) catch return error.ToolSearchInvalidLimit,
@@ -1791,6 +1793,26 @@ test "runToolSearchCall returns empty tools array for invalid arguments" {
     defer result.deinit(allocator);
 
     try std.testing.expectEqualStrings("search-invalid", result.call_id);
+    try std.testing.expect(std.mem.startsWith(u8, result.summary, "tool_search invalid:"));
+    var parsed = try std.json.parseFromSlice(std.json.Value, allocator, result.output, .{});
+    defer parsed.deinit();
+    try std.testing.expectEqual(@as(usize, 0), parsed.value.array.items.len);
+}
+
+test "runToolSearchCall rejects oversized numeric limit" {
+    const allocator = std.testing.allocator;
+    const catalog = mcp_runtime.Catalog{ .tools = &.{} };
+    const call = api.FunctionCall{
+        .kind = .tool_search,
+        .call_id = "search-limit",
+        .name = "tool_search",
+        .arguments = "{\"query\":\"echo\",\"limit\":1e100}",
+    };
+
+    const result = try runToolSearchCall(allocator, catalog, call);
+    defer result.deinit(allocator);
+
+    try std.testing.expectEqualStrings("search-limit", result.call_id);
     try std.testing.expect(std.mem.startsWith(u8, result.summary, "tool_search invalid:"));
     var parsed = try std.json.parseFromSlice(std.json.Value, allocator, result.output, .{});
     defer parsed.deinit();
