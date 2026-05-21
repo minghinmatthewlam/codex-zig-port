@@ -134,7 +134,7 @@ fn activePluginVersion(allocator: std.mem.Allocator, plugin_base_root: []const u
             if (best) |value| allocator.free(value);
             return try allocator.dupe(u8, "local");
         }
-        if (best == null or std.mem.order(u8, entry.name, best.?) == .gt) {
+        if (best == null or comparePluginVersions(entry.name, best.?) == .gt) {
             if (best) |value| allocator.free(value);
             best = try allocator.dupe(u8, entry.name);
         }
@@ -151,6 +151,120 @@ fn isValidPluginVersionSegment(value: []const u8) bool {
         return false;
     }
     return true;
+}
+
+fn comparePluginVersions(a: []const u8, b: []const u8) std.math.Order {
+    const parsed_a = parsePluginSemver(a);
+    const parsed_b = parsePluginSemver(b);
+    if (parsed_a != null and parsed_b != null) return comparePluginSemver(parsed_a.?, parsed_b.?);
+    return naturalOrder(a, b);
+}
+
+const PluginSemver = struct {
+    major: u64,
+    minor: u64,
+    patch: u64,
+    prerelease: ?[]const u8,
+};
+
+fn parsePluginSemver(value: []const u8) ?PluginSemver {
+    const without_build = if (std.mem.indexOfScalar(u8, value, '+')) |index| value[0..index] else value;
+    const core = if (std.mem.indexOfScalar(u8, without_build, '-')) |index| without_build[0..index] else without_build;
+    const prerelease = if (core.len < without_build.len) without_build[core.len + 1 ..] else null;
+
+    var parts = std.mem.splitScalar(u8, core, '.');
+    const major = parsePluginVersionNumber(parts.next() orelse return null) orelse return null;
+    const minor = parsePluginVersionNumber(parts.next() orelse return null) orelse return null;
+    const patch = parsePluginVersionNumber(parts.next() orelse return null) orelse return null;
+    if (parts.next() != null) return null;
+    return .{
+        .major = major,
+        .minor = minor,
+        .patch = patch,
+        .prerelease = prerelease,
+    };
+}
+
+fn parsePluginVersionNumber(value: []const u8) ?u64 {
+    if (value.len == 0) return null;
+    for (value) |byte| {
+        if (!std.ascii.isDigit(byte)) return null;
+    }
+    return std.fmt.parseUnsigned(u64, value, 10) catch null;
+}
+
+fn comparePluginSemver(a: PluginSemver, b: PluginSemver) std.math.Order {
+    if (a.major != b.major) return numericOrder(a.major, b.major);
+    if (a.minor != b.minor) return numericOrder(a.minor, b.minor);
+    if (a.patch != b.patch) return numericOrder(a.patch, b.patch);
+    if (a.prerelease == null and b.prerelease == null) return .eq;
+    if (a.prerelease == null) return .gt;
+    if (b.prerelease == null) return .lt;
+    return comparePluginPrerelease(a.prerelease.?, b.prerelease.?);
+}
+
+fn comparePluginPrerelease(a: []const u8, b: []const u8) std.math.Order {
+    var a_parts = std.mem.splitScalar(u8, a, '.');
+    var b_parts = std.mem.splitScalar(u8, b, '.');
+    while (true) {
+        const a_part = a_parts.next();
+        const b_part = b_parts.next();
+        if (a_part == null and b_part == null) return .eq;
+        if (a_part == null) return .lt;
+        if (b_part == null) return .gt;
+
+        const a_number = parsePluginVersionNumber(a_part.?);
+        const b_number = parsePluginVersionNumber(b_part.?);
+        const order = if (a_number != null and b_number != null)
+            numericOrder(a_number.?, b_number.?)
+        else if (a_number != null)
+            std.math.Order.lt
+        else if (b_number != null)
+            std.math.Order.gt
+        else
+            std.mem.order(u8, a_part.?, b_part.?);
+        if (order != .eq) return order;
+    }
+}
+
+fn naturalOrder(a: []const u8, b: []const u8) std.math.Order {
+    var a_index: usize = 0;
+    var b_index: usize = 0;
+    while (a_index < a.len and b_index < b.len) {
+        if (std.ascii.isDigit(a[a_index]) and std.ascii.isDigit(b[b_index])) {
+            const a_start = a_index;
+            const b_start = b_index;
+            while (a_index < a.len and std.ascii.isDigit(a[a_index])) a_index += 1;
+            while (b_index < b.len and std.ascii.isDigit(b[b_index])) b_index += 1;
+            const order = digitRunOrder(a[a_start..a_index], b[b_start..b_index]);
+            if (order != .eq) return order;
+            continue;
+        }
+        if (a[a_index] != b[b_index]) return if (a[a_index] < b[b_index]) .lt else .gt;
+        a_index += 1;
+        b_index += 1;
+    }
+    if (a_index == a.len and b_index == b.len) return .eq;
+    return if (a_index == a.len) .lt else .gt;
+}
+
+fn digitRunOrder(a: []const u8, b: []const u8) std.math.Order {
+    const a_trimmed = trimLeadingZeroes(a);
+    const b_trimmed = trimLeadingZeroes(b);
+    if (a_trimmed.len != b_trimmed.len) return if (a_trimmed.len < b_trimmed.len) .lt else .gt;
+    return std.mem.order(u8, a_trimmed, b_trimmed);
+}
+
+fn trimLeadingZeroes(value: []const u8) []const u8 {
+    var index: usize = 0;
+    while (index + 1 < value.len and value[index] == '0') index += 1;
+    return value[index..];
+}
+
+fn numericOrder(a: u64, b: u64) std.math.Order {
+    if (a < b) return .lt;
+    if (a > b) return .gt;
+    return .eq;
 }
 
 pub fn removePluginConfig(allocator: std.mem.Allocator, bytes: []const u8, plugin_id: []const u8) ![]const u8 {
@@ -344,6 +458,8 @@ test "plugin config resolves active versioned plugin roots" {
     defer dir.cleanup();
     const io = std.Io.Threaded.global_single_threaded.io();
 
+    try dir.dir.createDirPath(io, "home/plugins/cache/openai-bundled/computer-use/1.0.9");
+    try dir.dir.createDirPath(io, "home/plugins/cache/openai-bundled/computer-use/1.0.10");
     try dir.dir.createDirPath(io, "home/plugins/cache/openai-bundled/computer-use/1.0.793");
     const codex_home = try dir.dir.realPathFileAlloc(io, "home", allocator);
     defer allocator.free(codex_home);
@@ -351,6 +467,8 @@ test "plugin config resolves active versioned plugin roots" {
     const versioned = (try localPluginRoot(allocator, codex_home, "computer-use@openai-bundled")).?;
     defer allocator.free(versioned);
     try std.testing.expect(std.mem.endsWith(u8, versioned, "plugins/cache/openai-bundled/computer-use/1.0.793"));
+    try std.testing.expect(comparePluginVersions("1.0.10", "1.0.9") == .gt);
+    try std.testing.expect(comparePluginVersions("1.0.10", "1.0.10-beta.1") == .gt);
 
     try dir.dir.createDirPath(io, "home/plugins/cache/openai-bundled/computer-use/local");
     const local = (try localPluginRoot(allocator, codex_home, "computer-use@openai-bundled")).?;
