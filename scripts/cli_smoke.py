@@ -8824,6 +8824,38 @@ def run_mcp_oauth_login_logout_smoke(binary: Path) -> None:
         )
         assert added_credentials[added_key]["access_token"] == "mock-access-token"
 
+        bearer_home = temp_root / "bearer-add-codex-home"
+        bearer_home.mkdir()
+        bearer_env = env.copy()
+        bearer_env["CODEX_HOME"] = str(bearer_home)
+        bearer_env["CODEX_MCP_OAUTH_SKIP_BROWSER"] = "1"
+        bearer_add = subprocess.run(
+            [
+                str(binary.resolve()),
+                "mcp",
+                "add",
+                "bearer-added",
+                "--url",
+                remote_url,
+                "--bearer-token-env-var",
+                "MCP_TOKEN",
+            ],
+            cwd=temp_root,
+            env=bearer_env,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=5,
+            check=True,
+        )
+        assert bearer_add.stderr == ""
+        assert bearer_add.stdout == "Added global MCP server 'bearer-added'.\n"
+        bearer_config = (bearer_home / "config.toml").read_text(encoding="utf-8")
+        assert "[mcp_servers.bearer-added]" in bearer_config
+        assert f'url = "{remote_url}"' in bearer_config
+        assert 'bearer_token_env_var = "MCP_TOKEN"' in bearer_config
+        assert not (bearer_home / ".credentials.json").exists()
+
         removed = subprocess.run(
             [str(binary.resolve()), "mcp", "logout", "remote"],
             cwd=temp_root,

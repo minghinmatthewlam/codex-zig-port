@@ -495,7 +495,7 @@ fn runAdd(
     try cli_utils.writeStdout(message);
 
     const added_server = servers.get(name) orelse return;
-    if (added_server.kind == .streamable_http and added_server.url != null and (streamableHttpSupportsOAuth(allocator, added_server.url.?) catch false)) {
+    if (added_server.kind == .streamable_http and added_server.url != null and added_server.bearer_token_env_var == null and (streamableHttpSupportsOAuth(allocator, added_server.url.?) catch false)) {
         try cli_utils.writeStdout("Detected OAuth support. Starting OAuth flow…\n");
         try performMcpOAuthLogin(allocator, codex_home, original_config, added_server.*, &.{}, true);
         try cli_utils.writeStdout("Successfully logged in.\n");
