@@ -366,16 +366,146 @@ fn runList(allocator: std.mem.Allocator, codex_home: []const u8, config_bytes: [
         try cli_utils.writeStdout("No MCP servers configured yet. Try `codex-zig mcp add my-tool -- my-command`.\n");
         return;
     }
+    const rendered = try renderTextList(allocator, codex_home, config_bytes, servers);
+    defer allocator.free(rendered);
+    try cli_utils.writeStdout(rendered);
+}
+
+const StdioListRow = struct {
+    name: []const u8,
+    command: []const u8,
+    args_display: []const u8,
+    env_display: []const u8,
+    cwd_display: []const u8,
+    status: []const u8,
+    auth: []const u8,
+
+    fn deinit(self: *StdioListRow, allocator: std.mem.Allocator) void {
+        allocator.free(self.args_display);
+        allocator.free(self.env_display);
+    }
+};
+
+const HttpListRow = struct {
+    name: []const u8,
+    url: []const u8,
+    bearer_token_display: []const u8,
+    status: []const u8,
+    auth: []const u8,
+};
+
+fn renderTextList(allocator: std.mem.Allocator, codex_home: []const u8, config_bytes: []const u8, servers: McpServers) ![]const u8 {
+    var stdio_rows = std.ArrayList(StdioListRow).empty;
+    defer {
+        for (stdio_rows.items) |*row| row.deinit(allocator);
+        stdio_rows.deinit(allocator);
+    }
+    var http_rows = std.ArrayList(HttpListRow).empty;
+    defer http_rows.deinit(allocator);
+
     for (servers.items.items) |server| {
         const auth_status = try mcpAuthStatusForServer(allocator, codex_home, config_bytes, server);
-        const line = try std.fmt.allocPrint(
-            allocator,
-            "{s}\t{s}\t{s}\t{s}\n",
-            .{ server.name, kindLabel(server), statusLabel(server.enabled), auth_status.display() },
-        );
-        defer allocator.free(line);
-        try cli_utils.writeStdout(line);
+        if (server.kind == .stdio) {
+            const args_display = if (server.args.items.len == 0)
+                try allocator.dupe(u8, "-")
+            else
+                try cli_utils.joinWithSpaces(allocator, server.args.items);
+            errdefer allocator.free(args_display);
+            const env_display = try formatEnvDisplay(allocator, server.env_vars.items);
+            errdefer allocator.free(env_display);
+            try stdio_rows.append(allocator, .{
+                .name = server.name,
+                .command = server.command.?,
+                .args_display = args_display,
+                .env_display = env_display,
+                .cwd_display = server.cwd orelse "-",
+                .status = statusLabel(server.enabled),
+                .auth = auth_status.display(),
+            });
+        } else if (server.kind == .streamable_http) {
+            try http_rows.append(allocator, .{
+                .name = server.name,
+                .url = server.url.?,
+                .bearer_token_display = server.bearer_token_env_var orelse "-",
+                .status = statusLabel(server.enabled),
+                .auth = auth_status.display(),
+            });
+        }
     }
+
+    std.mem.sort(StdioListRow, stdio_rows.items, {}, stdioListRowLessThan);
+    std.mem.sort(HttpListRow, http_rows.items, {}, httpListRowLessThan);
+
+    var output = std.ArrayList(u8).empty;
+    errdefer output.deinit(allocator);
+
+    if (stdio_rows.items.len > 0) {
+        var widths = [_]usize{ "Name".len, "Command".len, "Args".len, "Env".len, "Cwd".len, "Status".len, "Auth".len };
+        for (stdio_rows.items) |row| {
+            const cells = [_][]const u8{ row.name, row.command, row.args_display, row.env_display, row.cwd_display, row.status, row.auth };
+            updateColumnWidths(&widths, cells[0..]);
+        }
+        const header = [_][]const u8{ "Name", "Command", "Args", "Env", "Cwd", "Status", "Auth" };
+        try appendColumnLine(allocator, &output, header[0..], widths[0..]);
+        for (stdio_rows.items) |row| {
+            const cells = [_][]const u8{ row.name, row.command, row.args_display, row.env_display, row.cwd_display, row.status, row.auth };
+            try appendColumnLine(allocator, &output, cells[0..], widths[0..]);
+        }
+    }
+
+    if (stdio_rows.items.len > 0 and http_rows.items.len > 0) try output.append(allocator, '\n');
+
+    if (http_rows.items.len > 0) {
+        var widths = [_]usize{ "Name".len, "Url".len, "Bearer Token Env Var".len, "Status".len, "Auth".len };
+        for (http_rows.items) |row| {
+            const cells = [_][]const u8{ row.name, row.url, row.bearer_token_display, row.status, row.auth };
+            updateColumnWidths(&widths, cells[0..]);
+        }
+        const header = [_][]const u8{ "Name", "Url", "Bearer Token Env Var", "Status", "Auth" };
+        try appendColumnLine(allocator, &output, header[0..], widths[0..]);
+        for (http_rows.items) |row| {
+            const cells = [_][]const u8{ row.name, row.url, row.bearer_token_display, row.status, row.auth };
+            try appendColumnLine(allocator, &output, cells[0..], widths[0..]);
+        }
+    }
+
+    return output.toOwnedSlice(allocator);
+}
+
+fn stdioListRowLessThan(_: void, lhs: StdioListRow, rhs: StdioListRow) bool {
+    return std.mem.lessThan(u8, lhs.name, rhs.name);
+}
+
+fn httpListRowLessThan(_: void, lhs: HttpListRow, rhs: HttpListRow) bool {
+    return std.mem.lessThan(u8, lhs.name, rhs.name);
+}
+
+fn formatEnvDisplay(allocator: std.mem.Allocator, entries: []const KeyValue) ![]const u8 {
+    if (entries.len == 0) return allocator.dupe(u8, "-");
+    var output = std.ArrayList(u8).empty;
+    errdefer output.deinit(allocator);
+    for (entries, 0..) |entry, index| {
+        if (index > 0) try output.appendSlice(allocator, ", ");
+        try output.appendSlice(allocator, entry.key);
+        try output.appendSlice(allocator, "=*****");
+    }
+    return output.toOwnedSlice(allocator);
+}
+
+fn updateColumnWidths(widths: []usize, cells: []const []const u8) void {
+    for (cells, 0..) |cell, index| {
+        widths[index] = @max(widths[index], cell.len);
+    }
+}
+
+fn appendColumnLine(allocator: std.mem.Allocator, output: *std.ArrayList(u8), cells: []const []const u8, widths: []const usize) !void {
+    for (cells, 0..) |cell, index| {
+        if (index > 0) try output.appendSlice(allocator, "  ");
+        try output.appendSlice(allocator, cell);
+        var padding = widths[index] - cell.len;
+        while (padding > 0) : (padding -= 1) try output.append(allocator, ' ');
+    }
+    try output.append(allocator, '\n');
 }
 
 fn runGet(allocator: std.mem.Allocator, servers: McpServers, args: []const []const u8) !void {
@@ -3883,6 +4013,43 @@ test "mcp list auth status reports bearer and file oauth credentials" {
     try std.testing.expect(std.mem.indexOf(u8, rendered, "\"auth_status\": \"OAuth\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, rendered, "\"auth_status\": \"BearerToken\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, rendered, "\"auth_status\": \"Unsupported\"") != null);
+}
+
+test "mcp list text renders stdio cwd and http token columns" {
+    const allocator = std.testing.allocator;
+    var dir = std.testing.tmpDir(.{});
+    defer dir.cleanup();
+
+    const config_bytes =
+        \\[mcp_servers.remote]
+        \\url = "https://example.com/mcp"
+        \\bearer_token_env_var = "MCP_TOKEN"
+        \\
+        \\[mcp_servers.docs]
+        \\command = "docs-server"
+        \\args = ["--stdio"]
+        \\cwd = "/tmp/docs"
+        \\
+        \\[mcp_servers.docs.env]
+        \\TOKEN = "abc"
+        \\
+    ;
+    const codex_home = try dir.dir.realPathFileAlloc(std.Io.Threaded.global_single_threaded.io(), ".", allocator);
+    defer allocator.free(codex_home);
+
+    var servers = try parseServers(allocator, config_bytes);
+    defer servers.deinit(allocator);
+
+    const rendered = try renderTextList(allocator, codex_home, config_bytes, servers);
+    defer allocator.free(rendered);
+    try std.testing.expect(std.mem.indexOf(u8, rendered, "Name") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rendered, "Command") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rendered, "Cwd") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rendered, "docs-server") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rendered, "TOKEN=*****") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rendered, "/tmp/docs") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rendered, "Bearer Token Env Var") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rendered, "MCP_TOKEN") != null);
 }
 
 test "mcp streamable http headers parse inline and render" {
