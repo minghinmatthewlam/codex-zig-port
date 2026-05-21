@@ -226,6 +226,7 @@ pub const SandboxPermissionProfile = struct {
     mode: SandboxMode,
     additional_writable_roots: StringList,
     read_denied_roots: StringList,
+    read_denied_globs: StringList,
     include_cwd_write_root: bool = true,
     network_enabled: bool = true,
     exclude_tmpdir_env_var: bool = true,
@@ -234,7 +235,12 @@ pub const SandboxPermissionProfile = struct {
     pub fn deinit(self: *SandboxPermissionProfile, allocator: std.mem.Allocator) void {
         self.additional_writable_roots.deinit(allocator);
         self.read_denied_roots.deinit(allocator);
+        self.read_denied_globs.deinit(allocator);
     }
+};
+
+pub const SandboxPermissionProfileOptions = struct {
+    allow_read_denied_globs: bool = false,
 };
 
 pub const AltScreenMode = enum {
@@ -456,6 +462,14 @@ pub fn applyRawConfigOverride(
 }
 
 pub fn loadSandboxPermissionProfile(allocator: std.mem.Allocator, profile: []const u8) !SandboxPermissionProfile {
+    return loadSandboxPermissionProfileWithOptions(allocator, profile, .{});
+}
+
+pub fn loadSandboxPermissionProfileWithOptions(
+    allocator: std.mem.Allocator,
+    profile: []const u8,
+    options: SandboxPermissionProfileOptions,
+) !SandboxPermissionProfile {
     if (try resolveBuiltInSandboxPermissionProfile(allocator, profile)) |builtin_profile| return builtin_profile;
 
     const codex_home = try resolveCodexHome(allocator);
@@ -464,7 +478,7 @@ pub fn loadSandboxPermissionProfile(allocator: std.mem.Allocator, profile: []con
     defer if (config_bytes) |bytes| allocator.free(bytes);
     const bytes = config_bytes orelse return error.SandboxPermissionProfileUnsupported;
 
-    return (ConfigView{ .bytes = bytes }).resolveCustomSandboxPermissionProfile(allocator, profile);
+    return (ConfigView{ .bytes = bytes }).resolveCustomSandboxPermissionProfileWithOptions(allocator, profile, options);
 }
 
 fn resolveBuiltInSandboxPermissionProfile(allocator: std.mem.Allocator, profile: []const u8) !?SandboxPermissionProfile {
@@ -481,11 +495,14 @@ fn resolveBuiltInSandboxPermissionProfile(allocator: std.mem.Allocator, profile:
     errdefer allocator.free(additional_writable_roots);
     const read_denied_roots = try allocator.alloc([]const u8, 0);
     errdefer allocator.free(read_denied_roots);
+    const read_denied_globs = try allocator.alloc([]const u8, 0);
+    errdefer allocator.free(read_denied_globs);
 
     return .{
         .mode = mode,
         .additional_writable_roots = .{ .items = additional_writable_roots },
         .read_denied_roots = .{ .items = read_denied_roots },
+        .read_denied_globs = .{ .items = read_denied_globs },
         .network_enabled = mode == .danger_full_access,
         .exclude_tmpdir_env_var = mode != .workspace_write,
         .exclude_slash_tmp = mode != .workspace_write,
@@ -2181,7 +2198,18 @@ const ConfigView = struct {
         allocator: std.mem.Allocator,
         profile: []const u8,
     ) !SandboxPermissionProfile {
-        var state = CustomSandboxPermissionProfileState{};
+        return self.resolveCustomSandboxPermissionProfileWithOptions(allocator, profile, .{});
+    }
+
+    fn resolveCustomSandboxPermissionProfileWithOptions(
+        self: ConfigView,
+        allocator: std.mem.Allocator,
+        profile: []const u8,
+        options: SandboxPermissionProfileOptions,
+    ) !SandboxPermissionProfile {
+        var state = CustomSandboxPermissionProfileState{
+            .allow_read_denied_globs = options.allow_read_denied_globs,
+        };
         errdefer state.deinit(allocator);
 
         var saw_filesystem = false;
@@ -2244,17 +2272,21 @@ const SandboxFilesystemAccess = enum {
 };
 
 const CustomSandboxPermissionProfileState = struct {
+    allow_read_denied_globs: bool = false,
     root_read: bool = false,
     project_roots_write: bool = false,
     unsupported: bool = false,
     additional_writable_roots: std.ArrayList([]const u8) = .empty,
     read_denied_roots: std.ArrayList([]const u8) = .empty,
+    read_denied_globs: std.ArrayList([]const u8) = .empty,
 
     fn deinit(self: *CustomSandboxPermissionProfileState, allocator: std.mem.Allocator) void {
         for (self.additional_writable_roots.items) |root| allocator.free(root);
         self.additional_writable_roots.deinit(allocator);
         for (self.read_denied_roots.items) |root| allocator.free(root);
         self.read_denied_roots.deinit(allocator);
+        for (self.read_denied_globs.items) |pattern| allocator.free(pattern);
+        self.read_denied_globs.deinit(allocator);
     }
 
     fn toSandboxPermissionProfile(
@@ -2272,11 +2304,14 @@ const CustomSandboxPermissionProfileState = struct {
         errdefer freeStringSliceItems(allocator, additional_writable_roots);
         const read_denied_roots = try self.read_denied_roots.toOwnedSlice(allocator);
         errdefer freeStringSliceItems(allocator, read_denied_roots);
+        const read_denied_globs = try self.read_denied_globs.toOwnedSlice(allocator);
+        errdefer freeStringSliceItems(allocator, read_denied_globs);
 
         return .{
             .mode = mode,
             .additional_writable_roots = .{ .items = additional_writable_roots },
             .read_denied_roots = .{ .items = read_denied_roots },
+            .read_denied_globs = .{ .items = read_denied_globs },
             .include_cwd_write_root = self.project_roots_write,
             .network_enabled = network_enabled,
         };
@@ -2297,6 +2332,14 @@ fn recordSandboxFilesystemLine(
     const raw_key = std.mem.trim(u8, line[0..eq], " \t");
     const rhs = std.mem.trim(u8, line[eq + 1 ..], " \t");
     if (raw_key.len == 0) return;
+    if (std.mem.eql(u8, raw_key, "glob_scan_max_depth")) {
+        const depth = std.fmt.parseUnsigned(u64, tomlScalarWithoutInlineComment(rhs), 10) catch {
+            state.unsupported = true;
+            return;
+        };
+        if (depth == 0) state.unsupported = true;
+        return;
+    }
 
     const path = try parseTomlKey(allocator, raw_key);
     defer allocator.free(path);
@@ -2398,12 +2441,45 @@ fn recordSandboxReadDenyRoot(
     path: []const u8,
     subpath: ?[]const u8,
 ) !void {
+    if (try sandboxPermissionProfileDenyGlobPattern(allocator, path, subpath)) |pattern| {
+        errdefer allocator.free(pattern);
+        if (!state.allow_read_denied_globs) {
+            state.unsupported = true;
+            allocator.free(pattern);
+            return;
+        }
+        try state.read_denied_globs.append(allocator, pattern);
+        return;
+    }
+
     const root = try sandboxPermissionProfileRootPath(allocator, path, subpath) orelse {
         state.unsupported = true;
         return;
     };
     errdefer allocator.free(root);
     try state.read_denied_roots.append(allocator, root);
+}
+
+fn sandboxPermissionProfileDenyGlobPattern(
+    allocator: std.mem.Allocator,
+    path: []const u8,
+    subpath: ?[]const u8,
+) !?[]const u8 {
+    if (subpath) |child| {
+        if (!containsSandboxGlobChars(child)) return null;
+        if (!isSafeRelativeTomlGlobSubpath(child)) return null;
+        if (std.mem.eql(u8, path, ":project_roots")) {
+            return try allocator.dupe(u8, child);
+        }
+        if (std.fs.path.isAbsolute(path)) {
+            return try std.fs.path.join(allocator, &.{ path, child });
+        }
+        return null;
+    }
+
+    if (!containsSandboxGlobChars(path)) return null;
+    if (!std.fs.path.isAbsolute(path)) return null;
+    return try allocator.dupe(u8, path);
 }
 
 fn appendWritableRoot(
@@ -2465,6 +2541,22 @@ fn isSafeRelativeTomlSubpath(subpath: []const u8) bool {
         if (part.len == 0 or std.mem.eql(u8, part, ".") or std.mem.eql(u8, part, "..")) return false;
     }
     return true;
+}
+
+fn isSafeRelativeTomlGlobSubpath(subpath: []const u8) bool {
+    if (subpath.len == 0 or std.fs.path.isAbsolute(subpath)) return false;
+    var iter = std.mem.splitScalar(u8, subpath, '/');
+    while (iter.next()) |part| {
+        if (part.len == 0 or std.mem.eql(u8, part, ".") or std.mem.eql(u8, part, "..")) return false;
+    }
+    return true;
+}
+
+fn containsSandboxGlobChars(path: []const u8) bool {
+    for (path) |byte| {
+        if (byte == '*' or byte == '?' or byte == '[' or byte == ']') return true;
+    }
+    return false;
 }
 
 fn tomlAssignmentKey(line: []const u8) ?[]const u8 {
@@ -3073,6 +3165,33 @@ test "sandbox permission profile preserves concrete read deny roots" {
     try std.testing.expectEqualStrings("/tmp/codex-private", profile.read_denied_roots.items[1]);
 }
 
+test "sandbox permission profile preserves deny globs when enabled" {
+    const allocator = std.testing.allocator;
+    const view = ConfigView{
+        .bytes =
+        \\[permissions.demo.filesystem]
+        \\glob_scan_max_depth = 2
+        \\":root" = "read"
+        \\":project_roots" = { "**/*.secret" = "none" }
+        \\"/tmp/codex-private" = { "*.token" = "none" }
+        \\
+        \\[permissions.demo.network]
+        \\enabled = true
+        \\
+        ,
+    };
+
+    var profile = try view.resolveCustomSandboxPermissionProfileWithOptions(allocator, "demo", .{
+        .allow_read_denied_globs = true,
+    });
+    defer profile.deinit(allocator);
+
+    try std.testing.expectEqual(SandboxMode.read_only, profile.mode);
+    try std.testing.expectEqual(@as(usize, 2), profile.read_denied_globs.items.len);
+    try std.testing.expectEqualStrings("**/*.secret", profile.read_denied_globs.items[0]);
+    try std.testing.expectEqualStrings("/tmp/codex-private/*.token", profile.read_denied_globs.items[1]);
+}
+
 test "sandbox permission profile decodes quoted profile section escapes" {
     const allocator = std.testing.allocator;
     const view = ConfigView{
@@ -3121,6 +3240,19 @@ test "sandbox permission profile rejects narrow read and restricted network shap
         ,
     };
     try std.testing.expectError(error.SandboxPermissionProfileUnsupported, restricted_network.resolveCustomSandboxPermissionProfile(allocator, "demo"));
+
+    const deny_glob_default = ConfigView{
+        .bytes =
+        \\[permissions.demo.filesystem]
+        \\":root" = "read"
+        \\":project_roots" = { "**/*.secret" = "none" }
+        \\
+        \\[permissions.demo.network]
+        \\enabled = true
+        \\
+        ,
+    };
+    try std.testing.expectError(error.SandboxPermissionProfileUnsupported, deny_glob_default.resolveCustomSandboxPermissionProfile(allocator, "demo"));
 }
 
 test "profile values override top-level config values" {
