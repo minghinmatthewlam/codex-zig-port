@@ -40,18 +40,24 @@ pub fn build(b: *std.Build) void {
     const test_step = b.step("test", "Run unit tests");
     test_step.dependOn(&run_unit_tests.step);
 
+    const installed_exe_path = b.getInstallPath(.bin, "codex-zig");
+
     const tui_e2e_cmd = b.addSystemCommand(&.{ "python3", "scripts/tui_e2e.py" });
+    tui_e2e_cmd.addArgs(&.{ "--bin", installed_exe_path });
     tui_e2e_cmd.step.dependOn(b.getInstallStep());
     const app_server_e2e_cmd = b.addSystemCommand(&.{ "python3", "scripts/app_server_stdio_smoke.py" });
+    app_server_e2e_cmd.addArg(installed_exe_path);
     app_server_e2e_cmd.step.dependOn(b.getInstallStep());
     app_server_e2e_cmd.step.dependOn(&tui_e2e_cmd.step);
     const cli_e2e_cmd = b.addSystemCommand(&.{ "python3", "scripts/cli_smoke.py" });
+    cli_e2e_cmd.addArg(installed_exe_path);
     cli_e2e_cmd.step.dependOn(b.getInstallStep());
     cli_e2e_cmd.step.dependOn(&app_server_e2e_cmd.step);
     const e2e_step = b.step("e2e", "Run product-surface E2E smoke tests");
     e2e_step.dependOn(&cli_e2e_cmd.step);
 
     const computer_use_smoke_cmd = b.addSystemCommand(&.{ "python3", "scripts/real_computer_use_mcp_smoke.py" });
+    computer_use_smoke_cmd.addArg(installed_exe_path);
     computer_use_smoke_cmd.step.dependOn(b.getInstallStep());
     const computer_use_smoke_step = b.step("computer-use-smoke", "Run real computer-use MCP smoke test");
     computer_use_smoke_step.dependOn(&computer_use_smoke_cmd.step);
