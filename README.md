@@ -60,7 +60,7 @@ The first demo slice targets macOS and focuses on the interactive CLI surface:
 - run a command through the macOS Seatbelt sandbox with `sandbox macos`,
   including Rust built-ins, supported custom `[permissions]` profiles, macOS
   deny-read glob entries, shared tool/app-server enforcement, and parsed
-  Seatbelt-only denial flags plus applied Unix socket allowlists
+  Seatbelt-only denial logging plus applied Unix socket allowlists
 - check `prefix_rule` execpolicy files against a command with
   `execpolicy check`, including `match` / `not_match` examples,
   `network_rule` validation, and absolute host executable resolution

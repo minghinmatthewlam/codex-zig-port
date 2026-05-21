@@ -9105,7 +9105,7 @@ def run_sandbox_permission_profile_smoke(binary: Path) -> None:
         assert "--allow-unix-socket PATH" in help_result.stderr
         assert "--log-denials" in help_result.stderr
 
-        denials_unsupported = subprocess.run(
+        denials_logged = subprocess.run(
             [
                 str(binary.resolve()),
                 "sandbox",
@@ -9121,11 +9121,10 @@ def run_sandbox_permission_profile_smoke(binary: Path) -> None:
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             timeout=5,
-            check=False,
+            check=True,
         )
-        assert denials_unsupported.returncode != 0
-        assert denials_unsupported.stdout == ""
-        assert "error: SandboxLogDenialsUnsupported" in denials_unsupported.stderr
+        assert denials_logged.stdout == "ok\n"
+        assert "=== Sandbox denials ===" in denials_logged.stderr
 
         cwd_without_profile = subprocess.run(
             [str(binary.resolve()), "sandbox", "macos", "--cd", str(temp_root), "--", "/bin/echo", "ok"],
@@ -9429,6 +9428,34 @@ def run_sandbox_permission_profile_smoke(binary: Path) -> None:
         )
         assert denied_read.returncode != 0
         assert denied_read.stdout == ""
+
+        logged_shell_denial = subprocess.run(
+            [
+                str(binary.resolve()),
+                "sandbox",
+                "macos",
+                "--log-denials",
+                "--permissions-profile",
+                "read-deny-profile",
+                "--cd",
+                str(workspace),
+                "--",
+                "/bin/sh",
+                "-c",
+                "exec /bin/cat secret.txt",
+            ],
+            cwd=temp_root,
+            env=env,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=8,
+            check=False,
+        )
+        assert logged_shell_denial.returncode != 0
+        assert logged_shell_denial.stdout == ""
+        assert "=== Sandbox denials ===" in logged_shell_denial.stderr
+        assert "file-read" in logged_shell_denial.stderr
 
         allowed_read = subprocess.run(
             [
