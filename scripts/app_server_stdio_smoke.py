@@ -20154,7 +20154,7 @@ def run_goal_state_db_smoke(binary: Path) -> None:
                     stale_clear_thread_id,
                     "goal-stale-clear-1",
                     "stale transcript goal",
-                    "active",
+                    "paused",
                     99,
                     0,
                     0,
@@ -20340,6 +20340,32 @@ def run_goal_state_db_smoke(binary: Path) -> None:
                 proc,
                 {
                     "jsonrpc": "2.0",
+                    "id": "thread-goal-reactivate-same-objective-state-db-unloaded",
+                    "method": "thread/goal/set",
+                    "params": {
+                        "threadId": stale_clear_thread_id,
+                        "objective": "stale transcript goal",
+                    },
+                },
+            )
+            reactivated_same_objective = read_json_line(proc, 5)
+            assert reactivated_same_objective["id"] == "thread-goal-reactivate-same-objective-state-db-unloaded"
+            assert reactivated_same_objective["result"]["goal"]["status"] == "active"
+            assert reactivated_same_objective["result"]["goal"]["tokenBudget"] == 99
+            assert read_json_line(proc, 5)["method"] == "thread/goal/updated"
+            assert (
+                sqlite_row(
+                    state_db_path,
+                    "SELECT goal_id, status, token_budget FROM thread_goals WHERE thread_id = ?",
+                    (stale_clear_thread_id,),
+                )
+                == ("goal-stale-clear-1", "active", 99)
+            )
+
+            write_json_line(
+                proc,
+                {
+                    "jsonrpc": "2.0",
                     "id": "thread-resume-preserves-transcript-goal-without-state-row",
                     "method": "thread/resume",
                     "params": {"threadId": transcript_goal_thread_id, "excludeTurns": True},
@@ -20493,6 +20519,66 @@ def run_goal_state_db_smoke(binary: Path) -> None:
                 )
                 == ("paused", 333)
             )
+
+            loaded_goal_id_before_same_objective = sqlite_row(
+                state_db_path,
+                "SELECT goal_id FROM thread_goals WHERE thread_id = ?",
+                (thread_id,),
+            )[0]
+            write_json_line(
+                proc,
+                {
+                    "jsonrpc": "2.0",
+                    "id": "thread-goal-reactivate-same-objective-state-db-loaded",
+                    "method": "thread/goal/set",
+                    "params": {
+                        "threadId": thread_id,
+                        "objective": "resume should load sqlite goal",
+                    },
+                },
+            )
+            loaded_same_objective = read_json_line(proc, 5)
+            assert loaded_same_objective["id"] == "thread-goal-reactivate-same-objective-state-db-loaded"
+            assert loaded_same_objective["result"]["goal"]["status"] == "active"
+            assert loaded_same_objective["result"]["goal"]["tokenBudget"] == 333
+            assert read_json_line(proc, 5)["method"] == "thread/goal/updated"
+            assert (
+                sqlite_row(
+                    state_db_path,
+                    "SELECT goal_id, status, token_budget FROM thread_goals WHERE thread_id = ?",
+                    (thread_id,),
+                )
+                == (loaded_goal_id_before_same_objective, "active", 333)
+            )
+
+            loaded_goal_id_before_replace = sqlite_row(
+                state_db_path,
+                "SELECT goal_id FROM thread_goals WHERE thread_id = ?",
+                (thread_id,),
+            )[0]
+            write_json_line(
+                proc,
+                {
+                    "jsonrpc": "2.0",
+                    "id": "thread-goal-replace-state-db-loaded",
+                    "method": "thread/goal/set",
+                    "params": {
+                        "threadId": thread_id,
+                        "objective": "replacement loaded sqlite goal",
+                    },
+                },
+            )
+            loaded_replace = read_json_line(proc, 5)
+            assert loaded_replace["id"] == "thread-goal-replace-state-db-loaded"
+            assert loaded_replace["result"]["goal"]["objective"] == "replacement loaded sqlite goal"
+            assert loaded_replace["result"]["goal"]["status"] == "active"
+            assert read_json_line(proc, 5)["method"] == "thread/goal/updated"
+            loaded_goal_id_after_replace = sqlite_row(
+                state_db_path,
+                "SELECT goal_id FROM thread_goals WHERE thread_id = ?",
+                (thread_id,),
+            )[0]
+            assert loaded_goal_id_after_replace != loaded_goal_id_before_replace
 
             write_json_line(
                 proc,
