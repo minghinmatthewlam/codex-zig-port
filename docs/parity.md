@@ -768,9 +768,11 @@ absolute `turn/start.sandboxPolicy.workspaceWrite.writableRoots`, including
 relative roots resolved against the TUI cwd.
 
 Additional remote app-server TUI config coverage: remote TUI `--profile`,
-`--search`, `--oss`, and `--local-provider` are accepted for start, resume, and
-fork flows and forwarded through thread lifecycle `params.config` as `profile`,
-`web_search`, `oss`, and `oss_provider`. App-server `thread/start`,
+`-c openai_base_url=...`, `--search`, `--oss`, and `--local-provider` are
+accepted for start, resume, and fork flows and forwarded through thread
+lifecycle `params.config` as `profile`, `openai_base_url`, `web_search`, `oss`,
+and `oss_provider`. The simple remote TUI also accepts legacy `syntax_theme`
+overrides as local no-ops for CLI compatibility. App-server `thread/start`,
 `thread/resume`, and `thread/fork` honor those request config overrides when
 creating loaded threads; later `turn/start`, compact, and review requests reload
 the loaded thread's active profile while preserving explicit request
