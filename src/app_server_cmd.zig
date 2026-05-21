@@ -48,6 +48,8 @@ const THREAD_LIST_DEFAULT_LIMIT = 25;
 const THREAD_LIST_MAX_LIMIT = 100;
 const THREAD_TURNS_DEFAULT_LIMIT = 25;
 const THREAD_TURNS_MAX_LIMIT = 100;
+const APP_LIST_DIRECTORY_MAX_PAGES = 20;
+const APP_LIST_DIRECTORY_CACHE_TTL_MS = 3600 * std.time.ms_per_s;
 const MANAGED_CONFIG_PATH_ENV_VAR = "CODEX_APP_SERVER_MANAGED_CONFIG_PATH";
 const SYSTEM_CONFIG_PATH_ENV_VAR = "CODEX_APP_SERVER_SYSTEM_CONFIG_PATH";
 const SYSTEM_REQUIREMENTS_PATH_ENV_VAR = "CODEX_APP_SERVER_SYSTEM_REQUIREMENTS_PATH";
@@ -70,6 +72,20 @@ var app_server_shutdown_active_connection_fd = std.atomic.Value(std.posix.fd_t).
 var app_server_shutdown_wakeup_write_fd = std.atomic.Value(std.posix.fd_t).init(-1);
 var app_server_shutdown_connection_wakeup_write_fd = std.atomic.Value(std.posix.fd_t).init(-1);
 var app_server_shutdown_connection_watcher_stop = std.atomic.Value(bool).init(false);
+var app_directory_cache_mutex: std.Io.Mutex = .init;
+var app_directory_cache: ?AppDirectoryCache = null;
+
+const AppDirectoryCache = struct {
+    key: []const u8,
+    expires_at_ms: i64,
+    pages: std.ArrayList([]const u8),
+
+    fn deinit(self: *AppDirectoryCache, allocator: std.mem.Allocator) void {
+        allocator.free(self.key);
+        for (self.pages.items) |page| allocator.free(page);
+        self.pages.deinit(allocator);
+    }
+};
 
 extern "c" fn openpty(
     amaster: *c_int,
@@ -2702,9 +2718,6 @@ const APP_METADATA_TS =
 
 const APP_INFO_TS =
     GENERATED_TS_HEADER ++
-    \\import type { AppBranding } from "./AppBranding";
-    \\import type { AppMetadata } from "./AppMetadata";
-    \\
     \\export interface AppInfo {
     \\  id: string;
     \\  name: string;
@@ -2712,9 +2725,9 @@ const APP_INFO_TS =
     \\  logoUrl: string | null;
     \\  logoUrlDark: string | null;
     \\  distributionChannel: string | null;
-    \\  branding: AppBranding | null;
-    \\  appMetadata: AppMetadata | null;
-    \\  labels: Record<string, string> | null;
+    \\  branding: Record<string, unknown> | null;
+    \\  appMetadata: Record<string, unknown> | null;
+    \\  labels: Record<string, unknown> | null;
     \\  installUrl: string | null;
     \\  isAccessible: boolean;
     \\  isEnabled: boolean;
@@ -11875,9 +11888,9 @@ const APPS_LIST_RESPONSE_JSON_SCHEMA =
     \\        "logoUrl": { "type": ["string", "null"] },
     \\        "logoUrlDark": { "type": ["string", "null"] },
     \\        "distributionChannel": { "type": ["string", "null"] },
-    \\        "branding": { "anyOf": [{ "$ref": "#/$defs/AppBranding" }, { "type": "null" }] },
-    \\        "appMetadata": { "anyOf": [{ "$ref": "#/$defs/AppMetadata" }, { "type": "null" }] },
-    \\        "labels": { "type": ["object", "null"], "additionalProperties": { "type": "string" } },
+    \\        "branding": { "type": ["object", "null"], "additionalProperties": true },
+    \\        "appMetadata": { "type": ["object", "null"], "additionalProperties": true },
+    \\        "labels": { "type": ["object", "null"], "additionalProperties": true },
     \\        "installUrl": { "type": ["string", "null"] },
     \\        "isAccessible": { "type": "boolean", "default": false },
     \\        "isEnabled": { "type": "boolean", "default": true },
@@ -11960,9 +11973,9 @@ const APP_LIST_UPDATED_NOTIFICATION_JSON_SCHEMA =
     \\        "logoUrl": { "type": ["string", "null"] },
     \\        "logoUrlDark": { "type": ["string", "null"] },
     \\        "distributionChannel": { "type": ["string", "null"] },
-    \\        "branding": { "anyOf": [{ "$ref": "#/$defs/AppBranding" }, { "type": "null" }] },
-    \\        "appMetadata": { "anyOf": [{ "$ref": "#/$defs/AppMetadata" }, { "type": "null" }] },
-    \\        "labels": { "type": ["object", "null"], "additionalProperties": { "type": "string" } },
+    \\        "branding": { "type": ["object", "null"], "additionalProperties": true },
+    \\        "appMetadata": { "type": ["object", "null"], "additionalProperties": true },
+    \\        "labels": { "type": ["object", "null"], "additionalProperties": true },
     \\        "installUrl": { "type": ["string", "null"] },
     \\        "isAccessible": { "type": "boolean", "default": false },
     \\        "isEnabled": { "type": "boolean", "default": true },
@@ -21783,9 +21796,9 @@ const APP_SERVER_PROTOCOL_SCHEMA_BUNDLE =
     \\        "logoUrl": { "type": ["string", "null"] },
     \\        "logoUrlDark": { "type": ["string", "null"] },
     \\        "distributionChannel": { "type": ["string", "null"] },
-    \\        "branding": { "anyOf": [{ "$ref": "#/$defs/AppBranding" }, { "type": "null" }] },
-    \\        "appMetadata": { "anyOf": [{ "$ref": "#/$defs/AppMetadata" }, { "type": "null" }] },
-    \\        "labels": { "type": ["object", "null"], "additionalProperties": { "type": "string" } },
+    \\        "branding": { "type": ["object", "null"], "additionalProperties": true },
+    \\        "appMetadata": { "type": ["object", "null"], "additionalProperties": true },
+    \\        "labels": { "type": ["object", "null"], "additionalProperties": true },
     \\        "installUrl": { "type": ["string", "null"] },
     \\        "isAccessible": { "type": "boolean", "default": false },
     \\        "isEnabled": { "type": "boolean", "default": true },
@@ -28368,6 +28381,7 @@ fn handleAppsList(
 
     var cursor: ?[]const u8 = null;
     var limit: ?usize = null;
+    var force_refetch = false;
     if (params) |object| {
         if (object.get("cursor")) |value| {
             if (value != .null) {
@@ -28387,6 +28401,9 @@ fn handleAppsList(
                 },
                 else => return renderJsonRpcError(allocator, id_value, -32602, "limit must be a non-negative integer or null"),
             };
+        }
+        if (object.get("forceRefetch")) |value| {
+            force_refetch = value == .bool and value.bool;
         }
     }
 
@@ -28425,8 +28442,25 @@ fn handleAppsList(
         scoped_cwds = scoped_cwds_storage[0..];
     }
 
+    var remote_directory_pages = std.ArrayList([]const u8).empty;
+    defer {
+        for (remote_directory_pages.items) |page| allocator.free(page);
+        remote_directory_pages.deinit(allocator);
+    }
+    try fetchRemoteAppDirectoryPagesIfAvailable(allocator, &remote_directory_pages, force_refetch);
+
     var total: usize = 0;
-    const result = plugin_list.renderAppsListResponse(allocator, codex_home, config_bytes orelse "", requirements.app_requirements, scoped_cwds, start, limit, &total) catch |err| {
+    const result = plugin_list.renderAppsListResponseWithRemoteDirectoryPages(
+        allocator,
+        codex_home,
+        config_bytes orelse "",
+        requirements.app_requirements,
+        scoped_cwds,
+        remote_directory_pages.items,
+        start,
+        limit,
+        &total,
+    ) catch |err| {
         return renderJsonRpcErrorForFailure(allocator, id_value, "app/list failed", err);
     };
     const result_json = result orelse {
@@ -28471,7 +28505,24 @@ fn renderCurrentAppListDataJson(allocator: std.mem.Allocator) ![]const u8 {
     var requirements = try loadConfigRequirementsReadRequirements(allocator);
     defer requirements.deinit(allocator);
 
-    const response = (try plugin_list.renderAppsListResponse(allocator, codex_home, config_bytes orelse "", requirements.app_requirements, &.{}, 0, null, &total)) orelse return error.InvalidAppListRefreshCursor;
+    var remote_directory_pages = std.ArrayList([]const u8).empty;
+    defer {
+        for (remote_directory_pages.items) |page| allocator.free(page);
+        remote_directory_pages.deinit(allocator);
+    }
+    try fetchRemoteAppDirectoryPagesIfAvailable(allocator, &remote_directory_pages, false);
+
+    const response = (try plugin_list.renderAppsListResponseWithRemoteDirectoryPages(
+        allocator,
+        codex_home,
+        config_bytes orelse "",
+        requirements.app_requirements,
+        &.{},
+        remote_directory_pages.items,
+        0,
+        null,
+        &total,
+    )) orelse return error.InvalidAppListRefreshCursor;
     defer allocator.free(response);
 
     var parsed = try std.json.parseFromSlice(std.json.Value, allocator, response, .{});
@@ -28480,6 +28531,196 @@ fn renderCurrentAppListDataJson(allocator: std.mem.Allocator) ![]const u8 {
     const data = parsed.value.object.get("data") orelse return error.InvalidAppListRefreshResponse;
     if (data != .array) return error.InvalidAppListRefreshResponse;
     return std.json.Stringify.valueAlloc(allocator, data, .{});
+}
+
+fn fetchRemoteAppDirectoryPagesIfAvailable(allocator: std.mem.Allocator, pages: *std.ArrayList([]const u8), force_refetch: bool) !void {
+    var cfg = config.load(allocator) catch |err| switch (err) {
+        error.OutOfMemory => return err,
+        else => return,
+    };
+    defer cfg.deinit(allocator);
+
+    var credentials = auth_mod.loadCliAuthNoRefreshForConfig(allocator, &cfg) catch |err| switch (err) {
+        error.OutOfMemory => return err,
+        else => return,
+    };
+    defer credentials.deinit(allocator);
+
+    if (!appDirectoryCredentialsUseCodexBackend(credentials)) return;
+    const cache_key = try appDirectoryCacheKey(allocator, cfg.chatgpt_base_url, credentials);
+    defer allocator.free(cache_key);
+
+    if (!force_refetch and try appendCachedRemoteAppDirectoryPages(allocator, pages, cache_key)) return;
+
+    const initial_len = pages.items.len;
+    fetchRemoteAppDirectoryPages(allocator, cfg.chatgpt_base_url, credentials, pages) catch |err| switch (err) {
+        error.OutOfMemory => return err,
+        else => return,
+    };
+    try replaceRemoteAppDirectoryCache(allocator, cache_key, pages.items[initial_len..]);
+}
+
+fn appDirectoryCredentialsUseCodexBackend(credentials: auth_mod.Credentials) bool {
+    return switch (credentials.mode) {
+        .chatgpt, .chatgpt_auth_tokens, .agent_identity => true,
+        .api_key, .local_oss => false,
+    };
+}
+
+fn appDirectoryCacheKey(allocator: std.mem.Allocator, base_url: []const u8, credentials: auth_mod.Credentials) ![]const u8 {
+    var key = std.ArrayList(u8).empty;
+    errdefer key.deinit(allocator);
+    try appendAppDirectoryCacheKeyPart(allocator, &key, "chatgpt_base_url", base_url);
+    try appendAppDirectoryCacheKeyPart(allocator, &key, "auth_mode", authMethodLabel(credentials.mode) orelse "local_oss");
+    try appendAppDirectoryCacheKeyPart(allocator, &key, "account_id", credentials.account_id orelse "");
+    try appendAppDirectoryCacheKeyPart(allocator, &key, "chatgpt_user_id", credentials.chatgpt_user_id orelse "");
+    try appendAppDirectoryCacheKeyPart(allocator, &key, "fedramp", if (credentials.fedramp) "true" else "false");
+    return key.toOwnedSlice(allocator);
+}
+
+fn appendAppDirectoryCacheKeyPart(
+    allocator: std.mem.Allocator,
+    key: *std.ArrayList(u8),
+    name: []const u8,
+    value: []const u8,
+) !void {
+    const len_text = try std.fmt.allocPrint(allocator, "{d}", .{value.len});
+    defer allocator.free(len_text);
+    try key.appendSlice(allocator, name);
+    try key.append(allocator, ':');
+    try key.appendSlice(allocator, len_text);
+    try key.append(allocator, ':');
+    try key.appendSlice(allocator, value);
+    try key.append(allocator, '\n');
+}
+
+fn appendCachedRemoteAppDirectoryPages(
+    allocator: std.mem.Allocator,
+    pages: *std.ArrayList([]const u8),
+    cache_key: []const u8,
+) !bool {
+    const io = std.Io.Threaded.global_single_threaded.io();
+    app_directory_cache_mutex.lockUncancelable(io);
+    defer app_directory_cache_mutex.unlock(io);
+    const cache = if (app_directory_cache) |*cache| cache else return false;
+    if (currentUnixMilliseconds() >= cache.expires_at_ms) return false;
+    if (!std.mem.eql(u8, cache.key, cache_key)) return false;
+    try appendOwnedRemoteAppDirectoryPages(allocator, pages, cache.pages.items);
+    return true;
+}
+
+fn replaceRemoteAppDirectoryCache(allocator: std.mem.Allocator, cache_key: []const u8, pages: []const []const u8) !void {
+    var next_cache = AppDirectoryCache{
+        .key = try allocator.dupe(u8, cache_key),
+        .expires_at_ms = currentUnixMilliseconds() + APP_LIST_DIRECTORY_CACHE_TTL_MS,
+        .pages = .empty,
+    };
+    var keep_next_cache = false;
+    defer if (!keep_next_cache) next_cache.deinit(allocator);
+    try appendOwnedRemoteAppDirectoryPages(allocator, &next_cache.pages, pages);
+
+    const io = std.Io.Threaded.global_single_threaded.io();
+    app_directory_cache_mutex.lockUncancelable(io);
+    defer app_directory_cache_mutex.unlock(io);
+    if (app_directory_cache) |*cache| cache.deinit(allocator);
+    app_directory_cache = next_cache;
+    keep_next_cache = true;
+}
+
+fn appendOwnedRemoteAppDirectoryPages(
+    allocator: std.mem.Allocator,
+    target: *std.ArrayList([]const u8),
+    source: []const []const u8,
+) !void {
+    const initial_len = target.items.len;
+    errdefer {
+        for (target.items[initial_len..]) |page| allocator.free(page);
+        target.shrinkRetainingCapacity(initial_len);
+    }
+    for (source) |page| {
+        const owned = try allocator.dupe(u8, page);
+        errdefer allocator.free(owned);
+        try target.append(allocator, owned);
+    }
+}
+
+fn fetchRemoteAppDirectoryPages(
+    allocator: std.mem.Allocator,
+    base_url: []const u8,
+    credentials: auth_mod.Credentials,
+    pages: *std.ArrayList([]const u8),
+) !void {
+    const initial_len = pages.items.len;
+    errdefer {
+        for (pages.items[initial_len..]) |page| allocator.free(page);
+        pages.shrinkRetainingCapacity(initial_len);
+    }
+
+    var next_token: ?[]const u8 = null;
+    defer if (next_token) |value| allocator.free(value);
+
+    var page_count: usize = 0;
+    while (page_count < APP_LIST_DIRECTORY_MAX_PAGES) : (page_count += 1) {
+        const url = try remoteAppDirectoryListUrl(allocator, base_url, next_token);
+        defer allocator.free(url);
+
+        const body = try remote_plugin.fetchJsonBytes(allocator, url, credentials);
+        errdefer allocator.free(body);
+        const following_token = try remoteAppDirectoryNextToken(allocator, body);
+        errdefer if (following_token) |value| allocator.free(value);
+
+        try pages.append(allocator, body);
+        if (next_token) |value| allocator.free(value);
+        next_token = following_token;
+        if (next_token == null) break;
+    }
+}
+
+fn remoteAppDirectoryListUrl(allocator: std.mem.Allocator, base_url: []const u8, page_token: ?[]const u8) ![]const u8 {
+    const trimmed = std.mem.trimEnd(u8, base_url, "/");
+    if (trimmed.len == 0) return error.InvalidRemoteAppDirectoryBaseUrl;
+
+    var url = std.ArrayList(u8).empty;
+    errdefer url.deinit(allocator);
+    try url.appendSlice(allocator, trimmed);
+    try url.appendSlice(allocator, "/connectors/directory/list?");
+    if (page_token) |token| {
+        try url.appendSlice(allocator, "token=");
+        try appendQueryComponent(allocator, &url, token);
+        try url.append(allocator, '&');
+    }
+    try url.appendSlice(allocator, "external_logos=true");
+    return url.toOwnedSlice(allocator);
+}
+
+fn remoteAppDirectoryNextToken(allocator: std.mem.Allocator, body: []const u8) !?[]const u8 {
+    var parsed = std.json.parseFromSlice(std.json.Value, allocator, body, .{}) catch return null;
+    defer parsed.deinit();
+    if (parsed.value != .object) return null;
+    const token = remoteAppDirectoryStringField(parsed.value.object, "nextToken") orelse remoteAppDirectoryStringField(parsed.value.object, "next_token") orelse return null;
+    const trimmed = std.mem.trim(u8, token, " \t\r\n");
+    if (trimmed.len == 0) return null;
+    const owned: []const u8 = try allocator.dupe(u8, trimmed);
+    return owned;
+}
+
+fn remoteAppDirectoryStringField(object: std.json.ObjectMap, field: []const u8) ?[]const u8 {
+    const value = object.get(field) orelse return null;
+    if (value != .string) return null;
+    return value.string;
+}
+
+fn appendQueryComponent(allocator: std.mem.Allocator, out: *std.ArrayList(u8), value: []const u8) !void {
+    const hex = "0123456789ABCDEF";
+    for (value) |byte| {
+        if (std.ascii.isAlphanumeric(byte) or byte == '-' or byte == '.' or byte == '_' or byte == '~') {
+            try out.append(allocator, byte);
+        } else {
+            try out.append(allocator, '%');
+            try out.append(allocator, hex[byte >> 4]);
+            try out.append(allocator, hex[byte & 0x0f]);
+        }
+    }
 }
 
 fn handleGetConversationSummary(

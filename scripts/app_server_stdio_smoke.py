@@ -1350,6 +1350,92 @@ class ModelCatalogBackendHandler(BaseHTTPRequestHandler):
         return
 
 
+class AppDirectoryBackendHandler(BaseHTTPRequestHandler):
+    requests: list[dict[str, object]] = []
+
+    def do_GET(self) -> None:
+        parsed = urllib.parse.urlparse(self.path)
+        query = urllib.parse.parse_qs(parsed.query)
+        AppDirectoryBackendHandler.requests.append(
+            {
+                "path": parsed.path,
+                "query": query,
+                "authorization": self.headers.get("Authorization"),
+                "account_id": self.headers.get("ChatGPT-Account-Id"),
+                "accept": self.headers.get("Accept"),
+            }
+        )
+        if parsed.path != "/backend-api/codex/connectors/directory/list":
+            self.send_response(404)
+            self.end_headers()
+            return
+
+        token = query.get("token", [None])[0]
+        if token is None:
+            self._send_json(
+                200,
+                {
+                    "apps": [
+                        {
+                            "id": "drive",
+                            "name": " Drive Search ",
+                            "description": " Search Drive ",
+                            "logoUrl": "https://cdn.example/drive.png",
+                            "logoUrlDark": "https://cdn.example/drive-dark.png",
+                            "distributionChannel": "chatgpt",
+                            "branding": {"theme": "blue"},
+                            "appMetadata": {"category": "productivity"},
+                            "labels": {"featured": True},
+                            "isAccessible": True,
+                            "visibility": "VISIBLE",
+                        },
+                        {
+                            "id": "hidden-app",
+                            "name": "Hidden App",
+                            "visibility": "HIDDEN",
+                        },
+                        {
+                            "id": "gmail",
+                            "name": "Gmail Directory",
+                            "description": "Remote mail",
+                            "logoUrl": "https://cdn.example/gmail.png",
+                            "isAccessible": True,
+                        },
+                    ],
+                    "nextToken": "page 2",
+                },
+            )
+            return
+        if token == "page 2":
+            self._send_json(
+                200,
+                {
+                    "apps": [
+                        {
+                            "id": "calendar_remote",
+                            "name": "Calendar Remote",
+                            "description": "Remote calendar",
+                        }
+                    ],
+                    "nextToken": None,
+                },
+            )
+            return
+
+        self._send_json(400, {"error": "unexpected-token"})
+
+    def _send_json(self, status_code: int, payload: dict[str, object]) -> None:
+        body = json.dumps(payload, separators=(",", ":")).encode("utf-8")
+        self.send_response(status_code)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def log_message(self, format: str, *args: object) -> None:
+        return
+
+
 class AddCreditsNudgeBackendHandler(BaseHTTPRequestHandler):
     requests: list[dict[str, object]] = []
     status_code: int = 200
@@ -38107,6 +38193,13 @@ def start_model_catalog_backend() -> tuple[ThreadingHTTPServer, str]:
     return server, f"http://127.0.0.1:{server.server_port}"
 
 
+def start_app_directory_backend() -> tuple[ThreadingHTTPServer, str]:
+    AppDirectoryBackendHandler.requests = []
+    server = ThreadingHTTPServer(("127.0.0.1", 0), AppDirectoryBackendHandler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    return server, f"http://127.0.0.1:{server.server_port}"
+
+
 def start_add_credits_nudge_backend(status_code: int = 200) -> tuple[ThreadingHTTPServer, str]:
     AddCreditsNudgeBackendHandler.requests = []
     AddCreditsNudgeBackendHandler.status_code = status_code
@@ -40275,6 +40368,7 @@ def run_apps_list_rpc_smoke(binary: Path) -> None:
     env = os.environ.copy()
     env["CODEX_HOME"] = str(codex_home)
     env["CODEX_APP_SERVER_SYSTEM_REQUIREMENTS_PATH"] = str(system_requirements_path)
+    directory_server: ThreadingHTTPServer | None = None
     proc = subprocess.Popen(
         [str(binary), "app-server"],
         stdin=subprocess.PIPE,
@@ -40387,6 +40481,37 @@ def run_apps_list_rpc_smoke(binary: Path) -> None:
             "isEnabled": is_enabled,
             "pluginDisplayNames": [plugin_display_name],
         }
+
+    def write_chatgpt_directory_auth(base_url: str) -> str:
+        access_token = encode_unsigned_jwt({"exp": 4_102_444_800})
+        id_token = encode_unsigned_jwt(
+            {
+                "https://api.openai.com/auth": {
+                    "chatgpt_account_id": "acct_apps",
+                },
+            }
+        )
+        config_path = codex_home / "config.toml"
+        config_path.write_text(
+            f'chatgpt_base_url = "{base_url}/backend-api/codex"\n'
+            + config_path.read_text(encoding="utf-8"),
+            encoding="utf-8",
+        )
+        (codex_home / "auth.json").write_text(
+            json.dumps(
+                {
+                    "auth_mode": "chatgpt",
+                    "tokens": {
+                        "id_token": id_token,
+                        "access_token": access_token,
+                        "refresh_token": "refresh-token",
+                        "account_id": "acct_apps",
+                    },
+                }
+            ),
+            encoding="utf-8",
+        )
+        return access_token
 
     try:
         write_json_line(
@@ -40579,12 +40704,95 @@ def run_apps_list_rpc_smoke(binary: Path) -> None:
         assert missing_thread["error"]["code"] == -32600
         assert "thread not found: missing-thread" in missing_thread["error"]["message"]
 
+        directory_server, directory_base_url = start_app_directory_backend()
+        access_token = write_chatgpt_directory_auth(directory_base_url)
+        remote_directory_page = rpc("apps-list-remote-directory", {"forceRefetch": True})
+        assert remote_directory_page["id"] == "apps-list-remote-directory"
+        drive_app = {
+            "id": "drive",
+            "name": "Drive Search",
+            "description": "Search Drive",
+            "logoUrl": "https://cdn.example/drive.png",
+            "logoUrlDark": "https://cdn.example/drive-dark.png",
+            "distributionChannel": "chatgpt",
+            "branding": {"theme": "blue"},
+            "appMetadata": {"category": "productivity"},
+            "labels": {"featured": True},
+            "installUrl": "https://chatgpt.com/apps/drive-search/drive",
+            "isAccessible": True,
+            "isEnabled": True,
+            "pluginDisplayNames": [],
+        }
+        calendar_remote_app = {
+            "id": "calendar_remote",
+            "name": "Calendar Remote",
+            "description": "Remote calendar",
+            "logoUrl": None,
+            "logoUrlDark": None,
+            "distributionChannel": None,
+            "branding": None,
+            "appMetadata": None,
+            "labels": None,
+            "installUrl": "https://chatgpt.com/apps/calendar-remote/calendar_remote",
+            "isAccessible": False,
+            "isEnabled": True,
+            "pluginDisplayNames": [],
+        }
+        gmail_remote_app = {
+            **gmail_app,
+            "logoUrl": "https://cdn.example/gmail.png",
+            "isAccessible": True,
+        }
+        assert remote_directory_page["result"] == {
+            "data": [
+                calendar_remote_app,
+                drive_app,
+                gmail_remote_app,
+                slack_app,
+                zoom_app,
+            ],
+            "nextCursor": None,
+        }
+        assert all(
+            app["id"] != "hidden-app"
+            for app in remote_directory_page["result"]["data"]
+        )
+        assert AppDirectoryBackendHandler.requests == [
+            {
+                "path": "/backend-api/codex/connectors/directory/list",
+                "query": {"external_logos": ["true"]},
+                "authorization": f"Bearer {access_token}",
+                "account_id": "acct_apps",
+                "accept": "application/json",
+            },
+            {
+                "path": "/backend-api/codex/connectors/directory/list",
+                "query": {"token": ["page 2"], "external_logos": ["true"]},
+                "authorization": f"Bearer {access_token}",
+                "account_id": "acct_apps",
+                "accept": "application/json",
+            },
+        ]
+        remote_cached_page = rpc(
+            "apps-list-remote-directory-cached-page",
+            {"cursor": "2", "limit": 2},
+        )
+        assert remote_cached_page["id"] == "apps-list-remote-directory-cached-page"
+        assert remote_cached_page["result"] == {
+            "data": [gmail_remote_app, slack_app],
+            "nextCursor": "4",
+        }
+        assert len(AppDirectoryBackendHandler.requests) == 2
+
         assert proc.stdin is not None
         proc.stdin.close()
         proc.wait(timeout=5)
         if proc.returncode != 0:
             raise AssertionError(f"app-server exited {proc.returncode}: {proc.stderr.read()}")
     finally:
+        if directory_server is not None:
+            directory_server.shutdown()
+            directory_server.server_close()
         if proc.poll() is None:
             proc.kill()
             proc.wait(timeout=5)
@@ -43478,12 +43686,13 @@ def run_json_schema_smoke(binary: Path) -> None:
             app_list_updated["properties"]["data"]["items"]["$ref"]
             == "#/$defs/AppInfo"
         )
-        assert (
-            app_list_updated["$defs"]["AppInfo"]["properties"]["branding"]["anyOf"][0][
-                "$ref"
-            ]
-            == "#/$defs/AppBranding"
-        )
+        app_list_updated_app_info = app_list_updated["$defs"]["AppInfo"]["properties"]
+        assert app_list_updated_app_info["branding"]["type"] == ["object", "null"]
+        assert app_list_updated_app_info["branding"]["additionalProperties"] is True
+        assert app_list_updated_app_info["appMetadata"]["type"] == ["object", "null"]
+        assert app_list_updated_app_info["appMetadata"]["additionalProperties"] is True
+        assert app_list_updated_app_info["labels"]["type"] == ["object", "null"]
+        assert app_list_updated_app_info["labels"]["additionalProperties"] is True
         for plugin_marketplace_schema in [
             "MarketplaceAddParams",
             "MarketplaceAddResponse",
@@ -46346,16 +46555,13 @@ def run_json_schema_smoke(binary: Path) -> None:
             == "#/$defs/AddCreditsNudgeEmailStatus"
         )
         assert bundle["$defs"]["AppsListParams"]["properties"]["limit"]["maximum"] == 4294967295
-        assert (
-            bundle["$defs"]["AppInfo"]["properties"]["branding"]["anyOf"][0]["$ref"]
-            == "#/$defs/AppBranding"
-        )
-        assert (
-            bundle["$defs"]["AppInfo"]["properties"]["appMetadata"]["anyOf"][0][
-                "$ref"
-            ]
-            == "#/$defs/AppMetadata"
-        )
+        app_info_properties = bundle["$defs"]["AppInfo"]["properties"]
+        assert app_info_properties["branding"]["type"] == ["object", "null"]
+        assert app_info_properties["branding"]["additionalProperties"] is True
+        assert app_info_properties["appMetadata"]["type"] == ["object", "null"]
+        assert app_info_properties["appMetadata"]["additionalProperties"] is True
+        assert app_info_properties["labels"]["type"] == ["object", "null"]
+        assert app_info_properties["labels"]["additionalProperties"] is True
         assert bundle["$defs"]["AppsListResponse"]["properties"]["data"]["items"][
             "$ref"
         ] == "#/$defs/AppInfo"
@@ -48848,8 +49054,11 @@ def run_typescript_generation_smoke(binary: Path) -> None:
         assert "threadId?: string | null;" in apps_list_params
         assert "forceRefetch?: boolean;" in apps_list_params
         app_info = (out_dir / "v2" / "AppInfo.ts").read_text(encoding="utf-8")
-        assert 'import type { AppBranding } from "./AppBranding";' in app_info
-        assert 'import type { AppMetadata } from "./AppMetadata";' in app_info
+        assert 'import type { AppBranding } from "./AppBranding";' not in app_info
+        assert 'import type { AppMetadata } from "./AppMetadata";' not in app_info
+        assert "branding: Record<string, unknown> | null;" in app_info
+        assert "appMetadata: Record<string, unknown> | null;" in app_info
+        assert "labels: Record<string, unknown> | null;" in app_info
         assert "pluginDisplayNames: string[];" in app_info
         apps_list_response = (
             out_dir / "v2" / "AppsListResponse.ts"

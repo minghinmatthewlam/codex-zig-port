@@ -487,7 +487,7 @@ pub fn fetchMarketplacesJson(
     return out.toOwnedSlice(allocator);
 }
 
-fn fetchJsonBytes(allocator: std.mem.Allocator, url: []const u8, credentials: auth.Credentials) ![]const u8 {
+pub fn fetchJsonBytes(allocator: std.mem.Allocator, url: []const u8, credentials: auth.Credentials) ![]const u8 {
     return sendJsonBytes(allocator, url, .GET, credentials);
 }
 
