@@ -839,8 +839,11 @@ fn functionCallOutputContentFromItems(
             const image_url_value = object.get("image_url") orelse return error.InvalidHistory;
             if (image_url_value != .string) return error.InvalidHistory;
             const detail_value = object.get("detail");
-            if (detail_value != null and detail_value.? != .string) return error.InvalidHistory;
-            const detail = if (detail_value) |value| value.string else null;
+            const detail = if (detail_value) |value| switch (value) {
+                .string => value.string,
+                .null => null,
+                else => return error.InvalidHistory,
+            } else null;
             var content_item = try cloneHistoryContentItem(allocator, .{
                 .type = type_value.string,
                 .image_url = image_url_value.string,
@@ -1839,7 +1842,7 @@ test "append response history function call output preserves image content items
         \\  "type": "function_call_output",
         \\  "call_id": "call-image",
         \\  "output": [
-        \\    {"type": "input_image", "image_url": "file:///tmp/out.png"}
+        \\    {"type": "input_image", "image_url": "file:///tmp/out.png", "detail": null}
         \\  ]
         \\}
     , .{});
@@ -1854,6 +1857,7 @@ test "append response history function call output preserves image content items
     try std.testing.expectEqualStrings("", transcript.history.items[0].output.?);
     try std.testing.expectEqual(@as(usize, 1), transcript.history.items[0].output_content.?.len);
     try std.testing.expectEqualStrings("file:///tmp/out.png", transcript.history.items[0].output_content.?[0].image_url.?);
+    try std.testing.expect(transcript.history.items[0].output_content.?[0].detail == null);
 }
 
 test "append response history function call output rejects unsupported content items" {
