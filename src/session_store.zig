@@ -22,11 +22,13 @@ const StoredLine = struct {
     role: ?[]const u8 = null,
     content_type: ?[]const u8 = null,
     text: ?[]const u8 = null,
+    content: ?[]const api.HistoryContent = null,
     images: ?[]const api.HistoryImage = null,
     call_id: ?[]const u8 = null,
     name: ?[]const u8 = null,
     arguments: ?[]const u8 = null,
     output: ?[]const u8 = null,
+    output_content: ?[]const api.HistoryContent = null,
 };
 
 const StoredGitInfo = struct {
@@ -589,15 +591,116 @@ fn appendTranscriptLine(allocator: std.mem.Allocator, transcript: *session.Trans
 }
 
 fn appendStoredMessage(allocator: std.mem.Allocator, transcript: *session.Transcript, object: std.json.ObjectMap) !void {
-    const images = try storedHistoryImages(allocator, object.get("images"));
+    const role = jsonStringField(object, "role") orelse return error.InvalidSessionLine;
+    const content = try storedHistoryContent(allocator, object.get("content"));
+    defer freeStoredHistoryContent(allocator, content);
+    const images = if (content.len == 0)
+        try storedHistoryImages(allocator, object.get("images"))
+    else
+        &.{};
     defer freeStoredHistoryImages(allocator, images);
+    const owned_text = if (jsonStringField(object, "text") == null and content.len > 0)
+        try historyContentText(allocator, content)
+    else
+        null;
+    defer if (owned_text) |value| allocator.free(value);
+    const content_type = jsonStringField(object, "content_type") orelse if (content.len > 0)
+        historyContentType(content) orelse defaultHistoryContentType(role)
+    else
+        return error.InvalidSessionLine;
+    const text = jsonStringField(object, "text") orelse owned_text orelse return error.InvalidSessionLine;
     try transcript.appendHistoryItem(allocator, .{
         .kind = .message,
-        .role = jsonStringField(object, "role") orelse return error.InvalidSessionLine,
-        .content_type = jsonStringField(object, "content_type") orelse return error.InvalidSessionLine,
-        .text = jsonStringField(object, "text") orelse return error.InvalidSessionLine,
+        .role = role,
+        .content_type = content_type,
+        .text = text,
+        .content = content,
         .images = images,
     });
+}
+
+fn storedHistoryContent(allocator: std.mem.Allocator, value: ?std.json.Value) ![]const api.HistoryContent {
+    const content_value = value orelse return &.{};
+    if (content_value == .null) return &.{};
+    if (content_value != .array) return error.InvalidSessionLine;
+    var content = std.ArrayList(api.HistoryContent).empty;
+    errdefer {
+        for (content.items) |item| item.deinit(allocator);
+        content.deinit(allocator);
+    }
+
+    for (content_value.array.items) |item| {
+        if (item != .object) return error.InvalidSessionLine;
+        const content_type = jsonStringField(item.object, "type") orelse return error.InvalidSessionLine;
+        var content_item = try storedHistoryContentItem(allocator, content_type, jsonStringField(item.object, "text"), jsonStringField(item.object, "image_url"), jsonStringField(item.object, "detail"));
+        var content_item_owned = true;
+        errdefer if (content_item_owned) content_item.deinit(allocator);
+        try content.append(allocator, content_item);
+        content_item_owned = false;
+    }
+
+    return content.toOwnedSlice(allocator);
+}
+
+fn storedHistoryContentItem(
+    allocator: std.mem.Allocator,
+    content_type: []const u8,
+    text: ?[]const u8,
+    image_url: ?[]const u8,
+    detail: ?[]const u8,
+) !api.HistoryContent {
+    const content_type_copy = try allocator.dupe(u8, content_type);
+    errdefer allocator.free(content_type_copy);
+    const text_copy = if (text) |value| try allocator.dupe(u8, value) else null;
+    var text_owned = true;
+    errdefer if (text_owned) if (text_copy) |value| allocator.free(value);
+    const image_url_copy = if (image_url) |value| try allocator.dupe(u8, value) else null;
+    var image_url_owned = true;
+    errdefer if (image_url_owned) if (image_url_copy) |value| allocator.free(value);
+    const detail_copy = if (detail) |value| try allocator.dupe(u8, value) else null;
+    var detail_owned = true;
+    errdefer if (detail_owned) if (detail_copy) |value| allocator.free(value);
+
+    text_owned = false;
+    image_url_owned = false;
+    detail_owned = false;
+    return .{
+        .type = content_type_copy,
+        .text = text_copy,
+        .image_url = image_url_copy,
+        .detail = detail_copy,
+    };
+}
+
+fn freeStoredHistoryContent(allocator: std.mem.Allocator, content: []const api.HistoryContent) void {
+    for (content) |item| item.deinit(allocator);
+    if (content.len > 0) allocator.free(content);
+}
+
+fn historyContentText(allocator: std.mem.Allocator, content: []const api.HistoryContent) ![]const u8 {
+    var segments = std.ArrayList([]const u8).empty;
+    defer segments.deinit(allocator);
+
+    for (content) |item| {
+        const text = item.text orelse continue;
+        if (std.mem.trim(u8, text, " \t\r\n").len == 0) continue;
+        try segments.append(allocator, text);
+    }
+
+    if (segments.items.len == 0) return allocator.dupe(u8, "");
+    return std.mem.join(allocator, "\n", segments.items);
+}
+
+fn historyContentType(content: []const api.HistoryContent) ?[]const u8 {
+    for (content) |item| {
+        if (item.text != null) return item.type;
+    }
+    return null;
+}
+
+fn defaultHistoryContentType(role: []const u8) []const u8 {
+    if (std.mem.eql(u8, role, "assistant")) return "output_text";
+    return "input_text";
 }
 
 fn storedHistoryImages(allocator: std.mem.Allocator, value: ?std.json.Value) ![]const api.HistoryImage {
@@ -648,10 +751,20 @@ fn appendStoredFunctionCall(allocator: std.mem.Allocator, transcript: *session.T
 }
 
 fn appendStoredFunctionCallOutput(allocator: std.mem.Allocator, transcript: *session.Transcript, object: std.json.ObjectMap) !void {
+    const output_content_value = object.get("output_content");
+    const output_content = try storedHistoryContent(allocator, output_content_value);
+    defer freeStoredHistoryContent(allocator, output_content);
+    const output_content_present = if (output_content_value) |value| value != .null else false;
+    const owned_output = if (jsonStringField(object, "output") == null and output_content_present)
+        try historyContentText(allocator, output_content)
+    else
+        null;
+    defer if (owned_output) |value| allocator.free(value);
     try transcript.appendHistoryItem(allocator, .{
         .kind = .function_call_output,
         .call_id = jsonStringField(object, "call_id") orelse return error.InvalidSessionLine,
-        .output = jsonStringField(object, "output") orelse return error.InvalidSessionLine,
+        .output = jsonStringField(object, "output") orelse owned_output orelse return error.InvalidSessionLine,
+        .output_content = if (output_content_present) output_content else null,
     });
 }
 
@@ -1413,7 +1526,8 @@ fn storedLineFromHistoryItem(item: api.HistoryItem) !StoredLine {
             .role = item.role orelse return error.InvalidSessionItem,
             .content_type = item.content_type orelse return error.InvalidSessionItem,
             .text = item.text orelse return error.InvalidSessionItem,
-            .images = if (item.images.len > 0) item.images else null,
+            .content = if (item.content.len > 0) item.content else null,
+            .images = if (item.content.len == 0 and item.images.len > 0) item.images else null,
         },
         .function_call => .{
             .type = "function_call",
@@ -1425,6 +1539,7 @@ fn storedLineFromHistoryItem(item: api.HistoryItem) !StoredLine {
             .type = "function_call_output",
             .call_id = item.call_id orelse return error.InvalidSessionItem,
             .output = item.output orelse return error.InvalidSessionItem,
+            .output_content = item.output_content,
         },
     };
 }
@@ -1487,25 +1602,54 @@ test "session store round trips transcript jsonl" {
         .created_at = 100,
         .updated_at = 120,
     });
+    const history_content = [_]api.HistoryContent{
+        .{ .type = "input_text", .text = "hello" },
+        .{
+            .type = "input_image",
+            .image_url = "data:image/png;base64,cm91bmR0cmlw",
+            .detail = "low",
+        },
+        .{ .type = "input_text", .text = "after image" },
+    };
     const history_images = [_]api.HistoryImage{.{
-        .image_url = "data:image/png;base64,cm91bmR0cmlw",
+        .image_url = "data:image/png;base64,bGVnYWN5",
         .detail = "low",
     }};
     try transcript.appendHistoryItem(allocator, .{
         .kind = .message,
         .role = "user",
         .content_type = "input_text",
-        .text = "hello",
-        .images = history_images[0..],
+        .text = "hello\nafter image",
+        .content = history_content[0..],
     });
     try transcript.appendAssistantMessage(allocator, "hi");
+    try transcript.appendHistoryItem(allocator, .{
+        .kind = .message,
+        .role = "user",
+        .content_type = "input_text",
+        .text = "legacy image",
+        .images = history_images[0..],
+    });
     try transcript.appendHistoryItem(allocator, .{
         .kind = .function_call,
         .call_id = "call-1",
         .name = "shell_command",
         .arguments = "{\"command\":\"pwd\"}",
     });
-    try transcript.appendFunctionOutput(allocator, "call-1", "stdout:\n/tmp\n");
+    const output_content = [_]api.HistoryContent{
+        .{ .type = "input_text", .text = "stdout:\n/tmp\n" },
+        .{
+            .type = "input_image",
+            .image_url = "data:image/png;base64,b3V0",
+            .detail = "high",
+        },
+    };
+    try transcript.appendHistoryItem(allocator, .{
+        .kind = .function_call_output,
+        .call_id = "call-1",
+        .output = "stdout:\n/tmp\n",
+        .output_content = output_content[0..],
+    });
     transcript.token_usage = .{
         .total = .{
             .input_tokens = 90,
@@ -1553,16 +1697,23 @@ test "session store round trips transcript jsonl" {
     try std.testing.expectEqual(@as(i64, 12), loaded.token_usage.?.total.reasoning_output_tokens);
     try std.testing.expectEqual(@as(i64, 50), loaded.token_usage.?.last.total_tokens);
     try std.testing.expectEqual(@as(i64, 200000), loaded.token_usage.?.model_context_window.?);
-    try std.testing.expectEqual(@as(usize, 4), loaded.history.items.len);
+    try std.testing.expectEqual(@as(usize, 5), loaded.history.items.len);
     try std.testing.expectEqual(api.HistoryItem.Kind.message, loaded.history.items[0].kind);
     try std.testing.expectEqualStrings("user", loaded.history.items[0].role.?);
-    try std.testing.expectEqualStrings("hello", loaded.history.items[0].text.?);
-    try std.testing.expectEqual(@as(usize, 1), loaded.history.items[0].images.len);
-    try std.testing.expectEqualStrings("data:image/png;base64,cm91bmR0cmlw", loaded.history.items[0].images[0].image_url);
-    try std.testing.expectEqualStrings("low", loaded.history.items[0].images[0].detail.?);
-    try std.testing.expectEqual(api.HistoryItem.Kind.function_call, loaded.history.items[2].kind);
-    try std.testing.expectEqualStrings("shell_command", loaded.history.items[2].name.?);
-    try std.testing.expectEqualStrings("stdout:\n/tmp\n", loaded.history.items[3].output.?);
+    try std.testing.expectEqualStrings("hello\nafter image", loaded.history.items[0].text.?);
+    try std.testing.expectEqual(@as(usize, 3), loaded.history.items[0].content.len);
+    try std.testing.expectEqualStrings("hello", loaded.history.items[0].content[0].text.?);
+    try std.testing.expectEqualStrings("data:image/png;base64,cm91bmR0cmlw", loaded.history.items[0].content[1].image_url.?);
+    try std.testing.expectEqualStrings("after image", loaded.history.items[0].content[2].text.?);
+    try std.testing.expectEqual(@as(usize, 1), loaded.history.items[2].images.len);
+    try std.testing.expectEqualStrings("data:image/png;base64,bGVnYWN5", loaded.history.items[2].images[0].image_url);
+    try std.testing.expectEqual(api.HistoryItem.Kind.function_call, loaded.history.items[3].kind);
+    try std.testing.expectEqualStrings("shell_command", loaded.history.items[3].name.?);
+    try std.testing.expectEqualStrings("stdout:\n/tmp\n", loaded.history.items[4].output.?);
+    try std.testing.expectEqual(@as(usize, 2), loaded.history.items[4].output_content.?.len);
+    try std.testing.expectEqualStrings("stdout:\n/tmp\n", loaded.history.items[4].output_content.?[0].text.?);
+    try std.testing.expectEqualStrings("data:image/png;base64,b3V0", loaded.history.items[4].output_content.?[1].image_url.?);
+    try std.testing.expectEqualStrings("high", loaded.history.items[4].output_content.?[1].detail.?);
 }
 
 test "session store rollback clears transcript metadata goal" {
