@@ -931,7 +931,7 @@ loads authenticated ChatGPT connector directory pages from
 process-local auth/base-URL-scoped directory cache for ordinary pagination,
 refreshes that cache for `forceRefetch`, filters hidden directory apps,
 generates ChatGPT install URLs, preserves remote logo, branding, metadata,
-label, distribution-channel, and accessibility fields, and merges directory
+label, and distribution-channel fields, and merges directory
 metadata into matching local plugin apps without dropping local plugin display
 names. It applies simple user `[apps._default]` /
 `[apps.NAME]` `enabled` flags, applies local system `requirements.toml` app

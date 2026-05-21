@@ -1453,7 +1453,6 @@ fn collectAppsFromRemoteDirectoryPage(
                 .branding_json = branding_json,
                 .app_metadata_json = app_metadata_json,
                 .labels_json = labels_json,
-                .is_accessible = boolFieldAlias(object, "isAccessible", "is_accessible") orelse false,
             },
         );
     }
@@ -2595,18 +2594,6 @@ fn stringField(object: std.json.ObjectMap, field: []const u8) ?[]const u8 {
     return value.string;
 }
 
-fn boolField(object: std.json.ObjectMap, field: []const u8) ?bool {
-    const value = object.get(field) orelse return null;
-    return switch (value) {
-        .bool => |boolean| boolean,
-        else => null,
-    };
-}
-
-fn boolFieldAlias(object: std.json.ObjectMap, field: []const u8, alias: []const u8) ?bool {
-    return boolField(object, field) orelse boolField(object, alias);
-}
-
 fn containsString(values: []const []const u8, needle: []const u8) bool {
     for (values) |value| {
         if (std.mem.eql(u8, value, needle)) return true;
@@ -2742,7 +2729,7 @@ test "apps list includes remote directory metadata" {
     try std.testing.expect(std.mem.indexOf(u8, rendered, "\"branding\":{\"primaryColor\":\"#111111\"}") != null);
     try std.testing.expect(std.mem.indexOf(u8, rendered, "\"appMetadata\":{\"category\":\"productivity\"}") != null);
     try std.testing.expect(std.mem.indexOf(u8, rendered, "\"labels\":{\"tier\":\"beta\"}") != null);
-    try std.testing.expect(std.mem.indexOf(u8, rendered, "\"isAccessible\":true") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rendered, "\"isAccessible\":false") != null);
     try std.testing.expect(std.mem.indexOf(u8, rendered, "\"isEnabled\":false") != null);
 }
 

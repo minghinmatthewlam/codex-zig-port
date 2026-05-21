@@ -40719,7 +40719,7 @@ def run_apps_list_rpc_smoke(binary: Path) -> None:
             "appMetadata": {"category": "productivity"},
             "labels": {"featured": True},
             "installUrl": "https://chatgpt.com/apps/drive-search/drive",
-            "isAccessible": True,
+            "isAccessible": False,
             "isEnabled": True,
             "pluginDisplayNames": [],
         }
@@ -40741,7 +40741,6 @@ def run_apps_list_rpc_smoke(binary: Path) -> None:
         gmail_remote_app = {
             **gmail_app,
             "logoUrl": "https://cdn.example/gmail.png",
-            "isAccessible": True,
         }
         assert remote_directory_page["result"] == {
             "data": [
