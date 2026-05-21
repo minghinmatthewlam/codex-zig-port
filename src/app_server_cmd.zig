@@ -26694,6 +26694,7 @@ const AppServerRequestUserInputContext = struct {
 const AppServerGoalToolContext = struct {
     allocator: std.mem.Allocator,
     state: *AppServerState,
+    codex_home: []const u8,
     thread: *LoadedThread,
     turn_id: []const u8,
     notifications: *std.ArrayList([]const u8),
@@ -27268,7 +27269,9 @@ fn handleAppServerGoalTool(ctx: *anyopaque, call: api.FunctionCall) !tool_runner
     }
 
     if (std.mem.eql(u8, call.name, "get_goal")) {
-        _ = try refreshLoadedThreadGoalAccountingAndPersistAt(context.allocator, context.thread, currentUnixSeconds());
+        if (try refreshLoadedThreadGoalAccountingAndPersistAt(context.allocator, context.thread, currentUnixSeconds())) {
+            _ = try saveLoadedThreadGoalToStateDb(context.allocator, context.codex_home, context.thread);
+        }
         const output = try renderGoalToolResponse(context.allocator, context.thread, .omit);
         defer context.allocator.free(output);
         return goalToolResult(context.allocator, call.call_id, "goal read", output);
@@ -27292,6 +27295,7 @@ fn handleAppServerGoalTool(ctx: *anyopaque, call: api.FunctionCall) !tool_runner
             return goalToolResult(context.allocator, call.call_id, "goal invalid", message);
         }
         try setLoadedThreadGoal(context.allocator, context.thread, object);
+        _ = try saveLoadedThreadGoalToStateDb(context.allocator, context.codex_home, context.thread);
         try queueThreadGoalUpdatedTurnNotification(context);
         const output = try renderGoalToolResponse(context.allocator, context.thread, .omit);
         defer context.allocator.free(output);
@@ -27306,6 +27310,7 @@ fn handleAppServerGoalTool(ctx: *anyopaque, call: api.FunctionCall) !tool_runner
             error.MissingThreadGoal => return goalToolResult(context.allocator, call.call_id, "goal rejected", "cannot update goal because this thread has no goal"),
             else => return err,
         };
+        _ = try saveLoadedThreadGoalToStateDb(context.allocator, context.codex_home, context.thread);
         try queueThreadGoalUpdatedTurnNotification(context);
         const output = try renderGoalToolResponse(context.allocator, context.thread, .include);
         defer context.allocator.free(output);
@@ -29493,6 +29498,7 @@ fn handleReviewStart(
     var goal_tool_context = AppServerGoalToolContext{
         .allocator = allocator,
         .state = state,
+        .codex_home = cfg.codex_home,
         .thread = thread,
         .turn_id = turn_id,
         .notifications = &turn_update_notifications,
@@ -30462,6 +30468,7 @@ fn handleTurnStart(
     var goal_tool_context = AppServerGoalToolContext{
         .allocator = allocator,
         .state = state,
+        .codex_home = cfg.codex_home,
         .thread = thread,
         .turn_id = turn_id,
         .notifications = &turn_update_notifications,
@@ -30595,7 +30602,7 @@ fn handleTurnStart(
             var completed_notification_moved = false;
             errdefer if (!completed_notification_moved) allocator.free(completed_notification);
 
-            const goal_accounting_changed = try refreshLoadedThreadAfterTurnAndAccountGoal(allocator, thread, prompt_for_turn, completed_at);
+            const goal_accounting_changed = try refreshLoadedThreadAfterTurnAndAccountGoal(allocator, cfg.codex_home, thread, prompt_for_turn, completed_at);
             if (thread.path) |path| {
                 try session_store.saveTranscript(allocator, path, &thread.transcript);
             }
@@ -30649,7 +30656,7 @@ fn handleTurnStart(
         }
         thread.status = .system_error;
         const failed_at = currentUnixSeconds();
-        const goal_accounting_changed = try refreshLoadedThreadAfterTurnAndAccountGoal(allocator, thread, prompt_for_turn, failed_at);
+        const goal_accounting_changed = try refreshLoadedThreadAfterTurnAndAccountGoal(allocator, cfg.codex_home, thread, prompt_for_turn, failed_at);
         if (thread.path) |path| {
             try session_store.saveTranscript(allocator, path, &thread.transcript);
         }
@@ -30679,7 +30686,7 @@ fn handleTurnStart(
     var completed_notification_moved = false;
     errdefer if (!completed_notification_moved) allocator.free(completed_notification);
 
-    const goal_accounting_changed = try refreshLoadedThreadAfterTurnAndAccountGoal(allocator, thread, prompt_for_turn, completed_at);
+    const goal_accounting_changed = try refreshLoadedThreadAfterTurnAndAccountGoal(allocator, cfg.codex_home, thread, prompt_for_turn, completed_at);
     if (thread.path) |path| {
         try session_store.saveTranscript(allocator, path, &thread.transcript);
     }
@@ -33263,13 +33270,17 @@ fn refreshLoadedThreadAfterTurn(allocator: std.mem.Allocator, thread: *LoadedThr
 
 fn refreshLoadedThreadAfterTurnAndAccountGoal(
     allocator: std.mem.Allocator,
+    codex_home: []const u8,
     thread: *LoadedThread,
     prompt: []const u8,
     accounting_at: i64,
 ) !bool {
     try refreshLoadedThreadAfterTurn(allocator, thread, prompt);
     const goal_accounting_changed = refreshLoadedThreadGoalAccountingAt(thread, accounting_at);
-    if (goal_accounting_changed) try syncLoadedThreadGoalToTranscript(allocator, thread);
+    if (goal_accounting_changed) {
+        try syncLoadedThreadGoalToTranscript(allocator, thread);
+        _ = try saveLoadedThreadGoalToStateDb(allocator, codex_home, thread);
+    }
     return goal_accounting_changed;
 }
 
@@ -33614,6 +33625,19 @@ fn syncLoadedThreadGoalToTranscript(allocator: std.mem.Allocator, thread: *Loade
     });
 }
 
+fn saveLoadedThreadGoalToStateDb(allocator: std.mem.Allocator, codex_home: []const u8, thread: *const LoadedThread) !bool {
+    const goal = thread.goal orelse return false;
+    return thread_state.saveThreadGoalSnapshot(allocator, codex_home, thread.id, .{
+        .objective = goal.objective,
+        .status = goal.status,
+        .token_budget = goal.token_budget,
+        .tokens_used = goal.tokens_used,
+        .time_used_seconds = goal.time_used_seconds,
+        .created_at = goal.created_at,
+        .updated_at = goal.updated_at,
+    });
+}
+
 fn loadedThreadGoalFromSessionGoal(allocator: std.mem.Allocator, maybe_goal: ?session_mod.ThreadGoal) !?LoadedThreadGoal {
     const goal = maybe_goal orelse return null;
     const objective = try allocator.dupe(u8, goal.objective);
@@ -33633,6 +33657,40 @@ fn loadedThreadGoalFromSessionGoal(allocator: std.mem.Allocator, maybe_goal: ?se
         .time_usage_start_seconds = goal.time_used_seconds,
         .time_usage_start_at = loadedThreadGoalTimeUsageStartAtForSavedGoal(goal.status, goal.updated_at, now),
     };
+}
+
+fn loadedThreadGoalFromStateGoal(allocator: std.mem.Allocator, goal: thread_state.ThreadGoal) !LoadedThreadGoal {
+    const objective = try allocator.dupe(u8, goal.objective);
+    errdefer allocator.free(objective);
+    const status = try allocator.dupe(u8, goal.status);
+    errdefer allocator.free(status);
+    const now = currentUnixSeconds();
+    return .{
+        .objective = objective,
+        .status = status,
+        .token_budget = goal.token_budget,
+        .tokens_used = goal.tokens_used,
+        .time_used_seconds = goal.time_used_seconds,
+        .created_at = goal.created_at,
+        .updated_at = goal.updated_at,
+        .token_usage_start_total = 0,
+        .time_usage_start_seconds = goal.time_used_seconds,
+        .time_usage_start_at = now,
+    };
+}
+
+fn applyStateThreadGoal(allocator: std.mem.Allocator, codex_home: []const u8, thread: *LoadedThread) !void {
+    const state_goal = (try thread_state.findThreadGoalByThreadId(allocator, codex_home, thread.id)) orelse return;
+    defer state_goal.deinit(allocator);
+
+    var loaded_goal = try loadedThreadGoalFromStateGoal(allocator, state_goal);
+    errdefer loaded_goal.deinit(allocator);
+    const goal_usage_tokens = loadedThreadGoalUsageTokens(thread);
+    loaded_goal.token_usage_start_total = loadedThreadGoalStartTotalForSavedUsage(goal_usage_tokens, loaded_goal.tokens_used);
+
+    if (thread.goal) |*existing| existing.deinit(allocator);
+    thread.goal = loaded_goal;
+    try syncLoadedThreadGoalToTranscript(allocator, thread);
 }
 
 fn loadedThreadGoalTimeUsageStartAtForSavedGoal(status: []const u8, updated_at: i64, now: i64) i64 {
@@ -33846,7 +33904,10 @@ fn handleLoadedThreadCompactStart(
     const completed_at_ms = currentUnixMilliseconds();
     const completed_at = @divTrunc(completed_at_ms, std.time.ms_per_s);
     const goal_accounting_changed = refreshLoadedThreadGoalAccountingAt(thread, completed_at);
-    if (goal_accounting_changed) try syncLoadedThreadGoalToTranscript(allocator, thread);
+    if (goal_accounting_changed) {
+        try syncLoadedThreadGoalToTranscript(allocator, thread);
+        _ = try saveLoadedThreadGoalToStateDb(allocator, cfg.codex_home, thread);
+    }
     if (thread.path) |path| {
         try session_store.saveTranscript(allocator, path, &thread.transcript);
     }
@@ -35824,7 +35885,16 @@ fn handleThreadMethod(
         };
         const result = try renderThreadReadResponse(allocator, thread, true);
         defer allocator.free(result);
-        if (goal_cleared) try queueThreadGoalClearedNotification(allocator, state, thread.id);
+        if (goal_cleared) {
+            var cfg = config.load(allocator) catch |err| {
+                return renderJsonRpcErrorForFailure(allocator, id_value, "thread/rollback failed to load config", err);
+            };
+            defer cfg.deinit(allocator);
+            _ = thread_state.deleteThreadGoal(allocator, cfg.codex_home, thread.id) catch |err| {
+                return renderJsonRpcErrorForFailure(allocator, id_value, "thread/rollback failed to persist state goal", err);
+            };
+            try queueThreadGoalClearedNotification(allocator, state, thread.id);
+        }
         return renderJsonRpcResult(allocator, id_value, result);
     }
     if (std.mem.eql(u8, method, "thread/list")) {
@@ -35932,16 +36002,37 @@ fn handleThreadMethod(
         if (!isUuidString(thread_id)) {
             return renderInvalidThreadId(allocator, id_value, thread_id);
         }
-        const thread_index = findLoadedThreadIndex(state, thread_id) orelse {
-            return renderThreadNotFound(allocator, id_value, thread_id);
+        var cfg = config.load(allocator) catch |err| {
+            return renderJsonRpcErrorForFailure(allocator, id_value, "thread/goal/set failed to load config", err);
         };
-        const thread = &state.loaded_threads.items[thread_index];
-        if (thread.ephemeral) {
-            const message = try std.fmt.allocPrint(allocator, "ephemeral thread does not support goals: {s}", .{thread_id});
-            defer allocator.free(message);
-            return renderJsonRpcError(allocator, id_value, -32600, message);
+        defer cfg.deinit(allocator);
+        if (findLoadedThreadIndex(state, thread_id)) |thread_index| {
+            const thread = &state.loaded_threads.items[thread_index];
+            if (thread.ephemeral) {
+                const message = try std.fmt.allocPrint(allocator, "ephemeral thread does not support goals: {s}", .{thread_id});
+                defer allocator.free(message);
+                return renderJsonRpcError(allocator, id_value, -32600, message);
+            }
+            setLoadedThreadGoal(allocator, thread, object) catch |err| switch (err) {
+                error.MissingThreadGoal => {
+                    const message = try std.fmt.allocPrint(allocator, "cannot update goal for thread {s}: no goal exists", .{thread_id});
+                    defer allocator.free(message);
+                    return renderJsonRpcError(allocator, id_value, -32600, message);
+                },
+                else => return renderJsonRpcErrorForFailure(allocator, id_value, "thread/goal/set failed", err),
+            };
+            _ = saveLoadedThreadGoalToStateDb(allocator, cfg.codex_home, thread) catch |err| {
+                return renderJsonRpcErrorForFailure(allocator, id_value, "thread/goal/set failed to persist state goal", err);
+            };
+            const result = try renderThreadGoalSetResponse(allocator, thread);
+            defer allocator.free(result);
+            try queueThreadGoalUpdatedNotification(allocator, state, thread);
+            return renderJsonRpcResult(allocator, id_value, result);
         }
-        setLoadedThreadGoal(allocator, thread, object) catch |err| switch (err) {
+        if (!try thread_state.stateDbThreadExists(allocator, cfg.codex_home, thread_id)) {
+            return renderThreadNotFound(allocator, id_value, thread_id);
+        }
+        var goal = setStateThreadGoalFromParams(allocator, cfg.codex_home, thread_id, object) catch |err| switch (err) {
             error.MissingThreadGoal => {
                 const message = try std.fmt.allocPrint(allocator, "cannot update goal for thread {s}: no goal exists", .{thread_id});
                 defer allocator.free(message);
@@ -35949,9 +36040,10 @@ fn handleThreadMethod(
             },
             else => return renderJsonRpcErrorForFailure(allocator, id_value, "thread/goal/set failed", err),
         };
-        const result = try renderThreadGoalSetResponse(allocator, thread);
+        defer goal.deinit(allocator);
+        const result = try renderStateThreadGoalSetResponse(allocator, goal);
         defer allocator.free(result);
-        try queueThreadGoalUpdatedNotification(allocator, state, thread);
+        try queueStateThreadGoalUpdatedNotification(allocator, state, goal);
         return renderJsonRpcResult(allocator, id_value, result);
     }
     if (std.mem.eql(u8, method, "thread/goal/get")) {
@@ -35967,19 +36059,36 @@ fn handleThreadMethod(
         if (!isUuidString(thread_id)) {
             return renderInvalidThreadId(allocator, id_value, thread_id);
         }
-        const thread_index = findLoadedThreadIndex(state, thread_id) orelse {
-            return renderThreadNotFound(allocator, id_value, thread_id);
+        var cfg = config.load(allocator) catch |err| {
+            return renderJsonRpcErrorForFailure(allocator, id_value, "thread/goal/get failed to load config", err);
         };
-        const thread = &state.loaded_threads.items[thread_index];
-        if (thread.ephemeral) {
-            const message = try std.fmt.allocPrint(allocator, "ephemeral thread does not support goals: {s}", .{thread_id});
-            defer allocator.free(message);
-            return renderJsonRpcError(allocator, id_value, -32600, message);
+        defer cfg.deinit(allocator);
+        if (findLoadedThreadIndex(state, thread_id)) |thread_index| {
+            const thread = &state.loaded_threads.items[thread_index];
+            if (thread.ephemeral) {
+                const message = try std.fmt.allocPrint(allocator, "ephemeral thread does not support goals: {s}", .{thread_id});
+                defer allocator.free(message);
+                return renderJsonRpcError(allocator, id_value, -32600, message);
+            }
+            if (refreshLoadedThreadGoalAccountingAndPersistAt(allocator, thread, currentUnixSeconds()) catch |err| {
+                return renderJsonRpcErrorForFailure(allocator, id_value, "thread/goal/get failed", err);
+            }) {
+                _ = saveLoadedThreadGoalToStateDb(allocator, cfg.codex_home, thread) catch |err| {
+                    return renderJsonRpcErrorForFailure(allocator, id_value, "thread/goal/get failed to persist state goal", err);
+                };
+            }
+            const result = try renderThreadGoalGetResponse(allocator, thread);
+            defer allocator.free(result);
+            return renderJsonRpcResult(allocator, id_value, result);
         }
-        _ = refreshLoadedThreadGoalAccountingAndPersistAt(allocator, thread, currentUnixSeconds()) catch |err| {
+        if (!try thread_state.stateDbThreadExists(allocator, cfg.codex_home, thread_id)) {
+            return renderThreadNotFound(allocator, id_value, thread_id);
+        }
+        const goal = thread_state.findThreadGoalByThreadId(allocator, cfg.codex_home, thread_id) catch |err| {
             return renderJsonRpcErrorForFailure(allocator, id_value, "thread/goal/get failed", err);
         };
-        const result = try renderThreadGoalGetResponse(allocator, thread);
+        defer if (goal) |value| value.deinit(allocator);
+        const result = try renderStateThreadGoalGetResponse(allocator, goal);
         defer allocator.free(result);
         return renderJsonRpcResult(allocator, id_value, result);
     }
@@ -35996,21 +36105,48 @@ fn handleThreadMethod(
         if (!isUuidString(thread_id)) {
             return renderInvalidThreadId(allocator, id_value, thread_id);
         }
-        const thread_index = findLoadedThreadIndex(state, thread_id) orelse {
-            return renderThreadNotFound(allocator, id_value, thread_id);
+        var cfg = config.load(allocator) catch |err| {
+            return renderJsonRpcErrorForFailure(allocator, id_value, "thread/goal/clear failed to load config", err);
         };
-        const thread = &state.loaded_threads.items[thread_index];
-        if (thread.ephemeral) {
-            const message = try std.fmt.allocPrint(allocator, "ephemeral thread does not support goals: {s}", .{thread_id});
-            defer allocator.free(message);
-            return renderJsonRpcError(allocator, id_value, -32600, message);
-        }
-        const cleared = clearLoadedThreadGoal(allocator, thread) catch |err| {
-            return renderJsonRpcErrorForFailure(allocator, id_value, "thread/goal/clear failed", err);
+        defer cfg.deinit(allocator);
+        const cleared = if (findLoadedThreadIndex(state, thread_id)) |thread_index| blk: {
+            const thread = &state.loaded_threads.items[thread_index];
+            if (thread.ephemeral) {
+                const message = try std.fmt.allocPrint(allocator, "ephemeral thread does not support goals: {s}", .{thread_id});
+                defer allocator.free(message);
+                return renderJsonRpcError(allocator, id_value, -32600, message);
+            }
+            const loaded_cleared = clearLoadedThreadGoal(allocator, thread) catch |err| {
+                return renderJsonRpcErrorForFailure(allocator, id_value, "thread/goal/clear failed", err);
+            };
+            if (loaded_cleared) {
+                _ = thread_state.deleteThreadGoal(allocator, cfg.codex_home, thread_id) catch |err| {
+                    return renderJsonRpcErrorForFailure(allocator, id_value, "thread/goal/clear failed to persist state goal", err);
+                };
+            }
+            break :blk loaded_cleared;
+        } else blk: {
+            if (!try thread_state.stateDbThreadExists(allocator, cfg.codex_home, thread_id)) {
+                return renderThreadNotFound(allocator, id_value, thread_id);
+            }
+            var stored_cleared = false;
+            const state_cleared = thread_state.deleteThreadGoal(allocator, cfg.codex_home, thread_id) catch |err| {
+                return renderJsonRpcErrorForFailure(allocator, id_value, "thread/goal/clear failed", err);
+            };
+            var stored_thread = createStoredThreadFromParamsIncludingStateDb(allocator, cfg, object) catch |err| switch (err) {
+                error.FileNotFound => break :blk state_cleared,
+                error.InvalidThreadParams => return renderThreadObjectParamsError(allocator, id_value, method),
+                else => return renderJsonRpcErrorForFailure(allocator, id_value, "thread/goal/clear failed to load stored thread", err),
+            };
+            defer stored_thread.deinit(allocator);
+            stored_cleared = clearLoadedThreadGoal(allocator, &stored_thread) catch |err| {
+                return renderJsonRpcErrorForFailure(allocator, id_value, "thread/goal/clear failed", err);
+            };
+            break :blk state_cleared or stored_cleared;
         };
         const result = try renderThreadGoalClearResponse(allocator, cleared);
         defer allocator.free(result);
-        if (cleared) try queueThreadGoalClearedNotification(allocator, state, thread.id);
+        if (cleared) try queueThreadGoalClearedNotification(allocator, state, thread_id);
         return renderJsonRpcResult(allocator, id_value, result);
     }
     if (std.mem.eql(u8, method, "thread/memoryMode/set")) {
@@ -37677,6 +37813,7 @@ fn createStateDbStoredThreadFromParams(
     const metadata = try thread_state.findThreadMetadataByThreadId(allocator, cfg.codex_home, thread_id);
     defer if (metadata) |value| value.deinit(allocator);
     if (metadata) |value| try applyStateThreadMetadata(allocator, &thread, value);
+    try applyStateThreadGoal(allocator, cfg.codex_home, &thread);
     return thread;
 }
 
@@ -37730,6 +37867,7 @@ fn applyStateResumeMetadata(
             .apply_cwd = optionalStringParam(params, "cwd") == null,
         });
     }
+    try applyStateThreadGoal(allocator, codex_home, thread);
 }
 
 fn applyStateThreadMetadataWithOptions(
@@ -40723,6 +40861,64 @@ fn queueThreadGoalClearedNotification(allocator: std.mem.Allocator, state: *AppS
     try queuePendingServerNotification(allocator, state, "thread/goal/cleared", owned);
 }
 
+fn setStateThreadGoalFromParams(
+    allocator: std.mem.Allocator,
+    codex_home: []const u8,
+    thread_id: []const u8,
+    object: std.json.ObjectMap,
+) !thread_state.ThreadGoal {
+    const objective = loadedThreadGoalObjective(object);
+    const status = loadedThreadGoalStatus(object);
+    const token_budget = loadedThreadGoalTokenBudget(object);
+
+    if (objective) |value| {
+        const existing = try thread_state.findThreadGoalByThreadId(allocator, codex_home, thread_id);
+        defer if (existing) |goal| goal.deinit(allocator);
+        if (existing) |goal| {
+            if (std.mem.eql(u8, goal.objective, value) and !std.mem.eql(u8, goal.status, "complete")) {
+                return (try thread_state.updateThreadGoal(allocator, codex_home, thread_id, .{
+                    .status = status,
+                    .token_budget_present = token_budget.present,
+                    .token_budget = token_budget.value,
+                })) orelse error.MissingThreadGoal;
+            }
+        }
+        return (try thread_state.replaceThreadGoal(
+            allocator,
+            codex_home,
+            thread_id,
+            value,
+            status orelse "active",
+            if (token_budget.present) token_budget.value else null,
+        )) orelse error.MissingThreadGoal;
+    }
+
+    const existing_for_update = try thread_state.findThreadGoalByThreadId(allocator, codex_home, thread_id);
+    defer if (existing_for_update) |goal| goal.deinit(allocator);
+    if (existing_for_update == null) return error.MissingThreadGoal;
+    return (try thread_state.updateThreadGoal(allocator, codex_home, thread_id, .{
+        .status = status,
+        .token_budget_present = token_budget.present,
+        .token_budget = token_budget.value,
+    })) orelse error.MissingThreadGoal;
+}
+
+fn queueStateThreadGoalUpdatedNotification(
+    allocator: std.mem.Allocator,
+    state: *AppServerState,
+    goal: thread_state.ThreadGoal,
+) !void {
+    var notification = std.ArrayList(u8).empty;
+    errdefer notification.deinit(allocator);
+    try notification.appendSlice(allocator, "{\"jsonrpc\":\"2.0\",\"method\":\"thread/goal/updated\",\"params\":{\"threadId\":");
+    try appendJsonString(allocator, &notification, goal.thread_id);
+    try notification.appendSlice(allocator, ",\"turnId\":null,\"goal\":");
+    try appendStateThreadGoalJson(allocator, &notification, goal);
+    try notification.appendSlice(allocator, "}}");
+    const owned = try notification.toOwnedSlice(allocator);
+    try queuePendingServerNotification(allocator, state, "thread/goal/updated", owned);
+}
+
 fn renderThreadGoalSetResponse(allocator: std.mem.Allocator, thread: *const LoadedThread) ![]const u8 {
     const goal = thread.goal orelse return error.MissingThreadGoal;
     var result = std.ArrayList(u8).empty;
@@ -40733,12 +40929,34 @@ fn renderThreadGoalSetResponse(allocator: std.mem.Allocator, thread: *const Load
     return result.toOwnedSlice(allocator);
 }
 
+fn renderStateThreadGoalSetResponse(allocator: std.mem.Allocator, goal: thread_state.ThreadGoal) ![]const u8 {
+    var result = std.ArrayList(u8).empty;
+    errdefer result.deinit(allocator);
+    try result.appendSlice(allocator, "{\"goal\":");
+    try appendStateThreadGoalJson(allocator, &result, goal);
+    try result.appendSlice(allocator, "}");
+    return result.toOwnedSlice(allocator);
+}
+
 fn renderThreadGoalGetResponse(allocator: std.mem.Allocator, thread: *const LoadedThread) ![]const u8 {
     var result = std.ArrayList(u8).empty;
     errdefer result.deinit(allocator);
     try result.appendSlice(allocator, "{\"goal\":");
     if (thread.goal) |goal| {
         try appendLoadedThreadGoalJson(allocator, &result, thread.id, goal);
+    } else {
+        try result.appendSlice(allocator, "null");
+    }
+    try result.appendSlice(allocator, "}");
+    return result.toOwnedSlice(allocator);
+}
+
+fn renderStateThreadGoalGetResponse(allocator: std.mem.Allocator, maybe_goal: ?thread_state.ThreadGoal) ![]const u8 {
+    var result = std.ArrayList(u8).empty;
+    errdefer result.deinit(allocator);
+    try result.appendSlice(allocator, "{\"goal\":");
+    if (maybe_goal) |goal| {
+        try appendStateThreadGoalJson(allocator, &result, goal);
     } else {
         try result.appendSlice(allocator, "null");
     }
@@ -40823,6 +41041,30 @@ fn appendLoadedThreadGoalJson(
 ) !void {
     try out.appendSlice(allocator, "{\"threadId\":");
     try appendJsonString(allocator, out, thread_id);
+    try out.appendSlice(allocator, ",\"objective\":");
+    try appendJsonString(allocator, out, goal.objective);
+    try out.appendSlice(allocator, ",\"status\":");
+    try appendJsonString(allocator, out, goal.status);
+    try out.appendSlice(allocator, ",\"tokenBudget\":");
+    try appendOptionalInt(allocator, out, goal.token_budget);
+    try out.appendSlice(allocator, ",\"tokensUsed\":");
+    try appendInt(allocator, out, goal.tokens_used);
+    try out.appendSlice(allocator, ",\"timeUsedSeconds\":");
+    try appendInt(allocator, out, goal.time_used_seconds);
+    try out.appendSlice(allocator, ",\"createdAt\":");
+    try appendInt(allocator, out, goal.created_at);
+    try out.appendSlice(allocator, ",\"updatedAt\":");
+    try appendInt(allocator, out, goal.updated_at);
+    try out.appendSlice(allocator, "}");
+}
+
+fn appendStateThreadGoalJson(
+    allocator: std.mem.Allocator,
+    out: *std.ArrayList(u8),
+    goal: thread_state.ThreadGoal,
+) !void {
+    try out.appendSlice(allocator, "{\"threadId\":");
+    try appendJsonString(allocator, out, goal.thread_id);
     try out.appendSlice(allocator, ",\"objective\":");
     try appendJsonString(allocator, out, goal.objective);
     try out.appendSlice(allocator, ",\"status\":");

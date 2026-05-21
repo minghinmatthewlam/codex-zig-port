@@ -98,6 +98,11 @@ pub fn bindInt64(stmt: *Statement, index: c_int, value: i64) !void {
     }
 }
 
+pub fn bindNullableInt64(stmt: *Statement, index: c_int, value: ?i64) !void {
+    if (value) |integer| return bindInt64(stmt, index, integer);
+    if (sqlite3_bind_null(stmt, index) != SQLITE_OK) return error.SqliteBindFailed;
+}
+
 pub fn step(stmt: *Statement) c_int {
     return sqlite3_step(stmt);
 }

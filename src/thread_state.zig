@@ -63,6 +63,27 @@ const THREAD_SUMMARY_METADATA_QUERY =
     \\WHERE id = ?
 ;
 
+const THREAD_EXISTS_QUERY =
+    \\SELECT 1
+    \\FROM threads
+    \\WHERE id = ?
+;
+
+const THREAD_GOAL_QUERY =
+    \\SELECT
+    \\    thread_id,
+    \\    goal_id,
+    \\    objective,
+    \\    status,
+    \\    token_budget,
+    \\    tokens_used,
+    \\    time_used_seconds,
+    \\    created_at_ms,
+    \\    updated_at_ms
+    \\FROM thread_goals
+    \\WHERE thread_id = ?
+;
+
 const UPDATE_TITLE_QUERY =
     \\UPDATE threads
     \\SET title = ?
@@ -79,6 +100,62 @@ const UPDATE_GIT_INFO_QUERY =
     \\UPDATE threads
     \\SET git_sha = ?, git_branch = ?, git_origin_url = ?
     \\WHERE id = ?
+;
+
+const REPLACE_THREAD_GOAL_QUERY =
+    \\INSERT INTO thread_goals (
+    \\    thread_id,
+    \\    goal_id,
+    \\    objective,
+    \\    status,
+    \\    token_budget,
+    \\    tokens_used,
+    \\    time_used_seconds,
+    \\    created_at_ms,
+    \\    updated_at_ms
+    \\) VALUES (?, ?, ?, ?, ?, 0, 0, ?, ?)
+    \\ON CONFLICT(thread_id) DO UPDATE SET
+    \\    goal_id = excluded.goal_id,
+    \\    objective = excluded.objective,
+    \\    status = excluded.status,
+    \\    token_budget = excluded.token_budget,
+    \\    tokens_used = 0,
+    \\    time_used_seconds = 0,
+    \\    created_at_ms = excluded.created_at_ms,
+    \\    updated_at_ms = excluded.updated_at_ms
+;
+
+const UPDATE_THREAD_GOAL_QUERY =
+    \\UPDATE thread_goals
+    \\SET status = ?, token_budget = ?, updated_at_ms = ?
+    \\WHERE thread_id = ?
+;
+
+const SAVE_THREAD_GOAL_SNAPSHOT_QUERY =
+    \\INSERT INTO thread_goals (
+    \\    thread_id,
+    \\    goal_id,
+    \\    objective,
+    \\    status,
+    \\    token_budget,
+    \\    tokens_used,
+    \\    time_used_seconds,
+    \\    created_at_ms,
+    \\    updated_at_ms
+    \\) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    \\ON CONFLICT(thread_id) DO UPDATE SET
+    \\    objective = excluded.objective,
+    \\    status = excluded.status,
+    \\    token_budget = excluded.token_budget,
+    \\    tokens_used = excluded.tokens_used,
+    \\    time_used_seconds = excluded.time_used_seconds,
+    \\    created_at_ms = excluded.created_at_ms,
+    \\    updated_at_ms = excluded.updated_at_ms
+;
+
+const DELETE_THREAD_GOAL_QUERY =
+    \\DELETE FROM thread_goals
+    \\WHERE thread_id = ?
 ;
 
 const UPDATE_ARCHIVE_QUERY =
@@ -130,6 +207,41 @@ pub const ThreadMetadata = struct {
         if (self.git_branch) |value| allocator.free(value);
         if (self.git_origin_url) |value| allocator.free(value);
     }
+};
+
+pub const ThreadGoal = struct {
+    thread_id: []const u8,
+    goal_id: []const u8,
+    objective: []const u8,
+    status: []const u8,
+    token_budget: ?i64,
+    tokens_used: i64,
+    time_used_seconds: i64,
+    created_at: i64,
+    updated_at: i64,
+
+    pub fn deinit(self: ThreadGoal, allocator: std.mem.Allocator) void {
+        allocator.free(self.thread_id);
+        allocator.free(self.goal_id);
+        allocator.free(self.objective);
+        allocator.free(self.status);
+    }
+};
+
+pub const ThreadGoalUpdate = struct {
+    status: ?[]const u8 = null,
+    token_budget_present: bool = false,
+    token_budget: ?i64 = null,
+};
+
+pub const ThreadGoalSnapshot = struct {
+    objective: []const u8,
+    status: []const u8,
+    token_budget: ?i64,
+    tokens_used: i64,
+    time_used_seconds: i64,
+    created_at: i64,
+    updated_at: i64,
 };
 
 const StateListQueryKind = enum {
@@ -396,6 +508,50 @@ pub fn findThreadMetadataByThreadId(allocator: std.mem.Allocator, codex_home: []
     }
 }
 
+pub fn stateDbThreadExists(allocator: std.mem.Allocator, codex_home: []const u8, thread_id: []const u8) !bool {
+    const state_path = try memory_reset.resolveStateDbPath(allocator, codex_home);
+    defer allocator.free(state_path);
+    if (!try memory_reset.stateDbExists(allocator, state_path)) return false;
+
+    const db = try sqlite.openReadOnly(allocator, state_path);
+    defer sqlite.close(db);
+
+    const statement = sqlite.prepare(allocator, db, THREAD_EXISTS_QUERY) catch |err| switch (err) {
+        error.SqlitePrepareFailed => return false,
+        else => return err,
+    };
+    defer sqlite.finalize(statement);
+    try sqlite.bindText(statement, 1, thread_id);
+
+    return switch (sqlite.step(statement)) {
+        sqlite.SQLITE_ROW => true,
+        sqlite.SQLITE_DONE => false,
+        else => error.StateDbThreadMetadataStepFailed,
+    };
+}
+
+pub fn findThreadGoalByThreadId(allocator: std.mem.Allocator, codex_home: []const u8, thread_id: []const u8) !?ThreadGoal {
+    const state_path = try memory_reset.resolveStateDbPath(allocator, codex_home);
+    defer allocator.free(state_path);
+    if (!try memory_reset.stateDbExists(allocator, state_path)) return null;
+
+    const db = try sqlite.openReadOnly(allocator, state_path);
+    defer sqlite.close(db);
+
+    const statement = sqlite.prepare(allocator, db, THREAD_GOAL_QUERY) catch |err| switch (err) {
+        error.SqlitePrepareFailed => return null,
+        else => return err,
+    };
+    defer sqlite.finalize(statement);
+    try sqlite.bindText(statement, 1, thread_id);
+
+    return switch (sqlite.step(statement)) {
+        sqlite.SQLITE_ROW => try threadGoalFromStatement(allocator, statement),
+        sqlite.SQLITE_DONE => null,
+        else => error.StateDbThreadMetadataStepFailed,
+    };
+}
+
 pub fn updateThreadTitle(allocator: std.mem.Allocator, codex_home: []const u8, thread_id: []const u8, title: []const u8) !bool {
     const statement = try prepareStateUpdate(allocator, codex_home, UPDATE_TITLE_QUERY) orelse return false;
     errdefer statement.deinit();
@@ -426,6 +582,93 @@ pub fn updateThreadGitInfo(
     try sqlite.bindNullableText(statement.statement, 2, branch);
     try sqlite.bindNullableText(statement.statement, 3, origin_url);
     try sqlite.bindText(statement.statement, 4, thread_id);
+    return try finishStateUpdate(statement);
+}
+
+pub fn replaceThreadGoal(
+    allocator: std.mem.Allocator,
+    codex_home: []const u8,
+    thread_id: []const u8,
+    objective: []const u8,
+    status: []const u8,
+    token_budget: ?i64,
+) !?ThreadGoal {
+    if (!try stateDbThreadExists(allocator, codex_home, thread_id)) return null;
+
+    const statement = try prepareStateUpdate(allocator, codex_home, REPLACE_THREAD_GOAL_QUERY) orelse return null;
+    errdefer statement.deinit();
+    const goal_id = try generateUuidString(allocator);
+    defer allocator.free(goal_id);
+    const now_ms = currentUnixMilliseconds();
+    const state_status = stateGoalStatus(statusAfterBudgetLimit(status, 0, token_budget));
+    try sqlite.bindText(statement.statement, 1, thread_id);
+    try sqlite.bindText(statement.statement, 2, goal_id);
+    try sqlite.bindText(statement.statement, 3, objective);
+    try sqlite.bindText(statement.statement, 4, state_status);
+    try sqlite.bindNullableInt64(statement.statement, 5, token_budget);
+    try sqlite.bindInt64(statement.statement, 6, now_ms);
+    try sqlite.bindInt64(statement.statement, 7, now_ms);
+    if (!try finishStateUpdate(statement)) return null;
+    return findThreadGoalByThreadId(allocator, codex_home, thread_id);
+}
+
+pub fn updateThreadGoal(
+    allocator: std.mem.Allocator,
+    codex_home: []const u8,
+    thread_id: []const u8,
+    update: ThreadGoalUpdate,
+) !?ThreadGoal {
+    var existing = (try findThreadGoalByThreadId(allocator, codex_home, thread_id)) orelse return null;
+    defer existing.deinit(allocator);
+
+    var status = update.status orelse existing.status;
+    if (std.mem.eql(u8, existing.status, "budgetLimited") and
+        update.status != null and
+        std.mem.eql(u8, update.status.?, "paused"))
+    {
+        status = "budgetLimited";
+    }
+    const token_budget = if (update.token_budget_present) update.token_budget else existing.token_budget;
+    status = statusAfterBudgetLimit(status, existing.tokens_used, token_budget);
+
+    const statement = try prepareStateUpdate(allocator, codex_home, UPDATE_THREAD_GOAL_QUERY) orelse return null;
+    errdefer statement.deinit();
+    try sqlite.bindText(statement.statement, 1, stateGoalStatus(status));
+    try sqlite.bindNullableInt64(statement.statement, 2, token_budget);
+    try sqlite.bindInt64(statement.statement, 3, currentUnixMilliseconds());
+    try sqlite.bindText(statement.statement, 4, thread_id);
+    if (!try finishStateUpdate(statement)) return null;
+    return findThreadGoalByThreadId(allocator, codex_home, thread_id);
+}
+
+pub fn saveThreadGoalSnapshot(
+    allocator: std.mem.Allocator,
+    codex_home: []const u8,
+    thread_id: []const u8,
+    snapshot: ThreadGoalSnapshot,
+) !bool {
+    if (!try stateDbThreadExists(allocator, codex_home, thread_id)) return false;
+
+    const statement = try prepareStateUpdate(allocator, codex_home, SAVE_THREAD_GOAL_SNAPSHOT_QUERY) orelse return false;
+    errdefer statement.deinit();
+    const goal_id = try generateUuidString(allocator);
+    defer allocator.free(goal_id);
+    try sqlite.bindText(statement.statement, 1, thread_id);
+    try sqlite.bindText(statement.statement, 2, goal_id);
+    try sqlite.bindText(statement.statement, 3, snapshot.objective);
+    try sqlite.bindText(statement.statement, 4, stateGoalStatus(snapshot.status));
+    try sqlite.bindNullableInt64(statement.statement, 5, snapshot.token_budget);
+    try sqlite.bindInt64(statement.statement, 6, snapshot.tokens_used);
+    try sqlite.bindInt64(statement.statement, 7, snapshot.time_used_seconds);
+    try sqlite.bindInt64(statement.statement, 8, secondsToMilliseconds(snapshot.created_at));
+    try sqlite.bindInt64(statement.statement, 9, secondsToMilliseconds(snapshot.updated_at));
+    return try finishStateUpdate(statement);
+}
+
+pub fn deleteThreadGoal(allocator: std.mem.Allocator, codex_home: []const u8, thread_id: []const u8) !bool {
+    const statement = try prepareStateUpdate(allocator, codex_home, DELETE_THREAD_GOAL_QUERY) orelse return false;
+    errdefer statement.deinit();
+    try sqlite.bindText(statement.statement, 1, thread_id);
     return try finishStateUpdate(statement);
 }
 
@@ -498,6 +741,91 @@ fn stateRolloutPath(allocator: std.mem.Allocator, codex_home: []const u8, path: 
 fn currentUnixSeconds() i64 {
     const now_ns = std.Io.Timestamp.now(std.Io.Threaded.global_single_threaded.io(), .real).nanoseconds;
     return @intCast(@divTrunc(now_ns, std.time.ns_per_s));
+}
+
+fn currentUnixMilliseconds() i64 {
+    const now_ns = std.Io.Timestamp.now(std.Io.Threaded.global_single_threaded.io(), .real).nanoseconds;
+    return @intCast(@divTrunc(now_ns, std.time.ns_per_ms));
+}
+
+fn threadGoalFromStatement(allocator: std.mem.Allocator, statement: *sqlite.Statement) !ThreadGoal {
+    const thread_id = try sqlite.columnTextOwned(allocator, statement, 0);
+    errdefer allocator.free(thread_id);
+    const goal_id = try sqlite.columnTextOwned(allocator, statement, 1);
+    errdefer allocator.free(goal_id);
+    const objective = try sqlite.columnTextOwned(allocator, statement, 2);
+    errdefer allocator.free(objective);
+    const raw_status = try sqlite.columnTextOwned(allocator, statement, 3);
+    defer allocator.free(raw_status);
+    const status = try allocator.dupe(u8, apiGoalStatus(raw_status));
+    errdefer allocator.free(status);
+    return .{
+        .thread_id = thread_id,
+        .goal_id = goal_id,
+        .objective = objective,
+        .status = status,
+        .token_budget = sqlite.columnNullableInt64(statement, 4),
+        .tokens_used = sqlite.columnInt64(statement, 5),
+        .time_used_seconds = sqlite.columnInt64(statement, 6),
+        .created_at = millisecondsToSeconds(sqlite.columnInt64(statement, 7)),
+        .updated_at = millisecondsToSeconds(sqlite.columnInt64(statement, 8)),
+    };
+}
+
+fn apiGoalStatus(status: []const u8) []const u8 {
+    if (std.mem.eql(u8, status, "budget_limited")) return "budgetLimited";
+    return status;
+}
+
+fn stateGoalStatus(status: []const u8) []const u8 {
+    if (std.mem.eql(u8, status, "budgetLimited")) return "budget_limited";
+    return status;
+}
+
+fn statusAfterBudgetLimit(status: []const u8, tokens_used: i64, token_budget: ?i64) []const u8 {
+    if (std.mem.eql(u8, status, "active")) {
+        if (token_budget) |budget| {
+            if (tokens_used >= budget) return "budgetLimited";
+        }
+    }
+    return status;
+}
+
+fn millisecondsToSeconds(value: i64) i64 {
+    return @divFloor(value, std.time.ms_per_s);
+}
+
+fn secondsToMilliseconds(value: i64) i64 {
+    return value * std.time.ms_per_s;
+}
+
+fn generateUuidString(allocator: std.mem.Allocator) ![]const u8 {
+    var bytes: [16]u8 = undefined;
+    std.Io.Threaded.global_single_threaded.io().random(&bytes);
+    bytes[6] = (bytes[6] & 0x0f) | 0x40;
+    bytes[8] = (bytes[8] & 0x3f) | 0x80;
+    return std.fmt.allocPrint(
+        allocator,
+        "{x:0>2}{x:0>2}{x:0>2}{x:0>2}-{x:0>2}{x:0>2}-{x:0>2}{x:0>2}-{x:0>2}{x:0>2}-{x:0>2}{x:0>2}{x:0>2}{x:0>2}{x:0>2}{x:0>2}",
+        .{
+            bytes[0],
+            bytes[1],
+            bytes[2],
+            bytes[3],
+            bytes[4],
+            bytes[5],
+            bytes[6],
+            bytes[7],
+            bytes[8],
+            bytes[9],
+            bytes[10],
+            bytes[11],
+            bytes[12],
+            bytes[13],
+            bytes[14],
+            bytes[15],
+        },
+    );
 }
 
 const FileModifiedTimes = struct {
