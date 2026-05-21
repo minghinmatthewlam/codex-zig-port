@@ -12687,6 +12687,142 @@ def run_turn_auth_failure_preserves_runtime_overrides_smoke(binary: Path) -> Non
             if proc.poll() is None:
                 proc.kill()
                 proc.wait(timeout=5)
+
+        legacy_home = Path(tempfile.mkdtemp(prefix="codex-zig-app-server-goal-legacy-", dir="/tmp"))
+        try:
+            (legacy_home / "config.toml").write_text(
+                "\n".join(
+                    [
+                        'model = "gpt-goal-state"',
+                        "[features]",
+                        "goals = true",
+                        "",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            legacy_sessions_dir = legacy_home / "sessions"
+            legacy_sessions_dir.mkdir()
+            legacy_thread_id = "70707070-7070-4070-8070-707070707070"
+            legacy_rollout_path = legacy_sessions_dir / f"rollout-{legacy_thread_id}.jsonl"
+            legacy_rollout_path.write_text(
+                "\n".join(
+                    [
+                        json.dumps(
+                            {
+                                "timestamp": "2025-01-06T12:00:00Z",
+                                "type": "session_meta",
+                                "payload": {
+                                    "id": legacy_thread_id,
+                                    "timestamp": "2025-01-06T12:00:00Z",
+                                    "cwd": "/",
+                                    "originator": "codex",
+                                    "cli_version": "0.0.0",
+                                    "source": "cli",
+                                    "model_provider": "mock_provider",
+                                    "goal": {
+                                        "objective": "legacy transcript goal",
+                                        "status": "paused",
+                                        "token_budget": 88,
+                                        "tokens_used": 2,
+                                        "time_used_seconds": 3,
+                                        "created_at": 1736164800,
+                                        "updated_at": 1736164800,
+                                    },
+                                },
+                            },
+                            separators=(",", ":"),
+                        ),
+                        json.dumps(
+                            {
+                                "timestamp": "2025-01-06T12:00:00Z",
+                                "type": "response_item",
+                                "payload": {
+                                    "type": "message",
+                                    "role": "user",
+                                    "content": [
+                                        {
+                                            "type": "input_text",
+                                            "text": "legacy schema goal hello",
+                                        }
+                                    ],
+                                },
+                            },
+                            separators=(",", ":"),
+                        ),
+                        "",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            seed_feedback_state_db(legacy_home, [(legacy_thread_id, legacy_rollout_path)], [])
+            legacy_env = os.environ.copy()
+            legacy_env["CODEX_HOME"] = str(legacy_home)
+            legacy_proc = subprocess.Popen(
+                [str(binary), "app-server"],
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                env=legacy_env,
+            )
+            try:
+                write_json_line(
+                    legacy_proc,
+                    {
+                        "jsonrpc": "2.0",
+                        "id": "initialize-goal-legacy-state",
+                        "method": "initialize",
+                        "params": {
+                            "clientInfo": {"name": "app-server-smoke", "version": "0"},
+                            "capabilities": EXPERIMENTAL_API_CAPABILITIES,
+                        },
+                    },
+                )
+                assert read_json_line(legacy_proc, 5)["id"] == "initialize-goal-legacy-state"
+
+                write_json_line(
+                    legacy_proc,
+                    {
+                        "jsonrpc": "2.0",
+                        "id": "thread-resume-legacy-state-without-goal-table",
+                        "method": "thread/resume",
+                        "params": {"threadId": legacy_thread_id, "excludeTurns": True},
+                    },
+                )
+                legacy_resume = read_json_line(legacy_proc, 5)
+                assert legacy_resume["id"] == "thread-resume-legacy-state-without-goal-table"
+                assert legacy_resume["result"]["thread"]["id"] == legacy_thread_id
+
+                write_json_line(
+                    legacy_proc,
+                    {
+                        "jsonrpc": "2.0",
+                        "id": "thread-goal-get-legacy-transcript-goal",
+                        "method": "thread/goal/get",
+                        "params": {"threadId": legacy_thread_id},
+                    },
+                )
+                legacy_goal = read_json_line(legacy_proc, 5)
+                assert legacy_goal["id"] == "thread-goal-get-legacy-transcript-goal"
+                assert legacy_goal["result"]["goal"]["objective"] == "legacy transcript goal"
+                assert legacy_goal["result"]["goal"]["status"] == "paused"
+                assert legacy_goal["result"]["goal"]["tokenBudget"] == 88
+                assert "legacy transcript goal" in legacy_rollout_path.read_text(encoding="utf-8")
+
+                assert legacy_proc.stdin is not None
+                legacy_proc.stdin.close()
+                legacy_proc.wait(timeout=5)
+                if legacy_proc.returncode != 0:
+                    raise AssertionError(
+                        f"app-server exited {legacy_proc.returncode}: {legacy_proc.stderr.read()}"
+                    )
+            finally:
+                if legacy_proc.poll() is None:
+                    legacy_proc.kill()
+                    legacy_proc.wait(timeout=5)
+        finally:
+            shutil.rmtree(legacy_home, ignore_errors=True)
     finally:
         shutil.rmtree(codex_home, ignore_errors=True)
 
@@ -19727,6 +19863,663 @@ def run_goal_feature_gate_smoke(binary: Path) -> None:
                 "goals feature is disabled"
                 in thread_goal_get_disabled["error"]["message"]
             )
+            assert proc.stdin is not None
+            proc.stdin.close()
+            proc.wait(timeout=5)
+            if proc.returncode != 0:
+                raise AssertionError(
+                    f"app-server exited {proc.returncode}: {proc.stderr.read()}"
+                )
+        finally:
+            if proc.poll() is None:
+                proc.kill()
+                proc.wait(timeout=5)
+    finally:
+        shutil.rmtree(codex_home, ignore_errors=True)
+
+
+def run_goal_state_db_smoke(binary: Path) -> None:
+    codex_home = Path(tempfile.mkdtemp(prefix="codex-zig-app-server-goal-state-", dir="/tmp"))
+    try:
+        (codex_home / "config.toml").write_text(
+            "\n".join(
+                [
+                    'model = "gpt-goal-state"',
+                    "[features]",
+                    "goals = true",
+                    "",
+                ]
+            ),
+            encoding="utf-8",
+        )
+        sessions_dir = codex_home / "sessions"
+        sessions_dir.mkdir()
+        thread_id = "66666666-6666-4666-8666-666666666666"
+        rollout_path = sessions_dir / f"rollout-{thread_id}.jsonl"
+        rollout_path.write_text(
+            "\n".join(
+                [
+                    json.dumps(
+                        {
+                            "timestamp": "2025-01-06T12:00:00Z",
+                            "type": "session_meta",
+                            "payload": {
+                                "id": thread_id,
+                                "timestamp": "2025-01-06T12:00:00Z",
+                                "cwd": "/",
+                                "originator": "codex",
+                                "cli_version": "0.0.0",
+                                "source": "cli",
+                                "model_provider": "mock_provider",
+                            },
+                        },
+                        separators=(",", ":"),
+                    ),
+                    json.dumps(
+                        {
+                            "timestamp": "2025-01-06T12:00:00Z",
+                            "type": "response_item",
+                            "payload": {
+                                "type": "message",
+                                "role": "user",
+                                "content": [
+                                    {
+                                        "type": "input_text",
+                                        "text": "state goal hello",
+                                    }
+                                ],
+                            },
+                        },
+                        separators=(",", ":"),
+                    ),
+                    "",
+                ]
+            ),
+            encoding="utf-8",
+        )
+        stale_clear_thread_id = "67676767-6767-4767-8767-676767676767"
+        stale_clear_rollout_path = sessions_dir / f"rollout-{stale_clear_thread_id}.jsonl"
+        stale_clear_rollout_path.write_text(
+            "\n".join(
+                [
+                    json.dumps(
+                        {
+                            "timestamp": "2025-01-06T12:00:00Z",
+                            "type": "session_meta",
+                            "payload": {
+                                "id": stale_clear_thread_id,
+                                "timestamp": "2025-01-06T12:00:00Z",
+                                "cwd": "/",
+                                "originator": "codex",
+                                "cli_version": "0.0.0",
+                                "source": "cli",
+                                "model_provider": "mock_provider",
+                                "goal": {
+                                    "objective": "stale transcript goal",
+                                    "status": "active",
+                                    "token_budget": 99,
+                                    "tokens_used": 0,
+                                    "time_used_seconds": 0,
+                                    "created_at": 1736164800,
+                                    "updated_at": 1736164800,
+                                },
+                            },
+                        },
+                        separators=(",", ":"),
+                    ),
+                    json.dumps(
+                        {
+                            "timestamp": "2025-01-06T12:00:00Z",
+                            "type": "response_item",
+                            "payload": {
+                                "type": "message",
+                                "role": "user",
+                                "content": [
+                                    {
+                                        "type": "input_text",
+                                        "text": "stale goal hello",
+                                    }
+                                ],
+                            },
+                        },
+                        separators=(",", ":"),
+                    ),
+                    "",
+                ]
+            ),
+            encoding="utf-8",
+        )
+        transcript_goal_thread_id = "68686868-6868-4868-8868-686868686868"
+        transcript_goal_rollout_path = sessions_dir / f"rollout-{transcript_goal_thread_id}.jsonl"
+        transcript_goal_rollout_path.write_text(
+            "\n".join(
+                [
+                    json.dumps(
+                        {
+                            "timestamp": "2025-01-06T12:00:00Z",
+                            "type": "session_meta",
+                            "payload": {
+                                "id": transcript_goal_thread_id,
+                                "timestamp": "2025-01-06T12:00:00Z",
+                                "cwd": "/",
+                                "originator": "codex",
+                                "cli_version": "0.0.0",
+                                "source": "cli",
+                                "model_provider": "mock_provider",
+                                "goal": {
+                                    "objective": "transcript fallback goal",
+                                    "status": "paused",
+                                    "token_budget": 77,
+                                    "tokens_used": 3,
+                                    "time_used_seconds": 4,
+                                    "created_at": 1736164800,
+                                    "updated_at": 1736164800,
+                                },
+                            },
+                        },
+                        separators=(",", ":"),
+                    ),
+                    json.dumps(
+                        {
+                            "timestamp": "2025-01-06T12:00:00Z",
+                            "type": "response_item",
+                            "payload": {
+                                "type": "message",
+                                "role": "user",
+                                "content": [
+                                    {
+                                        "type": "input_text",
+                                        "text": "transcript fallback goal hello",
+                                    }
+                                ],
+                            },
+                        },
+                        separators=(",", ":"),
+                    ),
+                    "",
+                ]
+            ),
+            encoding="utf-8",
+        )
+        active_elapsed_thread_id = "69696969-6969-4969-8969-696969696969"
+        active_elapsed_rollout_path = sessions_dir / f"rollout-{active_elapsed_thread_id}.jsonl"
+        active_elapsed_rollout_path.write_text(
+            "\n".join(
+                [
+                    json.dumps(
+                        {
+                            "timestamp": "2025-01-06T12:00:00Z",
+                            "type": "session_meta",
+                            "payload": {
+                                "id": active_elapsed_thread_id,
+                                "timestamp": "2025-01-06T12:00:00Z",
+                                "cwd": "/",
+                                "originator": "codex",
+                                "cli_version": "0.0.0",
+                                "source": "cli",
+                                "model_provider": "mock_provider",
+                            },
+                        },
+                        separators=(",", ":"),
+                    ),
+                    json.dumps(
+                        {
+                            "timestamp": "2025-01-06T12:00:00Z",
+                            "type": "response_item",
+                            "payload": {
+                                "type": "message",
+                                "role": "user",
+                                "content": [
+                                    {
+                                        "type": "input_text",
+                                        "text": "active elapsed goal hello",
+                                    }
+                                ],
+                            },
+                        },
+                        separators=(",", ":"),
+                    ),
+                    "",
+                ]
+            ),
+            encoding="utf-8",
+        )
+        state_db_path = seed_feedback_state_db(
+            codex_home,
+            [
+                (thread_id, rollout_path),
+                (stale_clear_thread_id, stale_clear_rollout_path),
+                (transcript_goal_thread_id, transcript_goal_rollout_path),
+                (active_elapsed_thread_id, active_elapsed_rollout_path),
+            ],
+            [],
+        )
+        with sqlite3.connect(state_db_path) as db:
+            db.executescript(
+                """
+                CREATE TABLE thread_goals (
+                    thread_id TEXT PRIMARY KEY NOT NULL REFERENCES threads(id) ON DELETE CASCADE,
+                    goal_id TEXT NOT NULL,
+                    objective TEXT NOT NULL,
+                    status TEXT NOT NULL CHECK(status IN ('active', 'paused', 'budget_limited', 'complete')),
+                    token_budget INTEGER,
+                    tokens_used INTEGER NOT NULL DEFAULT 0,
+                    time_used_seconds INTEGER NOT NULL DEFAULT 0,
+                    created_at_ms INTEGER NOT NULL,
+                    updated_at_ms INTEGER NOT NULL
+                );
+                """
+            )
+            db.execute(
+                """
+                INSERT INTO thread_goals (
+                    thread_id,
+                    goal_id,
+                    objective,
+                    status,
+                    token_budget,
+                    tokens_used,
+                    time_used_seconds,
+                    created_at_ms,
+                    updated_at_ms
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    thread_id,
+                    "goal-state-1",
+                    "persist state db goal",
+                    "budget_limited",
+                    123,
+                    124,
+                    8,
+                    1736164800000,
+                    1736164805000,
+                ),
+            )
+            db.execute(
+                """
+                INSERT INTO thread_goals (
+                    thread_id,
+                    goal_id,
+                    objective,
+                    status,
+                    token_budget,
+                    tokens_used,
+                    time_used_seconds,
+                    created_at_ms,
+                    updated_at_ms
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    stale_clear_thread_id,
+                    "goal-stale-clear-1",
+                    "stale transcript goal",
+                    "active",
+                    99,
+                    0,
+                    0,
+                    1736164800000,
+                    1736164800000,
+                ),
+            )
+            db.execute(
+                """
+                INSERT INTO thread_goals (
+                    thread_id,
+                    goal_id,
+                    objective,
+                    status,
+                    token_budget,
+                    tokens_used,
+                    time_used_seconds,
+                    created_at_ms,
+                    updated_at_ms
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    active_elapsed_thread_id,
+                    "goal-active-elapsed-1",
+                    "active state goal should not count offline time",
+                    "active",
+                    None,
+                    0,
+                    5,
+                    1736164800000,
+                    1736164800000,
+                ),
+            )
+
+        env = os.environ.copy()
+        env["CODEX_HOME"] = str(codex_home)
+        proc = subprocess.Popen(
+            [str(binary), "app-server"],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            env=env,
+        )
+        try:
+            write_json_line(
+                proc,
+                {
+                    "jsonrpc": "2.0",
+                    "id": "initialize-goal-state",
+                    "method": "initialize",
+                    "params": {
+                        "clientInfo": {"name": "app-server-smoke", "version": "0"},
+                        "capabilities": EXPERIMENTAL_API_CAPABILITIES,
+                    },
+                },
+            )
+            assert read_json_line(proc, 5)["id"] == "initialize-goal-state"
+
+            write_json_line(
+                proc,
+                {
+                    "jsonrpc": "2.0",
+                    "id": "thread-resume-active-state-goal",
+                    "method": "thread/resume",
+                    "params": {"threadId": active_elapsed_thread_id, "excludeTurns": True},
+                },
+            )
+            active_resumed = read_json_line(proc, 5)
+            assert active_resumed["id"] == "thread-resume-active-state-goal"
+            assert active_resumed["result"]["thread"]["id"] == active_elapsed_thread_id
+
+            write_json_line(
+                proc,
+                {
+                    "jsonrpc": "2.0",
+                    "id": "thread-goal-get-active-state-goal-no-offline-elapsed",
+                    "method": "thread/goal/get",
+                    "params": {"threadId": active_elapsed_thread_id},
+                },
+            )
+            active_goal_get = read_json_line(proc, 5)
+            assert active_goal_get["id"] == "thread-goal-get-active-state-goal-no-offline-elapsed"
+            active_goal = active_goal_get["result"]["goal"]
+            assert active_goal["objective"] == "active state goal should not count offline time"
+            assert active_goal["status"] == "active"
+            assert active_goal["timeUsedSeconds"] < 20
+
+            write_json_line(
+                proc,
+                {
+                    "jsonrpc": "2.0",
+                    "id": "thread-goal-get-state-db-unloaded",
+                    "method": "thread/goal/get",
+                    "params": {"threadId": thread_id},
+                },
+            )
+            unloaded_get = read_json_line(proc, 5)
+            assert unloaded_get["id"] == "thread-goal-get-state-db-unloaded"
+            assert unloaded_get["result"]["goal"]["objective"] == "persist state db goal"
+            assert unloaded_get["result"]["goal"]["status"] == "budgetLimited"
+            assert unloaded_get["result"]["goal"]["tokenBudget"] == 123
+            assert unloaded_get["result"]["goal"]["tokensUsed"] == 124
+            assert unloaded_get["result"]["goal"]["createdAt"] == 1736164800
+
+            write_json_line(
+                proc,
+                {
+                    "jsonrpc": "2.0",
+                    "id": "thread-goal-preserve-budget-limited-state-db-unloaded",
+                    "method": "thread/goal/set",
+                    "params": {
+                        "threadId": thread_id,
+                        "objective": "persist state db goal",
+                        "status": "paused",
+                    },
+                },
+            )
+            preserved_budget_limited = read_json_line(proc, 5)
+            assert preserved_budget_limited["id"] == "thread-goal-preserve-budget-limited-state-db-unloaded"
+            assert preserved_budget_limited["result"]["goal"]["status"] == "budgetLimited"
+            assert preserved_budget_limited["result"]["goal"]["tokenBudget"] == 123
+            assert preserved_budget_limited["result"]["goal"]["tokensUsed"] == 124
+            assert read_json_line(proc, 5)["method"] == "thread/goal/updated"
+            assert (
+                sqlite_row(
+                    state_db_path,
+                    "SELECT status, token_budget FROM thread_goals WHERE thread_id = ?",
+                    (thread_id,),
+                )
+                == ("budget_limited", 123)
+            )
+
+            write_json_line(
+                proc,
+                {
+                    "jsonrpc": "2.0",
+                    "id": "thread-goal-complete-state-db-unloaded",
+                    "method": "thread/goal/set",
+                    "params": {"threadId": thread_id, "status": "complete"},
+                },
+            )
+            unloaded_set = read_json_line(proc, 5)
+            assert unloaded_set["id"] == "thread-goal-complete-state-db-unloaded"
+            assert unloaded_set["result"]["goal"]["status"] == "complete"
+            unloaded_set_notification = read_json_line(proc, 5)
+            assert unloaded_set_notification["method"] == "thread/goal/updated"
+            assert unloaded_set_notification["params"]["threadId"] == thread_id
+            assert unloaded_set_notification["params"]["turnId"] is None
+            assert (
+                sqlite_row(
+                    state_db_path,
+                    "SELECT status, tokens_used FROM thread_goals WHERE thread_id = ?",
+                    (thread_id,),
+                )
+                == ("complete", 124)
+            )
+
+            write_json_line(
+                proc,
+                {
+                    "jsonrpc": "2.0",
+                    "id": "thread-goal-clear-state-db-unloaded",
+                    "method": "thread/goal/clear",
+                    "params": {"threadId": thread_id},
+                },
+            )
+            unloaded_clear = read_json_line(proc, 5)
+            assert unloaded_clear["id"] == "thread-goal-clear-state-db-unloaded"
+            assert unloaded_clear["result"] == {"cleared": True}
+            unloaded_clear_notification = read_json_line(proc, 5)
+            assert unloaded_clear_notification["method"] == "thread/goal/cleared"
+            assert unloaded_clear_notification["params"] == {"threadId": thread_id}
+            assert (
+                sqlite_count(
+                    state_db_path,
+                    "SELECT COUNT(*) FROM thread_goals",
+                )
+                == 2
+            )
+
+            write_json_line(
+                proc,
+                {
+                    "jsonrpc": "2.0",
+                    "id": "thread-resume-preserves-transcript-goal-without-state-row",
+                    "method": "thread/resume",
+                    "params": {"threadId": transcript_goal_thread_id, "excludeTurns": True},
+                },
+            )
+            transcript_goal_resumed = read_json_line(proc, 5)
+            assert transcript_goal_resumed["id"] == "thread-resume-preserves-transcript-goal-without-state-row"
+            assert transcript_goal_resumed["result"]["thread"]["id"] == transcript_goal_thread_id
+
+            write_json_line(
+                proc,
+                {
+                    "jsonrpc": "2.0",
+                    "id": "thread-goal-get-preserved-transcript-goal-without-state-row",
+                    "method": "thread/goal/get",
+                    "params": {"threadId": transcript_goal_thread_id},
+                },
+            )
+            preserved_transcript_goal = read_json_line(proc, 5)
+            assert preserved_transcript_goal["id"] == "thread-goal-get-preserved-transcript-goal-without-state-row"
+            assert preserved_transcript_goal["result"]["goal"]["objective"] == "transcript fallback goal"
+            assert preserved_transcript_goal["result"]["goal"]["status"] == "paused"
+            assert preserved_transcript_goal["result"]["goal"]["tokenBudget"] == 77
+            assert preserved_transcript_goal["result"]["goal"]["tokensUsed"] == 3
+            assert (
+                sqlite_count(
+                    state_db_path,
+                    "SELECT COUNT(*) FROM thread_goals",
+                )
+                == 2
+            )
+
+            write_json_line(
+                proc,
+                {
+                    "jsonrpc": "2.0",
+                    "id": "thread-goal-clear-stale-state-db-unloaded",
+                    "method": "thread/goal/clear",
+                    "params": {"threadId": stale_clear_thread_id},
+                },
+            )
+            stale_clear = read_json_line(proc, 5)
+            assert stale_clear["id"] == "thread-goal-clear-stale-state-db-unloaded"
+            assert stale_clear["result"] == {"cleared": True}
+            stale_clear_notification = read_json_line(proc, 5)
+            assert stale_clear_notification["method"] == "thread/goal/cleared"
+            assert stale_clear_notification["params"] == {"threadId": stale_clear_thread_id}
+
+            write_json_line(
+                proc,
+                {
+                    "jsonrpc": "2.0",
+                    "id": "thread-resume-after-stale-goal-clear",
+                    "method": "thread/resume",
+                    "params": {"threadId": stale_clear_thread_id, "excludeTurns": True},
+                },
+            )
+            stale_clear_resumed = read_json_line(proc, 5)
+            assert stale_clear_resumed["id"] == "thread-resume-after-stale-goal-clear"
+            assert stale_clear_resumed["result"]["thread"]["id"] == stale_clear_thread_id
+
+            write_json_line(
+                proc,
+                {
+                    "jsonrpc": "2.0",
+                    "id": "thread-goal-get-after-stale-clear-resume",
+                    "method": "thread/goal/get",
+                    "params": {"threadId": stale_clear_thread_id},
+                },
+            )
+            stale_clear_get = read_json_line(proc, 5)
+            assert stale_clear_get["id"] == "thread-goal-get-after-stale-clear-resume"
+            assert stale_clear_get["result"] == {"goal": None}
+            assert (
+                sqlite_count(
+                    state_db_path,
+                    "SELECT COUNT(*) FROM thread_goals",
+                )
+                == 1
+            )
+
+            write_json_line(
+                proc,
+                {
+                    "jsonrpc": "2.0",
+                    "id": "thread-goal-recreate-state-db-unloaded",
+                    "method": "thread/goal/set",
+                    "params": {
+                        "threadId": thread_id,
+                        "objective": "resume should load sqlite goal",
+                        "tokenBudget": 222,
+                    },
+                },
+            )
+            recreated = read_json_line(proc, 5)
+            assert recreated["id"] == "thread-goal-recreate-state-db-unloaded"
+            assert recreated["result"]["goal"]["objective"] == "resume should load sqlite goal"
+            assert recreated["result"]["goal"]["tokenBudget"] == 222
+            assert read_json_line(proc, 5)["method"] == "thread/goal/updated"
+
+            write_json_line(
+                proc,
+                {
+                    "jsonrpc": "2.0",
+                    "id": "thread-resume-state-goal",
+                    "method": "thread/resume",
+                    "params": {"threadId": thread_id, "excludeTurns": True},
+                },
+            )
+            resumed = read_json_line(proc, 5)
+            assert resumed["id"] == "thread-resume-state-goal"
+            assert resumed["result"]["thread"]["id"] == thread_id
+
+            write_json_line(
+                proc,
+                {
+                    "jsonrpc": "2.0",
+                    "id": "thread-goal-get-state-db-loaded",
+                    "method": "thread/goal/get",
+                    "params": {"threadId": thread_id},
+                },
+            )
+            loaded_get = read_json_line(proc, 5)
+            assert loaded_get["id"] == "thread-goal-get-state-db-loaded"
+            assert loaded_get["result"]["goal"]["objective"] == "resume should load sqlite goal"
+            assert loaded_get["result"]["goal"]["tokenBudget"] == 222
+
+            write_json_line(
+                proc,
+                {
+                    "jsonrpc": "2.0",
+                    "id": "thread-goal-pause-state-db-loaded",
+                    "method": "thread/goal/set",
+                    "params": {
+                        "threadId": thread_id,
+                        "status": "paused",
+                        "tokenBudget": 333,
+                    },
+                },
+            )
+            loaded_set = read_json_line(proc, 5)
+            assert loaded_set["id"] == "thread-goal-pause-state-db-loaded"
+            assert loaded_set["result"]["goal"]["status"] == "paused"
+            assert loaded_set["result"]["goal"]["tokenBudget"] == 333
+            assert read_json_line(proc, 5)["method"] == "thread/goal/updated"
+            assert (
+                sqlite_row(
+                    state_db_path,
+                    "SELECT status, token_budget FROM thread_goals WHERE thread_id = ?",
+                    (thread_id,),
+                )
+                == ("paused", 333)
+            )
+
+            write_json_line(
+                proc,
+                {
+                    "jsonrpc": "2.0",
+                    "id": "thread-rollback-clears-state-db-goal",
+                    "method": "thread/rollback",
+                    "params": {
+                        "threadId": thread_id,
+                        "numTurns": 1,
+                    },
+                },
+            )
+            rollback = read_json_line(proc, 5)
+            assert rollback["id"] == "thread-rollback-clears-state-db-goal"
+            assert rollback["result"]["thread"]["id"] == thread_id
+            rollback_clear_notification = read_json_line(proc, 5)
+            assert rollback_clear_notification["method"] == "thread/goal/cleared"
+            assert rollback_clear_notification["params"] == {"threadId": thread_id}
+            assert (
+                sqlite_count(
+                    state_db_path,
+                    "SELECT COUNT(*) FROM thread_goals",
+                )
+                == 1
+            )
+
             assert proc.stdin is not None
             proc.stdin.close()
             proc.wait(timeout=5)
@@ -52315,6 +53108,8 @@ def main() -> None:
     print("app-server-thread-resume-rpc-e2e: ok")
     run_goal_feature_gate_smoke(binary)
     print("app-server-goal-feature-gate-e2e: ok")
+    run_goal_state_db_smoke(binary)
+    print("app-server-goal-state-db-e2e: ok")
     run_memory_reset_smoke(binary)
     print("app-server-memory-reset-e2e: ok")
     run_git_diff_to_remote_rpc_smoke(binary)
