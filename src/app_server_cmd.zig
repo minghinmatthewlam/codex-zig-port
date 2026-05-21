@@ -46810,6 +46810,10 @@ fn addCommandExecPermissionProfileEntry(
         summary.slash_tmp_write = true;
         return;
     }
+    if (try commandExecPermissionUnknownSpecialAbsolutePath(allocator, summary, path)) |absolute_path| {
+        try summary.path_writable_roots.append(allocator, absolute_path);
+        return;
+    }
     if (try commandExecPermissionPathAbsolute(path)) |absolute_path| {
         try summary.path_writable_roots.append(allocator, absolute_path);
         return;
@@ -46866,6 +46870,10 @@ fn addCommandExecPermissionReadDenyRoot(
         try summary.read_denied_roots.append(allocator, "/tmp");
         return;
     }
+    if (try commandExecPermissionUnknownSpecialAbsolutePath(allocator, summary, path)) |absolute_path| {
+        try summary.read_denied_roots.append(allocator, absolute_path);
+        return;
+    }
     if (try commandExecPermissionPathAbsolute(path)) |absolute_path| {
         try summary.read_denied_roots.append(allocator, absolute_path);
         return;
@@ -46915,11 +46923,50 @@ fn addCommandExecPermissionReadRoot(
         try summary.readable_roots.append(allocator, "/tmp");
         return;
     }
+    if (try commandExecPermissionUnknownSpecialAbsolutePath(allocator, summary, path)) |absolute_path| {
+        try summary.readable_roots.append(allocator, absolute_path);
+        return;
+    }
     if (try commandExecPermissionPathAbsolute(path)) |absolute_path| {
         try summary.readable_roots.append(allocator, absolute_path);
         return;
     }
     summary.unsupported = true;
+}
+
+fn commandExecPermissionUnknownSpecialAbsolutePath(
+    allocator: std.mem.Allocator,
+    summary: *CommandExecPermissionProfileSummary,
+    value: std.json.Value,
+) !?[]const u8 {
+    if (value != .object) return error.InvalidCommandExecPermissionProfileEntry;
+    const type_value = value.object.get("type") orelse return error.InvalidCommandExecPermissionProfileEntry;
+    if (type_value != .string) return error.InvalidCommandExecPermissionProfileEntry;
+    if (!std.mem.eql(u8, type_value.string, "special")) return null;
+    const special_value = value.object.get("value") orelse return error.InvalidCommandExecPermissionProfileEntry;
+    if (special_value != .object) return error.InvalidCommandExecPermissionProfileEntry;
+    const kind_value = special_value.object.get("kind") orelse return error.InvalidCommandExecPermissionProfileEntry;
+    if (kind_value != .string) return error.InvalidCommandExecPermissionProfileEntry;
+    if (!std.mem.eql(u8, kind_value.string, "unknown")) return null;
+
+    const path_value = special_value.object.get("path") orelse return error.InvalidCommandExecPermissionProfileEntry;
+    if (path_value != .string or !std.fs.path.isAbsolute(path_value.string)) return error.InvalidCommandExecPermissionProfileEntry;
+
+    const subpath_value = special_value.object.get("subpath") orelse return path_value.string;
+    if (subpath_value == .null) return path_value.string;
+    if (subpath_value != .string or std.fs.path.isAbsolute(subpath_value.string)) return error.InvalidCommandExecPermissionProfileEntry;
+
+    const base = try commandExecCanonicalMissingPath(allocator, path_value.string);
+    defer allocator.free(base);
+    const resolved = try std.fs.path.resolve(allocator, &.{ base, subpath_value.string });
+    defer allocator.free(resolved);
+    if (!commandExecPathIsWithinBase(base, resolved)) return error.InvalidCommandExecPermissionProfileEntry;
+
+    const canonical = try commandExecCanonicalMissingPath(allocator, resolved);
+    errdefer allocator.free(canonical);
+    if (!commandExecPathIsWithinBase(base, canonical)) return error.InvalidCommandExecPermissionProfileEntry;
+    try summary.owned_paths.append(allocator, canonical);
+    return canonical;
 }
 
 fn commandExecPermissionPathGlobPattern(

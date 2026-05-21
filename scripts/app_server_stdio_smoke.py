@@ -29624,6 +29624,58 @@ def run_command_exec_rpc_smoke(binary: Path) -> None:
         assert permission_profile_narrow_read["result"]["stdout"] == "narrow-allowednarrow-read"
         assert not narrow_write_target.exists()
 
+        unknown_special_read_permission_profile = {
+            "type": "managed",
+            "fileSystem": {
+                "type": "restricted",
+                "entries": [
+                    {
+                        "path": {"type": "special", "value": {"kind": "minimal"}},
+                        "access": "read",
+                    },
+                    {
+                        "path": {
+                            "type": "special",
+                            "value": {
+                                "kind": "unknown",
+                                "path": str(narrow_read_root),
+                                "subpath": None,
+                            },
+                        },
+                        "access": "read",
+                    },
+                ],
+            },
+            "network": {"enabled": False},
+        }
+        permission_profile_unknown_special_read = request_stdio_app_server(
+            binary,
+            {
+                "jsonrpc": "2.0",
+                "id": "command-exec-permission-profile-unknown-special-read",
+                "method": "command/exec",
+                "params": {
+                    "command": [
+                        "/bin/sh",
+                        "-c",
+                        f"cat {shlex.quote(str(narrow_allowed_file))} && ! cat {shlex.quote(str(narrow_blocked_file))} && ! printf nope > {shlex.quote(str(narrow_write_target))} && printf unknown-special-read",
+                    ],
+                    "permissionProfile": unknown_special_read_permission_profile,
+                },
+            },
+            env,
+        )
+        assert (
+            permission_profile_unknown_special_read["id"]
+            == "command-exec-permission-profile-unknown-special-read"
+        )
+        assert permission_profile_unknown_special_read["result"]["exitCode"] == 0
+        assert (
+            permission_profile_unknown_special_read["result"]["stdout"]
+            == "narrow-allowedunknown-special-read"
+        )
+        assert not narrow_write_target.exists()
+
         narrow_read_with_parent_deny_permission_profile = {
             "type": "managed",
             "fileSystem": {
@@ -29859,6 +29911,49 @@ def run_command_exec_rpc_smoke(binary: Path) -> None:
             )
             assert permission_profile_escape["error"]["code"] == -32602
 
+        unknown_special_escape_permission_profile = {
+            "type": "managed",
+            "fileSystem": {
+                "type": "restricted",
+                "entries": [
+                    {
+                        "path": {"type": "special", "value": {"kind": "root"}},
+                        "access": "read",
+                    },
+                    {
+                        "path": {
+                            "type": "special",
+                            "value": {
+                                "kind": "unknown",
+                                "path": str(child_cwd),
+                                "subpath": "../escape",
+                            },
+                        },
+                        "access": "write",
+                    },
+                ],
+            },
+            "network": {"enabled": False},
+        }
+        permission_profile_unknown_special_escape = request_stdio_app_server(
+            binary,
+            {
+                "jsonrpc": "2.0",
+                "id": "command-exec-permission-profile-unknown-special-escape",
+                "method": "command/exec",
+                "params": {
+                    "command": ["/usr/bin/true"],
+                    "permissionProfile": unknown_special_escape_permission_profile,
+                },
+            },
+            env,
+        )
+        assert (
+            permission_profile_unknown_special_escape["id"]
+            == "command-exec-permission-profile-unknown-special-escape"
+        )
+        assert permission_profile_unknown_special_escape["error"]["code"] == -32602
+
         symlink_outside_root = non_tmp_root / "permission-profile-symlink-outside"
         symlink_outside_root.mkdir()
         symlink_inside_cwd = child_cwd / "writable-symlink"
@@ -29979,6 +30074,74 @@ def run_command_exec_rpc_smoke(binary: Path) -> None:
         assert permission_profile_absolute_root["result"]["stdout"] == "absolute-root"
         assert absolute_writable_root.joinpath("ok.txt").read_text(encoding="utf-8") == "absolute"
         assert not child_cwd.joinpath("child-denied.txt").exists()
+
+        unknown_special_root = root / "unknown-special"
+        unknown_special_writable_root = unknown_special_root / "writable"
+        unknown_special_writable_root.mkdir(parents=True)
+        unknown_special_denied_target = child_cwd / "unknown-special-secret.txt"
+        unknown_special_denied_target.write_text("unknown-secret", encoding="utf-8")
+        unknown_special_write_permission_profile = {
+            "type": "managed",
+            "fileSystem": {
+                "type": "restricted",
+                "entries": [
+                    {
+                        "path": {"type": "special", "value": {"kind": "root"}},
+                        "access": "read",
+                    },
+                    {
+                        "path": {
+                            "type": "special",
+                            "value": {
+                                "kind": "unknown",
+                                "path": str(unknown_special_root),
+                                "subpath": "writable",
+                            },
+                        },
+                        "access": "write",
+                    },
+                    {
+                        "path": {
+                            "type": "special",
+                            "value": {
+                                "kind": "unknown",
+                                "path": str(child_cwd),
+                                "subpath": unknown_special_denied_target.name,
+                            },
+                        },
+                        "access": "none",
+                    },
+                ],
+            },
+            "network": {"enabled": False},
+        }
+        permission_profile_unknown_special_write = request_stdio_app_server(
+            binary,
+            {
+                "jsonrpc": "2.0",
+                "id": "command-exec-permission-profile-unknown-special-write",
+                "method": "command/exec",
+                "params": {
+                    "command": [
+                        "/bin/sh",
+                        "-c",
+                        f"printf unknown > {shlex.quote(str(unknown_special_writable_root / 'ok.txt'))} && ! printf child > child-unknown-denied.txt && ! cat unknown-special-secret.txt && printf unknown-special-write",
+                    ],
+                    "cwd": str(child_cwd),
+                    "permissionProfile": unknown_special_write_permission_profile,
+                },
+            },
+            env,
+        )
+        assert (
+            permission_profile_unknown_special_write["id"]
+            == "command-exec-permission-profile-unknown-special-write"
+        )
+        assert permission_profile_unknown_special_write["result"]["exitCode"] == 0
+        assert permission_profile_unknown_special_write["result"]["stdout"] == "unknown-special-write"
+        assert unknown_special_writable_root.joinpath("ok.txt").read_text(encoding="utf-8") == "unknown"
+        assert not child_cwd.joinpath("child-unknown-denied.txt").exists()
+        assert unknown_special_denied_target.read_text(encoding="utf-8") == "unknown-secret"
 
         read_denied_target = child_cwd / "secret.txt"
         read_denied_target.write_text("secret", encoding="utf-8")

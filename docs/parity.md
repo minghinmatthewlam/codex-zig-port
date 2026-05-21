@@ -710,7 +710,9 @@ Additional app-server command/exec permission-profile coverage: app-server
 `command/exec` now lowers supported Rust-shaped permission profiles with
 project/current-working-directory writable subpaths and concrete absolute or
 special-path read-deny roots plus deny-read glob-pattern entries into the macOS
-seatbelt wrapper. Unknown and read/write glob entries still return explicit
+seatbelt wrapper. Absolute `unknown` special paths are accepted for read,
+write, and none entries, including safe relative subpaths. Read/write glob
+entries and non-absolute `unknown` special paths still return explicit
 unsupported-profile errors.
 
 Additional app-server config/read coverage: `config/read` now includes
