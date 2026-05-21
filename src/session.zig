@@ -382,6 +382,8 @@ pub const Transcript = struct {
         if (self.source) |value| try replacement.setSource(allocator, value);
         if (self.thread_source) |value| try replacement.setThreadSource(allocator, value);
         if (self.model_provider) |value| try replacement.setModelProvider(allocator, value);
+        if (self.openai_base_url) |value| try replacement.setOpenaiBaseUrl(allocator, value);
+        if (self.chatgpt_base_url) |value| try replacement.setChatgptBaseUrl(allocator, value);
         if (self.cwd) |value| try replacement.setCwd(allocator, value);
         if (self.cli_version) |value| try replacement.setCliVersion(allocator, value);
         if (self.memory_mode) |value| try replacement.setMemoryMode(allocator, value);
@@ -2261,6 +2263,8 @@ test "replace transcript with compacted summary" {
 
     try transcript.setTitle(allocator, "demo title");
     try transcript.setId(allocator, "11111111-1111-4111-8111-111111111111");
+    try transcript.setOpenaiBaseUrl(allocator, "http://127.0.0.1:7654/v1");
+    try transcript.setChatgptBaseUrl(allocator, "http://127.0.0.1:8765/backend-api/codex");
     try transcript.setCwd(allocator, "/tmp/demo");
     try transcript.setGitBranch(allocator, "main");
     try transcript.setGoal(allocator, .{
@@ -2296,6 +2300,8 @@ test "replace transcript with compacted summary" {
 
     try std.testing.expectEqualStrings("demo title", transcript.title.?);
     try std.testing.expectEqualStrings("11111111-1111-4111-8111-111111111111", transcript.id.?);
+    try std.testing.expectEqualStrings("http://127.0.0.1:7654/v1", transcript.openai_base_url.?);
+    try std.testing.expectEqualStrings("http://127.0.0.1:8765/backend-api/codex", transcript.chatgpt_base_url.?);
     try std.testing.expectEqualStrings("/tmp/demo", transcript.cwd.?);
     try std.testing.expectEqualStrings("main", transcript.git_branch.?);
     try std.testing.expectEqualStrings("ship persistence", transcript.goal.?.objective);
