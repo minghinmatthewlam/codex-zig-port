@@ -6,6 +6,10 @@ const config = @import("config.zig");
 const sandbox = @import("sandbox.zig");
 const workdir = @import("workdir.zig");
 
+extern "c" fn proc_listchildpids(ppid: std.posix.pid_t, buffer: ?*anyopaque, buffersize: c_int) c_int;
+extern "c" fn proc_listpgrppids(pgrpid: std.posix.pid_t, buffer: ?*anyopaque, buffersize: c_int) c_int;
+extern "c" fn getpgid(pid: std.posix.pid_t) std.posix.pid_t;
+
 const SandboxKind = enum {
     macos,
     linux,
@@ -257,18 +261,25 @@ fn runCommand(
         child_env = try sandbox.environmentWithSeatbeltMarker(allocator);
     }
 
-    var denial_log_stream: ?std.process.Child = null;
     if (log_denials) {
-        denial_log_stream = startSandboxDenialLogStream(io_instance.io()) catch null;
-        if (denial_log_stream != null) {
-            std.Io.sleep(
-                io_instance.io(),
-                .{ .nanoseconds = 1000 * std.time.ns_per_ms },
-                .awake,
-            ) catch {};
+        var result = try runCommandWithDenialLog(
+            allocator,
+            &io_instance,
+            effective_argv,
+            if (child_env) |*env_map| env_map else null,
+        );
+        defer result.deinit(allocator);
+
+        try cli_utils.writeStdout(result.stdout);
+        try cli_utils.writeStderr(result.stderr);
+        try printSandboxDenials(allocator, result.log_output, &result.tracked_pids);
+
+        switch (result.term) {
+            .exited => |code| if (code != 0) std.process.exit(@intCast(@min(code, 255))),
+            else => return error.SandboxedCommandTerminated,
         }
+        return;
     }
-    defer if (denial_log_stream) |*child| child.kill(io_instance.io());
 
     const result = try std.process.run(allocator, io_instance.io(), .{
         .argv = effective_argv,
@@ -281,21 +292,384 @@ fn runCommand(
 
     try cli_utils.writeStdout(result.stdout);
     try cli_utils.writeStderr(result.stderr);
-    if (log_denials) {
-        const log_output = if (denial_log_stream) |*child| blk: {
-            const captured = stopSandboxDenialLogStream(allocator, io_instance.io(), child) catch null;
-            denial_log_stream = null;
-            break :blk captured;
-        } else null;
-        defer if (log_output) |output| allocator.free(output);
-        try printSandboxDenials(allocator, log_output orelse "");
-    }
 
     switch (result.term) {
         .exited => |code| if (code != 0) std.process.exit(@intCast(@min(code, 255))),
         else => return error.SandboxedCommandTerminated,
     }
 }
+
+const COMMAND_OUTPUT_LIMIT = 10 * 1024 * 1024;
+const DENIAL_LOG_OUTPUT_LIMIT = 2 * 1024 * 1024;
+const DENIAL_LOG_STARTUP_GRACE_MS = 1000;
+const DENIAL_LOG_SHUTDOWN_GRACE_MS = 1000;
+
+var sandbox_forward_process_group = std.atomic.Value(i32).init(0);
+var sandbox_forward_log_pid = std.atomic.Value(i32).init(0);
+
+const SandboxLogRunResult = struct {
+    term: std.process.Child.Term,
+    stdout: []u8,
+    stderr: []u8,
+    log_output: []u8,
+    tracked_pids: std.AutoHashMap(i32, void),
+
+    fn deinit(self: *SandboxLogRunResult, allocator: std.mem.Allocator) void {
+        allocator.free(self.stdout);
+        allocator.free(self.stderr);
+        allocator.free(self.log_output);
+        self.tracked_pids.deinit();
+    }
+};
+
+const SandboxSignalForwarder = struct {
+    int_action: std.posix.Sigaction = undefined,
+    term_action: std.posix.Sigaction = undefined,
+    hup_action: std.posix.Sigaction = undefined,
+    installed: bool = false,
+
+    fn install(process_group_id: i32, log_pid: i32) SandboxSignalForwarder {
+        sandbox_forward_process_group.store(process_group_id, .seq_cst);
+        sandbox_forward_log_pid.store(log_pid, .seq_cst);
+        const action: std.posix.Sigaction = .{
+            .handler = .{ .handler = forwardSandboxSignal },
+            .mask = std.posix.sigemptyset(),
+            .flags = 0,
+        };
+        var forwarder = SandboxSignalForwarder{};
+        std.posix.sigaction(.INT, &action, &forwarder.int_action);
+        std.posix.sigaction(.TERM, &action, &forwarder.term_action);
+        std.posix.sigaction(.HUP, &action, &forwarder.hup_action);
+        forwarder.installed = true;
+        return forwarder;
+    }
+
+    fn deinit(self: *SandboxSignalForwarder) void {
+        sandbox_forward_process_group.store(0, .seq_cst);
+        sandbox_forward_log_pid.store(0, .seq_cst);
+        if (!self.installed) return;
+        std.posix.sigaction(.INT, &self.int_action, null);
+        std.posix.sigaction(.TERM, &self.term_action, null);
+        std.posix.sigaction(.HUP, &self.hup_action, null);
+        self.* = .{};
+    }
+};
+
+fn forwardSandboxSignal(signal: std.c.SIG) callconv(.c) void {
+    const process_group_id = sandbox_forward_process_group.load(.seq_cst);
+    if (process_group_id > 0) {
+        _ = std.c.kill(-@as(std.c.pid_t, @intCast(process_group_id)), signal);
+    }
+    const log_pid = sandbox_forward_log_pid.load(.seq_cst);
+    if (log_pid > 0) {
+        _ = std.c.kill(@as(std.c.pid_t, @intCast(log_pid)), signal);
+    }
+    const default_action: std.posix.Sigaction = .{
+        .handler = .{ .handler = std.c.SIG.DFL },
+        .mask = std.posix.sigemptyset(),
+        .flags = 0,
+    };
+    std.posix.sigaction(signal, &default_action, null);
+    _ = std.c.kill(std.c.getpid(), signal);
+}
+
+fn runCommandWithDenialLog(
+    allocator: std.mem.Allocator,
+    io_instance: *std.Io.Threaded,
+    argv: []const []const u8,
+    environ_map: ?*std.process.Environ.Map,
+) !SandboxLogRunResult {
+    var denial_log_stream = startSandboxDenialLogStream(io_instance.io()) catch null;
+    var denial_log_stream_alive = denial_log_stream != null;
+    errdefer if (denial_log_stream_alive) {
+        if (denial_log_stream) |*child| child.kill(io_instance.io());
+    };
+    if (denial_log_stream != null) {
+        std.Io.sleep(
+            io_instance.io(),
+            .{ .nanoseconds = DENIAL_LOG_STARTUP_GRACE_MS * std.time.ns_per_ms },
+            .awake,
+        ) catch {};
+    }
+
+    var child = try std.process.spawn(io_instance.io(), .{
+        .argv = argv,
+        .environ_map = environ_map,
+        .stdin = .ignore,
+        .stdout = .pipe,
+        .stderr = .pipe,
+        .pgid = if (builtin.os.tag == .macos) 0 else null,
+    });
+    var child_alive = true;
+    errdefer if (child_alive) killSandboxCommandGroup(io_instance.io(), &child);
+
+    const root_pid = child.id orelse return error.SandboxedCommandTerminated;
+    const log_pid: i32 = if (denial_log_stream) |log_child|
+        @intCast(log_child.id orelse 0)
+    else
+        0;
+    var signal_forwarder = SandboxSignalForwarder.install(@intCast(root_pid), log_pid);
+    defer signal_forwarder.deinit();
+
+    var pid_tracker = try SandboxPidTracker.init(allocator, @intCast(root_pid));
+    defer pid_tracker.deinit();
+
+    var stdout = std.ArrayList(u8).empty;
+    errdefer stdout.deinit(allocator);
+    var stderr = std.ArrayList(u8).empty;
+    errdefer stderr.deinit(allocator);
+    var log_stdout = std.ArrayList(u8).empty;
+    errdefer log_stdout.deinit(allocator);
+    var log_stderr = std.ArrayList(u8).empty;
+    defer log_stderr.deinit(allocator);
+    var stdout_observed_len: usize = 0;
+    var stderr_observed_len: usize = 0;
+    var log_stdout_observed_len: usize = 0;
+    var log_stderr_observed_len: usize = 0;
+    var log_stdout_parse_cursor: usize = 0;
+
+    while (true) {
+        try pid_tracker.poll();
+        if (pollSandboxChild(&child)) |term| {
+            child_alive = false;
+            try drainSandboxPostExit(
+                io_instance,
+                allocator,
+                &child,
+                if (denial_log_stream) |*log_child| log_child else null,
+                &denial_log_stream_alive,
+                &stdout,
+                &stderr,
+                &log_stdout,
+                &log_stderr,
+                &stdout_observed_len,
+                &stderr_observed_len,
+                &log_stdout_observed_len,
+                &log_stderr_observed_len,
+                &log_stdout_parse_cursor,
+                &pid_tracker,
+            );
+            if (denial_log_stream) |*log_child| {
+                try stopSandboxDenialLogStream(
+                    io_instance,
+                    allocator,
+                    log_child,
+                    &denial_log_stream_alive,
+                    &log_stdout,
+                    &log_stderr,
+                    &log_stdout_observed_len,
+                    &log_stderr_observed_len,
+                    &log_stdout_parse_cursor,
+                    &pid_tracker,
+                );
+                closeSandboxChildPipes(io_instance.io(), log_child);
+            }
+            closeSandboxChildPipes(io_instance.io(), &child);
+
+            const stdout_owned = try stdout.toOwnedSlice(allocator);
+            errdefer allocator.free(stdout_owned);
+            const stderr_owned = try stderr.toOwnedSlice(allocator);
+            errdefer allocator.free(stderr_owned);
+            const log_stdout_owned = try log_stdout.toOwnedSlice(allocator);
+            errdefer allocator.free(log_stdout_owned);
+            var tracked_pids = pid_tracker.takeSeen();
+            errdefer tracked_pids.deinit();
+            return .{
+                .term = term,
+                .stdout = stdout_owned,
+                .stderr = stderr_owned,
+                .log_output = log_stdout_owned,
+                .tracked_pids = tracked_pids,
+            };
+        }
+
+        var made_progress = false;
+        made_progress = try readSandboxPipeChunk(io_instance, allocator, child.stdout, &stdout, &stdout_observed_len, COMMAND_OUTPUT_LIMIT, true, 0) or made_progress;
+        try pid_tracker.poll();
+        made_progress = try readSandboxPipeChunk(io_instance, allocator, child.stderr, &stderr, &stderr_observed_len, COMMAND_OUTPUT_LIMIT, true, 0) or made_progress;
+        try pid_tracker.poll();
+        if (denial_log_stream) |*log_child| {
+            made_progress = try readSandboxPipeChunk(io_instance, allocator, log_child.stdout, &log_stdout, &log_stdout_observed_len, DENIAL_LOG_OUTPUT_LIMIT, false, 0) or made_progress;
+            try pid_tracker.poll();
+            made_progress = try readSandboxPipeChunk(io_instance, allocator, log_child.stderr, &log_stderr, &log_stderr_observed_len, DENIAL_LOG_OUTPUT_LIMIT, false, 0) or made_progress;
+            try addLiveSandboxDenialPidsFromLogOutput(allocator, log_stdout.items, &log_stdout_parse_cursor, &pid_tracker);
+            if (denial_log_stream_alive and pollSandboxChild(log_child) != null) {
+                denial_log_stream_alive = false;
+            }
+        }
+        if (!made_progress) {
+            std.Io.sleep(
+                io_instance.io(),
+                .{ .nanoseconds = std.time.ns_per_ms },
+                .awake,
+            ) catch {};
+        }
+    }
+}
+
+const SandboxPidTracker = struct {
+    allocator: std.mem.Allocator,
+    kq: ?c_int,
+    process_group_id: ?i32,
+    seen: std.AutoHashMap(i32, void),
+    active: std.AutoHashMap(i32, void),
+
+    fn init(allocator: std.mem.Allocator, root_pid: i32) !SandboxPidTracker {
+        var tracker = SandboxPidTracker{
+            .allocator = allocator,
+            .kq = null,
+            .process_group_id = null,
+            .seen = std.AutoHashMap(i32, void).init(allocator),
+            .active = std.AutoHashMap(i32, void).init(allocator),
+        };
+        errdefer tracker.deinit();
+
+        try tracker.seen.put(root_pid, {});
+        if (builtin.os.tag != .macos or root_pid <= 0) return tracker;
+
+        const kq = std.c.kqueue();
+        if (kq < 0) return tracker;
+        tracker.kq = kq;
+        tracker.process_group_id = root_pid;
+        try tracker.addPidWatch(root_pid);
+        try tracker.watchProcessGroup();
+        return tracker;
+    }
+
+    fn deinit(self: *SandboxPidTracker) void {
+        if (self.kq) |kq| _ = std.c.close(kq);
+        self.seen.deinit();
+        self.active.deinit();
+    }
+
+    fn takeSeen(self: *SandboxPidTracker) std.AutoHashMap(i32, void) {
+        const seen = self.seen;
+        self.seen = std.AutoHashMap(i32, void).init(self.allocator);
+        return seen;
+    }
+
+    fn poll(self: *SandboxPidTracker) !void {
+        if (builtin.os.tag != .macos) return;
+        try self.watchProcessGroup();
+        const kq = self.kq orelse return;
+        if (self.active.count() == 0) return;
+
+        var timeout = std.posix.timespec{ .sec = 0, .nsec = 0 };
+        var events: [32]std.posix.Kevent = undefined;
+        const count = std.Io.Kqueue.kevent(kq, &.{}, events[0..], &timeout) catch return;
+        for (events[0..count]) |event| {
+            const pid: i32 = @intCast(event.ident);
+            if ((event.flags & std.c.EV.ERROR) != 0) {
+                _ = self.active.remove(pid);
+                continue;
+            }
+            if ((event.fflags & std.c.NOTE.FORK) != 0) {
+                try self.watchChildren(pid);
+            }
+            if ((event.fflags & std.c.NOTE.EXIT) != 0) {
+                _ = self.active.remove(pid);
+            }
+        }
+    }
+
+    fn addPidWatch(self: *SandboxPidTracker, pid: i32) anyerror!void {
+        if (pid <= 0) return;
+
+        const newly_seen = !self.seen.contains(pid);
+        if (newly_seen) try self.seen.put(pid, {});
+        var should_recurse = newly_seen;
+
+        if (!self.active.contains(pid)) {
+            if (self.watchPid(pid)) {
+                try self.active.put(pid, {});
+                should_recurse = true;
+            } else {
+                _ = self.active.remove(pid);
+                return;
+            }
+        }
+
+        if (should_recurse) try self.watchChildren(pid);
+    }
+
+    fn addSeenPid(self: *SandboxPidTracker, pid: i32) !void {
+        if (pid <= 0 or self.seen.contains(pid)) return;
+        try self.seen.put(pid, {});
+    }
+
+    fn addPidIfInProcessGroup(self: *SandboxPidTracker, pid: i32) !void {
+        if (builtin.os.tag != .macos) return;
+        if (pid <= 0 or self.seen.contains(pid)) return;
+        const process_group_id = self.process_group_id orelse return;
+        const observed_process_group = getpgid(@intCast(pid));
+        if (observed_process_group < 0) return;
+        if (observed_process_group != process_group_id) return;
+        try self.addSeenPid(pid);
+    }
+
+    fn watchPid(self: *SandboxPidTracker, pid: i32) bool {
+        const kq = self.kq orelse return false;
+        const change = std.posix.Kevent{
+            .ident = @intCast(pid),
+            .filter = std.c.EVFILT.PROC,
+            .flags = std.c.EV.ADD | std.c.EV.CLEAR,
+            .fflags = std.c.NOTE.FORK | std.c.NOTE.EXEC | std.c.NOTE.EXIT,
+            .data = 0,
+            .udata = 0,
+        };
+        _ = std.Io.Kqueue.kevent(kq, &.{change}, &.{}, null) catch return false;
+        return true;
+    }
+
+    fn watchChildren(self: *SandboxPidTracker, parent: i32) anyerror!void {
+        if (builtin.os.tag != .macos) return;
+        var capacity: usize = 16;
+        while (true) {
+            const children = try self.allocator.alloc(i32, capacity);
+            defer self.allocator.free(children);
+
+            const buffer_size = std.math.cast(c_int, children.len * @sizeOf(i32)) orelse return error.OutOfMemory;
+            const count = proc_listchildpids(
+                @intCast(parent),
+                children.ptr,
+                buffer_size,
+            );
+            if (count <= 0) return;
+
+            const returned: usize = @intCast(count);
+            if (returned < capacity) {
+                for (children[0..returned]) |child_pid| try self.addPidWatch(child_pid);
+                return;
+            }
+            capacity = @max(std.math.mul(usize, capacity, 2) catch returned + 16, returned + 16);
+        }
+    }
+
+    fn watchProcessGroup(self: *SandboxPidTracker) anyerror!void {
+        if (builtin.os.tag != .macos) return;
+        const process_group_id = self.process_group_id orelse return;
+        var capacity: usize = 16;
+        while (true) {
+            const pids = try self.allocator.alloc(i32, capacity);
+            defer self.allocator.free(pids);
+
+            const buffer_size = std.math.cast(c_int, pids.len * @sizeOf(i32)) orelse return error.OutOfMemory;
+            const count = proc_listpgrppids(
+                @intCast(process_group_id),
+                pids.ptr,
+                buffer_size,
+            );
+            if (count <= 0) return;
+
+            const returned: usize = @intCast(count);
+            if (returned < capacity) {
+                for (pids[0..returned]) |pid| try self.addPidWatch(pid);
+                return;
+            }
+            capacity = @max(std.math.mul(usize, capacity, 2) catch returned + 16, returned + 16);
+        }
+    }
+};
 
 fn startSandboxDenialLogStream(io: std.Io) !std.process.Child {
     const predicate = "(((processID == 0) AND (senderImagePath CONTAINS \"/Sandbox\")) OR (subsystem == \"com.apple.sandbox.reporting\"))";
@@ -308,40 +682,341 @@ fn startSandboxDenialLogStream(io: std.Io) !std.process.Child {
     });
 }
 
-fn stopSandboxDenialLogStream(allocator: std.mem.Allocator, io: std.Io, child: *std.process.Child) ![]u8 {
-    var multi_reader_buffer: std.Io.File.MultiReader.Buffer(2) = undefined;
-    var multi_reader: std.Io.File.MultiReader = undefined;
-    multi_reader.init(allocator, io, multi_reader_buffer.toStreams(), &.{ child.stdout.?, child.stderr.? });
-    defer multi_reader.deinit();
-
-    std.Io.sleep(
-        io,
-        .{ .nanoseconds = 1000 * std.time.ns_per_ms },
-        .awake,
-    ) catch {};
+fn stopSandboxDenialLogStream(
+    io_instance: *std.Io.Threaded,
+    allocator: std.mem.Allocator,
+    child: *std.process.Child,
+    child_alive: *bool,
+    stdout: *std.ArrayList(u8),
+    stderr: *std.ArrayList(u8),
+    stdout_observed_len: *usize,
+    stderr_observed_len: *usize,
+    stdout_parse_cursor: *usize,
+    pid_tracker: *SandboxPidTracker,
+) !void {
+    try drainSandboxLogStreamForDuration(
+        io_instance,
+        allocator,
+        child,
+        child_alive,
+        stdout,
+        stderr,
+        stdout_observed_len,
+        stderr_observed_len,
+        stdout_parse_cursor,
+        pid_tracker,
+        DENIAL_LOG_SHUTDOWN_GRACE_MS,
+    );
     if (child.id) |pid| {
         std.posix.kill(pid, .TERM) catch {};
     }
-
-    const stdout_reader = multi_reader.reader(0);
-    while (multi_reader.fill(64, .none)) |_| {
-        if (stdout_reader.buffered().len > 2 * 1024 * 1024) break;
-    } else |err| switch (err) {
-        error.EndOfStream => {},
-        else => {},
+    var empty_rounds: usize = 0;
+    while (child.id != null and empty_rounds < 20) {
+        const made_progress = try drainSandboxLogStreamChunk(
+            io_instance,
+            allocator,
+            child,
+            child_alive,
+            stdout,
+            stderr,
+            stdout_observed_len,
+            stderr_observed_len,
+            stdout_parse_cursor,
+            pid_tracker,
+        );
+        if (!child_alive.*) break;
+        if (made_progress) {
+            empty_rounds = 0;
+        } else {
+            empty_rounds += 1;
+        }
     }
-    multi_reader.checkAnyError() catch {};
-
-    _ = child.wait(io) catch {};
-    const stdout = try multi_reader.toOwnedSlice(0);
-    errdefer allocator.free(stdout);
-    const stderr = try multi_reader.toOwnedSlice(1);
-    allocator.free(stderr);
-    return stdout;
+    if (child.id != null) {
+        child.kill(io_instance.io());
+        child_alive.* = false;
+    }
+    try drainSandboxOutput(io_instance, allocator, child, stdout, stderr, stdout_observed_len, stderr_observed_len, DENIAL_LOG_OUTPUT_LIMIT);
+    try addLiveSandboxDenialPidsFromLogOutput(allocator, stdout.items, stdout_parse_cursor, pid_tracker);
 }
 
-fn printSandboxDenials(allocator: std.mem.Allocator, log_output: []const u8) !void {
+fn drainSandboxLogStreamForDuration(
+    io_instance: *std.Io.Threaded,
+    allocator: std.mem.Allocator,
+    child: *std.process.Child,
+    child_alive: *bool,
+    stdout: *std.ArrayList(u8),
+    stderr: *std.ArrayList(u8),
+    stdout_observed_len: *usize,
+    stderr_observed_len: *usize,
+    stdout_parse_cursor: *usize,
+    pid_tracker: *SandboxPidTracker,
+    duration_ms: u64,
+) !void {
+    const started = std.Io.Timestamp.now(io_instance.io(), .awake);
+    while (child_alive.* and elapsedSandboxMilliseconds(io_instance.io(), started) < duration_ms) {
+        const made_progress = try drainSandboxLogStreamChunk(
+            io_instance,
+            allocator,
+            child,
+            child_alive,
+            stdout,
+            stderr,
+            stdout_observed_len,
+            stderr_observed_len,
+            stdout_parse_cursor,
+            pid_tracker,
+        );
+        if (!made_progress) {
+            std.Io.sleep(
+                io_instance.io(),
+                .{ .nanoseconds = std.time.ns_per_ms },
+                .awake,
+            ) catch {};
+        }
+    }
+}
+
+fn drainSandboxLogStreamChunk(
+    io_instance: *std.Io.Threaded,
+    allocator: std.mem.Allocator,
+    child: *std.process.Child,
+    child_alive: *bool,
+    stdout: *std.ArrayList(u8),
+    stderr: *std.ArrayList(u8),
+    stdout_observed_len: *usize,
+    stderr_observed_len: *usize,
+    stdout_parse_cursor: *usize,
+    pid_tracker: *SandboxPidTracker,
+) !bool {
+    try pid_tracker.poll();
+    var made_progress = false;
+    made_progress = try readSandboxPipeChunk(io_instance, allocator, child.stdout, stdout, stdout_observed_len, DENIAL_LOG_OUTPUT_LIMIT, false, 1) or made_progress;
+    made_progress = try readSandboxPipeChunk(io_instance, allocator, child.stderr, stderr, stderr_observed_len, DENIAL_LOG_OUTPUT_LIMIT, false, 1) or made_progress;
+    try addLiveSandboxDenialPidsFromLogOutput(allocator, stdout.items, stdout_parse_cursor, pid_tracker);
+    if (child_alive.* and pollSandboxChild(child) != null) {
+        child_alive.* = false;
+    }
+    return made_progress;
+}
+
+fn drainSandboxPostExit(
+    io_instance: *std.Io.Threaded,
+    allocator: std.mem.Allocator,
+    child: *std.process.Child,
+    log_child: ?*std.process.Child,
+    log_child_alive: *bool,
+    stdout: *std.ArrayList(u8),
+    stderr: *std.ArrayList(u8),
+    log_stdout: *std.ArrayList(u8),
+    log_stderr: *std.ArrayList(u8),
+    stdout_observed_len: *usize,
+    stderr_observed_len: *usize,
+    log_stdout_observed_len: *usize,
+    log_stderr_observed_len: *usize,
+    log_stdout_parse_cursor: *usize,
+    pid_tracker: *SandboxPidTracker,
+) !void {
+    var stdout_open = child.stdout != null;
+    var stderr_open = child.stderr != null;
+    while (stdout_open or stderr_open) {
+        try pid_tracker.poll();
+        var made_progress = false;
+        switch (try readSandboxPipeChunkState(io_instance, allocator, child.stdout, stdout, stdout_observed_len, COMMAND_OUTPUT_LIMIT, true, 1)) {
+            .progress => made_progress = true,
+            .idle => {},
+            .closed => stdout_open = false,
+        }
+        switch (try readSandboxPipeChunkState(io_instance, allocator, child.stderr, stderr, stderr_observed_len, COMMAND_OUTPUT_LIMIT, true, 1)) {
+            .progress => made_progress = true,
+            .idle => {},
+            .closed => stderr_open = false,
+        }
+        if (log_child) |log| {
+            made_progress = try drainSandboxLogStreamChunk(
+                io_instance,
+                allocator,
+                log,
+                log_child_alive,
+                log_stdout,
+                log_stderr,
+                log_stdout_observed_len,
+                log_stderr_observed_len,
+                log_stdout_parse_cursor,
+                pid_tracker,
+            ) or made_progress;
+        }
+        if (!made_progress) {
+            std.Io.sleep(
+                io_instance.io(),
+                .{ .nanoseconds = std.time.ns_per_ms },
+                .awake,
+            ) catch {};
+        }
+    }
+}
+
+fn drainSandboxOutput(
+    io_instance: *std.Io.Threaded,
+    allocator: std.mem.Allocator,
+    child: *std.process.Child,
+    stdout: *std.ArrayList(u8),
+    stderr: *std.ArrayList(u8),
+    stdout_observed_len: *usize,
+    stderr_observed_len: *usize,
+    output_bytes_cap: usize,
+) !void {
+    var empty_rounds: usize = 0;
+    while (empty_rounds < 2) {
+        var made_progress = false;
+        made_progress = try readSandboxPipeChunk(io_instance, allocator, child.stdout, stdout, stdout_observed_len, output_bytes_cap, false, 1) or made_progress;
+        made_progress = try readSandboxPipeChunk(io_instance, allocator, child.stderr, stderr, stderr_observed_len, output_bytes_cap, false, 1) or made_progress;
+        if (made_progress) {
+            empty_rounds = 0;
+        } else {
+            empty_rounds += 1;
+        }
+    }
+}
+
+const SandboxPipeReadResult = enum {
+    idle,
+    progress,
+    closed,
+};
+
+fn readSandboxPipeChunk(
+    io_instance: *std.Io.Threaded,
+    allocator: std.mem.Allocator,
+    maybe_file: ?std.Io.File,
+    output: *std.ArrayList(u8),
+    observed_len: *usize,
+    output_bytes_cap: usize,
+    error_on_cap: bool,
+    timeout_ms: u64,
+) !bool {
+    return switch (try readSandboxPipeChunkState(
+        io_instance,
+        allocator,
+        maybe_file,
+        output,
+        observed_len,
+        output_bytes_cap,
+        error_on_cap,
+        timeout_ms,
+    )) {
+        .progress => true,
+        .idle, .closed => false,
+    };
+}
+
+fn readSandboxPipeChunkState(
+    io_instance: *std.Io.Threaded,
+    allocator: std.mem.Allocator,
+    maybe_file: ?std.Io.File,
+    output: *std.ArrayList(u8),
+    observed_len: *usize,
+    output_bytes_cap: usize,
+    error_on_cap: bool,
+    timeout_ms: u64,
+) !SandboxPipeReadResult {
+    const file = maybe_file orelse return .closed;
+    var buffer: [4096]u8 = undefined;
+    const result = io_instance.io().operateTimeout(.{ .file_read_streaming = .{
+        .file = file,
+        .data = &.{buffer[0..]},
+    } }, .{ .duration = .{
+        .raw = std.Io.Duration.fromMilliseconds(@intCast(timeout_ms)),
+        .clock = .awake,
+    } }) catch |err| switch (err) {
+        error.Timeout => return .idle,
+        else => return err,
+    };
+    const count = result.file_read_streaming catch |err| switch (err) {
+        error.EndOfStream => return .closed,
+        error.WouldBlock => return .idle,
+        else => return err,
+    };
+    if (count == 0) return .closed;
+    const previous_observed_len = observed_len.*;
+    if (error_on_cap and count > output_bytes_cap -| previous_observed_len) return error.StreamTooLong;
+    observed_len.* += count;
+    const bytes = buffer[0..count];
+    const remaining = output_bytes_cap -| previous_observed_len;
+    try output.appendSlice(allocator, bytes[0..@min(bytes.len, remaining)]);
+    return .progress;
+}
+
+fn pollSandboxChild(child: *std.process.Child) ?std.process.Child.Term {
+    const pid = child.id orelse return null;
+    var status: c_int = 0;
+    const result = std.c.waitpid(pid, &status, std.c.W.NOHANG);
+    if (result == 0) return null;
+    if (result < 0) return null;
+    child.id = null;
+
+    const status_u: u32 = @intCast(status);
+    if (std.c.W.IFEXITED(status_u)) return .{ .exited = std.c.W.EXITSTATUS(status_u) };
+    if (std.c.W.IFSIGNALED(status_u)) return .{ .signal = std.c.W.TERMSIG(status_u) };
+    if (std.c.W.IFSTOPPED(status_u)) return .{ .stopped = std.c.W.STOPSIG(status_u) };
+    return .{ .unknown = status_u };
+}
+
+fn killSandboxCommandGroup(io: std.Io, child: *std.process.Child) void {
+    if (child.id) |pid| {
+        if (builtin.os.tag == .macos) {
+            _ = std.c.kill(-@as(std.c.pid_t, @intCast(pid)), .KILL);
+        }
+    }
+    child.kill(io);
+}
+
+fn closeSandboxChildPipes(io: std.Io, child: *std.process.Child) void {
+    if (child.stdin) |file| {
+        file.close(io);
+        child.stdin = null;
+    }
+    if (child.stdout) |file| {
+        file.close(io);
+        child.stdout = null;
+    }
+    if (child.stderr) |file| {
+        file.close(io);
+        child.stderr = null;
+    }
+}
+
+fn addLiveSandboxDenialPidsFromLogOutput(
+    allocator: std.mem.Allocator,
+    log_output: []const u8,
+    parse_cursor: *usize,
+    pid_tracker: *SandboxPidTracker,
+) !void {
+    while (std.mem.indexOfScalarPos(u8, log_output, parse_cursor.*, '\n')) |newline_index| {
+        const line = log_output[parse_cursor.*..newline_index];
+        parse_cursor.* = newline_index + 1;
+        const message = eventMessageFromLogLine(allocator, line) catch continue;
+        defer allocator.free(message);
+        const denial = parseSandboxDenialMessage(message) orelse continue;
+        try pid_tracker.addPidIfInProcessGroup(denial.pid);
+    }
+}
+
+fn elapsedSandboxMilliseconds(io: std.Io, started: std.Io.Timestamp) u64 {
+    const elapsed = started.durationTo(std.Io.Timestamp.now(io, .awake));
+    if (elapsed.nanoseconds <= 0) return 0;
+    return @intCast(@divTrunc(elapsed.nanoseconds, std.time.ns_per_ms));
+}
+
+fn printSandboxDenials(allocator: std.mem.Allocator, log_output: []const u8, tracked_pids: *const std.AutoHashMap(i32, void)) !void {
     try cli_utils.writeStderr("\n=== Sandbox denials ===\n");
+    const rendered = try renderSandboxDenialSummary(allocator, log_output, tracked_pids);
+    defer allocator.free(rendered);
+    try cli_utils.writeStderr(rendered);
+}
+
+fn renderSandboxDenialSummary(allocator: std.mem.Allocator, log_output: []const u8, tracked_pids: *const std.AutoHashMap(i32, void)) ![]const u8 {
+    var output = std.ArrayList(u8).empty;
+    errdefer output.deinit(allocator);
 
     var seen = std.StringHashMap(void).init(allocator);
     defer {
@@ -356,6 +1031,7 @@ fn printSandboxDenials(allocator: std.mem.Allocator, log_output: []const u8) !vo
         const message = eventMessageFromLogLine(allocator, line) catch continue;
         defer allocator.free(message);
         const denial = parseSandboxDenialMessage(message) orelse continue;
+        if (!tracked_pids.contains(denial.pid)) continue;
         const key = try std.fmt.allocPrint(allocator, "{s}\x00{s}", .{ denial.name, denial.capability });
         errdefer allocator.free(key);
         if (seen.contains(key)) {
@@ -365,11 +1041,12 @@ fn printSandboxDenials(allocator: std.mem.Allocator, log_output: []const u8) !vo
         try seen.put(key, {});
         const rendered = try std.fmt.allocPrint(allocator, "({s}) {s}\n", .{ denial.name, denial.capability });
         defer allocator.free(rendered);
-        try cli_utils.writeStderr(rendered);
+        try output.appendSlice(allocator, rendered);
         count += 1;
     }
 
-    if (count == 0) try cli_utils.writeStderr("None found.\n");
+    if (count == 0) try output.appendSlice(allocator, "None found.\n");
+    return output.toOwnedSlice(allocator);
 }
 
 fn eventMessageFromLogLine(allocator: std.mem.Allocator, line: []const u8) ![]const u8 {
@@ -390,7 +1067,7 @@ fn eventMessageFromLogLine(allocator: std.mem.Allocator, line: []const u8) ![]co
 
 const ParsedSandboxDenial = struct {
     name: []const u8,
-    pid: []const u8,
+    pid: i32,
     capability: []const u8,
 };
 
@@ -406,11 +1083,12 @@ fn parseSandboxDenialMessage(message: []const u8) ?ParsedSandboxDenial {
     if (name.len == 0) return null;
     const parsed_pid = std.mem.trim(u8, before_marker[open_index + 1 ..], " \t");
     if (parsed_pid.len == 0) return null;
+    const pid = std.fmt.parseInt(i32, parsed_pid, 10) catch return null;
     const deny_start = marker_index + marker.len;
     const deny_end = std.mem.indexOfScalarPos(u8, after_prefix, deny_start, ')') orelse return null;
     const capability = std.mem.trim(u8, after_prefix[deny_end + 1 ..], " \t");
     if (capability.len == 0) return null;
-    return .{ .name = name, .pid = parsed_pid, .capability = capability };
+    return .{ .name = name, .pid = pid, .capability = capability };
 }
 
 fn dupeRemaining(allocator: std.mem.Allocator, args: []const []const u8) ![]const []const u8 {
@@ -551,7 +1229,24 @@ test "sandbox denial messages parse name and capability" {
     const parsed = parseSandboxDenialMessage("Sandbox: sh(1234) deny(1) file-write-create /tmp/blocked") orelse return error.TestExpectedEqual;
 
     try std.testing.expectEqualStrings("sh", parsed.name);
-    try std.testing.expectEqualStrings("1234", parsed.pid);
+    try std.testing.expectEqual(@as(i32, 1234), parsed.pid);
     try std.testing.expectEqualStrings("file-write-create /tmp/blocked", parsed.capability);
     try std.testing.expect(parseSandboxDenialMessage("other") == null);
+}
+
+test "sandbox denial summary filters untracked pids and dedupes" {
+    const allocator = std.testing.allocator;
+    var tracked_pids = std.AutoHashMap(i32, void).init(allocator);
+    defer tracked_pids.deinit();
+    try tracked_pids.put(1234, {});
+
+    const log_output =
+        \\{"eventMessage":"Sandbox: sh(1234) deny(1) file-read-data /tmp/blocked"}
+        \\{"eventMessage":"Sandbox: other(9999) deny(1) file-read-data /tmp/noise"}
+        \\{"eventMessage":"Sandbox: sh(1234) deny(1) file-read-data /tmp/blocked"}
+    ;
+    const rendered = try renderSandboxDenialSummary(allocator, log_output, &tracked_pids);
+    defer allocator.free(rendered);
+
+    try std.testing.expectEqualStrings("(sh) file-read-data /tmp/blocked\n", rendered);
 }
