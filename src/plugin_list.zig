@@ -2,6 +2,7 @@ const std = @import("std");
 
 const config = @import("config.zig");
 const marketplace_config = @import("marketplace_config.zig");
+const mcp_runtime = @import("mcp_runtime.zig");
 const plugin_config = @import("plugin_config.zig");
 const skills_list = @import("skills_list.zig");
 
@@ -12,6 +13,15 @@ const MARKETPLACE_MANIFEST_RELATIVE_PATHS = [_][]const u8{
 
 const AGENTS_MARKETPLACE_SUFFIX = "/.agents/plugins/marketplace.json";
 const CLAUDE_MARKETPLACE_SUFFIX = "/.claude-plugin/marketplace.json";
+const disallowed_connector_prefix = "connector_openai_";
+const disallowed_connector_ids = [_][]const u8{
+    "asdk_app_6938a94a61d881918ef32cb999ff937c",
+    "connector_2b0a9009c9c64bf9933a3dae3f2b1254",
+    "connector_3f8d1a79f27c4c7ba1a897ab13bf37dc",
+    "connector_68de829bf7648191acd70a907364c67c",
+    "connector_68e004f14af881919eb50893d3d9f523",
+    "connector_69272cb413a081919685ec3c88d1744e",
+};
 
 const SourceRender = struct {
     plugin_root: ?[]const u8 = null,
@@ -156,6 +166,32 @@ pub fn renderAppsListResponseWithRemoteDirectoryPages(
     limit: ?usize,
     total_out: *usize,
 ) !?[]const u8 {
+    return renderAppsListResponseWithRemoteDirectoryPagesAndAccessibleTools(
+        allocator,
+        codex_home,
+        config_bytes,
+        app_requirements,
+        cwds,
+        remote_directory_pages,
+        &.{},
+        start,
+        limit,
+        total_out,
+    );
+}
+
+pub fn renderAppsListResponseWithRemoteDirectoryPagesAndAccessibleTools(
+    allocator: std.mem.Allocator,
+    codex_home: []const u8,
+    config_bytes: []const u8,
+    app_requirements: ?AppRequirements,
+    cwds: []const []const u8,
+    remote_directory_pages: []const []const u8,
+    accessible_tools: []const mcp_runtime.ToolSpec,
+    start: usize,
+    limit: ?usize,
+    total_out: *usize,
+) !?[]const u8 {
     var apps = std.ArrayList(AppListEntry).empty;
     defer {
         for (apps.items) |*app| app.deinit(allocator);
@@ -187,9 +223,23 @@ pub fn renderAppsListResponseWithRemoteDirectoryPages(
         }
     }
 
-    for (remote_directory_pages) |page| {
-        try collectAppsFromRemoteDirectoryPage(allocator, config_bytes, page, &apps);
+    var remote_directory_app_ids = std.ArrayList([]const u8).empty;
+    defer {
+        for (remote_directory_app_ids.items) |app_id| allocator.free(app_id);
+        remote_directory_app_ids.deinit(allocator);
     }
+
+    for (remote_directory_pages) |page| {
+        try collectAppsFromRemoteDirectoryPage(allocator, config_bytes, page, &apps, &remote_directory_app_ids);
+    }
+    try collectAccessibleAppsFromMcpTools(
+        allocator,
+        config_bytes,
+        accessible_tools,
+        remote_directory_pages.len > 0,
+        remote_directory_app_ids.items,
+        &apps,
+    );
 
     if (app_requirements) |requirements| {
         applyAppRequirements(&apps, requirements);
@@ -1412,6 +1462,7 @@ fn collectAppsFromRemoteDirectoryPage(
     config_bytes: []const u8,
     page: []const u8,
     apps: *std.ArrayList(AppListEntry),
+    remote_directory_app_ids: *std.ArrayList([]const u8),
 ) !void {
     var parsed = std.json.parseFromSlice(std.json.Value, allocator, page, .{}) catch return;
     defer parsed.deinit();
@@ -1423,6 +1474,8 @@ fn collectAppsFromRemoteDirectoryPage(
         if (remoteDirectoryAppIsHidden(object)) continue;
         const app_id = normalizedRemoteDirectoryString(stringField(object, "id") orelse stringField(object, "appId") orelse stringField(object, "slug")) orelse continue;
         if (app_id[0] == '$') continue;
+        if (!connectorIdAllowed(app_id)) continue;
+        try appendUniqueOwnedString(allocator, remote_directory_app_ids, app_id);
         const name = normalizedRemoteDirectoryString(stringField(object, "name") orelse stringField(object, "title")) orelse app_id;
         const description = normalizedRemoteDirectoryString(stringField(object, "description"));
         const raw_install_url = normalizedRemoteDirectoryString(stringFieldAlias(object, "installUrl", "install_url"));
@@ -1458,6 +1511,65 @@ fn collectAppsFromRemoteDirectoryPage(
     }
 }
 
+fn collectAccessibleAppsFromMcpTools(
+    allocator: std.mem.Allocator,
+    config_bytes: []const u8,
+    tools: []const mcp_runtime.ToolSpec,
+    remote_directory_loaded: bool,
+    remote_directory_app_ids: []const []const u8,
+    apps: *std.ArrayList(AppListEntry),
+) !void {
+    for (tools) |tool| {
+        if (!std.mem.eql(u8, tool.server_name, "codex_apps")) continue;
+        const app_id = normalizedRemoteDirectoryString(tool.connector_id) orelse continue;
+        if (app_id[0] == '$') continue;
+        if (!connectorIdAllowed(app_id)) continue;
+        if (remote_directory_loaded and
+            !containsString(remote_directory_app_ids, app_id) and
+            !containsAppListEntry(apps.items, app_id))
+        {
+            continue;
+        }
+        const name = normalizedRemoteDirectoryString(tool.connector_name) orelse app_id;
+        const description = normalizedRemoteDirectoryString(tool.namespace_description);
+        const install_url = try remoteDirectoryInstallUrl(allocator, name, app_id);
+        defer allocator.free(install_url);
+        try upsertAppListEntry(
+            allocator,
+            apps,
+            app_id,
+            name,
+            description,
+            install_url,
+            "",
+            appEnabledFromConfig(config_bytes, app_id),
+            .{ .is_accessible = true },
+        );
+    }
+}
+
+fn connectorIdAllowed(app_id: []const u8) bool {
+    if (std.mem.startsWith(u8, app_id, disallowed_connector_prefix)) return false;
+    for (disallowed_connector_ids) |disallowed| {
+        if (std.mem.eql(u8, app_id, disallowed)) return false;
+    }
+    return true;
+}
+
+fn appendUniqueOwnedString(allocator: std.mem.Allocator, values: *std.ArrayList([]const u8), value: []const u8) !void {
+    if (containsString(values.items, value)) return;
+    const owned = try allocator.dupe(u8, value);
+    errdefer allocator.free(owned);
+    try values.append(allocator, owned);
+}
+
+fn containsAppListEntry(apps: []const AppListEntry, app_id: []const u8) bool {
+    for (apps) |app| {
+        if (std.mem.eql(u8, app.id, app_id)) return true;
+    }
+    return false;
+}
+
 fn collectAppsFromPluginRoot(
     allocator: std.mem.Allocator,
     config_bytes: []const u8,
@@ -1482,6 +1594,7 @@ fn collectAppsFromPluginRoot(
         const app_object = if (entry.value_ptr.* == .object) entry.value_ptr.object else null;
         const app_id = stringFieldOpt(app_object, "id") orelse fallback_id;
         if (app_id.len == 0 or app_id[0] == '$') continue;
+        if (!connectorIdAllowed(app_id)) continue;
         const name = stringFieldOpt(app_object, "name") orelse app_id;
         const description = stringFieldOpt(app_object, "description");
         const raw_install_url = stringFieldOpt(app_object, "installUrl") orelse stringFieldOpt(app_object, "install_url");
@@ -2051,6 +2164,7 @@ fn appendAppListEntryJson(allocator: std.mem.Allocator, out: *std.ArrayList(u8),
 }
 
 fn appListEntryLessThan(_: void, left: AppListEntry, right: AppListEntry) bool {
+    if (left.is_accessible != right.is_accessible) return left.is_accessible;
     const name_order = std.mem.order(u8, left.name, right.name);
     if (name_order != .eq) return name_order == .lt;
     return std.mem.lessThan(u8, left.id, right.id);
@@ -2091,6 +2205,7 @@ fn appendPluginAppsJson(allocator: std.mem.Allocator, out: *std.ArrayList(u8), p
         const app_object = if (entry.value_ptr.* == .object) entry.value_ptr.object else null;
         const app_id = stringFieldOpt(app_object, "id") orelse fallback_id;
         if (app_id.len == 0 or app_id[0] == '$') continue;
+        if (!connectorIdAllowed(app_id)) continue;
         const name = stringFieldOpt(app_object, "name") orelse app_id;
         const description = stringFieldOpt(app_object, "description");
         const install_url = stringFieldOpt(app_object, "installUrl") orelse stringFieldOpt(app_object, "install_url");
@@ -2731,6 +2846,214 @@ test "apps list includes remote directory metadata" {
     try std.testing.expect(std.mem.indexOf(u8, rendered, "\"labels\":{\"tier\":\"beta\"}") != null);
     try std.testing.expect(std.mem.indexOf(u8, rendered, "\"isAccessible\":false") != null);
     try std.testing.expect(std.mem.indexOf(u8, rendered, "\"isEnabled\":false") != null);
+}
+
+test "apps list merges accessible codex apps tools" {
+    const allocator = std.testing.allocator;
+    const page =
+        \\{"data":[{"id":"drive","name":"drive","description":"Search Drive","logoUrl":"https://example.com/drive.png"},{"id":"calendar","name":"Calendar"},{"id":"connector_openai_internal","name":"Internal"}]}
+    ;
+    const config_bytes =
+        \\[apps.orphan]
+        \\enabled = false
+    ;
+    const accessible_tools = [_]mcp_runtime.ToolSpec{
+        .{
+            .server_name = "codex_apps",
+            .raw_tool_name = "drive_search",
+            .callable_name = "mcp__codex_apps__drive_search",
+            .description = "Search Drive",
+            .input_schema_json = "{\"type\":\"object\"}",
+            .connector_id = "drive",
+            .connector_name = "Drive Search",
+            .namespace_description = "Accessible Drive",
+        },
+        .{
+            .server_name = "codex_apps",
+            .raw_tool_name = "orphan_lookup",
+            .callable_name = "mcp__codex_apps__orphan_lookup",
+            .description = "Lookup orphan",
+            .input_schema_json = "{\"type\":\"object\"}",
+            .connector_id = "orphan",
+            .connector_name = "Orphan App",
+            .namespace_description = "Only from accessible tools",
+        },
+        .{
+            .server_name = "other",
+            .raw_tool_name = "ignored",
+            .callable_name = "mcp__other__ignored",
+            .description = "",
+            .input_schema_json = "{\"type\":\"object\"}",
+            .connector_id = "ignored",
+            .connector_name = "Ignored",
+        },
+        .{
+            .server_name = "codex_apps",
+            .raw_tool_name = "internal_search",
+            .callable_name = "mcp__codex_apps__internal_search",
+            .description = "Internal",
+            .input_schema_json = "{\"type\":\"object\"}",
+            .connector_id = "connector_openai_internal",
+            .connector_name = "Internal",
+        },
+    };
+
+    var total: usize = 0;
+    const rendered_opt = try renderAppsListResponseWithRemoteDirectoryPagesAndAccessibleTools(
+        allocator,
+        "/tmp/codex-home",
+        config_bytes,
+        null,
+        &.{},
+        &.{page},
+        &accessible_tools,
+        0,
+        null,
+        &total,
+    );
+    try std.testing.expect(rendered_opt != null);
+    const rendered = rendered_opt.?;
+    defer allocator.free(rendered);
+
+    try std.testing.expectEqual(@as(usize, 2), total);
+    const drive_index = std.mem.indexOf(u8, rendered, "\"id\":\"drive\"") orelse return error.TestExpectedDriveApp;
+    const calendar_index = std.mem.indexOf(u8, rendered, "\"id\":\"calendar\"") orelse return error.TestExpectedCalendarApp;
+    try std.testing.expect(drive_index < calendar_index);
+    try std.testing.expect(std.mem.indexOf(u8, rendered, "\"name\":\"Drive Search\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rendered, "\"description\":\"Search Drive\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rendered, "\"logoUrl\":\"https://example.com/drive.png\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rendered, "\"id\":\"orphan\"") == null);
+    try std.testing.expect(std.mem.indexOf(u8, rendered, "\"id\":\"ignored\"") == null);
+    try std.testing.expect(std.mem.indexOf(u8, rendered, "connector_openai_internal") == null);
+}
+
+test "apps list keeps accessible-only codex apps before directory load" {
+    const allocator = std.testing.allocator;
+    const config_bytes =
+        \\[apps.orphan]
+        \\enabled = false
+    ;
+    const accessible_tools = [_]mcp_runtime.ToolSpec{
+        .{
+            .server_name = "codex_apps",
+            .raw_tool_name = "orphan_lookup",
+            .callable_name = "mcp__codex_apps__orphan_lookup",
+            .description = "Lookup orphan",
+            .input_schema_json = "{\"type\":\"object\"}",
+            .connector_id = "orphan",
+            .connector_name = "Orphan App",
+            .namespace_description = "Only from accessible tools",
+        },
+    };
+
+    var total: usize = 0;
+    const rendered_opt = try renderAppsListResponseWithRemoteDirectoryPagesAndAccessibleTools(
+        allocator,
+        "/tmp/codex-home",
+        config_bytes,
+        null,
+        &.{},
+        &.{},
+        &accessible_tools,
+        0,
+        null,
+        &total,
+    );
+    try std.testing.expect(rendered_opt != null);
+    const rendered = rendered_opt.?;
+    defer allocator.free(rendered);
+
+    try std.testing.expectEqual(@as(usize, 1), total);
+    try std.testing.expect(std.mem.indexOf(u8, rendered, "\"id\":\"orphan\",\"name\":\"Orphan App\",\"description\":\"Only from accessible tools\",\"logoUrl\":null,\"logoUrlDark\":null,\"distributionChannel\":null,\"branding\":null,\"appMetadata\":null,\"labels\":null,\"installUrl\":\"https://chatgpt.com/apps/orphan-app/orphan\",\"isAccessible\":true,\"isEnabled\":false") != null);
+}
+
+test "apps list marks plugin-only app accessible after directory load" {
+    const allocator = std.testing.allocator;
+    var apps = std.ArrayList(AppListEntry).empty;
+    defer {
+        for (apps.items) |*app| app.deinit(allocator);
+        apps.deinit(allocator);
+    }
+
+    try upsertAppListEntry(
+        allocator,
+        &apps,
+        "plugin_drive",
+        "plugin_drive",
+        null,
+        "https://chatgpt.com/apps/plugin_drive/plugin_drive",
+        "Plugin Source",
+        true,
+        .{},
+    );
+
+    const accessible_tools = [_]mcp_runtime.ToolSpec{
+        .{
+            .server_name = "codex_apps",
+            .raw_tool_name = "plugin_drive_search",
+            .callable_name = "mcp__codex_apps__plugin_drive_search",
+            .description = "Search plugin drive",
+            .input_schema_json = "{\"type\":\"object\"}",
+            .connector_id = "plugin_drive",
+            .connector_name = "Plugin Drive",
+            .namespace_description = "Plugin drive files",
+        },
+    };
+
+    try collectAccessibleAppsFromMcpTools(
+        allocator,
+        "",
+        &accessible_tools,
+        true,
+        &.{"directory_only"},
+        &apps,
+    );
+
+    try std.testing.expectEqual(@as(usize, 1), apps.items.len);
+    try std.testing.expect(apps.items[0].is_accessible);
+    try std.testing.expectEqualStrings("Plugin Drive", apps.items[0].name);
+    try std.testing.expectEqualStrings("Plugin drive files", apps.items[0].description.?);
+}
+
+test "apps list filters blocked ids from plugin app metadata" {
+    const allocator = std.testing.allocator;
+    var dir = std.testing.tmpDir(.{});
+    defer dir.cleanup();
+    const io = std.Io.Threaded.global_single_threaded.io();
+
+    try dir.dir.writeFile(io, .{
+        .sub_path = ".app.json",
+        .data =
+        \\{
+        \\  "apps": {
+        \\    "drive": {"name": "Drive"},
+        \\    "connector_openai_internal": {"name": "Internal"},
+        \\    "blocked_alias": {"id": "connector_openai_alias", "name": "Alias"}
+        \\  }
+        \\}
+        ,
+    });
+
+    const plugin_root = try dir.dir.realPathFileAlloc(io, ".", allocator);
+    defer allocator.free(plugin_root);
+
+    var apps = std.ArrayList(AppListEntry).empty;
+    defer {
+        for (apps.items) |*app| app.deinit(allocator);
+        apps.deinit(allocator);
+    }
+
+    const added = try collectAppsFromPluginRoot(allocator, "", plugin_root, "Plugin Source", &apps);
+    try std.testing.expect(added);
+    try std.testing.expectEqual(@as(usize, 1), apps.items.len);
+    try std.testing.expectEqualStrings("drive", apps.items[0].id);
+
+    var summaries = std.ArrayList(u8).empty;
+    defer summaries.deinit(allocator);
+    try appendPluginAppsJson(allocator, &summaries, plugin_root);
+    try std.testing.expect(std.mem.indexOf(u8, summaries.items, "\"id\":\"drive\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, summaries.items, "connector_openai_internal") == null);
+    try std.testing.expect(std.mem.indexOf(u8, summaries.items, "connector_openai_alias") == null);
 }
 
 test "plugin list renders local marketplaces with installed state and manifest metadata" {

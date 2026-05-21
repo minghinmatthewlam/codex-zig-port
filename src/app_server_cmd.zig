@@ -50,6 +50,7 @@ const THREAD_TURNS_DEFAULT_LIMIT = 25;
 const THREAD_TURNS_MAX_LIMIT = 100;
 const APP_LIST_DIRECTORY_MAX_PAGES = 20;
 const APP_LIST_DIRECTORY_CACHE_TTL_MS = 3600 * std.time.ms_per_s;
+const CODEX_CONNECTORS_TOKEN_ENV_VAR = "CODEX_CONNECTORS_TOKEN";
 const MANAGED_CONFIG_PATH_ENV_VAR = "CODEX_APP_SERVER_MANAGED_CONFIG_PATH";
 const SYSTEM_CONFIG_PATH_ENV_VAR = "CODEX_APP_SERVER_SYSTEM_CONFIG_PATH";
 const SYSTEM_REQUIREMENTS_PATH_ENV_VAR = "CODEX_APP_SERVER_SYSTEM_REQUIREMENTS_PATH";
@@ -74,6 +75,8 @@ var app_server_shutdown_connection_wakeup_write_fd = std.atomic.Value(std.posix.
 var app_server_shutdown_connection_watcher_stop = std.atomic.Value(bool).init(false);
 var app_directory_cache_mutex: std.Io.Mutex = .init;
 var app_directory_cache: ?AppDirectoryCache = null;
+var app_accessible_tools_cache_mutex: std.Io.Mutex = .init;
+var app_accessible_tools_cache: ?AppAccessibleToolsCache = null;
 
 const AppDirectoryCache = struct {
     key: []const u8,
@@ -84,6 +87,18 @@ const AppDirectoryCache = struct {
         allocator.free(self.key);
         for (self.pages.items) |page| allocator.free(page);
         self.pages.deinit(allocator);
+    }
+};
+
+const AppAccessibleToolsCache = struct {
+    key: []const u8,
+    expires_at_ms: i64,
+    tools: []mcp_runtime.ToolSpec,
+
+    fn deinit(self: *AppAccessibleToolsCache, allocator: std.mem.Allocator) void {
+        allocator.free(self.key);
+        for (self.tools) |tool| tool.deinit(allocator);
+        allocator.free(self.tools);
     }
 };
 
@@ -28449,14 +28464,21 @@ fn handleAppsList(
     }
     try fetchRemoteAppDirectoryPagesIfAvailable(allocator, &remote_directory_pages, force_refetch);
 
+    const accessible_catalog: ?mcp_runtime.Catalog = loadCodexAppsAccessibleCatalog(allocator, codex_home, force_refetch) catch |err| {
+        return renderJsonRpcErrorForFailure(allocator, id_value, "app/list failed", err);
+    };
+    defer if (accessible_catalog) |catalog| catalog.deinit(allocator);
+    const accessible_tools: []const mcp_runtime.ToolSpec = if (accessible_catalog) |catalog| catalog.tools else &.{};
+
     var total: usize = 0;
-    const result = plugin_list.renderAppsListResponseWithRemoteDirectoryPages(
+    const result = plugin_list.renderAppsListResponseWithRemoteDirectoryPagesAndAccessibleTools(
         allocator,
         codex_home,
         config_bytes orelse "",
         requirements.app_requirements,
         scoped_cwds,
         remote_directory_pages.items,
+        accessible_tools,
         start,
         limit,
         &total,
@@ -28512,13 +28534,18 @@ fn renderCurrentAppListDataJson(allocator: std.mem.Allocator) ![]const u8 {
     }
     try fetchRemoteAppDirectoryPagesIfAvailable(allocator, &remote_directory_pages, false);
 
-    const response = (try plugin_list.renderAppsListResponseWithRemoteDirectoryPages(
+    const accessible_catalog: ?mcp_runtime.Catalog = try loadCodexAppsAccessibleCatalog(allocator, codex_home, false);
+    defer if (accessible_catalog) |catalog| catalog.deinit(allocator);
+    const accessible_tools: []const mcp_runtime.ToolSpec = if (accessible_catalog) |catalog| catalog.tools else &.{};
+
+    const response = (try plugin_list.renderAppsListResponseWithRemoteDirectoryPagesAndAccessibleTools(
         allocator,
         codex_home,
         config_bytes orelse "",
         requirements.app_requirements,
         &.{},
         remote_directory_pages.items,
+        accessible_tools,
         0,
         null,
         &total,
@@ -28531,6 +28558,166 @@ fn renderCurrentAppListDataJson(allocator: std.mem.Allocator) ![]const u8 {
     const data = parsed.value.object.get("data") orelse return error.InvalidAppListRefreshResponse;
     if (data != .array) return error.InvalidAppListRefreshResponse;
     return std.json.Stringify.valueAlloc(allocator, data, .{});
+}
+
+fn loadCodexAppsAccessibleCatalog(allocator: std.mem.Allocator, codex_home: []const u8, force_refetch: bool) !?mcp_runtime.Catalog {
+    const cache_key = try codexAppsAccessibleToolsCacheKey(allocator, codex_home);
+    defer if (cache_key) |key| allocator.free(key);
+
+    if (!force_refetch) {
+        if (cache_key) |key| {
+            if (try loadCachedCodexAppsAccessibleCatalog(allocator, key)) |cached| return cached;
+        }
+    }
+
+    const catalog = mcp_runtime.loadHostOwnedCodexAppsCatalog(allocator, codex_home) catch |err| switch (err) {
+        error.OutOfMemory => return err,
+        else => return null,
+    };
+    errdefer catalog.deinit(allocator);
+    if (cache_key) |key| {
+        try replaceCodexAppsAccessibleToolsCache(allocator, key, catalog.tools);
+    }
+    return catalog;
+}
+
+fn codexAppsAccessibleToolsCacheKey(allocator: std.mem.Allocator, codex_home: []const u8) !?[]const u8 {
+    var cfg = config.load(allocator) catch |err| switch (err) {
+        error.OutOfMemory => return err,
+        else => return null,
+    };
+    defer cfg.deinit(allocator);
+
+    var credentials = auth_mod.loadCliAuthNoRefreshForConfig(allocator, &cfg) catch |err| switch (err) {
+        error.OutOfMemory => return err,
+        else => return null,
+    };
+    defer credentials.deinit(allocator);
+
+    if (!appDirectoryCredentialsUseCodexBackend(credentials)) return null;
+
+    var key = std.ArrayList(u8).empty;
+    errdefer key.deinit(allocator);
+    try appendAppDirectoryCacheKeyPart(allocator, &key, "codex_home", codex_home);
+    try appendAppDirectoryCacheKeyPart(allocator, &key, "chatgpt_base_url", cfg.chatgpt_base_url);
+    try appendAppDirectoryCacheKeyPart(allocator, &key, "auth_mode", authMethodLabel(credentials.mode) orelse "local_oss");
+    try appendAppDirectoryCacheKeyPart(allocator, &key, "account_id", credentials.account_id orelse "");
+    try appendAppDirectoryCacheKeyPart(allocator, &key, "chatgpt_user_id", credentials.chatgpt_user_id orelse "");
+    try appendAppDirectoryCacheKeyPart(allocator, &key, "fedramp", if (credentials.fedramp) "true" else "false");
+    try appendCodexConnectorsTokenCacheKeyPart(allocator, &key);
+    const owned: []const u8 = try key.toOwnedSlice(allocator);
+    return owned;
+}
+
+fn appendCodexConnectorsTokenCacheKeyPart(allocator: std.mem.Allocator, key: *std.ArrayList(u8)) !void {
+    const value = try env.getOwned(allocator, CODEX_CONNECTORS_TOKEN_ENV_VAR) orelse {
+        try appendAppDirectoryCacheKeyPart(allocator, key, "codex_connectors_token", "absent");
+        return;
+    };
+    defer allocator.free(value);
+
+    const trimmed = std.mem.trim(u8, value, " \t\r\n");
+    if (trimmed.len == 0) {
+        try appendAppDirectoryCacheKeyPart(allocator, key, "codex_connectors_token", "blank");
+        return;
+    }
+
+    const fingerprint = std.hash.Wyhash.hash(0, trimmed);
+    const fingerprint_text = try std.fmt.allocPrint(allocator, "{x}", .{fingerprint});
+    defer allocator.free(fingerprint_text);
+    try appendAppDirectoryCacheKeyPart(allocator, key, "codex_connectors_token", fingerprint_text);
+}
+
+fn loadCachedCodexAppsAccessibleCatalog(
+    allocator: std.mem.Allocator,
+    cache_key: []const u8,
+) !?mcp_runtime.Catalog {
+    const io = std.Io.Threaded.global_single_threaded.io();
+    app_accessible_tools_cache_mutex.lockUncancelable(io);
+    defer app_accessible_tools_cache_mutex.unlock(io);
+    const cache = if (app_accessible_tools_cache) |*cache| cache else return null;
+    if (currentUnixMilliseconds() >= cache.expires_at_ms) return null;
+    if (!std.mem.eql(u8, cache.key, cache_key)) return null;
+    return .{ .tools = try cloneMcpToolSpecs(allocator, cache.tools) };
+}
+
+fn replaceCodexAppsAccessibleToolsCache(
+    allocator: std.mem.Allocator,
+    cache_key: []const u8,
+    tools: []const mcp_runtime.ToolSpec,
+) !void {
+    const owned_key = try allocator.dupe(u8, cache_key);
+    errdefer allocator.free(owned_key);
+    const owned_tools = try cloneMcpToolSpecs(allocator, tools);
+    errdefer {
+        for (owned_tools) |tool| tool.deinit(allocator);
+        allocator.free(owned_tools);
+    }
+
+    var next_cache = AppAccessibleToolsCache{
+        .key = owned_key,
+        .expires_at_ms = currentUnixMilliseconds() + APP_LIST_DIRECTORY_CACHE_TTL_MS,
+        .tools = owned_tools,
+    };
+    var keep_next_cache = false;
+    defer if (!keep_next_cache) next_cache.deinit(allocator);
+
+    const io = std.Io.Threaded.global_single_threaded.io();
+    app_accessible_tools_cache_mutex.lockUncancelable(io);
+    defer app_accessible_tools_cache_mutex.unlock(io);
+    if (app_accessible_tools_cache) |*cache| cache.deinit(allocator);
+    app_accessible_tools_cache = next_cache;
+    keep_next_cache = true;
+}
+
+fn cloneMcpToolSpecs(allocator: std.mem.Allocator, tools: []const mcp_runtime.ToolSpec) ![]mcp_runtime.ToolSpec {
+    const cloned = try allocator.alloc(mcp_runtime.ToolSpec, tools.len);
+    var initialized: usize = 0;
+    errdefer {
+        for (cloned[0..initialized]) |tool| tool.deinit(allocator);
+        allocator.free(cloned);
+    }
+
+    for (tools) |tool| {
+        cloned[initialized] = try cloneMcpToolSpec(allocator, tool);
+        initialized += 1;
+    }
+    return cloned;
+}
+
+fn cloneMcpToolSpec(allocator: std.mem.Allocator, tool: mcp_runtime.ToolSpec) !mcp_runtime.ToolSpec {
+    const server_name = try allocator.dupe(u8, tool.server_name);
+    errdefer allocator.free(server_name);
+    const raw_tool_name = try allocator.dupe(u8, tool.raw_tool_name);
+    errdefer allocator.free(raw_tool_name);
+    const callable_name = try allocator.dupe(u8, tool.callable_name);
+    errdefer allocator.free(callable_name);
+    const description = try allocator.dupe(u8, tool.description);
+    errdefer allocator.free(description);
+    const input_schema_json = try allocator.dupe(u8, tool.input_schema_json);
+    errdefer allocator.free(input_schema_json);
+
+    var connector_id: ?[]const u8 = null;
+    errdefer if (connector_id) |owned| allocator.free(owned);
+    var connector_name: ?[]const u8 = null;
+    errdefer if (connector_name) |owned| allocator.free(owned);
+    var namespace_description: ?[]const u8 = null;
+    errdefer if (namespace_description) |owned| allocator.free(owned);
+
+    if (tool.connector_id) |value| connector_id = try allocator.dupe(u8, value);
+    if (tool.connector_name) |value| connector_name = try allocator.dupe(u8, value);
+    if (tool.namespace_description) |value| namespace_description = try allocator.dupe(u8, value);
+
+    return .{
+        .server_name = server_name,
+        .raw_tool_name = raw_tool_name,
+        .callable_name = callable_name,
+        .description = description,
+        .input_schema_json = input_schema_json,
+        .connector_id = connector_id,
+        .connector_name = connector_name,
+        .namespace_description = namespace_description,
+    };
 }
 
 fn fetchRemoteAppDirectoryPagesIfAvailable(allocator: std.mem.Allocator, pages: *std.ArrayList([]const u8), force_refetch: bool) !void {
