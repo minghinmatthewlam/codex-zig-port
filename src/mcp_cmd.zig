@@ -622,6 +622,7 @@ fn runAdd(
     if (parsed.kind == .unknown) return error.MissingMcpTransport;
     if (parsed.kind == .streamable_http and parsed.url == null) return error.MissingMcpUrl;
     if (parsed.kind == .stdio and parsed.command == null) return error.MissingMcpCommand;
+    try validateParsedMcpServer(&parsed);
 
     if (servers.remove(allocator, name)) {}
     try servers.items.append(allocator, parsed);
@@ -3410,6 +3411,7 @@ fn appendEnvPair(allocator: std.mem.Allocator, server: *McpServer, raw: []const 
     const eq = std.mem.indexOfScalar(u8, raw, '=') orelse return error.InvalidMcpEnv;
     const key = std.mem.trim(u8, raw[0..eq], " \t");
     if (key.len == 0) return error.InvalidMcpEnv;
+    server.env_configured = true;
     try server.env_vars.append(allocator, .{
         .key = try allocator.dupe(u8, key),
         .value = try allocator.dupe(u8, raw[eq + 1 ..]),
@@ -3968,6 +3970,22 @@ test "mcp config parses and renders stdio and http servers" {
     try std.testing.expect(std.mem.indexOf(u8, rendered, "[mcp_servers.docs]") != null);
     try std.testing.expect(std.mem.indexOf(u8, rendered, "[mcp_servers.remote]") != null);
     try std.testing.expect(std.mem.indexOf(u8, rendered, "required = true") != null);
+}
+
+test "mcp add rejects http env options before writing config" {
+    const allocator = std.testing.allocator;
+    var dir = std.testing.tmpDir(.{});
+    defer dir.cleanup();
+    const codex_home = try dir.dir.realPathFileAlloc(std.Io.Threaded.global_single_threaded.io(), ".", allocator);
+    defer allocator.free(codex_home);
+
+    var servers = try parseServers(allocator, "");
+    defer servers.deinit(allocator);
+    const args = [_][]const u8{ "remote", "--url", "https://example.com/mcp", "--bearer-token-env-var", "TOKEN", "--env", "FOO=bar" };
+
+    try std.testing.expectError(error.McpStreamableHttpUnsupportedEnv, runAdd(allocator, codex_home, "", &servers, args[0..]));
+    try std.testing.expect(servers.get("remote") == null);
+    try std.testing.expectError(error.FileNotFound, dir.dir.statFile(std.Io.Threaded.global_single_threaded.io(), "config.toml", .{}));
 }
 
 fn expectParseServersError(expected: anyerror, bytes: []const u8) !void {
