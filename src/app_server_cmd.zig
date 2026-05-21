@@ -567,6 +567,7 @@ const LoadedThread = struct {
     model_verbosity: ?[]const u8,
     model_provider: []const u8,
     openai_base_url: ?[]const u8,
+    chatgpt_base_url: ?[]const u8,
     oss_provider: ?[]const u8,
     service_tier: ?[]const u8,
     active_profile: ?[]const u8,
@@ -623,6 +624,7 @@ const LoadedThread = struct {
         if (self.model_verbosity) |value| allocator.free(value);
         allocator.free(self.model_provider);
         if (self.openai_base_url) |value| allocator.free(value);
+        if (self.chatgpt_base_url) |value| allocator.free(value);
         if (self.oss_provider) |value| allocator.free(value);
         if (self.service_tier) |value| allocator.free(value);
         if (self.active_profile) |value| allocator.free(value);
@@ -31962,7 +31964,7 @@ fn applyLoadedThreadRuntimeToConfig(
         cfg.model_verbosity = null;
     }
     try replaceConfigOptionalString(allocator, &cfg.model_provider_id, thread.model_provider);
-    try applyLoadedThreadOpenaiBaseUrlToConfig(allocator, cfg, thread);
+    try applyLoadedThreadBaseUrlsToConfig(allocator, cfg, thread);
     cfg.web_search_mode = thread.web_search_mode;
     cfg.approval_policy = config.ApprovalPolicy.parse(thread.approval_policy) catch return error.InvalidLoadedThreadRuntime;
     cfg.sandbox_mode = config.SandboxMode.parse(thread.sandbox_mode) catch return error.InvalidLoadedThreadRuntime;
@@ -32166,7 +32168,7 @@ fn applyTurnStartRuntimeConfigOverrides(
         &cfg.model_provider_id,
         optionalStringParam(params, "modelProvider") orelse thread.model_provider,
     );
-    try applyLoadedThreadOpenaiBaseUrlToConfig(allocator, cfg, thread);
+    try applyLoadedThreadBaseUrlsToConfig(allocator, cfg, thread);
 
     if (params.get("serviceTier")) |service_tier_value| {
         if (service_tier_value != .null and service_tier_value != .string) return error.InvalidTurnContextOverride;
@@ -32376,7 +32378,7 @@ fn applyTurnStartRuntimeOverrides(
         thread.runtime_overrides.model_provider = true;
     }
     try replaceConfigOptionalString(allocator, &cfg.model_provider_id, thread.model_provider);
-    try applyLoadedThreadOpenaiBaseUrlToConfig(allocator, cfg, thread);
+    try applyLoadedThreadBaseUrlsToConfig(allocator, cfg, thread);
 
     if (params.get("serviceTier")) |service_tier_value| {
         if (service_tier_value != .null and service_tier_value != .string) return error.InvalidTurnContextOverride;
@@ -35787,6 +35789,8 @@ const ThreadRequestConfigOverrides = struct {
     profile: ?[]const u8 = null,
     openai_base_url_present: bool = false,
     openai_base_url: ?[]const u8 = null,
+    chatgpt_base_url_present: bool = false,
+    chatgpt_base_url: ?[]const u8 = null,
     web_search_mode_present: bool = false,
     web_search_mode: ?config.WebSearchMode = null,
     oss_mode_present: bool = false,
@@ -35804,6 +35808,9 @@ fn validateThreadRequestConfigParam(object: std.json.ObjectMap) ?[]const u8 {
     }
     if (value.object.get("openai_base_url")) |openai_base_url| {
         if (openai_base_url != .null and openai_base_url != .string) return "config.openai_base_url must be a string or null";
+    }
+    if (value.object.get("chatgpt_base_url")) |chatgpt_base_url| {
+        if (chatgpt_base_url != .null and chatgpt_base_url != .string) return "config.chatgpt_base_url must be a string or null";
     }
     if (value.object.get("web_search")) |web_search| {
         if (!optionalEnumStringIsValid(web_search, &.{ "disabled", "cached", "live" })) {
@@ -35839,6 +35846,14 @@ fn threadRequestConfigFromParams(params: ?std.json.ObjectMap) !ThreadRequestConf
     if (value.object.get("openai_base_url")) |openai_base_url| {
         result.openai_base_url_present = true;
         result.openai_base_url = switch (openai_base_url) {
+            .null => null,
+            .string => |base_url| base_url,
+            else => return error.InvalidThreadRequestConfig,
+        };
+    }
+    if (value.object.get("chatgpt_base_url")) |chatgpt_base_url| {
+        result.chatgpt_base_url_present = true;
+        result.chatgpt_base_url = switch (chatgpt_base_url) {
             .null => null,
             .string => |base_url| base_url,
             else => return error.InvalidThreadRequestConfig,
@@ -35947,6 +35962,11 @@ fn applyThreadRequestConfigOverrides(
             try replaceConfigOwnedString(allocator, &cfg.openai_base_url, base_url);
         }
     }
+    if (request_config.chatgpt_base_url_present) {
+        if (request_config.chatgpt_base_url) |base_url| {
+            try replaceConfigOwnedString(allocator, &cfg.chatgpt_base_url, base_url);
+        }
+    }
     if (request_config.web_search_mode_present) cfg.web_search_mode = request_config.web_search_mode;
     if (request_config.oss_provider_present) {
         if (request_config.oss_provider) |provider| {
@@ -36009,10 +36029,21 @@ fn threadOpenaiBaseUrlForRequest(
     allocator: std.mem.Allocator,
     request_config: ThreadRequestConfigOverrides,
 ) !?[]const u8 {
-    if (request_config.openai_base_url) |base_url| {
-        const owned = try allocator.dupe(u8, base_url);
-        return owned;
-    }
+    return threadBaseUrlForRequest(allocator, request_config.openai_base_url);
+}
+
+fn threadChatgptBaseUrlForRequest(
+    allocator: std.mem.Allocator,
+    request_config: ThreadRequestConfigOverrides,
+) !?[]const u8 {
+    return threadBaseUrlForRequest(allocator, request_config.chatgpt_base_url);
+}
+
+fn threadBaseUrlForRequest(
+    allocator: std.mem.Allocator,
+    base_url: ?[]const u8,
+) !?[]const u8 {
+    if (base_url) |value| return try allocator.dupe(u8, value);
     return null;
 }
 
@@ -36022,19 +36053,40 @@ fn forkThreadOpenaiBaseUrl(
     use_request_profile: bool,
     source: *const LoadedThread,
 ) !?[]const u8 {
-    if (request_config.openai_base_url_present) {
-        if (request_config.openai_base_url) |base_url| {
-            const owned = try allocator.dupe(u8, base_url);
-            return owned;
-        }
-        return null;
-    }
+    return forkThreadBaseUrl(
+        allocator,
+        request_config.openai_base_url_present,
+        request_config.openai_base_url,
+        use_request_profile,
+        source.openai_base_url,
+    );
+}
+
+fn forkThreadChatgptBaseUrl(
+    allocator: std.mem.Allocator,
+    request_config: ThreadRequestConfigOverrides,
+    use_request_profile: bool,
+    source: *const LoadedThread,
+) !?[]const u8 {
+    return forkThreadBaseUrl(
+        allocator,
+        request_config.chatgpt_base_url_present,
+        request_config.chatgpt_base_url,
+        use_request_profile,
+        source.chatgpt_base_url,
+    );
+}
+
+fn forkThreadBaseUrl(
+    allocator: std.mem.Allocator,
+    request_base_url_present: bool,
+    request_base_url: ?[]const u8,
+    use_request_profile: bool,
+    source_base_url: ?[]const u8,
+) !?[]const u8 {
+    if (request_base_url_present) return threadBaseUrlForRequest(allocator, request_base_url);
     if (use_request_profile) return null;
-    if (source.openai_base_url) |base_url| {
-        const owned = try allocator.dupe(u8, base_url);
-        return owned;
-    }
-    return null;
+    return threadBaseUrlForRequest(allocator, source_base_url);
 }
 
 fn forkThreadOssProvider(
@@ -36064,6 +36116,25 @@ fn applyLoadedThreadOpenaiBaseUrlToConfig(
     if (thread.openai_base_url) |base_url| {
         try replaceConfigOwnedString(allocator, &cfg.openai_base_url, base_url);
     }
+}
+
+fn applyLoadedThreadChatgptBaseUrlToConfig(
+    allocator: std.mem.Allocator,
+    cfg: *config.Config,
+    thread: *const LoadedThread,
+) !void {
+    if (thread.chatgpt_base_url) |base_url| {
+        try replaceConfigOwnedString(allocator, &cfg.chatgpt_base_url, base_url);
+    }
+}
+
+fn applyLoadedThreadBaseUrlsToConfig(
+    allocator: std.mem.Allocator,
+    cfg: *config.Config,
+    thread: *const LoadedThread,
+) !void {
+    try applyLoadedThreadOpenaiBaseUrlToConfig(allocator, cfg, thread);
+    try applyLoadedThreadChatgptBaseUrlToConfig(allocator, cfg, thread);
 }
 
 fn applyLoadedThreadOssModeToConfig(
@@ -37202,6 +37273,8 @@ fn createLoadedThreadFromStartParams(
     errdefer allocator.free(model_provider);
     const openai_base_url = try threadOpenaiBaseUrlForRequest(allocator, request_config);
     errdefer if (openai_base_url) |value| allocator.free(value);
+    const chatgpt_base_url = try threadChatgptBaseUrlForRequest(allocator, request_config);
+    errdefer if (chatgpt_base_url) |value| allocator.free(value);
     const oss_provider = try threadOssProviderForRequest(allocator, cfg, request_config);
     errdefer if (oss_provider) |value| allocator.free(value);
 
@@ -37282,6 +37355,7 @@ fn createLoadedThreadFromStartParams(
         .model_verbosity = model_verbosity,
         .model_provider = model_provider,
         .openai_base_url = openai_base_url,
+        .chatgpt_base_url = chatgpt_base_url,
         .oss_provider = oss_provider,
         .service_tier = service_tier,
         .active_profile = active_profile,
@@ -37375,6 +37449,8 @@ fn createLoadedThreadFromHistoryParams(
     errdefer allocator.free(model_provider);
     const openai_base_url = try threadOpenaiBaseUrlForRequest(allocator, request_config);
     errdefer if (openai_base_url) |value| allocator.free(value);
+    const chatgpt_base_url = try threadChatgptBaseUrlForRequest(allocator, request_config);
+    errdefer if (chatgpt_base_url) |value| allocator.free(value);
     const oss_provider = try threadOssProviderForRequest(allocator, cfg, request_config);
     errdefer if (oss_provider) |value| allocator.free(value);
 
@@ -37442,6 +37518,7 @@ fn createLoadedThreadFromHistoryParams(
         .model_verbosity = model_verbosity,
         .model_provider = model_provider,
         .openai_base_url = openai_base_url,
+        .chatgpt_base_url = chatgpt_base_url,
         .oss_provider = oss_provider,
         .service_tier = service_tier,
         .active_profile = active_profile,
@@ -37569,6 +37646,8 @@ fn createLoadedThreadFromResumeParams(
     errdefer allocator.free(model_provider);
     const openai_base_url = try threadOpenaiBaseUrlForRequest(allocator, request_config);
     errdefer if (openai_base_url) |value| allocator.free(value);
+    const chatgpt_base_url = try threadChatgptBaseUrlForRequest(allocator, request_config);
+    errdefer if (chatgpt_base_url) |value| allocator.free(value);
     const oss_provider = try threadOssProviderForRequest(allocator, cfg, request_config);
     errdefer if (oss_provider) |value| allocator.free(value);
 
@@ -37628,6 +37707,7 @@ fn createLoadedThreadFromResumeParams(
         .model_verbosity = model_verbosity,
         .model_provider = model_provider,
         .openai_base_url = openai_base_url,
+        .chatgpt_base_url = chatgpt_base_url,
         .oss_provider = oss_provider,
         .service_tier = service_tier,
         .active_profile = active_profile,
@@ -37759,6 +37839,8 @@ fn createLoadedThreadFromForkParams(
     errdefer allocator.free(model_provider);
     const openai_base_url = try forkThreadOpenaiBaseUrl(allocator, request_config, use_request_profile, source);
     errdefer if (openai_base_url) |value| allocator.free(value);
+    const chatgpt_base_url = try forkThreadChatgptBaseUrl(allocator, request_config, use_request_profile, source);
+    errdefer if (chatgpt_base_url) |value| allocator.free(value);
     const oss_provider = try forkThreadOssProvider(allocator, cfg, request_config, use_request_profile, source);
     errdefer if (oss_provider) |value| allocator.free(value);
 
@@ -37889,6 +37971,7 @@ fn createLoadedThreadFromForkParams(
         .model_verbosity = model_verbosity,
         .model_provider = model_provider,
         .openai_base_url = openai_base_url,
+        .chatgpt_base_url = chatgpt_base_url,
         .oss_provider = oss_provider,
         .service_tier = service_tier,
         .active_profile = active_profile,
@@ -62824,7 +62907,7 @@ test "runtime scalar requirements reject explicit lifecycle overrides" {
     );
 }
 
-test "thread request config supports openai base URL override" {
+test "thread request config supports base URL overrides" {
     const allocator = std.testing.allocator;
     var cfg = try testAppServerConfig(allocator, "gpt-5.5");
     defer cfg.deinit(allocator);
@@ -62832,7 +62915,7 @@ test "thread request config supports openai base URL override" {
     var params = try std.json.parseFromSlice(
         std.json.Value,
         allocator,
-        "{\"ephemeral\":true,\"config\":{\"openai_base_url\":\"http://127.0.0.1:11434/v1\"}}",
+        "{\"ephemeral\":true,\"config\":{\"openai_base_url\":\"http://127.0.0.1:11434/v1\",\"chatgpt_base_url\":\"http://127.0.0.1:8080/backend-api/codex\"}}",
         .{},
     );
     defer params.deinit();
@@ -62840,10 +62923,12 @@ test "thread request config supports openai base URL override" {
     try applyThreadRequestConfigOverrides(allocator, &cfg, request_config, false);
 
     try std.testing.expectEqualStrings("http://127.0.0.1:11434/v1", cfg.openai_base_url);
+    try std.testing.expectEqualStrings("http://127.0.0.1:8080/backend-api/codex", cfg.chatgpt_base_url);
 
     var thread = try createLoadedThreadFromStartParams(allocator, cfg, params.value.object);
     defer thread.deinit(allocator);
     try std.testing.expectEqualStrings("http://127.0.0.1:11434/v1", thread.openai_base_url.?);
+    try std.testing.expectEqualStrings("http://127.0.0.1:8080/backend-api/codex", thread.chatgpt_base_url.?);
 
     var turn_cfg = try testAppServerConfig(allocator, "gpt-other");
     defer turn_cfg.deinit(allocator);
@@ -62851,15 +62936,17 @@ test "thread request config supports openai base URL override" {
     defer turn_params.deinit();
     try applyTurnStartRuntimeConfigOverrides(allocator, &turn_cfg, &thread, turn_params.value.object);
     try std.testing.expectEqualStrings("http://127.0.0.1:11434/v1", turn_cfg.openai_base_url);
+    try std.testing.expectEqualStrings("http://127.0.0.1:8080/backend-api/codex", turn_cfg.chatgpt_base_url);
 
     var inherited_fork = try createLoadedThreadFromForkParams(allocator, turn_cfg, turn_params.value.object, &thread);
     defer inherited_fork.deinit(allocator);
     try std.testing.expectEqualStrings("http://127.0.0.1:11434/v1", inherited_fork.openai_base_url.?);
+    try std.testing.expectEqualStrings("http://127.0.0.1:8080/backend-api/codex", inherited_fork.chatgpt_base_url.?);
 
     var clear_params = try std.json.parseFromSlice(
         std.json.Value,
         allocator,
-        "{\"ephemeral\":true,\"config\":{\"openai_base_url\":null}}",
+        "{\"ephemeral\":true,\"config\":{\"openai_base_url\":null,\"chatgpt_base_url\":null}}",
         .{},
     );
     defer clear_params.deinit();
@@ -62870,6 +62957,7 @@ test "thread request config supports openai base URL override" {
     var cleared_fork = try createLoadedThreadFromForkParams(allocator, clear_cfg, clear_params.value.object, &thread);
     defer cleared_fork.deinit(allocator);
     try std.testing.expect(cleared_fork.openai_base_url == null);
+    try std.testing.expect(cleared_fork.chatgpt_base_url == null);
 }
 
 test "config write scalar requirements reject disallowed top-level and profile values" {
@@ -63739,6 +63827,7 @@ test "app-server goal reads persist refreshed accounting" {
         .model_verbosity = null,
         .model_provider = "openai",
         .openai_base_url = null,
+        .chatgpt_base_url = null,
         .oss_provider = null,
         .service_tier = null,
         .active_profile = null,

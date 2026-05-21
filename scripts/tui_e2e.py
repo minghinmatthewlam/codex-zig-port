@@ -3117,6 +3117,8 @@ def run_remote_wss_tui_smoke(
                 "remote-work",
                 "-c",
                 "openai_base_url='http://127.0.0.1:11434/v1'",
+                "-c",
+                "chatgpt_base_url='http://127.0.0.1:9090/backend-api/codex'",
                 "--search",
                 "--add-dir",
                 extra_root.name,
@@ -3151,6 +3153,7 @@ def run_remote_wss_tui_smoke(
         if request_config != {
             "profile": "remote-work",
             "openai_base_url": "http://127.0.0.1:11434/v1",
+            "chatgpt_base_url": "http://127.0.0.1:9090/backend-api/codex",
             "web_search": "live",
         }:
             raise AssertionError(

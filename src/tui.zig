@@ -550,7 +550,6 @@ fn runRemoteTui(allocator: std.mem.Allocator, options: Options, remote: []const 
     }
 
     const parts = try validateRemoteUrl(remote);
-    try validateRemoteTuiSupportedOptions(options);
 
     const io = std.Io.Threaded.global_single_threaded.io();
     var remote_ws_connection: remote_ws_client.Connection = undefined;
@@ -675,6 +674,7 @@ const RemoteSlashAction = enum {
 const RemoteRequestConfigOverrides = struct {
     profile: ?[]const u8 = null,
     openai_base_url: ?[]const u8 = null,
+    chatgpt_base_url: ?[]const u8 = null,
     web_search_mode: ?config.WebSearchMode = null,
     oss_mode: bool = false,
     oss_provider: ?[]const u8 = null,
@@ -682,6 +682,7 @@ const RemoteRequestConfigOverrides = struct {
     fn isEmpty(self: RemoteRequestConfigOverrides) bool {
         return self.profile == null and
             self.openai_base_url == null and
+            self.chatgpt_base_url == null and
             self.web_search_mode == null and
             !self.oss_mode and
             self.oss_provider == null;
@@ -692,6 +693,7 @@ fn remoteRequestConfigOverrides(options: Options) RemoteRequestConfigOverrides {
     return .{
         .profile = options.profile,
         .openai_base_url = options.runtime_overrides.openai_base_url,
+        .chatgpt_base_url = options.runtime_overrides.chatgpt_base_url,
         .web_search_mode = options.runtime_overrides.web_search_mode,
         .oss_mode = options.oss,
         .oss_provider = if (options.oss) options.oss_provider orelse options.runtime_overrides.oss_provider else null,
@@ -1532,16 +1534,6 @@ fn openRemoteLifecycleThread(
     return allocator.dupe(u8, thread_id_raw);
 }
 
-fn validateRemoteTuiSupportedOptions(options: Options) !void {
-    const overrides = options.runtime_overrides;
-    if (overrides.chatgpt_base_url != null) return rejectUnsupportedRemoteTuiOption("-c chatgpt_base_url");
-}
-
-fn rejectUnsupportedRemoteTuiOption(option: []const u8) error{RemoteTuiUnsupportedOption} {
-    std.debug.print("remote app-server TUI does not support `{s}` yet\n", .{option});
-    return error.RemoteTuiUnsupportedOption;
-}
-
 fn printRemoteHeader(remote: []const u8, cwd: []const u8) void {
     std.debug.print(
         \\╭────────────────────────────────────────────╮
@@ -1672,6 +1664,9 @@ fn appendRemoteThreadRequestConfig(
     }
     if (request_config.openai_base_url) |base_url| {
         try appendJsonStringField(allocator, out, &config_first, "openai_base_url", base_url);
+    }
+    if (request_config.chatgpt_base_url) |base_url| {
+        try appendJsonStringField(allocator, out, &config_first, "chatgpt_base_url", base_url);
     }
     if (request_config.web_search_mode) |mode| {
         try appendJsonStringField(allocator, out, &config_first, "web_search", mode.label());
@@ -4349,32 +4344,6 @@ test "remote auth token transport is limited to secure or loopback URLs" {
     try std.testing.expect(!remoteUrlSupportsAuthToken(try validateRemoteUrl("ws://127.0.0.1.example:4500")));
 }
 
-test "remote TUI validates unsupported local-only options" {
-    try validateRemoteTuiSupportedOptions(.{
-        .profile = "work",
-        .runtime_overrides = .{ .web_search_mode = .live },
-    });
-    try validateRemoteTuiSupportedOptions(.{
-        .oss = true,
-    });
-    try validateRemoteTuiSupportedOptions(.{
-        .oss_provider = "ollama",
-    });
-    try validateRemoteTuiSupportedOptions(.{
-        .oss = true,
-        .runtime_overrides = .{ .oss_provider = "lmstudio" },
-    });
-    try validateRemoteTuiSupportedOptions(.{
-        .runtime_overrides = .{ .openai_base_url = "http://127.0.0.1:11434/v1" },
-    });
-    try validateRemoteTuiSupportedOptions(.{
-        .runtime_overrides = .{ .syntax_theme = "dark" },
-    });
-    try std.testing.expectError(error.RemoteTuiUnsupportedOption, validateRemoteTuiSupportedOptions(.{
-        .runtime_overrides = .{ .chatgpt_base_url = "https://chatgpt.example" },
-    }));
-}
-
 test "remote TUI resolves relative writable roots against cwd" {
     const allocator = std.testing.allocator;
     const io = std.Io.Threaded.global_single_threaded.io();
@@ -4405,6 +4374,7 @@ test "remote TUI serializes supported runtime overrides" {
         .personality = .friendly,
     }, false, .{
         .profile = "work",
+        .chatgpt_base_url = "https://chatgpt.example/backend-api/codex",
         .web_search_mode = .live,
     });
     defer allocator.free(thread_start);
@@ -4419,6 +4389,7 @@ test "remote TUI serializes supported runtime overrides" {
     try std.testing.expectEqualStrings("friendly", thread_params.get("personality").?.string);
     const thread_config = thread_params.get("config").?.object;
     try std.testing.expectEqualStrings("work", thread_config.get("profile").?.string);
+    try std.testing.expectEqualStrings("https://chatgpt.example/backend-api/codex", thread_config.get("chatgpt_base_url").?.string);
     try std.testing.expectEqualStrings("live", thread_config.get("web_search").?.string);
 
     const oss_thread_start = try renderRemoteThreadStartRequest(allocator, "/tmp/work", .{}, false, .{
@@ -4484,6 +4455,7 @@ test "remote TUI serializes supported runtime overrides" {
     }, false, .{
         .profile = "research",
         .openai_base_url = "http://127.0.0.1:11434/v1",
+        .chatgpt_base_url = "https://chatgpt.example/backend-api/codex",
         .web_search_mode = .cached,
     });
     defer allocator.free(thread_resume);
@@ -4501,6 +4473,7 @@ test "remote TUI serializes supported runtime overrides" {
     const resume_config = resume_params.get("config").?.object;
     try std.testing.expectEqualStrings("research", resume_config.get("profile").?.string);
     try std.testing.expectEqualStrings("http://127.0.0.1:11434/v1", resume_config.get("openai_base_url").?.string);
+    try std.testing.expectEqualStrings("https://chatgpt.example/backend-api/codex", resume_config.get("chatgpt_base_url").?.string);
     try std.testing.expectEqualStrings("cached", resume_config.get("web_search").?.string);
 
     const thread_resume_relative = try renderRemoteThreadLifecycleRequest(allocator, "thread-resume", "thread/resume", "./rollout.jsonl", "/tmp/work", .{}, false, .{});
