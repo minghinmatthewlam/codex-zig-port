@@ -761,6 +761,14 @@ locally installed `computer-use@openai-bundled` plugin cache, verifies
 `mcpServerStatus/list` exposes the bundled tools, and calls `get_app_state`
 through `mcpServer/tool/call`.
 
+Additional MCP config validation coverage: top-level MCP server parsing now
+rejects Rust-unsupported transport field combinations such as `url`,
+`http_headers`, `env_http_headers`, `bearer_token_env_var`, `bearer_token`, or
+`oauth_resource` on stdio servers, and `args`, `env`, `env_vars`, `cwd`, or
+`bearer_token` on streamable HTTP servers. Plugin `.mcp.json` discovery applies
+the same validation and skips invalid plugin-provided servers instead of making
+them available at runtime.
+
 `approvals_reviewer` is covered as a runtime config scalar, raw CLI config
 override, app-server `config/read`/write field, and loaded-thread reload value.
 
