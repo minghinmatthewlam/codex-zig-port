@@ -575,12 +575,46 @@ fn appendResponseHistoryFunctionCallOutput(
     object: std.json.ObjectMap,
 ) !void {
     const call_id = requiredJsonStringField(object, "call_id") orelse requiredJsonStringField(object, "callId") orelse return error.InvalidHistory;
-    const output = requiredJsonStringField(object, "output") orelse return error.InvalidHistory;
+    const output_value = object.get("output") orelse return error.InvalidHistory;
+    var owned_output: ?[]const u8 = null;
+    defer if (owned_output) |value| allocator.free(value);
+    const output = switch (output_value) {
+        .string => |value| value,
+        .array => |array| blk: {
+            const value = try functionCallOutputTextFromContentItems(allocator, array.items);
+            owned_output = value;
+            break :blk value;
+        },
+        else => return error.InvalidHistory,
+    };
     try transcript.appendHistoryItem(allocator, .{
         .kind = .function_call_output,
         .call_id = call_id,
         .output = output,
     });
+}
+
+fn functionCallOutputTextFromContentItems(
+    allocator: std.mem.Allocator,
+    items: []const std.json.Value,
+) ![]const u8 {
+    var segments = std.ArrayList([]const u8).empty;
+    defer segments.deinit(allocator);
+
+    for (items) |item| {
+        if (item != .object) return error.InvalidHistory;
+        const object = item.object;
+        const type_value = object.get("type") orelse return error.InvalidHistory;
+        if (type_value != .string) return error.InvalidHistory;
+        if (!std.mem.eql(u8, type_value.string, "input_text")) return error.InvalidHistory;
+        const text_value = object.get("text") orelse return error.InvalidHistory;
+        if (text_value != .string) return error.InvalidHistory;
+        if (std.mem.trim(u8, text_value.string, " \t\r\n").len == 0) continue;
+        try segments.append(allocator, text_value.string);
+    }
+
+    if (segments.items.len == 0) return try allocator.dupe(u8, "");
+    return try std.mem.join(allocator, "\n", segments.items);
 }
 
 fn defaultHistoryContentType(role: []const u8) []const u8 {
@@ -1453,6 +1487,52 @@ test "replace transcript with compacted summary" {
     try std.testing.expectEqual(@as(i64, 7), transcript.token_usage.?.last.total_tokens);
     try std.testing.expectEqual(@as(i64, 200000), transcript.token_usage.?.model_context_window.?);
     try std.testing.expectEqual(@as(?usize, null), transcript.token_usage_turn_index);
+}
+
+test "append response history function call output accepts text content items" {
+    const allocator = std.testing.allocator;
+    var parsed = try std.json.parseFromSlice(std.json.Value, allocator,
+        \\{
+        \\  "type": "function_call_output",
+        \\  "call_id": "call-structured",
+        \\  "output": [
+        \\    {"type": "input_text", "text": "line one"},
+        \\    {"type": "input_text", "text": "   "},
+        \\    {"type": "input_text", "text": "line two"}
+        \\  ]
+        \\}
+    , .{});
+    defer parsed.deinit();
+
+    var transcript = Transcript{};
+    defer transcript.deinit(allocator);
+
+    try appendResponseHistoryItem(allocator, &transcript, parsed.value);
+
+    try std.testing.expectEqual(@as(usize, 1), transcript.history.items.len);
+    try std.testing.expectEqual(api.HistoryItem.Kind.function_call_output, transcript.history.items[0].kind);
+    try std.testing.expectEqualStrings("call-structured", transcript.history.items[0].call_id.?);
+    try std.testing.expectEqualStrings("line one\nline two", transcript.history.items[0].output.?);
+}
+
+test "append response history function call output rejects non-text content items" {
+    const allocator = std.testing.allocator;
+    var parsed = try std.json.parseFromSlice(std.json.Value, allocator,
+        \\{
+        \\  "type": "function_call_output",
+        \\  "call_id": "call-image",
+        \\  "output": [
+        \\    {"type": "input_image", "image_url": "file:///tmp/out.png"}
+        \\  ]
+        \\}
+    , .{});
+    defer parsed.deinit();
+
+    var transcript = Transcript{};
+    defer transcript.deinit(allocator);
+
+    try std.testing.expectError(error.InvalidHistory, appendResponseHistoryItem(allocator, &transcript, parsed.value));
+    try std.testing.expectEqual(@as(usize, 0), transcript.history.items.len);
 }
 
 test "clone transcript copies title and history" {

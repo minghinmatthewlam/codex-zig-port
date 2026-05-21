@@ -5948,6 +5948,31 @@ def run_turn_start_rpc_smoke(binary: Path) -> None:
                     "role": "assistant",
                     "content": [{"type": "output_text", "text": injected_text}],
                 }
+                injected_call_id = "call_injected_structured"
+                injected_tool_output = (
+                    "structured output line one\nstructured output line two"
+                )
+                injected_function_call = {
+                    "type": "function_call",
+                    "call_id": injected_call_id,
+                    "name": "structured_tool",
+                    "arguments": '{"query":"structured"}',
+                }
+                injected_function_output = {
+                    "type": "function_call_output",
+                    "call_id": injected_call_id,
+                    "output": [
+                        {
+                            "type": "input_text",
+                            "text": "structured output line one",
+                        },
+                        {"type": "input_text", "text": "   "},
+                        {
+                            "type": "input_text",
+                            "text": "structured output line two",
+                        },
+                    ],
+                }
                 write_json_line(
                     proc,
                     {
@@ -5956,7 +5981,11 @@ def run_turn_start_rpc_smoke(binary: Path) -> None:
                         "method": "thread/inject_items",
                         "params": {
                             "threadId": thread_id,
-                            "items": [injected_item],
+                            "items": [
+                                injected_item,
+                                injected_function_call,
+                                injected_function_output,
+                            ],
                         },
                     },
                 )
@@ -5965,6 +5994,9 @@ def run_turn_start_rpc_smoke(binary: Path) -> None:
                 assert inject_loaded["result"] == {}
                 stored_after_inject = rollout_path.read_text(encoding="utf-8")
                 assert injected_text in stored_after_inject
+                assert injected_call_id in stored_after_inject
+                assert "structured output line one" in stored_after_inject
+                assert "structured output line two" in stored_after_inject
 
                 after_inject_prompt = "after injected context"
                 write_json_line(
@@ -6015,6 +6047,26 @@ def run_turn_start_rpc_smoke(binary: Path) -> None:
                     ),
                     None,
                 )
+                injected_call_index = next(
+                    (
+                        index
+                        for index, item in enumerate(after_inject_input)
+                        if item.get("type") == "function_call"
+                        and item.get("call_id") == injected_call_id
+                        and item.get("name") == "structured_tool"
+                    ),
+                    None,
+                )
+                injected_output_index = next(
+                    (
+                        index
+                        for index, item in enumerate(after_inject_input)
+                        if item.get("type") == "function_call_output"
+                        and item.get("call_id") == injected_call_id
+                        and item.get("output") == injected_tool_output
+                    ),
+                    None,
+                )
                 prompt_index = next(
                     (
                         index
@@ -6027,10 +6079,17 @@ def run_turn_start_rpc_smoke(binary: Path) -> None:
                     None,
                 )
                 assert injected_index is not None
+                assert injected_call_index is not None
+                assert injected_output_index is not None
                 assert prompt_index is not None
-                assert injected_index < prompt_index
+                assert injected_index < injected_call_index
+                assert injected_call_index < injected_output_index
+                assert injected_output_index < prompt_index
                 stored_after_inject_turn = rollout_path.read_text(encoding="utf-8")
                 assert injected_text in stored_after_inject_turn
+                assert injected_call_id in stored_after_inject_turn
+                assert "structured output line one" in stored_after_inject_turn
+                assert "structured output line two" in stored_after_inject_turn
                 assert after_inject_prompt in stored_after_inject_turn
 
                 server.response_payloads.append(
