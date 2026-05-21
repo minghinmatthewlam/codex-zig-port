@@ -33441,10 +33441,9 @@ fn setLoadedThreadGoal(
     const token_budget = loadedThreadGoalTokenBudget(object);
 
     if (objective) |value| {
-        const accounting_changed = if (thread.goal != null) refreshLoadedThreadGoalAccountingAt(thread, now) else false;
+        if (thread.goal != null) _ = refreshLoadedThreadGoalAccountingAt(thread, now);
         if (thread.goal) |*existing| {
             if (std.mem.eql(u8, existing.objective, value) and !std.mem.eql(u8, existing.status, "complete")) {
-                _ = accounting_changed;
                 const requested_status = status orelse "active";
                 const next_status = loadedThreadGoalUpdatedStatus(existing.status, requested_status, existing.tokens_used, if (token_budget.present) token_budget.value else existing.token_budget);
                 const was_active = std.mem.eql(u8, existing.status, "active");
