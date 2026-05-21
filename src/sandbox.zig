@@ -1169,7 +1169,19 @@ test "restricted read-only sandbox honors explicit readable roots with minimal d
     const write_target = try std.fs.path.join(allocator, &.{ allowed_root, "write-blocked.txt" });
     defer allocator.free(write_target);
 
-    const profile = try buildProfileWithOptions(allocator, .read_only, allowed_root, &.{}, &.{allowed_root}, true, true, false, &.{"/"}, &.{}, 0);
+    const profile = try buildProfileWithOptions(
+        allocator,
+        .read_only,
+        allowed_root,
+        &.{},
+        &.{allowed_root},
+        true,
+        true,
+        false,
+        &.{ "/", blocked_root, write_target },
+        &.{},
+        0,
+    );
     defer allocator.free(profile);
     const script = try std.fmt.allocPrint(
         allocator,
