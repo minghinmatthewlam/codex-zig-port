@@ -58,6 +58,12 @@ pub const McpServer = struct {
     bearer_token_env_var: ?[]const u8 = null,
     enabled: bool = true,
     required: bool = false,
+    args_configured: bool = false,
+    env_configured: bool = false,
+    env_vars_configured: bool = false,
+    http_headers_configured: bool = false,
+    env_http_headers_configured: bool = false,
+    bearer_token_configured: bool = false,
     args: std.ArrayList([]const u8) = .empty,
     env_vars: std.ArrayList(KeyValue) = .empty,
     http_headers: std.ArrayList(KeyValue) = .empty,
@@ -1522,6 +1528,12 @@ fn cloneMcpServer(allocator: std.mem.Allocator, server: McpServer) !McpServer {
     if (server.bearer_token_env_var) |value| cloned.bearer_token_env_var = try allocator.dupe(u8, value);
     cloned.enabled = server.enabled;
     cloned.required = server.required;
+    cloned.args_configured = server.args_configured;
+    cloned.env_configured = server.env_configured;
+    cloned.env_vars_configured = server.env_vars_configured;
+    cloned.http_headers_configured = server.http_headers_configured;
+    cloned.env_http_headers_configured = server.env_http_headers_configured;
+    cloned.bearer_token_configured = server.bearer_token_configured;
     if (server.oauth_resource) |value| cloned.oauth_resource = try allocator.dupe(u8, value);
     cloned.scopes_configured = server.scopes_configured;
     for (server.args.items) |arg| try appendClonedString(allocator, &cloned.args, arg);
@@ -2261,6 +2273,18 @@ fn parseServers(allocator: std.mem.Allocator, bytes: []const u8) !McpServers {
             const section = parseMcpSection(line);
             current_name = section.name;
             current_subtable = section.subtable;
+            if (section.name) |name| {
+                if (section.subtable) |subtable| {
+                    var section_server = try servers.getOrAdd(allocator, name);
+                    if (std.mem.eql(u8, subtable, "env")) {
+                        section_server.env_configured = true;
+                    } else if (std.mem.eql(u8, subtable, "http_headers")) {
+                        section_server.http_headers_configured = true;
+                    } else if (std.mem.eql(u8, subtable, "env_http_headers")) {
+                        section_server.env_http_headers_configured = true;
+                    }
+                }
+            }
             continue;
         }
         const name = current_name orelse continue;
@@ -2271,6 +2295,7 @@ fn parseServers(allocator: std.mem.Allocator, bytes: []const u8) !McpServers {
         var server = try servers.getOrAdd(allocator, name);
         if (current_subtable) |subtable| {
             if (std.mem.eql(u8, subtable, "env")) {
+                server.env_configured = true;
                 if (try parseTomlString(allocator, value)) |env_value| {
                     errdefer allocator.free(env_value);
                     try server.env_vars.append(allocator, .{
@@ -2279,8 +2304,10 @@ fn parseServers(allocator: std.mem.Allocator, bytes: []const u8) !McpServers {
                     });
                 }
             } else if (std.mem.eql(u8, subtable, "http_headers")) {
+                server.http_headers_configured = true;
                 try appendTomlKeyValue(allocator, &server.http_headers, key, value);
             } else if (std.mem.eql(u8, subtable, "env_http_headers")) {
+                server.env_http_headers_configured = true;
                 try appendTomlKeyValue(allocator, &server.env_http_headers, key, value);
             }
             continue;
@@ -2307,6 +2334,8 @@ fn parseServers(allocator: std.mem.Allocator, bytes: []const u8) !McpServers {
                 if (server.bearer_token_env_var) |existing| allocator.free(existing);
                 server.bearer_token_env_var = token_env;
             }
+        } else if (std.mem.eql(u8, key, "bearer_token")) {
+            server.bearer_token_configured = true;
         } else if (std.mem.eql(u8, key, "oauth_resource")) {
             if (try parseTomlString(allocator, value)) |resource| {
                 if (server.oauth_resource) |existing| allocator.free(existing);
@@ -2316,9 +2345,16 @@ fn parseServers(allocator: std.mem.Allocator, bytes: []const u8) !McpServers {
             server.scopes_configured = true;
             try replaceTomlStringArray(allocator, &server.scopes, value);
         } else if (std.mem.eql(u8, key, "http_headers")) {
+            server.http_headers_configured = true;
             try appendTomlInlineKeyValueTable(allocator, &server.http_headers, value);
         } else if (std.mem.eql(u8, key, "env_http_headers")) {
+            server.env_http_headers_configured = true;
             try appendTomlInlineKeyValueTable(allocator, &server.env_http_headers, value);
+        } else if (std.mem.eql(u8, key, "env")) {
+            server.env_configured = true;
+            try appendTomlInlineKeyValueTable(allocator, &server.env_vars, value);
+        } else if (std.mem.eql(u8, key, "env_vars")) {
+            server.env_vars_configured = true;
         } else if (std.mem.eql(u8, key, "enabled")) {
             if (std.mem.eql(u8, value, "true")) server.enabled = true;
             if (std.mem.eql(u8, value, "false")) server.enabled = false;
@@ -2326,10 +2362,62 @@ fn parseServers(allocator: std.mem.Allocator, bytes: []const u8) !McpServers {
             if (std.mem.eql(u8, value, "true")) server.required = true;
             if (std.mem.eql(u8, value, "false")) server.required = false;
         } else if (std.mem.eql(u8, key, "args")) {
+            server.args_configured = true;
             try replaceArgs(allocator, server, value);
         }
     }
+    try validateParsedMcpServers(&servers);
     return servers;
+}
+
+fn validateParsedMcpServers(servers: *McpServers) !void {
+    for (servers.items.items) |*server| {
+        try validateParsedMcpServer(server);
+    }
+}
+
+fn validateParsedMcpServer(server: *McpServer) !void {
+    if (server.command != null) {
+        server.kind = .stdio;
+        if (server.url != null) return error.McpStdioUnsupportedUrl;
+        if (server.bearer_token_env_var != null) return error.McpStdioUnsupportedBearerTokenEnvVar;
+        if (server.bearer_token_configured) return error.McpStdioUnsupportedBearerToken;
+        if (server.http_headers_configured) return error.McpStdioUnsupportedHttpHeaders;
+        if (server.env_http_headers_configured) return error.McpStdioUnsupportedEnvHttpHeaders;
+        if (server.oauth_resource != null) return error.McpStdioUnsupportedOauthResource;
+        return;
+    }
+
+    if (server.url != null) {
+        server.kind = .streamable_http;
+        if (server.args_configured) return error.McpStreamableHttpUnsupportedArgs;
+        if (server.env_configured) return error.McpStreamableHttpUnsupportedEnv;
+        if (server.env_vars_configured) return error.McpStreamableHttpUnsupportedEnvVars;
+        if (server.cwd != null) return error.McpStreamableHttpUnsupportedCwd;
+        if (server.bearer_token_configured) return error.McpStreamableHttpUnsupportedBearerToken;
+        return;
+    }
+
+    return error.InvalidMcpServerTransport;
+}
+
+fn isMcpConfigValidationError(err: anyerror) bool {
+    return switch (err) {
+        error.InvalidMcpServerTransport,
+        error.McpStdioUnsupportedUrl,
+        error.McpStdioUnsupportedBearerTokenEnvVar,
+        error.McpStdioUnsupportedBearerToken,
+        error.McpStdioUnsupportedHttpHeaders,
+        error.McpStdioUnsupportedEnvHttpHeaders,
+        error.McpStdioUnsupportedOauthResource,
+        error.McpStreamableHttpUnsupportedArgs,
+        error.McpStreamableHttpUnsupportedEnv,
+        error.McpStreamableHttpUnsupportedEnvVars,
+        error.McpStreamableHttpUnsupportedCwd,
+        error.McpStreamableHttpUnsupportedBearerToken,
+        => true,
+        else => false,
+    };
 }
 
 fn loadEffectiveMcpServers(
@@ -3191,6 +3279,9 @@ fn parsePluginMcpServer(allocator: std.mem.Allocator, plugin_root: []const u8, n
     } else if (jsonStringField(value.object, "bearerTokenEnvVar")) |token_env| {
         server.bearer_token_env_var = try allocator.dupe(u8, token_env);
     }
+    if (value.object.get("bearer_token") != null or value.object.get("bearerToken") != null) {
+        server.bearer_token_configured = true;
+    }
     if (jsonStringField(value.object, "oauth_resource")) |resource| {
         server.oauth_resource = try allocator.dupe(u8, resource);
     } else if (jsonStringField(value.object, "oauthResource")) |resource| {
@@ -3200,8 +3291,14 @@ fn parsePluginMcpServer(allocator: std.mem.Allocator, plugin_root: []const u8, n
         server.scopes_configured = true;
         try appendJsonStringArray(allocator, &server.scopes, scopes_value);
     }
+    if (value.object.get("http_headers") != null or value.object.get("httpHeaders") != null) {
+        server.http_headers_configured = true;
+    }
     try appendJsonStringMap(allocator, &server.http_headers, value.object.get("http_headers"));
     try appendJsonStringMap(allocator, &server.http_headers, value.object.get("httpHeaders"));
+    if (value.object.get("env_http_headers") != null or value.object.get("envHttpHeaders") != null) {
+        server.env_http_headers_configured = true;
+    }
     try appendJsonStringMap(allocator, &server.env_http_headers, value.object.get("env_http_headers"));
     try appendJsonStringMap(allocator, &server.env_http_headers, value.object.get("envHttpHeaders"));
     if (value.object.get("enabled")) |enabled| {
@@ -3211,6 +3308,7 @@ fn parsePluginMcpServer(allocator: std.mem.Allocator, plugin_root: []const u8, n
         if (required == .bool) server.required = required.bool;
     }
     if (value.object.get("args")) |args_value| {
+        server.args_configured = true;
         if (args_value == .array) {
             for (args_value.array.items) |item| {
                 if (item == .string) try server.args.append(allocator, try allocator.dupe(u8, item.string));
@@ -3218,6 +3316,7 @@ fn parsePluginMcpServer(allocator: std.mem.Allocator, plugin_root: []const u8, n
         }
     }
     if (value.object.get("env")) |env_value| {
+        server.env_configured = true;
         if (env_value == .object) {
             var iterator = env_value.object.iterator();
             while (iterator.next()) |entry| {
@@ -3229,11 +3328,21 @@ fn parsePluginMcpServer(allocator: std.mem.Allocator, plugin_root: []const u8, n
             }
         }
     }
+    if (value.object.get("env_vars") != null or value.object.get("envVars") != null) {
+        server.env_vars_configured = true;
+    }
 
     if (server.kind == .unknown) {
         server.deinit(allocator);
         return null;
     }
+    validateParsedMcpServer(&server) catch |err| {
+        if (isMcpConfigValidationError(err)) {
+            server.deinit(allocator);
+            return null;
+        }
+        return err;
+    };
     return server;
 }
 
@@ -3861,6 +3970,92 @@ test "mcp config parses and renders stdio and http servers" {
     try std.testing.expect(std.mem.indexOf(u8, rendered, "required = true") != null);
 }
 
+fn expectParseServersError(expected: anyerror, bytes: []const u8) !void {
+    const allocator = std.testing.allocator;
+    var servers = parseServers(allocator, bytes) catch |err| {
+        try std.testing.expectEqual(expected, err);
+        return;
+    };
+    defer servers.deinit(allocator);
+    return error.ExpectedParseServersError;
+}
+
+test "mcp config rejects unsupported transport fields like Rust" {
+    try expectParseServersError(error.McpStdioUnsupportedUrl,
+        \\[mcp_servers.docs]
+        \\command = "docs-server"
+        \\url = "https://example.com/mcp"
+        \\
+    );
+    try expectParseServersError(error.McpStdioUnsupportedBearerTokenEnvVar,
+        \\[mcp_servers.docs]
+        \\command = "docs-server"
+        \\bearer_token_env_var = "MCP_TOKEN"
+        \\
+    );
+    try expectParseServersError(error.McpStdioUnsupportedBearerToken,
+        \\[mcp_servers.docs]
+        \\command = "docs-server"
+        \\bearer_token = "secret"
+        \\
+    );
+    try expectParseServersError(error.McpStdioUnsupportedHttpHeaders,
+        \\[mcp_servers.docs]
+        \\command = "docs-server"
+        \\http_headers = {}
+        \\
+    );
+    try expectParseServersError(error.McpStdioUnsupportedEnvHttpHeaders,
+        \\[mcp_servers.docs]
+        \\command = "docs-server"
+        \\
+        \\[mcp_servers.docs.env_http_headers]
+        \\
+    );
+    try expectParseServersError(error.McpStdioUnsupportedOauthResource,
+        \\[mcp_servers.docs]
+        \\command = "docs-server"
+        \\oauth_resource = "https://api.example.com"
+        \\
+    );
+    try expectParseServersError(error.McpStreamableHttpUnsupportedArgs,
+        \\[mcp_servers.remote]
+        \\url = "https://example.com/mcp"
+        \\args = []
+        \\
+    );
+    try expectParseServersError(error.McpStreamableHttpUnsupportedEnv,
+        \\[mcp_servers.remote]
+        \\url = "https://example.com/mcp"
+        \\
+        \\[mcp_servers.remote.env]
+        \\
+    );
+    try expectParseServersError(error.McpStreamableHttpUnsupportedEnvVars,
+        \\[mcp_servers.remote]
+        \\url = "https://example.com/mcp"
+        \\env_vars = ["TOKEN"]
+        \\
+    );
+    try expectParseServersError(error.McpStreamableHttpUnsupportedCwd,
+        \\[mcp_servers.remote]
+        \\url = "https://example.com/mcp"
+        \\cwd = "/tmp"
+        \\
+    );
+    try expectParseServersError(error.McpStreamableHttpUnsupportedBearerToken,
+        \\[mcp_servers.remote]
+        \\url = "https://example.com/mcp"
+        \\bearer_token = "secret"
+        \\
+    );
+    try expectParseServersError(error.InvalidMcpServerTransport,
+        \\[mcp_servers.empty]
+        \\enabled = false
+        \\
+    );
+}
+
 test "mcp oauth store key matches Rust fallback format" {
     const allocator = std.testing.allocator;
     const key = try computeMcpOAuthStoreKey(allocator, "remote", "https://example.com/mcp");
@@ -4170,6 +4365,53 @@ test "mcp config loads enabled plugin mcp servers" {
     try std.testing.expectEqualStrings("abc", servers.get("plugin_docs").?.env_vars.items[0].value);
     try std.testing.expectEqualStrings("https://plugin.example/mcp", servers.get("plugin_remote").?.url.?);
     try std.testing.expectEqualStrings("PLUGIN_MCP_TOKEN", servers.get("plugin_remote").?.bearer_token_env_var.?);
+}
+
+test "mcp config skips plugin servers with unsupported transport fields" {
+    const allocator = std.testing.allocator;
+    var dir = std.testing.tmpDir(.{});
+    defer dir.cleanup();
+    try dir.dir.createDirPath(std.Io.Threaded.global_single_threaded.io(), "plugins/cache/test/sample/local");
+    try dir.dir.writeFile(std.Io.Threaded.global_single_threaded.io(), .{
+        .sub_path = "config.toml",
+        .data =
+        \\[features]
+        \\plugins = true
+        \\
+        \\[plugins."sample@test"]
+        \\enabled = true
+        \\
+        ,
+    });
+    try dir.dir.writeFile(std.Io.Threaded.global_single_threaded.io(), .{
+        .sub_path = "plugins/cache/test/sample/local/.mcp.json",
+        .data =
+        \\{
+        \\  "mcpServers": {
+        \\    "valid_docs": {
+        \\      "command": "plugin-mcp"
+        \\    },
+        \\    "bad_stdio": {
+        \\      "command": "plugin-mcp",
+        \\      "http_headers": {"X-Bad": "bad"}
+        \\    },
+        \\    "bad_remote": {
+        \\      "url": "https://plugin.example/mcp",
+        \\      "cwd": "."
+        \\    }
+        \\  }
+        \\}
+        ,
+    });
+    const codex_home = try dir.dir.realPathFileAlloc(std.Io.Threaded.global_single_threaded.io(), ".", allocator);
+    defer allocator.free(codex_home);
+
+    var servers = try loadServers(allocator, codex_home);
+    defer servers.deinit(allocator);
+    try std.testing.expectEqual(@as(usize, 1), servers.items.items.len);
+    try std.testing.expect(servers.get("valid_docs") != null);
+    try std.testing.expect(servers.get("bad_stdio") == null);
+    try std.testing.expect(servers.get("bad_remote") == null);
 }
 
 test "mcp config loads versioned plugin mcp servers with relative cwd" {

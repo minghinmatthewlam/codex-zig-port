@@ -102,6 +102,54 @@ pub fn main(init: std.process.Init) !void {
                 .{},
             ),
             error.ExecServerCommandFailed => {},
+            error.InvalidMcpServerTransport => std.debug.print(
+                "error: invalid transport\n",
+                .{},
+            ),
+            error.McpStdioUnsupportedUrl => std.debug.print(
+                "error: url is not supported for stdio\n",
+                .{},
+            ),
+            error.McpStdioUnsupportedBearerTokenEnvVar => std.debug.print(
+                "error: bearer_token_env_var is not supported for stdio\n",
+                .{},
+            ),
+            error.McpStdioUnsupportedBearerToken => std.debug.print(
+                "error: bearer_token is not supported for stdio\n",
+                .{},
+            ),
+            error.McpStdioUnsupportedHttpHeaders => std.debug.print(
+                "error: http_headers is not supported for stdio\n",
+                .{},
+            ),
+            error.McpStdioUnsupportedEnvHttpHeaders => std.debug.print(
+                "error: env_http_headers is not supported for stdio\n",
+                .{},
+            ),
+            error.McpStdioUnsupportedOauthResource => std.debug.print(
+                "error: oauth_resource is not supported for stdio\n",
+                .{},
+            ),
+            error.McpStreamableHttpUnsupportedArgs => std.debug.print(
+                "error: args is not supported for streamable_http\n",
+                .{},
+            ),
+            error.McpStreamableHttpUnsupportedEnv => std.debug.print(
+                "error: env is not supported for streamable_http\n",
+                .{},
+            ),
+            error.McpStreamableHttpUnsupportedEnvVars => std.debug.print(
+                "error: env_vars is not supported for streamable_http\n",
+                .{},
+            ),
+            error.McpStreamableHttpUnsupportedCwd => std.debug.print(
+                "error: cwd is not supported for streamable_http\n",
+                .{},
+            ),
+            error.McpStreamableHttpUnsupportedBearerToken => std.debug.print(
+                "error: bearer_token is not supported for streamable_http\n",
+                .{},
+            ),
             else => std.debug.print("error: {s}\n", .{@errorName(err)}),
         }
         std.process.exit(1);
