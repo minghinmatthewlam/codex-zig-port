@@ -45,7 +45,7 @@ jobs:
         run: zig fmt --check build.zig build.zig.zon src/*.zig
 
       - name: Check Python smoke scripts
-        run: python3 -m py_compile scripts/app_server_stdio_smoke.py scripts/cli_smoke.py scripts/oss_secret_scan.py scripts/tui_e2e.py
+        run: python3 -m py_compile scripts/app_server_stdio_smoke.py scripts/cli_smoke.py scripts/oss_secret_scan.py scripts/real_computer_use_mcp_smoke.py scripts/tui_e2e.py
 
       - name: Run OSS secret scan
         run: python3 scripts/oss_secret_scan.py
