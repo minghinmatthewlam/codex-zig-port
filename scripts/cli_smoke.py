@@ -9182,8 +9182,12 @@ def run_sandbox_permission_profile_smoke(binary: Path) -> None:
         outside.mkdir()
         secret = workspace / "secret.txt"
         public = workspace / "public.txt"
+        nested = workspace / "nested"
+        nested.mkdir()
+        glob_secret = nested / "token.secret"
         secret.write_text("secret", encoding="utf-8")
         public.write_text("public", encoding="utf-8")
+        glob_secret.write_text("glob-secret", encoding="utf-8")
 
         read_only_denied = subprocess.run(
             [
@@ -9313,6 +9317,13 @@ def run_sandbox_permission_profile_smoke(binary: Path) -> None:
                     '":project_roots" = { "." = "write", "secret.txt" = "none" }',
                     "",
                     "[permissions.read-deny-profile.network]",
+                    "enabled = true",
+                    "",
+                    "[permissions.glob-deny-profile.filesystem]",
+                    '":root" = "read"',
+                    '":project_roots" = { "." = "write", "**/*.secret" = "none" }',
+                    "",
+                    "[permissions.glob-deny-profile.network]",
                     "enabled = true",
                     "",
                     "[permissions.minimal-profile.filesystem]",
@@ -9449,6 +9460,102 @@ def run_sandbox_permission_profile_smoke(binary: Path) -> None:
         )
         assert allowed_write.stdout == ""
         assert (workspace / "allowed-deny-profile.txt").read_text(encoding="utf-8") == "ok"
+
+        denied_glob_read = subprocess.run(
+            [
+                str(binary.resolve()),
+                "sandbox",
+                "macos",
+                "--permissions-profile",
+                "glob-deny-profile",
+                "--cd",
+                str(workspace),
+                "--",
+                "/bin/cat",
+                "nested/token.secret",
+            ],
+            cwd=temp_root,
+            env=env,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=5,
+            check=False,
+        )
+        assert denied_glob_read.returncode != 0
+        assert denied_glob_read.stdout == ""
+
+        denied_glob_write = subprocess.run(
+            [
+                str(binary.resolve()),
+                "sandbox",
+                "macos",
+                "--permissions-profile",
+                "glob-deny-profile",
+                "--cd",
+                str(workspace),
+                "--",
+                "/bin/sh",
+                "-c",
+                "printf nope > nested/token.secret",
+            ],
+            cwd=temp_root,
+            env=env,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=5,
+            check=False,
+        )
+        assert denied_glob_write.returncode != 0
+        assert glob_secret.read_text(encoding="utf-8") == "glob-secret"
+
+        denied_glob_unlink = subprocess.run(
+            [
+                str(binary.resolve()),
+                "sandbox",
+                "macos",
+                "--permissions-profile",
+                "glob-deny-profile",
+                "--cd",
+                str(workspace),
+                "--",
+                "/bin/rm",
+                "nested/token.secret",
+            ],
+            cwd=temp_root,
+            env=env,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=5,
+            check=False,
+        )
+        assert denied_glob_unlink.returncode != 0
+        assert glob_secret.read_text(encoding="utf-8") == "glob-secret"
+
+        allowed_glob_neighbor = subprocess.run(
+            [
+                str(binary.resolve()),
+                "sandbox",
+                "macos",
+                "--permissions-profile",
+                "glob-deny-profile",
+                "--cd",
+                str(workspace),
+                "--",
+                "/bin/cat",
+                "public.txt",
+            ],
+            cwd=temp_root,
+            env=env,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=5,
+            check=True,
+        )
+        assert allowed_glob_neighbor.stdout == "public"
 
         network_probe = (
             "import urllib.request; "

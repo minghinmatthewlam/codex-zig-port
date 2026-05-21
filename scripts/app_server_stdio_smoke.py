@@ -5207,6 +5207,14 @@ def run_turn_start_rpc_smoke(binary: Path) -> None:
                     "[permissions.turn-read-deny-profile.network]",
                     "enabled = true",
                     "",
+                    "[permissions.turn-glob-read-deny-profile.filesystem]",
+                    "glob_scan_max_depth = 2",
+                    '":root" = "read"',
+                    '":project_roots" = { "." = "write", "**/*.secret" = "none" }',
+                    "",
+                    "[permissions.turn-glob-read-deny-profile.network]",
+                    "enabled = true",
+                    "",
                 ]
             ),
             encoding="utf-8",
@@ -7917,6 +7925,208 @@ def run_turn_start_rpc_smoke(binary: Path) -> None:
                 } in read_deny_entries
                 assert_thread_started_notification(
                     read_json_line(proc, 5), fork_after_read_deny["result"]["thread"]
+                )
+
+                turn_glob_read_deny_dir = resolved_cwd / "nested"
+                turn_glob_read_deny_dir.mkdir()
+                turn_glob_read_deny_secret = turn_glob_read_deny_dir / "token.secret"
+                turn_glob_read_deny_public = resolved_cwd / "glob-public.txt"
+                turn_glob_read_deny_allowed = (
+                    resolved_cwd / "glob-read-deny-allowed.txt"
+                )
+                turn_glob_read_deny_secret.write_text(
+                    "glob-secret", encoding="utf-8"
+                )
+                turn_glob_read_deny_public.write_text("glob-public", encoding="utf-8")
+                turn_glob_read_deny_command = (
+                    "! cat nested/token.secret "
+                    "&& cat glob-public.txt "
+                    "&& ! /bin/sh -c 'printf nope > nested/token.secret' "
+                    "&& ! rm nested/token.secret "
+                    "&& printf ok > glob-read-deny-allowed.txt "
+                    "&& printf turn-glob-read-deny-ok"
+                )
+                turn_glob_read_deny_call = {
+                    "type": "response.output_item.done",
+                    "item": {
+                        "type": "function_call",
+                        "call_id": "call-turn-permissions-glob-read-deny",
+                        "name": "exec_command",
+                        "arguments": json.dumps(
+                            {
+                                "cmd": turn_glob_read_deny_command,
+                                "workdir": str(resolved_cwd),
+                            }
+                        ),
+                    },
+                }
+                request_count_before_glob_read_deny = len(server.request_paths)
+                server.response_payloads.append(
+                    (
+                        f"data: {json.dumps(turn_glob_read_deny_call)}\n\n"
+                        "data: [DONE]\n\n"
+                    ).encode()
+                )
+                write_json_line(
+                    proc,
+                    {
+                        "jsonrpc": "2.0",
+                        "id": "turn-start-permissions-glob-read-deny",
+                        "method": "turn/start",
+                        "params": {
+                            "threadId": thread_id,
+                            "approvalPolicy": "never",
+                            "permissions": {
+                                "type": "profile",
+                                "id": "turn-glob-read-deny-profile",
+                            },
+                            "input": [
+                                {
+                                    "type": "text",
+                                    "text": "use glob read-deny permissions",
+                                },
+                            ],
+                        },
+                    },
+                )
+                assert_turn_start_rpc_completed(
+                    proc, thread_id, "turn-start-permissions-glob-read-deny"
+                )
+                assert (
+                    len(server.request_paths)
+                    == request_count_before_glob_read_deny + 2
+                )
+                glob_read_deny_followup = server.request_bodies[-1]
+                glob_read_deny_output = next(
+                    item
+                    for item in glob_read_deny_followup["input"]
+                    if item.get("type") == "function_call_output"
+                    and item.get("call_id") == "call-turn-permissions-glob-read-deny"
+                )
+                assert "glob-public" in glob_read_deny_output["output"], (
+                    glob_read_deny_output["output"]
+                )
+                assert "turn-glob-read-deny-ok" in glob_read_deny_output[
+                    "output"
+                ], glob_read_deny_output["output"]
+                assert (
+                    turn_glob_read_deny_secret.read_text(encoding="utf-8")
+                    == "glob-secret"
+                )
+                assert (
+                    turn_glob_read_deny_allowed.read_text(encoding="utf-8") == "ok"
+                )
+
+                write_json_line(
+                    proc,
+                    {
+                        "jsonrpc": "2.0",
+                        "id": "thread-fork-during-glob-read-deny-permissions",
+                        "method": "thread/fork",
+                        "params": {
+                            "threadId": thread_id,
+                            "ephemeral": True,
+                            "excludeTurns": True,
+                        },
+                    },
+                )
+                fork_during_glob_read_deny = read_json_line(proc, 5)
+                assert fork_during_glob_read_deny["id"] == (
+                    "thread-fork-during-glob-read-deny-permissions"
+                )
+                glob_read_deny_entries = fork_during_glob_read_deny["result"][
+                    "permissionProfile"
+                ]["fileSystem"]["entries"]
+                assert {
+                    "path": {
+                        "type": "glob_pattern",
+                        "pattern": str(resolved_cwd / "**/*.secret"),
+                    },
+                    "access": "none",
+                } in glob_read_deny_entries, glob_read_deny_entries
+                assert {
+                    "path": {"type": "special", "value": {"kind": "project_roots"}},
+                    "access": "write",
+                } in glob_read_deny_entries
+                assert_thread_started_notification(
+                    read_json_line(proc, 5),
+                    fork_during_glob_read_deny["result"]["thread"],
+                )
+
+                turn_glob_read_deny_patch = (
+                    "*** Begin Patch\n"
+                    "*** Update File: nested/token.secret\n"
+                    "@@\n"
+                    "-glob-secret\n"
+                    "+patched\n"
+                    "*** End Patch"
+                )
+                turn_glob_read_deny_patch_call = {
+                    "type": "response.output_item.done",
+                    "item": {
+                        "type": "function_call",
+                        "call_id": "call-turn-permissions-glob-read-deny-patch",
+                        "name": "apply_patch",
+                        "arguments": json.dumps(
+                            {"patch": turn_glob_read_deny_patch}
+                        ),
+                    },
+                }
+                request_count_before_glob_read_deny_patch = len(server.request_paths)
+                server.response_payloads.append(
+                    (
+                        f"data: {json.dumps(turn_glob_read_deny_patch_call)}\n\n"
+                        "data: [DONE]\n\n"
+                    ).encode()
+                )
+                write_json_line(
+                    proc,
+                    {
+                        "jsonrpc": "2.0",
+                        "id": "turn-start-permissions-glob-read-deny-apply-patch",
+                        "method": "turn/start",
+                        "params": {
+                            "threadId": thread_id,
+                            "approvalPolicy": "never",
+                            "permissions": {
+                                "type": "profile",
+                                "id": "turn-glob-read-deny-profile",
+                            },
+                            "input": [
+                                {
+                                    "type": "text",
+                                    "text": "use glob read-deny apply_patch",
+                                },
+                            ],
+                        },
+                    },
+                )
+                assert_turn_start_rpc_completed(
+                    proc, thread_id, "turn-start-permissions-glob-read-deny-apply-patch"
+                )
+                assert (
+                    len(server.request_paths)
+                    == request_count_before_glob_read_deny_patch + 2
+                )
+                glob_read_deny_patch_followup = server.request_bodies[-1]
+                glob_read_deny_patch_output = next(
+                    item
+                    for item in glob_read_deny_patch_followup["input"]
+                    if item.get("type") == "function_call_output"
+                    and item.get("call_id")
+                    == "call-turn-permissions-glob-read-deny-patch"
+                )
+                assert "blocked by read-denied path" in glob_read_deny_patch_output[
+                    "output"
+                ], glob_read_deny_patch_output["output"]
+                assert "token.secret" in glob_read_deny_patch_output["output"]
+                assert (
+                    turn_glob_read_deny_secret.read_text(encoding="utf-8")
+                    == "glob-secret"
+                )
+                assert (
+                    turn_glob_read_deny_public.read_text(encoding="utf-8")
+                    == "glob-public"
                 )
 
             assert proc.stdin is not None
@@ -29585,6 +29795,56 @@ def run_command_exec_rpc_smoke(binary: Path) -> None:
         assert permission_profile_with_sandbox_policy["error"]["code"] == -32600
         assert "cannot be combined" in permission_profile_with_sandbox_policy["error"]["message"]
 
+        glob_read_denied_dir = child_cwd / "glob-denied"
+        glob_read_denied_dir.mkdir()
+        glob_read_denied_target = glob_read_denied_dir / "token.secret"
+        glob_read_denied_target.write_text("glob-secret", encoding="utf-8")
+        glob_read_deny_permission_profile = {
+            "type": "managed",
+            "fileSystem": {
+                "type": "restricted",
+                "globScanMaxDepth": 2,
+                "entries": [
+                    {
+                        "path": {"type": "special", "value": {"kind": "root"}},
+                        "access": "read",
+                    },
+                    {
+                        "path": {"type": "special", "value": {"kind": "project_roots"}},
+                        "access": "write",
+                    },
+                    {
+                        "path": {"type": "glob_pattern", "pattern": "**/*.secret"},
+                        "access": "none",
+                    },
+                ],
+            },
+            "network": {"enabled": False},
+        }
+        permission_profile_glob_read_deny = request_stdio_app_server(
+            binary,
+            {
+                "jsonrpc": "2.0",
+                "id": "command-exec-permission-profile-glob-read-deny",
+                "method": "command/exec",
+                "params": {
+                    "command": [
+                        "/bin/sh",
+                        "-c",
+                        "printf allowed > allowed-glob-read-deny.txt && ! cat glob-denied/token.secret && ! /bin/sh -c 'printf nope > glob-denied/token.secret' && ! rm glob-denied/token.secret && printf glob-read-deny",
+                    ],
+                    "cwd": str(child_cwd),
+                    "permissionProfile": glob_read_deny_permission_profile,
+                },
+            },
+            env,
+        )
+        assert permission_profile_glob_read_deny["id"] == "command-exec-permission-profile-glob-read-deny"
+        assert permission_profile_glob_read_deny["result"]["exitCode"] == 0
+        assert permission_profile_glob_read_deny["result"]["stdout"] == "glob-read-deny"
+        assert child_cwd.joinpath("allowed-glob-read-deny.txt").read_text(encoding="utf-8") == "allowed"
+        assert glob_read_denied_target.read_text(encoding="utf-8") == "glob-secret"
+
         unsupported_permission_profile = request_stdio_app_server(
             binary,
             {
@@ -29600,7 +29860,7 @@ def run_command_exec_rpc_smoke(binary: Path) -> None:
                             "entries": [
                                 {
                                     "path": {"type": "glob_pattern", "pattern": "**/*.env"},
-                                    "access": "none",
+                                    "access": "write",
                                 }
                             ],
                         },
