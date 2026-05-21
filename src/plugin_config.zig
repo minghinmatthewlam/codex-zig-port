@@ -91,8 +91,13 @@ pub fn isValidPluginSegment(value: []const u8) bool {
 }
 
 pub fn localPluginRoot(allocator: std.mem.Allocator, codex_home: []const u8, plugin_id: []const u8) !?[]const u8 {
-    const parts = splitPluginId(plugin_id) orelse return null;
-    return try std.fs.path.join(allocator, &.{ codex_home, "plugins", "cache", parts.marketplace, parts.name, "local" });
+    const plugin_base_root = (try localPluginBaseRoot(allocator, codex_home, plugin_id)) orelse return null;
+    defer allocator.free(plugin_base_root);
+
+    const active_version = try activePluginVersion(allocator, plugin_base_root);
+    defer if (active_version) |version| allocator.free(version);
+
+    return try std.fs.path.join(allocator, &.{ plugin_base_root, active_version orelse "local" });
 }
 
 pub fn localPluginBaseRoot(allocator: std.mem.Allocator, codex_home: []const u8, plugin_id: []const u8) !?[]const u8 {
@@ -105,6 +110,43 @@ pub fn localPluginDataRoot(allocator: std.mem.Allocator, codex_home: []const u8,
     const leaf = try std.fmt.allocPrint(allocator, "{s}-{s}", .{ parts.name, parts.marketplace });
     defer allocator.free(leaf);
     return try std.fs.path.join(allocator, &.{ codex_home, "plugins", "data", leaf });
+}
+
+fn activePluginVersion(allocator: std.mem.Allocator, plugin_base_root: []const u8) !?[]const u8 {
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var dir = std.Io.Dir.openDirAbsolute(io, plugin_base_root, .{ .iterate = true }) catch |err| switch (err) {
+        error.FileNotFound, error.NotDir => return null,
+        else => return err,
+    };
+    defer dir.close(io);
+
+    var best: ?[]const u8 = null;
+    errdefer if (best) |value| allocator.free(value);
+
+    var iter = dir.iterate();
+    while (try iter.next(io)) |entry| {
+        if (entry.kind != .directory) continue;
+        if (!isValidPluginVersionSegment(entry.name)) continue;
+        if (std.mem.eql(u8, entry.name, "local")) {
+            if (best) |value| allocator.free(value);
+            return try allocator.dupe(u8, "local");
+        }
+        if (best == null or std.mem.order(u8, entry.name, best.?) == .gt) {
+            if (best) |value| allocator.free(value);
+            best = try allocator.dupe(u8, entry.name);
+        }
+    }
+
+    return best;
+}
+
+fn isValidPluginVersionSegment(value: []const u8) bool {
+    if (value.len == 0) return false;
+    if (std.mem.eql(u8, value, ".") or std.mem.eql(u8, value, "..")) return false;
+    for (value) |byte| {
+        if (byte == '/' or byte == '\\') return false;
+    }
+    return true;
 }
 
 pub fn removePluginConfig(allocator: std.mem.Allocator, bytes: []const u8, plugin_id: []const u8) ![]const u8 {
@@ -290,6 +332,26 @@ test "plugin config parses enabled plugin ids and feature flags" {
     const data_root = (try localPluginDataRoot(allocator, "/tmp/codex-home", "demo@test")).?;
     defer allocator.free(data_root);
     try std.testing.expectEqualStrings("/tmp/codex-home/plugins/data/demo-test", data_root);
+}
+
+test "plugin config resolves active versioned plugin roots" {
+    const allocator = std.testing.allocator;
+    var dir = std.testing.tmpDir(.{});
+    defer dir.cleanup();
+    const io = std.Io.Threaded.global_single_threaded.io();
+
+    try dir.dir.createDirPath(io, "home/plugins/cache/openai-bundled/computer-use/1.0.793");
+    const codex_home = try dir.dir.realPathFileAlloc(io, "home", allocator);
+    defer allocator.free(codex_home);
+
+    const versioned = (try localPluginRoot(allocator, codex_home, "computer-use@openai-bundled")).?;
+    defer allocator.free(versioned);
+    try std.testing.expect(std.mem.endsWith(u8, versioned, "plugins/cache/openai-bundled/computer-use/1.0.793"));
+
+    try dir.dir.createDirPath(io, "home/plugins/cache/openai-bundled/computer-use/local");
+    const local = (try localPluginRoot(allocator, codex_home, "computer-use@openai-bundled")).?;
+    defer allocator.free(local);
+    try std.testing.expect(std.mem.endsWith(u8, local, "plugins/cache/openai-bundled/computer-use/local"));
 }
 
 test "plugin config removal drops plugin table and child tables" {

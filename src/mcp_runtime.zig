@@ -1143,6 +1143,7 @@ const StdioClient = struct {
 
         var child = try std.process.spawn(io_instance.io(), .{
             .argv = argv.argv,
+            .cwd = if (server.cwd) |path| .{ .path = path } else .inherit,
             .stdin = .pipe,
             .stdout = .pipe,
             .stderr = .ignore,

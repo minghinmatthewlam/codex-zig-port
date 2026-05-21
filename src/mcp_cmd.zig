@@ -53,6 +53,7 @@ pub const McpServer = struct {
     name: []const u8,
     kind: ServerKind = .unknown,
     command: ?[]const u8 = null,
+    cwd: ?[]const u8 = null,
     url: ?[]const u8 = null,
     bearer_token_env_var: ?[]const u8 = null,
     enabled: bool = true,
@@ -68,6 +69,7 @@ pub const McpServer = struct {
     pub fn deinit(self: *McpServer, allocator: std.mem.Allocator) void {
         allocator.free(self.name);
         if (self.command) |value| allocator.free(value);
+        if (self.cwd) |value| allocator.free(value);
         if (self.url) |value| allocator.free(value);
         if (self.bearer_token_env_var) |value| allocator.free(value);
         if (self.oauth_resource) |value| allocator.free(value);
@@ -1385,6 +1387,7 @@ fn cloneMcpServer(allocator: std.mem.Allocator, server: McpServer) !McpServer {
     };
     errdefer cloned.deinit(allocator);
     if (server.command) |value| cloned.command = try allocator.dupe(u8, value);
+    if (server.cwd) |value| cloned.cwd = try allocator.dupe(u8, value);
     if (server.url) |value| cloned.url = try allocator.dupe(u8, value);
     if (server.bearer_token_env_var) |value| cloned.bearer_token_env_var = try allocator.dupe(u8, value);
     cloned.enabled = server.enabled;
@@ -2158,6 +2161,11 @@ fn parseServers(allocator: std.mem.Allocator, bytes: []const u8) !McpServers {
                 server.command = command;
                 server.kind = .stdio;
             }
+        } else if (std.mem.eql(u8, key, "cwd")) {
+            if (try parseTomlString(allocator, value)) |cwd| {
+                if (server.cwd) |existing| allocator.free(existing);
+                server.cwd = cwd;
+            }
         } else if (std.mem.eql(u8, key, "url")) {
             if (try parseTomlString(allocator, value)) |url| {
                 if (server.url) |existing| allocator.free(existing);
@@ -2270,7 +2278,7 @@ fn appendPluginMcpFile(
         const name = entry.key_ptr.*;
         if (name.len == 0 or name[0] == '$') continue;
         if (servers.findIndex(name) != null) continue;
-        const server = try parsePluginMcpServer(allocator, name, entry.value_ptr.*);
+        const server = try parsePluginMcpServer(allocator, plugin_root, name, entry.value_ptr.*);
         if (server) |value| {
             var owned = value;
             errdefer {
@@ -3032,7 +3040,7 @@ fn stripTomlLineComment(line: []const u8) []const u8 {
     return line;
 }
 
-fn parsePluginMcpServer(allocator: std.mem.Allocator, name: []const u8, value: std.json.Value) !?McpServer {
+fn parsePluginMcpServer(allocator: std.mem.Allocator, plugin_root: []const u8, name: []const u8, value: std.json.Value) !?McpServer {
     if (value != .object) return null;
     var server = McpServer{ .name = try allocator.dupe(u8, name) };
     errdefer server.deinit(allocator);
@@ -3044,6 +3052,9 @@ fn parsePluginMcpServer(allocator: std.mem.Allocator, name: []const u8, value: s
     if (jsonStringField(value.object, "command")) |command| {
         server.kind = .stdio;
         server.command = try allocator.dupe(u8, command);
+    }
+    if (jsonStringField(value.object, "cwd")) |cwd| {
+        server.cwd = try pluginMcpCwd(allocator, plugin_root, cwd);
     }
     if (jsonStringField(value.object, "bearer_token_env_var")) |token_env| {
         server.bearer_token_env_var = try allocator.dupe(u8, token_env);
@@ -3094,6 +3105,11 @@ fn parsePluginMcpServer(allocator: std.mem.Allocator, name: []const u8, value: s
         return null;
     }
     return server;
+}
+
+fn pluginMcpCwd(allocator: std.mem.Allocator, plugin_root: []const u8, raw_cwd: []const u8) ![]const u8 {
+    if (std.fs.path.isAbsolute(raw_cwd)) return allocator.dupe(u8, raw_cwd);
+    return std.fs.path.join(allocator, &.{ plugin_root, raw_cwd });
 }
 
 fn jsonStringField(object: std.json.ObjectMap, field: []const u8) ?[]const u8 {
@@ -3273,6 +3289,7 @@ fn appendServersToml(allocator: std.mem.Allocator, output: *std.ArrayList(u8), s
             }
         } else {
             try appendTomlStringField(allocator, output, "command", server.command.?);
+            if (server.cwd) |cwd| try appendTomlStringField(allocator, output, "cwd", cwd);
             if (server.args.items.len > 0) {
                 try output.appendSlice(allocator, "args = [");
                 for (server.args.items, 0..) |arg, arg_index| {
@@ -3472,6 +3489,10 @@ fn renderJsonServerWithAuthStatus(allocator: std.mem.Allocator, server: McpServe
     } else if (server.kind == .stdio) {
         try output.appendSlice(allocator, ", \"command\": ");
         try appendJsonString(allocator, &output, server.command.?);
+        if (server.cwd) |cwd| {
+            try output.appendSlice(allocator, ", \"cwd\": ");
+            try appendJsonString(allocator, &output, cwd);
+        }
         try output.appendSlice(allocator, ", \"args\": [");
         for (server.args.items, 0..) |arg, index| {
             if (index > 0) try output.appendSlice(allocator, ", ");
@@ -3535,7 +3556,7 @@ fn printServer(allocator: std.mem.Allocator, server: McpServer) !void {
     } else if (server.kind == .stdio) {
         const args_display = try cli_utils.joinWithSpaces(allocator, server.args.items);
         defer allocator.free(args_display);
-        const body = try std.fmt.allocPrint(allocator, "  command: {s}\n  args: {s}\n", .{ server.command.?, if (args_display.len == 0) "-" else args_display });
+        const body = try std.fmt.allocPrint(allocator, "  command: {s}\n  cwd: {s}\n  args: {s}\n", .{ server.command.?, server.cwd orelse "-", if (args_display.len == 0) "-" else args_display });
         defer allocator.free(body);
         try cli_utils.writeStdout(body);
     }
@@ -3577,6 +3598,9 @@ fn appendVerboseServerStatus(allocator: std.mem.Allocator, output: *std.ArrayLis
     if (server.kind == .stdio) {
         try output.appendSlice(allocator, "    command: ");
         try output.appendSlice(allocator, server.command orelse "-");
+        try output.append(allocator, '\n');
+        try output.appendSlice(allocator, "    cwd: ");
+        try output.appendSlice(allocator, server.cwd orelse "-");
         try output.append(allocator, '\n');
         const args_display = try cli_utils.joinWithSpaces(allocator, server.args.items);
         defer allocator.free(args_display);
@@ -3979,6 +4003,50 @@ test "mcp config loads enabled plugin mcp servers" {
     try std.testing.expectEqualStrings("abc", servers.get("plugin_docs").?.env_vars.items[0].value);
     try std.testing.expectEqualStrings("https://plugin.example/mcp", servers.get("plugin_remote").?.url.?);
     try std.testing.expectEqualStrings("PLUGIN_MCP_TOKEN", servers.get("plugin_remote").?.bearer_token_env_var.?);
+}
+
+test "mcp config loads versioned plugin mcp servers with relative cwd" {
+    const allocator = std.testing.allocator;
+    var dir = std.testing.tmpDir(.{});
+    defer dir.cleanup();
+    const io = std.Io.Threaded.global_single_threaded.io();
+    try dir.dir.createDirPath(io, "plugins/cache/openai-bundled/computer-use/1.0.793");
+    try dir.dir.writeFile(io, .{
+        .sub_path = "config.toml",
+        .data =
+        \\[features]
+        \\plugins = true
+        \\
+        \\[plugins."computer-use@openai-bundled"]
+        \\enabled = true
+        \\
+        ,
+    });
+    try dir.dir.writeFile(io, .{
+        .sub_path = "plugins/cache/openai-bundled/computer-use/1.0.793/.mcp.json",
+        .data =
+        \\{
+        \\  "mcpServers": {
+        \\    "computer-use": {
+        \\      "command": "./Codex Computer Use.app/Contents/SharedSupport/SkyComputerUseClient.app/Contents/MacOS/SkyComputerUseClient",
+        \\      "args": ["mcp"],
+        \\      "cwd": "."
+        \\    }
+        \\  }
+        \\}
+        ,
+    });
+    const codex_home = try dir.dir.realPathFileAlloc(io, ".", allocator);
+    defer allocator.free(codex_home);
+    const expected_cwd = try std.fs.path.join(allocator, &.{ codex_home, "plugins", "cache", "openai-bundled", "computer-use", "1.0.793", "." });
+    defer allocator.free(expected_cwd);
+
+    var servers = try loadServers(allocator, codex_home);
+    defer servers.deinit(allocator);
+    const computer_use = servers.get("computer-use").?;
+    try std.testing.expectEqualStrings("./Codex Computer Use.app/Contents/SharedSupport/SkyComputerUseClient.app/Contents/MacOS/SkyComputerUseClient", computer_use.command.?);
+    try std.testing.expectEqualStrings("mcp", computer_use.args.items[0]);
+    try std.testing.expectEqualStrings(expected_cwd, computer_use.cwd.?);
 }
 
 test "mcp config applies global mcp requirements to configured servers" {
