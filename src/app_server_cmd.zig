@@ -53734,7 +53734,7 @@ fn renderConfigReadResponse(
     try appendJsonMaybeI64Field(allocator, &result, &first, "model_auto_compact_token_limit", model_auto_compact_token_limit);
     const system_model_provider = if (system_layer) |layer| layer.model_provider else null;
     const managed_model_provider = if (managed_layer) |layer| layer.model_provider else null;
-    const model_provider = managed_model_provider orelse configReadUserOrSystemMaybeString(cfg.model_provider_id, user_layer, "model_provider", system_model_provider);
+    const model_provider = managed_model_provider orelse project_layers.modelProvider() orelse configReadUserOrSystemMaybeString(cfg.model_provider_id, user_layer, "model_provider", system_model_provider);
     try appendJsonMaybeStringField(allocator, &result, &first, "model_provider", model_provider);
     try appendJsonMaybeStringField(allocator, &result, &first, "profile", cfg.active_profile);
     try appendJsonFieldName(allocator, &result, &first, "profiles");
@@ -53877,6 +53877,7 @@ const ConfigReadProjectLayer = struct {
     review_model: ?[]const u8,
     model_context_window: ?i64,
     model_auto_compact_token_limit: ?i64,
+    model_provider: ?[]const u8,
     instructions: ?[]const u8,
     developer_instructions: ?[]const u8,
     compact_prompt: ?[]const u8,
@@ -53900,6 +53901,7 @@ const ConfigReadProjectLayer = struct {
         allocator.free(self.version);
         if (self.model) |value| allocator.free(value);
         if (self.review_model) |value| allocator.free(value);
+        if (self.model_provider) |value| allocator.free(value);
         if (self.instructions) |value| allocator.free(value);
         if (self.developer_instructions) |value| allocator.free(value);
         if (self.compact_prompt) |value| allocator.free(value);
@@ -54141,6 +54143,13 @@ const ConfigReadProjectLayers = struct {
     fn modelAutoCompactTokenLimit(self: ConfigReadProjectLayers) ?i64 {
         for (self.items) |layer| {
             if (layer.model_auto_compact_token_limit) |value| return value;
+        }
+        return null;
+    }
+
+    fn modelProvider(self: ConfigReadProjectLayers) ?[]const u8 {
+        for (self.items) |layer| {
+            if (layer.model_provider) |value| return value;
         }
         return null;
     }
@@ -56638,6 +56647,8 @@ fn loadConfigReadProjectLayer(
     errdefer if (review_model) |value| allocator.free(value);
     var model_context_window: ?i64 = null;
     var model_auto_compact_token_limit: ?i64 = null;
+    var model_provider: ?[]const u8 = null;
+    errdefer if (model_provider) |value| allocator.free(value);
     var instructions: ?[]const u8 = null;
     errdefer if (instructions) |value| allocator.free(value);
     var developer_instructions: ?[]const u8 = null;
@@ -56680,6 +56691,10 @@ fn loadConfigReadProjectLayer(
         if (try config.topLevelI64Value(config_bytes, "model_auto_compact_token_limit")) |value| {
             model_auto_compact_token_limit = value;
             try appendUniqueOriginKey(allocator, &origin_keys, "model_auto_compact_token_limit");
+        }
+        if (try config.topLevelStringValue(allocator, config_bytes, "model_provider")) |value| {
+            model_provider = value;
+            try appendUniqueOriginKey(allocator, &origin_keys, "model_provider");
         }
         if (try configReadTopLevelInstructionsValue(allocator, config_bytes)) |value| {
             instructions = value;
@@ -56759,6 +56774,7 @@ fn loadConfigReadProjectLayer(
         .review_model = review_model,
         .model_context_window = model_context_window,
         .model_auto_compact_token_limit = model_auto_compact_token_limit,
+        .model_provider = model_provider,
         .instructions = instructions,
         .developer_instructions = developer_instructions,
         .compact_prompt = compact_prompt,
@@ -57884,6 +57900,8 @@ fn appendConfigReadProjectLayerConfig(
             try appendJsonMaybeI64Field(allocator, result, &first, key, layer.model_context_window);
         } else if (std.mem.eql(u8, key, "model_auto_compact_token_limit")) {
             try appendJsonMaybeI64Field(allocator, result, &first, key, layer.model_auto_compact_token_limit);
+        } else if (std.mem.eql(u8, key, "model_provider")) {
+            try appendJsonMaybeStringField(allocator, result, &first, key, layer.model_provider);
         } else if (std.mem.eql(u8, key, "instructions")) {
             try appendJsonMaybeStringField(allocator, result, &first, key, layer.instructions);
         } else if (std.mem.eql(u8, key, "developer_instructions")) {

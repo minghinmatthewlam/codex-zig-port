@@ -735,6 +735,10 @@ requirements loading, broader plugin requirement enforcement beyond local
 plugin MCP identity allow-lists, and app requirements outside the effective
 config/app-list surfaces remain planned.
 
+Additional app-server config/read coverage: trusted project `.codex/config.toml`
+layers now include `model_provider` in effective config, origins, and
+`includeLayers` output with project-before-user precedence.
+
 Additional MCP requirements coverage: configured top-level MCP servers now
 honor system `requirements.toml` identity allow-lists of the Rust shape
 `[mcp_servers.<server>.identity]`, and local plugin-provided MCP servers honor
