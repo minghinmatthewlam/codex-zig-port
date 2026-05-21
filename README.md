@@ -137,7 +137,8 @@ The first demo slice targets macOS and focuses on the interactive CLI surface:
   `process/start` / `process/read` / `process/write` / `process/terminate`
   lifecycle, `envPolicy`-based child environment filtering and overlays, Unix
   `arg0` process titles, filesystem read/write/mkdir/metadata/list/copy/remove
-  RPCs with supported filesystem sandbox contexts, buffered executor-side
+  RPCs with supported filesystem sandbox contexts, including glob-pattern deny
+  entries, buffered executor-side
   `http/request` RPCs for built-in HTTP methods with buffered and streamed
   timeout handling plus streamed response body-delta notifications over stdio
   and websockets,
@@ -472,7 +473,8 @@ streamable HTTP servers, verifies
 CLI MCP auth-status reporting for bearer-token, file-backed OAuth, macOS
 keychain-backed OAuth, and OAuth-discovery not-logged-in servers, verifies
 exec-server filesystem read, write, metadata, directory listing, copy, remove,
-and sandbox-context behavior against a temporary directory, verifies
+and sandbox-context behavior, including glob-pattern deny entries, against a
+temporary directory, verifies
 app-server filesystem read, write, metadata, directory listing, copy, and remove
 behavior against a temporary directory, verifies app-server filesystem watch
 notifications for in-process file mutations, direct external file mutations,
