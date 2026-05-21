@@ -563,6 +563,11 @@ fn globPatternUnderAnyRoot(pattern: []const u8, roots: []const []const u8) bool 
     return false;
 }
 
+pub fn readDeniedGlobUnderRoot(pattern: []const u8, root: []const u8) bool {
+    const prefix = globStaticDirectoryPrefix(pattern) orelse return false;
+    return pathWithinRoot(prefix, root);
+}
+
 fn globPatternOverlapsAnyRoot(pattern: []const u8, roots: []const []const u8) bool {
     const prefix = globStaticDirectoryPrefix(pattern) orelse return roots.len > 0;
     for (roots) |root| {
@@ -571,8 +576,13 @@ fn globPatternOverlapsAnyRoot(pattern: []const u8, roots: []const []const u8) bo
     return false;
 }
 
+pub fn readDeniedGlobOverlapsRoot(pattern: []const u8, root: []const u8) bool {
+    const prefix = globStaticDirectoryPrefix(pattern) orelse return true;
+    return pathWithinRoot(root, prefix) or pathWithinRoot(prefix, root);
+}
+
 fn globStaticDirectoryPrefix(pattern: []const u8) ?[]const u8 {
-    const first_glob = firstGlobCharIndex(pattern) orelse return std.fs.path.dirname(pattern);
+    const first_glob = firstGlobCharIndex(pattern) orelse return if (pattern.len == 0) null else pattern;
     const static_prefix = pattern[0..first_glob];
     if (static_prefix.len == 0) return null;
     if (static_prefix[static_prefix.len - 1] == std.fs.path.sep) {
@@ -707,6 +717,7 @@ fn appendRegexEscapedByte(allocator: std.mem.Allocator, regex: *std.ArrayList(u8
 
 pub fn readDeniedGlobMatchesPath(pattern: []const u8, path: []const u8) bool {
     if (pattern.len == 0) return false;
+    if (firstGlobCharIndex(pattern) == null) return pathWithinRoot(path, pattern);
     return readDeniedGlobMatchesPathAt(pattern, 0, path, 0);
 }
 
@@ -979,7 +990,18 @@ test "sandbox profile skips glob data write allow when explicit read root overla
     try std.testing.expect(std.mem.indexOf(u8, profile, "(deny file-write* (subpath \"/tmp/codex-workspace/secret-dir\"))") != null);
 }
 
+test "sandbox profile keeps literal glob data write allow outside explicit read roots" {
+    const allocator = std.testing.allocator;
+    const profile = try buildProfileWithOptions(allocator, .workspace_write, "/tmp/codex-workspace", &.{}, true, true, &.{"/tmp/codex-workspace/private2"}, &.{"/tmp/codex-workspace/private"}, 0);
+    defer allocator.free(profile);
+
+    try std.testing.expect(std.mem.indexOf(u8, profile, "(allow file-write-data (regex #\"^/tmp/codex-workspace/private(/.*)?$\"))") != null);
+}
+
 test "read-denied glob matcher mirrors seatbelt translation" {
+    try std.testing.expect(readDeniedGlobMatchesPath("/tmp/repo/private", "/tmp/repo/private"));
+    try std.testing.expect(readDeniedGlobMatchesPath("/tmp/repo/private", "/tmp/repo/private/token"));
+    try std.testing.expect(!readDeniedGlobMatchesPath("/tmp/repo/private", "/tmp/repo/private2/token"));
     try std.testing.expect(readDeniedGlobMatchesPath("/tmp/repo/**/*.env", "/tmp/repo/.env"));
     try std.testing.expect(readDeniedGlobMatchesPath("/tmp/repo/**/*.env", "/tmp/repo/nested/child.env"));
     try std.testing.expect(!readDeniedGlobMatchesPath("/tmp/repo/**/*.env", "/tmp/repo/nested/child.env.bak"));

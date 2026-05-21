@@ -3242,10 +3242,18 @@ def run_exec_server_stdio_smoke(binary: Path) -> None:
         fs_copy_dir = fs_root / "nested-copy"
         fs_sandbox_allowed = fs_nested / "sandbox-allowed.txt"
         fs_sandbox_blocked = temp_root / "sandbox-blocked.txt"
-        fs_glob_secret = fs_nested / "token.secret"
+        fs_glob_dir = fs_root / "glob-fixture"
+        fs_glob_secret = fs_glob_dir / "token.secret"
+        fs_glob_public = fs_glob_dir / "public.txt"
+        fs_glob_missing = fs_glob_dir / "new.secret"
+        fs_glob_literal_dir = fs_root / "private"
+        fs_glob_literal_secret = fs_glob_literal_dir / "token.txt"
         fs_payload_bytes = b"hello from filesystem rpc\n"
-        fs_nested.mkdir(parents=True)
+        fs_glob_dir.mkdir(parents=True)
         fs_glob_secret.write_text("glob-secret", encoding="utf-8")
+        fs_glob_public.write_text("public", encoding="utf-8")
+        fs_glob_literal_dir.mkdir(parents=True)
+        fs_glob_literal_secret.write_text("literal-secret", encoding="utf-8")
 
         def fs_read_only_sandbox() -> dict:
             return {
@@ -3289,12 +3297,15 @@ def run_exec_server_stdio_smoke(binary: Path) -> None:
                 "useLegacyLandlock": False,
             }
 
-        def fs_workspace_write_with_glob_deny_sandbox(cwd: Path) -> dict:
+        def fs_workspace_write_with_glob_pattern_sandbox(cwd: Path, pattern: str) -> dict:
             sandbox = fs_workspace_write_sandbox(cwd)
             sandbox["permissions"]["file_system"]["entries"].append(
-                {"path": {"type": "glob_pattern", "pattern": "**/*.secret"}, "access": "none"}
+                {"path": {"type": "glob_pattern", "pattern": pattern}, "access": "none"}
             )
             return sandbox
+
+        def fs_workspace_write_with_glob_deny_sandbox(cwd: Path) -> dict:
+            return fs_workspace_write_with_glob_pattern_sandbox(cwd, "**/*.secret")
 
         def fs_path_read_sandbox(path: Path) -> dict:
             return {
@@ -3537,7 +3548,7 @@ def run_exec_server_stdio_smoke(binary: Path) -> None:
             },
             {
                 "jsonrpc": "2.0",
-                "id": "fs-sandbox-glob-write-denied",
+                "id": "fs-sandbox-glob-write-allowed",
                 "method": "fs/writeFile",
                 "params": {
                     "path": str(fs_glob_secret),
@@ -3547,10 +3558,29 @@ def run_exec_server_stdio_smoke(binary: Path) -> None:
             },
             {
                 "jsonrpc": "2.0",
+                "id": "fs-sandbox-glob-create-denied",
+                "method": "fs/writeFile",
+                "params": {
+                    "path": str(fs_glob_missing),
+                    "dataBase64": base64.b64encode(b"new leak").decode("ascii"),
+                    "sandbox": fs_workspace_write_with_glob_deny_sandbox(fs_root),
+                },
+            },
+            {
+                "jsonrpc": "2.0",
+                "id": "fs-sandbox-literal-glob-read-denied",
+                "method": "fs/readFile",
+                "params": {
+                    "path": str(fs_glob_literal_secret),
+                    "sandbox": fs_workspace_write_with_glob_pattern_sandbox(fs_root, "private"),
+                },
+            },
+            {
+                "jsonrpc": "2.0",
                 "id": "fs-sandbox-glob-list",
                 "method": "fs/readDirectory",
                 "params": {
-                    "path": str(fs_nested),
+                    "path": str(fs_glob_dir),
                     "sandbox": fs_workspace_write_with_glob_deny_sandbox(fs_root),
                 },
             },
@@ -3587,7 +3617,7 @@ def run_exec_server_stdio_smoke(binary: Path) -> None:
         )
         assert fs_result.stderr == ""
         fs_responses = [json.loads(line) for line in fs_result.stdout.splitlines()]
-        assert len(fs_responses) == 26
+        assert len(fs_responses) == 28
         fs_by_id = {response["id"]: response for response in fs_responses}
         assert fs_by_id["fs-before-init"]["error"]["code"] == -32600
         assert "client must call initialize before using filesystem methods" in fs_by_id["fs-before-init"]["error"]["message"]
@@ -3624,12 +3654,15 @@ def run_exec_server_stdio_smoke(binary: Path) -> None:
         assert fs_by_id["fs-sandbox-workspace-blocked"]["error"]["code"] == -32600
         assert not fs_sandbox_blocked.exists()
         assert fs_by_id["fs-sandbox-glob-read-denied"]["error"]["code"] == -32600
-        assert fs_by_id["fs-sandbox-glob-write-denied"]["error"]["code"] == -32600
-        assert fs_glob_secret.read_text(encoding="utf-8") == "glob-secret"
+        assert fs_by_id["fs-sandbox-glob-write-allowed"]["result"] == {}
+        assert fs_glob_secret.read_text(encoding="utf-8") == "leak"
+        assert fs_by_id["fs-sandbox-glob-create-denied"]["error"]["code"] == -32600
+        assert not fs_glob_missing.exists()
+        assert fs_by_id["fs-sandbox-literal-glob-read-denied"]["error"]["code"] == -32600
         fs_glob_entries = {
             entry["fileName"]: entry for entry in fs_by_id["fs-sandbox-glob-list"]["result"]["entries"]
         }
-        assert "note.txt" in fs_glob_entries
+        assert "public.txt" in fs_glob_entries
         assert "token.secret" not in fs_glob_entries
         assert fs_by_id["fs-remove-file"]["result"] == {}
         assert not fs_copy_file.exists()

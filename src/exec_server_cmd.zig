@@ -3116,6 +3116,18 @@ const FsSandboxPolicy = struct {
         return if (self.matchAccess(logical_path, resolved_path)) |access| access.allowsWrite() else false;
     }
 
+    fn allowsDataWrite(self: *const FsSandboxPolicy, logical_path: []const u8, resolved_path: []const u8, existing_file: bool) bool {
+        const base_access = self.matchAccessWithoutGlobs(logical_path, resolved_path) orelse return false;
+        if (!base_access.allowsWrite()) return false;
+        var denied_by_glob = false;
+        for (self.glob_patterns.items) |pattern| {
+            if (!readDeniedGlobMatchesEitherPath(pattern, logical_path, resolved_path)) continue;
+            denied_by_glob = true;
+            if (!existing_file or !self.globPatternAllowsDataWrite(pattern)) return false;
+        }
+        return !denied_by_glob or existing_file;
+    }
+
     fn hasEntryPath(self: *const FsSandboxPolicy, path: []const u8, access: FsSandboxAccess) bool {
         for (self.entries.items) |entry| {
             if (entry.access == access and std.mem.eql(u8, entry.path, path)) return true;
@@ -3124,6 +3136,12 @@ const FsSandboxPolicy = struct {
     }
 
     fn matchAccess(self: *const FsSandboxPolicy, logical_path: []const u8, resolved_path: []const u8) ?FsSandboxAccess {
+        const best_access = self.matchAccessWithoutGlobs(logical_path, resolved_path);
+        if (self.globDenies(logical_path, resolved_path)) return .none;
+        return best_access;
+    }
+
+    fn matchAccessWithoutGlobs(self: *const FsSandboxPolicy, logical_path: []const u8, resolved_path: []const u8) ?FsSandboxAccess {
         var best_access: ?FsSandboxAccess = null;
         var best_len: usize = 0;
         for (self.entries.items) |entry| {
@@ -3150,18 +3168,49 @@ const FsSandboxPolicy = struct {
                 }
             }
         }
-        if (self.globDenies(logical_path, resolved_path)) return .none;
         return best_access;
     }
 
     fn globDenies(self: *const FsSandboxPolicy, logical_path: []const u8, resolved_path: []const u8) bool {
         for (self.glob_patterns.items) |pattern| {
-            if (sandbox_mod.readDeniedGlobMatchesPath(pattern, logical_path)) return true;
-            if (!std.mem.eql(u8, logical_path, resolved_path) and sandbox_mod.readDeniedGlobMatchesPath(pattern, resolved_path)) return true;
+            if (readDeniedGlobMatchesEitherPath(pattern, logical_path, resolved_path)) return true;
         }
         return false;
     }
+
+    fn globPatternAllowsDataWrite(self: *const FsSandboxPolicy, pattern: []const u8) bool {
+        var under_write_root = false;
+        for (self.entries.items) |entry| {
+            if (entry.access == .write) {
+                if (readDeniedGlobUnderEntryRoot(pattern, entry)) under_write_root = true;
+                continue;
+            }
+            if (entry.access == .none and readDeniedGlobOverlapsEntryRoot(pattern, entry)) return false;
+        }
+        return under_write_root;
+    }
 };
+
+fn readDeniedGlobMatchesEitherPath(pattern: []const u8, logical_path: []const u8, resolved_path: []const u8) bool {
+    if (sandbox_mod.readDeniedGlobMatchesPath(pattern, logical_path)) return true;
+    return !std.mem.eql(u8, logical_path, resolved_path) and sandbox_mod.readDeniedGlobMatchesPath(pattern, resolved_path);
+}
+
+fn readDeniedGlobUnderEntryRoot(pattern: []const u8, entry: FsSandboxEntry) bool {
+    if (sandbox_mod.readDeniedGlobUnderRoot(pattern, entry.path)) return true;
+    if (entry.canonical_path) |canonical_path| {
+        if (!std.mem.eql(u8, entry.path, canonical_path) and sandbox_mod.readDeniedGlobUnderRoot(pattern, canonical_path)) return true;
+    }
+    return false;
+}
+
+fn readDeniedGlobOverlapsEntryRoot(pattern: []const u8, entry: FsSandboxEntry) bool {
+    if (sandbox_mod.readDeniedGlobOverlapsRoot(pattern, entry.path)) return true;
+    if (entry.canonical_path) |canonical_path| {
+        if (!std.mem.eql(u8, entry.path, canonical_path) and sandbox_mod.readDeniedGlobOverlapsRoot(pattern, canonical_path)) return true;
+    }
+    return false;
+}
 
 fn fsSandboxEntryMatchesLogical(entry: FsSandboxEntry, logical_path: []const u8, resolved_path: []const u8) bool {
     if (!pathIsSameOrDescendant(entry.path, logical_path)) return false;
@@ -4425,7 +4474,7 @@ fn handleFsWriteFile(allocator: std.mem.Allocator, id_value: std.json.Value, par
     };
     defer allocator.free(path);
     const io = std.Io.Threaded.global_single_threaded.io();
-    const sandbox_allows_write = fsSandboxAllowsWritePath(allocator, io, fsSandboxPolicyPtr(&sandbox), path, .follow_final_symlink) catch |err| {
+    const sandbox_allows_write = fsSandboxAllowsDataWritePath(allocator, io, fsSandboxPolicyPtr(&sandbox), path) catch |err| {
         return renderFsFailure(allocator, id_value, err);
     };
     if (!sandbox_allows_write) {
@@ -4937,6 +4986,19 @@ fn fsSandboxAllowsWritePath(
     mode: FsSandboxResolveMode,
 ) !bool {
     return fsSandboxAllowsPath(allocator, io, sandbox, path, mode, .write);
+}
+
+fn fsSandboxAllowsDataWritePath(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    sandbox: ?*const FsSandboxPolicy,
+    path: []const u8,
+) !bool {
+    const policy = sandbox orelse return true;
+    const resolved_path = try resolveSandboxPath(allocator, io, path, .follow_final_symlink);
+    defer allocator.free(resolved_path);
+    const existing_file = if (try statPath(path, true)) |metadata| metadata.kind == .file else false;
+    return policy.allowsDataWrite(path, resolved_path, existing_file);
 }
 
 fn fsSandboxAllowsPath(
