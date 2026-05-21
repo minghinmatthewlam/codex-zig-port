@@ -34,17 +34,17 @@ parity tracker; implementation parity remains tracked in `docs/parity.md`.
   push CI run `26182591696` passed on pushed head
   `7d2d54d0e65cc85405ed6f9f175d10b4798bfa1b`. Latest checked
   `publish-read-deny-parity-public` code head was
-  `fe49974fb1dd2e237657570efd358857980dbe17`; branch pushes do not start CI
+  `863c85edbfc0db485a44ee08ee252ccf3b781dfd`; branch pushes do not start CI
   until opened as a pull request because the workflow runs on `main` pushes and
   PRs.
 - Fresh public clone proof: a clean HTTPS clone from
   `https://github.com/minghinmatthewlam/codex-zig-port` of branch
   `publish-read-deny-parity-public` at pushed code head
-  `fe49974fb1dd2e237657570efd358857980dbe17` passed `python3 -m py_compile`
+  `863c85edbfc0db485a44ee08ee252ccf3b781dfd` passed `python3 -m py_compile`
   for the app-server, CLI, OSS secret-scan, and TUI smoke scripts,
   `python3 scripts/oss_secret_scan.py`, `zig fmt --check build.zig
   build.zig.zon src/*.zig`, `zig build --summary all`,
-  `zig build test --summary all` with `628/628` tests passed, and
+  `zig build test --summary all` with `635/635` tests passed, and
   `zig build e2e --summary all`.
 - Source hygiene: the current CI and fresh-public-clone scans found no
   high-confidence OpenAI, Anthropic, GitHub, AWS, Google, or Slack token
@@ -58,6 +58,9 @@ parity tracker; implementation parity remains tracked in `docs/parity.md`.
   script plus GitHub's enabled secret scanning and CodeQL runs.
 - Package boundary: `build.zig.zon` lists only source, test, script, and public
   documentation paths so local ignored artifacts are not part of a Zig package.
+- Third-party notices: Apache-2.0 SBPL files adapted from upstream OpenAI Codex
+  are listed in `THIRD_PARTY_NOTICES.md`, with a copy of the Apache-2.0 license
+  under `LICENSES/`.
 
 ## Public Guardrails
 
