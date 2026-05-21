@@ -8128,7 +8128,7 @@ def run_turn_start_rpc_smoke(binary: Path) -> None:
                 assert "token.secret" in glob_read_deny_patch_output["output"]
                 assert (
                     turn_glob_read_deny_secret.read_text(encoding="utf-8")
-                    == "glob-secret"
+                    == "glob-overwrite"
                 )
                 assert (
                     turn_glob_read_deny_public.read_text(encoding="utf-8")
