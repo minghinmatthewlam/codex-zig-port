@@ -5964,6 +5964,7 @@ def run_turn_start_rpc_smoke(binary: Path) -> None:
                 injected_tool_output = (
                     "structured output line one\nstructured output line two"
                 )
+                injected_output_image_url = "data:image/png;base64,b3V0cHV0"
                 injected_function_call = {
                     "type": "function_call",
                     "call_id": injected_call_id,
@@ -5977,6 +5978,11 @@ def run_turn_start_rpc_smoke(binary: Path) -> None:
                         {
                             "type": "input_text",
                             "text": "structured output line one",
+                        },
+                        {
+                            "type": "input_image",
+                            "image_url": injected_output_image_url,
+                            "detail": "high",
                         },
                         {"type": "input_text", "text": "   "},
                         {
@@ -6009,6 +6015,7 @@ def run_turn_start_rpc_smoke(binary: Path) -> None:
                 assert injected_text_second in stored_after_inject
                 assert injected_image_url in stored_after_inject
                 assert injected_call_id in stored_after_inject
+                assert injected_output_image_url in stored_after_inject
                 assert "structured output line one" in stored_after_inject
                 assert "structured output line two" in stored_after_inject
 
@@ -6055,7 +6062,11 @@ def run_turn_start_rpc_smoke(binary: Path) -> None:
                         index
                         for index, item in enumerate(after_inject_input)
                         if any(
-                            content.get("text") == injected_text
+                            content.get("text") == injected_text_first
+                            for content in item.get("content", [])
+                        )
+                        and any(
+                            content.get("text") == injected_text_second
                             for content in item.get("content", [])
                         )
                     ),
@@ -6089,7 +6100,21 @@ def run_turn_start_rpc_smoke(binary: Path) -> None:
                         for index, item in enumerate(after_inject_input)
                         if item.get("type") == "function_call_output"
                         and item.get("call_id") == injected_call_id
-                        and item.get("output") == injected_tool_output
+                        and (
+                            item.get("output") == injected_tool_output
+                            or (
+                                isinstance(item.get("output"), list)
+                                and [
+                                    content.get("text")
+                                    for content in item["output"]
+                                    if content.get("text", "").strip()
+                                ]
+                                == [
+                                    "structured output line one",
+                                    "structured output line two",
+                                ]
+                            )
+                        )
                     ),
                     None,
                 )
@@ -6106,8 +6131,19 @@ def run_turn_start_rpc_smoke(binary: Path) -> None:
                 )
                 assert injected_index is not None
                 assert injected_image_index == injected_index
+                injected_content = after_inject_input[injected_index]["content"]
+                assert injected_content[0]["text"] == injected_text_first
+                assert injected_content[1]["image_url"] == injected_image_url
+                assert injected_content[2]["text"] == "   "
+                assert injected_content[3]["text"] == injected_text_second
                 assert injected_call_index is not None
                 assert injected_output_index is not None
+                injected_output = after_inject_input[injected_output_index]["output"]
+                assert isinstance(injected_output, list)
+                assert injected_output[0]["text"] == "structured output line one"
+                assert injected_output[1]["image_url"] == injected_output_image_url
+                assert injected_output[1]["detail"] == "high"
+                assert injected_output[3]["text"] == "structured output line two"
                 assert prompt_index is not None
                 assert injected_index < injected_call_index
                 assert injected_call_index < injected_output_index
@@ -6117,6 +6153,7 @@ def run_turn_start_rpc_smoke(binary: Path) -> None:
                 assert injected_text_second in stored_after_inject_turn
                 assert injected_image_url in stored_after_inject_turn
                 assert injected_call_id in stored_after_inject_turn
+                assert injected_output_image_url in stored_after_inject_turn
                 assert "structured output line one" in stored_after_inject_turn
                 assert "structured output line two" in stored_after_inject_turn
                 assert after_inject_prompt in stored_after_inject_turn
