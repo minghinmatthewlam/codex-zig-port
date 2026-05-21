@@ -33443,7 +33443,7 @@ def run_config_read_rpc_smoke(binary: Path) -> None:
         assert project_config_read["id"] == "config-read-project"
         project_config_body = project_config_read["result"]["config"]
         assert project_config_body["model"] == "gpt-project"
-        assert project_config_body["model_provider"] == "project-provider"
+        assert project_config_body["model_provider"] == "profile-provider"
         assert project_config_body["review_model"] == "gpt-project-review"
         assert project_config_body["approval_policy"] == "on-request"
         assert project_config_body["approvals_reviewer"] == "guardian_subagent"
@@ -33535,7 +33535,6 @@ def run_config_read_rpc_smoke(binary: Path) -> None:
         project_origins = project_config_read["result"]["origins"]
         for key in [
             "model",
-            "model_provider",
             "review_model",
             "approval_policy",
             "approvals_reviewer",
@@ -33562,6 +33561,7 @@ def run_config_read_rpc_smoke(binary: Path) -> None:
             assert project_origins[key]["version"].startswith("sha256:")
         assert "profiles.project_only.model" not in project_origins
         for key in [
+            "model_provider",
             "tools.web_search.allowed_domains.0",
             "tools.web_search.location.country",
             "tools.web_search.location.city",
@@ -33598,7 +33598,6 @@ def run_config_read_rpc_smoke(binary: Path) -> None:
         assert project_layers[0]["version"] == project_origins["model_reasoning_effort"]["version"]
         assert project_layers[0]["config"] == {
             "model": "gpt-project",
-            "model_provider": "project-provider",
             "review_model": "gpt-project-review",
             "approval_policy": "on-request",
             "approvals_reviewer": "guardian_subagent",
@@ -33671,7 +33670,7 @@ def run_config_read_rpc_smoke(binary: Path) -> None:
         assert nested_project_config_read["id"] == "config-read-nested-project"
         nested_config_body = nested_project_config_read["result"]["config"]
         assert nested_config_body["model"] == "gpt-child"
-        assert nested_config_body["model_provider"] == "child-provider"
+        assert nested_config_body["model_provider"] == "profile-provider"
         assert nested_config_body["review_model"] == "gpt-child-review"
         assert nested_config_body["approval_policy"] == "on-failure"
         assert nested_config_body["approvals_reviewer"] == "user"
@@ -33712,7 +33711,7 @@ def run_config_read_rpc_smoke(binary: Path) -> None:
         }
         nested_origins = nested_project_config_read["result"]["origins"]
         assert nested_origins["model"]["name"] == child_project_source
-        assert nested_origins["model_provider"]["name"] == child_project_source
+        assert nested_origins["model_provider"]["name"] == {"type": "user", "file": config_path}
         assert nested_origins["review_model"]["name"] == child_project_source
         assert nested_origins["approval_policy"]["name"] == child_project_source
         assert nested_origins["approvals_reviewer"]["name"] == child_project_source
@@ -33744,7 +33743,6 @@ def run_config_read_rpc_smoke(binary: Path) -> None:
         assert nested_layers[0]["name"] == child_project_source
         assert nested_layers[0]["config"] == {
             "model": "gpt-child",
-            "model_provider": "child-provider",
             "review_model": "gpt-child-review",
             "approval_policy": "on-failure",
             "approvals_reviewer": "user",
@@ -33768,7 +33766,6 @@ def run_config_read_rpc_smoke(binary: Path) -> None:
         assert nested_layers[1]["name"] == project_source
         assert nested_layers[1]["config"] == {
             "model": "gpt-project",
-            "model_provider": "project-provider",
             "review_model": "gpt-project-review",
             "approval_policy": "on-request",
             "approvals_reviewer": "guardian_subagent",
