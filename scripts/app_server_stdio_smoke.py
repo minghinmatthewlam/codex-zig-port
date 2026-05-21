@@ -1352,6 +1352,41 @@ class ModelCatalogBackendHandler(BaseHTTPRequestHandler):
 
 class AppDirectoryBackendHandler(BaseHTTPRequestHandler):
     requests: list[dict[str, object]] = []
+    mcp_requests: list[dict[str, object]] = []
+    fail_mcp = False
+
+    MCP_TOOLS = [
+        {
+            "name": "drive_search",
+            "description": "Search installed Drive",
+            "inputSchema": {"type": "object"},
+            "_meta": {
+                "connector_id": "drive",
+                "connector_name": "Drive Search",
+                "connector_description": "Accessible Drive",
+            },
+        },
+        {
+            "name": "orphan_lookup",
+            "description": "Lookup orphan",
+            "inputSchema": {"type": "object"},
+            "_meta": {
+                "connector_id": "orphan",
+                "connector_display_name": "Orphan App",
+                "connectorDescription": "Only from accessible tools",
+            },
+        },
+        {
+            "name": "internal_search",
+            "description": "Internal connector",
+            "inputSchema": {"type": "object"},
+            "_meta": {
+                "connector_id": "connector_openai_internal",
+                "connector_name": "Internal",
+                "connector_description": "Blocked internal connector",
+            },
+        },
+    ]
 
     def do_GET(self) -> None:
         parsed = urllib.parse.urlparse(self.path)
@@ -1423,6 +1458,56 @@ class AppDirectoryBackendHandler(BaseHTTPRequestHandler):
             return
 
         self._send_json(400, {"error": "unexpected-token"})
+
+    def do_POST(self) -> None:
+        parsed = urllib.parse.urlparse(self.path)
+        length = int(self.headers.get("Content-Length", "0"))
+        raw_body = self.rfile.read(length) if length > 0 else b""
+        try:
+            request = json.loads(raw_body.decode("utf-8")) if raw_body else {}
+        except json.JSONDecodeError:
+            request = {}
+        AppDirectoryBackendHandler.mcp_requests.append(
+            {
+                "path": parsed.path,
+                "method": request.get("method"),
+                "authorization": self.headers.get("Authorization"),
+                "account_id": self.headers.get("ChatGPT-Account-Id"),
+                "accept": self.headers.get("Accept"),
+            }
+        )
+        if parsed.path != "/backend-api/wham/apps":
+            self.send_response(404)
+            self.end_headers()
+            return
+        if self.fail_mcp:
+            self._send_json(503, {"error": "mcp unavailable"})
+            return
+
+        method = request.get("method")
+        request_id = request.get("id")
+        if method == "notifications/initialized":
+            self._send_empty(202)
+            return
+        if method == "initialize":
+            result = {
+                "protocolVersion": "2025-03-26",
+                "capabilities": {"tools": {}},
+                "serverInfo": {"name": "codex-apps-smoke", "version": "0"},
+            }
+        elif method == "tools/list":
+            result = {"tools": self.MCP_TOOLS, "nextCursor": None}
+        else:
+            result = {}
+        self._send_json(
+            200,
+            {"jsonrpc": "2.0", "id": request_id, "result": result},
+        )
+
+    def _send_empty(self, status_code: int) -> None:
+        self.send_response(status_code)
+        self.send_header("Content-Length", "0")
+        self.end_headers()
 
     def _send_json(self, status_code: int, payload: dict[str, object]) -> None:
         body = json.dumps(payload, separators=(",", ":")).encode("utf-8")
@@ -38195,6 +38280,8 @@ def start_model_catalog_backend() -> tuple[ThreadingHTTPServer, str]:
 
 def start_app_directory_backend() -> tuple[ThreadingHTTPServer, str]:
     AppDirectoryBackendHandler.requests = []
+    AppDirectoryBackendHandler.mcp_requests = []
+    AppDirectoryBackendHandler.fail_mcp = False
     server = ThreadingHTTPServer(("127.0.0.1", 0), AppDirectoryBackendHandler)
     threading.Thread(target=server.serve_forever, daemon=True).start()
     return server, f"http://127.0.0.1:{server.server_port}"
@@ -40706,8 +40793,6 @@ def run_apps_list_rpc_smoke(binary: Path) -> None:
 
         directory_server, directory_base_url = start_app_directory_backend()
         access_token = write_chatgpt_directory_auth(directory_base_url)
-        remote_directory_page = rpc("apps-list-remote-directory", {"forceRefetch": True})
-        assert remote_directory_page["id"] == "apps-list-remote-directory"
         drive_app = {
             "id": "drive",
             "name": "Drive Search",
@@ -40719,9 +40804,18 @@ def run_apps_list_rpc_smoke(binary: Path) -> None:
             "appMetadata": {"category": "productivity"},
             "labels": {"featured": True},
             "installUrl": "https://chatgpt.com/apps/drive-search/drive",
-            "isAccessible": False,
+            "isAccessible": True,
             "isEnabled": True,
             "pluginDisplayNames": [],
+        }
+        remote_first_page = rpc(
+            "apps-list-remote-directory-first-page",
+            {"forceRefetch": True, "limit": 1},
+        )
+        assert remote_first_page["id"] == "apps-list-remote-directory-first-page"
+        assert remote_first_page["result"] == {
+            "data": [drive_app],
+            "nextCursor": "1",
         }
         calendar_remote_app = {
             "id": "calendar_remote",
@@ -40742,10 +40836,25 @@ def run_apps_list_rpc_smoke(binary: Path) -> None:
             **gmail_app,
             "logoUrl": "https://cdn.example/gmail.png",
         }
+        AppDirectoryBackendHandler.fail_mcp = True
+        remote_second_page = rpc(
+            "apps-list-remote-directory-second-page",
+            {"cursor": remote_first_page["result"]["nextCursor"], "limit": 1},
+        )
+        assert remote_second_page["id"] == "apps-list-remote-directory-second-page"
+        assert remote_second_page["result"] == {
+            "data": [calendar_remote_app],
+            "nextCursor": "2",
+        }
+        assert len(AppDirectoryBackendHandler.mcp_requests) == 3
+        AppDirectoryBackendHandler.fail_mcp = False
+
+        remote_directory_page = rpc("apps-list-remote-directory")
+        assert remote_directory_page["id"] == "apps-list-remote-directory"
         assert remote_directory_page["result"] == {
             "data": [
-                calendar_remote_app,
                 drive_app,
+                calendar_remote_app,
                 gmail_remote_app,
                 slack_app,
                 zoom_app,
@@ -40755,6 +40864,25 @@ def run_apps_list_rpc_smoke(binary: Path) -> None:
         assert all(
             app["id"] != "hidden-app"
             for app in remote_directory_page["result"]["data"]
+        )
+        assert all(
+            app["id"] != "orphan"
+            for app in remote_directory_page["result"]["data"]
+        )
+        assert all(
+            app["id"] != "connector_openai_internal"
+            for app in remote_directory_page["result"]["data"]
+        )
+        assert [request["method"] for request in AppDirectoryBackendHandler.mcp_requests[:3]] == [
+            "initialize",
+            "notifications/initialized",
+            "tools/list",
+        ]
+        assert all(
+            request["path"] == "/backend-api/wham/apps"
+            and request["authorization"] == f"Bearer {access_token}"
+            and request["account_id"] == "acct_apps"
+            for request in AppDirectoryBackendHandler.mcp_requests[:3]
         )
         assert AppDirectoryBackendHandler.requests == [
             {
@@ -40782,6 +40910,7 @@ def run_apps_list_rpc_smoke(binary: Path) -> None:
             "nextCursor": "4",
         }
         assert len(AppDirectoryBackendHandler.requests) == 2
+        assert len(AppDirectoryBackendHandler.mcp_requests) == 3
 
         assert proc.stdin is not None
         proc.stdin.close()
