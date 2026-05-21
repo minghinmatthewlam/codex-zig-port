@@ -8651,9 +8651,19 @@ def run_mcp_oauth_login_logout_smoke(binary: Path) -> None:
             timeout=5,
             check=True,
         )
-        assert "remote\tstreamable_http\tenabled\tOAuth" in listed_text.stdout
-        assert "bearer\tstreamable_http\tenabled\tBearer token" in listed_text.stdout
-        assert "docs\tstdio\tenabled\tUnsupported" in listed_text.stdout
+        assert "Name" in listed_text.stdout
+        assert "Command" in listed_text.stdout
+        assert "Bearer Token Env Var" in listed_text.stdout
+        assert "docs" in listed_text.stdout
+        assert "docs-server" in listed_text.stdout
+        assert "Unsupported" in listed_text.stdout
+        assert "bearer" in listed_text.stdout
+        assert "https://bearer.example/mcp" in listed_text.stdout
+        assert "MCP_TOKEN" in listed_text.stdout
+        assert "Bearer token" in listed_text.stdout
+        assert "remote" in listed_text.stdout
+        assert remote_url in listed_text.stdout
+        assert "OAuth" in listed_text.stdout
 
         missing_login = subprocess.run(
             [str(binary.resolve()), "mcp", "login", "missing"],
