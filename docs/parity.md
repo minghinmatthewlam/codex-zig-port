@@ -708,9 +708,9 @@ attachment collection remain planned.
 
 The high-level `app/list` summary in the table above is superseded by the
 detailed app-list note below: authenticated ChatGPT connector directory page
-loading and remote metadata merging are now implemented with a process-local
-cache for ordinary pagination, while accessible-tool discovery and broader
-cache refreshes/workspace-gated availability remain planned.
+loading, remote metadata merging, and accessible connector discovery from
+`codex_apps` MCP tool metadata are now implemented, while broader cache
+invalidation/workspace-gated availability remain planned.
 
 Additional app-server command/exec permission-profile coverage: app-server
 `command/exec` now lowers supported Rust-shaped permission profiles with
@@ -931,9 +931,13 @@ loads authenticated ChatGPT connector directory pages from
 process-local auth/base-URL-scoped directory cache for ordinary pagination,
 refreshes that cache for `forceRefetch`, filters hidden directory apps,
 generates ChatGPT install URLs, preserves remote logo, branding, metadata,
-label, and distribution-channel fields, and merges directory
-metadata into matching local plugin apps without dropping local plugin display
-names. It applies simple user `[apps._default]` /
+label, and distribution-channel fields, loads host-owned live `codex_apps` MCP
+tool metadata to derive accessible connectors, filters blocked/internal
+connector IDs, caches that accessible snapshot for ordinary pagination, marks
+matching rows accessible, shows accessible-only rows only before directory data
+has loaded, sorts accessible rows first, and merges directory metadata into
+matching local plugin apps without dropping local plugin display names. It
+applies simple user `[apps._default]` /
 `[apps.NAME]` `enabled` flags, applies local system `requirements.toml` app
 disable pins from table, dotted-key, and inline-table TOML forms so
 requirements disable app rows without re-enabling user-disabled apps, paginates
@@ -943,7 +947,7 @@ notification artifacts in TypeScript and JSON schema generation. Enabling the
 `apps` runtime feature through `experimentalFeature/enablement/set` also emits
 a Rust-shaped `app/list/updated` notification with the current local plugin app
 catalog plus any available authenticated directory apps after the response,
-honoring notification opt-out. Accessible-tool discovery/cache refreshes,
+honoring notification opt-out. Broader cache invalidation semantics,
 workspace-gated app availability, cloud app requirements, and full config layer
 fidelity remain planned.
 
