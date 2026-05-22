@@ -12587,6 +12587,16 @@ args = ["provider-token"]
 def run_turn_auth_failure_preserves_runtime_overrides_smoke(binary: Path) -> None:
     codex_home = Path(tempfile.mkdtemp(prefix="codex-zig-app-server-auth-failure-", dir="/tmp"))
     try:
+        (codex_home / "config.toml").write_text(
+            "\n".join(
+                [
+                    "[model_providers.custom]",
+                    "requires_openai_auth = true",
+                    "",
+                ]
+            ),
+            encoding="utf-8",
+        )
         env = os.environ.copy()
         env["CODEX_HOME"] = str(codex_home)
         env.pop("CODEX_ACCESS_TOKEN", None)
