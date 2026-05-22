@@ -30492,6 +30492,42 @@ def run_command_exec_rpc_smoke(binary: Path) -> None:
         assert permission_profile_bad_glob_depth["error"]["code"] == -32602
         assert "globScanMaxDepth" in permission_profile_bad_glob_depth["error"]["message"]
 
+        permission_profile_large_glob_depth = request_stdio_app_server(
+            binary,
+            {
+                "jsonrpc": "2.0",
+                "id": "command-exec-permission-profile-large-glob-depth",
+                "method": "command/exec",
+                "params": {
+                    "command": ["/bin/echo", "unused"],
+                    "permissionProfile": {
+                        "type": "managed",
+                        "fileSystem": {
+                            "type": "restricted",
+                            "globScanMaxDepth": 65,
+                            "entries": [
+                                {
+                                    "path": {
+                                        "type": "special",
+                                        "value": {"kind": "root"},
+                                    },
+                                    "access": "read",
+                                }
+                            ],
+                        },
+                        "network": {"enabled": False},
+                    },
+                },
+            },
+            env,
+        )
+        assert (
+            permission_profile_large_glob_depth["id"]
+            == "command-exec-permission-profile-large-glob-depth"
+        )
+        assert permission_profile_large_glob_depth["error"]["code"] == -32602
+        assert "globScanMaxDepth" in permission_profile_large_glob_depth["error"]["message"]
+
         permission_profile_disabled = request_stdio_app_server(
             binary,
             {
@@ -31373,6 +31409,1051 @@ def run_command_exec_rpc_smoke(binary: Path) -> None:
         assert permission_profile_with_sandbox_policy["error"]["code"] == -32600
         assert "cannot be combined" in permission_profile_with_sandbox_policy["error"]["message"]
 
+        glob_allowed_dir = narrow_read_root / "glob-allowed"
+        glob_allowed_dir.mkdir()
+        glob_read_allowed = glob_allowed_dir / "visible.env"
+        glob_read_allowed.write_text("glob-visible", encoding="utf-8")
+        glob_read_blocked = glob_allowed_dir / "hidden.txt"
+        glob_read_blocked.write_text("glob-hidden", encoding="utf-8")
+        glob_read_permission_profile = {
+            "type": "managed",
+            "fileSystem": {
+                "type": "restricted",
+                "globScanMaxDepth": 2,
+                "entries": [
+                    {
+                        "path": {"type": "special", "value": {"kind": "minimal"}},
+                        "access": "read",
+                    },
+                    {
+                        "path": {"type": "glob_pattern", "pattern": f"{glob_allowed_dir}/**/*.env"},
+                        "access": "read",
+                    },
+                ],
+            },
+            "network": {"enabled": False},
+        }
+        permission_profile_glob_read = request_stdio_app_server(
+            binary,
+            {
+                "jsonrpc": "2.0",
+                "id": "command-exec-permission-profile-glob-read",
+                "method": "command/exec",
+                "params": {
+                    "command": [
+                        "/bin/sh",
+                        "-c",
+                        f"cat {shlex.quote(str(glob_read_allowed))} && ! cat {shlex.quote(str(glob_read_blocked))} && printf glob-read",
+                    ],
+                    "cwd": str(child_cwd),
+                    "permissionProfile": glob_read_permission_profile,
+                },
+            },
+            env,
+        )
+        assert permission_profile_glob_read["id"] == "command-exec-permission-profile-glob-read"
+        assert permission_profile_glob_read["result"]["exitCode"] == 0
+        assert permission_profile_glob_read["result"]["stdout"] == "glob-visibleglob-read"
+
+        glob_read_denied_root = narrow_read_root / "glob-read-denied-root"
+        glob_read_denied_root.mkdir()
+        glob_read_carveout_allowed = glob_read_denied_root / "allowed.env"
+        glob_read_carveout_allowed.write_text("glob-carveout", encoding="utf-8")
+        glob_read_carveout_blocked = glob_read_denied_root / "blocked.txt"
+        glob_read_carveout_blocked.write_text("glob-carveout-blocked", encoding="utf-8")
+        glob_read_carveout_permission_profile = {
+            "type": "managed",
+            "fileSystem": {
+                "type": "restricted",
+                "globScanMaxDepth": 2,
+                "entries": [
+                    {
+                        "path": {"type": "special", "value": {"kind": "minimal"}},
+                        "access": "read",
+                    },
+                    {
+                        "path": {"type": "glob_pattern", "pattern": f"{glob_read_denied_root}/**/*.env"},
+                        "access": "read",
+                    },
+                    {
+                        "path": {"type": "path", "path": str(glob_read_denied_root)},
+                        "access": "none",
+                    },
+                ],
+            },
+            "network": {"enabled": False},
+        }
+        permission_profile_glob_read_carveout = request_stdio_app_server(
+            binary,
+            {
+                "jsonrpc": "2.0",
+                "id": "command-exec-permission-profile-glob-read-carveout",
+                "method": "command/exec",
+                "params": {
+                    "command": [
+                        "/bin/sh",
+                        "-c",
+                        f"cat {shlex.quote(str(glob_read_carveout_allowed))} && ! cat {shlex.quote(str(glob_read_carveout_blocked))} && printf glob-read-carveout",
+                    ],
+                    "cwd": str(child_cwd),
+                    "permissionProfile": glob_read_carveout_permission_profile,
+                },
+            },
+            env,
+        )
+        assert (
+            permission_profile_glob_read_carveout["id"]
+            == "command-exec-permission-profile-glob-read-carveout"
+        )
+        assert permission_profile_glob_read_carveout["result"]["exitCode"] == 0
+        assert (
+            permission_profile_glob_read_carveout["result"]["stdout"]
+            == "glob-carveoutglob-read-carveout"
+        )
+
+        glob_root_read_denied_root = narrow_read_root / "glob-root-read-denied-root"
+        glob_root_read_denied_root.mkdir()
+        glob_root_read_carveout_allowed = glob_root_read_denied_root / "allowed.env"
+        glob_root_read_carveout_allowed.write_text("root-glob-carveout", encoding="utf-8")
+        glob_root_read_carveout_blocked = glob_root_read_denied_root / "blocked.txt"
+        glob_root_read_carveout_blocked.write_text("root-glob-carveout-blocked", encoding="utf-8")
+        glob_root_read_carveout_permission_profile = {
+            "type": "managed",
+            "fileSystem": {
+                "type": "restricted",
+                "globScanMaxDepth": 2,
+                "entries": [
+                    {
+                        "path": {"type": "special", "value": {"kind": "root"}},
+                        "access": "read",
+                    },
+                    {
+                        "path": {
+                            "type": "glob_pattern",
+                            "pattern": f"{glob_root_read_denied_root}/**/*.env",
+                        },
+                        "access": "read",
+                    },
+                    {
+                        "path": {"type": "path", "path": str(glob_root_read_denied_root)},
+                        "access": "none",
+                    },
+                ],
+            },
+            "network": {"enabled": False},
+        }
+        permission_profile_glob_root_read_carveout = request_stdio_app_server(
+            binary,
+            {
+                "jsonrpc": "2.0",
+                "id": "command-exec-permission-profile-glob-root-read-carveout",
+                "method": "command/exec",
+                "params": {
+                    "command": [
+                        "/bin/sh",
+                        "-c",
+                        f"cat {shlex.quote(str(glob_root_read_carveout_allowed))} && ! cat {shlex.quote(str(glob_root_read_carveout_blocked))} && printf glob-root-read-carveout",
+                    ],
+                    "cwd": str(child_cwd),
+                    "permissionProfile": glob_root_read_carveout_permission_profile,
+                },
+            },
+            env,
+        )
+        assert (
+            permission_profile_glob_root_read_carveout["id"]
+            == "command-exec-permission-profile-glob-root-read-carveout"
+        )
+        assert permission_profile_glob_root_read_carveout["result"]["exitCode"] == 0
+        assert (
+            permission_profile_glob_root_read_carveout["result"]["stdout"]
+            == "root-glob-carveoutglob-root-read-carveout"
+        )
+
+        glob_literal_denied_root = narrow_read_root / "glob-literal-denied-root"
+        glob_literal_denied_root.mkdir()
+        glob_literal_denied_token = glob_literal_denied_root / "token.txt"
+        glob_literal_denied_token.write_text("literal-denied", encoding="utf-8")
+        permission_profile_glob_literal_deny = request_stdio_app_server(
+            binary,
+            {
+                "jsonrpc": "2.0",
+                "id": "command-exec-permission-profile-glob-literal-deny",
+                "method": "command/exec",
+                "params": {
+                    "command": [
+                        "/bin/sh",
+                        "-c",
+                        f"! cat {shlex.quote(str(glob_literal_denied_token))} && printf glob-literal-deny",
+                    ],
+                    "cwd": str(child_cwd),
+                    "permissionProfile": {
+                        "type": "managed",
+                        "fileSystem": {
+                            "type": "restricted",
+                            "entries": [
+                                {
+                                    "path": {"type": "special", "value": {"kind": "root"}},
+                                    "access": "read",
+                                },
+                                {
+                                    "path": {
+                                        "type": "glob_pattern",
+                                        "pattern": str(glob_literal_denied_root),
+                                    },
+                                    "access": "read",
+                                },
+                                {
+                                    "path": {"type": "path", "path": str(glob_literal_denied_root)},
+                                    "access": "none",
+                                },
+                            ],
+                        },
+                        "network": {"enabled": False},
+                    },
+                },
+            },
+            env,
+        )
+        assert (
+            permission_profile_glob_literal_deny["id"]
+            == "command-exec-permission-profile-glob-literal-deny"
+        )
+        assert permission_profile_glob_literal_deny["result"]["exitCode"] == 0
+        assert permission_profile_glob_literal_deny["result"]["stdout"] == "glob-literal-deny"
+
+        glob_overlap_denied_root = narrow_read_root / "glob-overlap-secret"
+        glob_overlap_denied_root.mkdir()
+        glob_overlap_allowed = glob_overlap_denied_root / "allowed.env"
+        glob_overlap_allowed.write_text("glob-overlap", encoding="utf-8")
+        permission_profile_glob_overlap_carveout = request_stdio_app_server(
+            binary,
+            {
+                "jsonrpc": "2.0",
+                "id": "command-exec-permission-profile-glob-overlap-carveout",
+                "method": "command/exec",
+                "params": {
+                    "command": [
+                        "/bin/sh",
+                        "-c",
+                        f"cat {shlex.quote(str(glob_overlap_allowed))} && printf glob-overlap-carveout",
+                    ],
+                    "cwd": str(child_cwd),
+                    "permissionProfile": {
+                        "type": "managed",
+                        "fileSystem": {
+                            "type": "restricted",
+                            "entries": [
+                                {
+                                    "path": {"type": "special", "value": {"kind": "root"}},
+                                    "access": "read",
+                                },
+                                {
+                                    "path": {
+                                        "type": "glob_pattern",
+                                        "pattern": f"{narrow_read_root}/glob-overlap-sec*/*.env",
+                                    },
+                                    "access": "read",
+                                },
+                                {
+                                    "path": {"type": "path", "path": str(glob_overlap_denied_root)},
+                                    "access": "none",
+                                },
+                            ],
+                        },
+                        "network": {"enabled": False},
+                    },
+                },
+            },
+            env,
+        )
+        assert (
+            permission_profile_glob_overlap_carveout["id"]
+            == "command-exec-permission-profile-glob-overlap-carveout"
+        )
+        assert permission_profile_glob_overlap_carveout["result"]["exitCode"] == 0
+        assert (
+            permission_profile_glob_overlap_carveout["result"]["stdout"]
+            == "glob-overlapglob-overlap-carveout"
+        )
+
+        glob_depth_dir = narrow_read_root / "glob-depth"
+        glob_depth_dir.mkdir()
+        glob_depth_shallow = glob_depth_dir / "shallow.env"
+        glob_depth_shallow.write_text("glob-depth-shallow", encoding="utf-8")
+        glob_depth_deep_dir = glob_depth_dir / "a" / "b"
+        glob_depth_deep_dir.mkdir(parents=True)
+        glob_depth_deep = glob_depth_deep_dir / "deep.env"
+        glob_depth_deep.write_text("glob-depth-deep", encoding="utf-8")
+        permission_profile_glob_depth = request_stdio_app_server(
+            binary,
+            {
+                "jsonrpc": "2.0",
+                "id": "command-exec-permission-profile-glob-depth",
+                "method": "command/exec",
+                "params": {
+                    "command": [
+                        "/bin/sh",
+                        "-c",
+                        f"cat {shlex.quote(str(glob_depth_shallow))} && ! cat {shlex.quote(str(glob_depth_deep))} && printf glob-depth",
+                    ],
+                    "cwd": str(child_cwd),
+                    "permissionProfile": {
+                        "type": "managed",
+                        "fileSystem": {
+                            "type": "restricted",
+                            "globScanMaxDepth": 1,
+                            "entries": [
+                                {
+                                    "path": {"type": "special", "value": {"kind": "minimal"}},
+                                    "access": "read",
+                                },
+                                {
+                                    "path": {
+                                        "type": "glob_pattern",
+                                        "pattern": f"{glob_depth_dir}/**/*.env",
+                                    },
+                                    "access": "read",
+                                },
+                            ],
+                        },
+                        "network": {"enabled": False},
+                    },
+                },
+            },
+            env,
+        )
+        assert permission_profile_glob_depth["id"] == "command-exec-permission-profile-glob-depth"
+        assert permission_profile_glob_depth["result"]["exitCode"] == 0
+        assert (
+            permission_profile_glob_depth["result"]["stdout"]
+            == "glob-depth-shallowglob-depth"
+        )
+
+        glob_read_escape_dir = narrow_blocked_root / "glob-read-escape-outside"
+        glob_read_escape_dir.mkdir()
+        glob_read_escape_target = glob_read_escape_dir / "visible.env"
+        glob_read_escape_target.write_text("glob-read-escape", encoding="utf-8")
+        child_cwd.joinpath("glob-read-link").symlink_to(glob_read_escape_dir, target_is_directory=True)
+        glob_read_symlink_escape_permission_profile = {
+            "type": "managed",
+            "fileSystem": {
+                "type": "restricted",
+                "globScanMaxDepth": 2,
+                "entries": [
+                    {
+                        "path": {"type": "special", "value": {"kind": "minimal"}},
+                        "access": "read",
+                    },
+                    {
+                        "path": {"type": "glob_pattern", "pattern": "glob-read-link/**/*.env"},
+                        "access": "read",
+                    },
+                ],
+            },
+            "network": {"enabled": False},
+        }
+        permission_profile_glob_read_symlink_escape = request_stdio_app_server(
+            binary,
+            {
+                "jsonrpc": "2.0",
+                "id": "command-exec-permission-profile-glob-read-symlink-escape",
+                "method": "command/exec",
+                "params": {
+                    "command": [
+                        "/bin/sh",
+                        "-c",
+                        "! cat glob-read-link/visible.env && printf glob-read-symlink-escape",
+                    ],
+                    "cwd": str(child_cwd),
+                    "permissionProfile": glob_read_symlink_escape_permission_profile,
+                },
+            },
+            env,
+        )
+        assert (
+            permission_profile_glob_read_symlink_escape["id"]
+            == "command-exec-permission-profile-glob-read-symlink-escape"
+        )
+        assert permission_profile_glob_read_symlink_escape["result"]["exitCode"] == 0
+        assert (
+            permission_profile_glob_read_symlink_escape["result"]["stdout"]
+            == "glob-read-symlink-escape"
+        )
+
+        glob_read_wildcard_symlink_escape_permission_profile = {
+            "type": "managed",
+            "fileSystem": {
+                "type": "restricted",
+                "globScanMaxDepth": 2,
+                "entries": [
+                    {
+                        "path": {"type": "special", "value": {"kind": "minimal"}},
+                        "access": "read",
+                    },
+                    {
+                        "path": {"type": "glob_pattern", "pattern": "glob-read-*/**/*.env"},
+                        "access": "read",
+                    },
+                ],
+            },
+            "network": {"enabled": False},
+        }
+        permission_profile_glob_read_wildcard_symlink_escape = request_stdio_app_server(
+            binary,
+            {
+                "jsonrpc": "2.0",
+                "id": "command-exec-permission-profile-glob-read-wildcard-symlink-escape",
+                "method": "command/exec",
+                "params": {
+                    "command": [
+                        "/bin/sh",
+                        "-c",
+                        "! cat glob-read-link/visible.env && printf glob-read-wildcard-symlink-escape",
+                    ],
+                    "cwd": str(child_cwd),
+                    "permissionProfile": glob_read_wildcard_symlink_escape_permission_profile,
+                },
+            },
+            env,
+        )
+        assert (
+            permission_profile_glob_read_wildcard_symlink_escape["id"]
+            == "command-exec-permission-profile-glob-read-wildcard-symlink-escape"
+        )
+        assert permission_profile_glob_read_wildcard_symlink_escape["result"]["exitCode"] == 0
+        assert (
+            permission_profile_glob_read_wildcard_symlink_escape["result"]["stdout"]
+            == "glob-read-wildcard-symlink-escape"
+        )
+
+        glob_read_bare_globstar_symlink_escape_permission_profile = {
+            "type": "managed",
+            "fileSystem": {
+                "type": "restricted",
+                "globScanMaxDepth": 2,
+                "entries": [
+                    {
+                        "path": {"type": "special", "value": {"kind": "minimal"}},
+                        "access": "read",
+                    },
+                    {
+                        "path": {"type": "glob_pattern", "pattern": "**.env"},
+                        "access": "read",
+                    },
+                ],
+            },
+            "network": {"enabled": False},
+        }
+        permission_profile_glob_read_bare_globstar_symlink_escape = request_stdio_app_server(
+            binary,
+            {
+                "jsonrpc": "2.0",
+                "id": "command-exec-permission-profile-glob-read-bare-globstar-symlink-escape",
+                "method": "command/exec",
+                "params": {
+                    "command": [
+                        "/bin/sh",
+                        "-c",
+                        "! cat glob-read-link/visible.env && printf glob-read-bare-globstar-symlink-escape",
+                    ],
+                    "cwd": str(child_cwd),
+                    "permissionProfile": glob_read_bare_globstar_symlink_escape_permission_profile,
+                },
+            },
+            env,
+        )
+        assert (
+            permission_profile_glob_read_bare_globstar_symlink_escape["id"]
+            == "command-exec-permission-profile-glob-read-bare-globstar-symlink-escape"
+        )
+        assert (
+            permission_profile_glob_read_bare_globstar_symlink_escape["result"]["exitCode"]
+            == 0
+        )
+        assert (
+            permission_profile_glob_read_bare_globstar_symlink_escape["result"]["stdout"]
+            == "glob-read-bare-globstar-symlink-escape"
+        )
+
+        glob_read_unreadable_dir = child_cwd / "glob-read-unreadable"
+        glob_read_unreadable_dir.mkdir()
+        glob_read_unreadable_dir.joinpath("glob-link").symlink_to(
+            glob_read_escape_dir,
+            target_is_directory=True,
+        )
+        os.chmod(glob_read_unreadable_dir, 0o111)
+        try:
+            permission_profile_glob_read_unreadable_symlink_escape = request_stdio_app_server(
+                binary,
+                {
+                    "jsonrpc": "2.0",
+                    "id": "command-exec-permission-profile-glob-read-unreadable-symlink-escape",
+                    "method": "command/exec",
+                    "params": {
+                        "command": [
+                            "/bin/sh",
+                            "-c",
+                            "! cat glob-read-unreadable/glob-link/visible.env && printf glob-read-unreadable-symlink-escape",
+                        ],
+                        "cwd": str(child_cwd),
+                        "permissionProfile": {
+                            "type": "managed",
+                            "fileSystem": {
+                                "type": "restricted",
+                                "globScanMaxDepth": 2,
+                                "entries": [
+                                    {
+                                        "path": {"type": "special", "value": {"kind": "minimal"}},
+                                        "access": "read",
+                                    },
+                                    {
+                                        "path": {"type": "glob_pattern", "pattern": "**/*.env"},
+                                        "access": "read",
+                                    },
+                                ],
+                            },
+                            "network": {"enabled": False},
+                        },
+                    },
+                },
+                env,
+            )
+        finally:
+            os.chmod(glob_read_unreadable_dir, 0o755)
+        assert (
+            permission_profile_glob_read_unreadable_symlink_escape["id"]
+            == "command-exec-permission-profile-glob-read-unreadable-symlink-escape"
+        )
+        assert (
+            permission_profile_glob_read_unreadable_symlink_escape["result"]["exitCode"]
+            == 0
+        )
+        assert (
+            permission_profile_glob_read_unreadable_symlink_escape["result"]["stdout"]
+            == "glob-read-unreadable-symlink-escape"
+        )
+
+        glob_read_fail_closed = child_cwd / "glob-read-fail-closed.txt"
+        glob_read_fail_closed.write_text("glob-read-fail-closed", encoding="utf-8")
+        glob_read_symlink_only_permission_profile = {
+            "type": "managed",
+            "fileSystem": {
+                "type": "restricted",
+                "globScanMaxDepth": 2,
+                "entries": [
+                    {
+                        "path": {"type": "glob_pattern", "pattern": "glob-read-link/**/*.env"},
+                        "access": "read",
+                    },
+                ],
+            },
+            "network": {"enabled": False},
+        }
+        permission_profile_glob_read_symlink_only = request_stdio_app_server(
+            binary,
+            {
+                "jsonrpc": "2.0",
+                "id": "command-exec-permission-profile-glob-read-symlink-only",
+                "method": "command/exec",
+                "params": {
+                    "command": [
+                        "/bin/sh",
+                        "-c",
+                        "cat glob-read-fail-closed.txt && printf widened-read",
+                    ],
+                    "cwd": str(child_cwd),
+                    "permissionProfile": glob_read_symlink_only_permission_profile,
+                },
+            },
+            env,
+        )
+        assert (
+            permission_profile_glob_read_symlink_only["id"]
+            == "command-exec-permission-profile-glob-read-symlink-only"
+        )
+        assert permission_profile_glob_read_symlink_only["result"]["exitCode"] != 0
+        assert permission_profile_glob_read_symlink_only["result"]["stdout"] != (
+            "glob-read-fail-closedwidened-read"
+        )
+
+        glob_writable_dir = child_cwd / "glob-writable"
+        glob_writable_dir.mkdir()
+        glob_write_allowed = glob_writable_dir / "editable.env"
+        glob_write_allowed.write_text("old", encoding="utf-8")
+        glob_write_blocked = glob_writable_dir / "blocked.txt"
+        glob_write_permission_profile = {
+            "type": "managed",
+            "fileSystem": {
+                "type": "restricted",
+                "globScanMaxDepth": 2,
+                "entries": [
+                    {
+                        "path": {"type": "special", "value": {"kind": "root"}},
+                        "access": "read",
+                    },
+                    {
+                        "path": {"type": "glob_pattern", "pattern": "glob-writable/**/*.env"},
+                        "access": "write",
+                    },
+                ],
+            },
+            "network": {"enabled": False},
+        }
+        permission_profile_glob_write = request_stdio_app_server(
+            binary,
+            {
+                "jsonrpc": "2.0",
+                "id": "command-exec-permission-profile-glob-write",
+                "method": "command/exec",
+                "params": {
+                    "command": [
+                        "/bin/sh",
+                        "-c",
+                        "printf glob-write-allowed > glob-writable/editable.env && printf glob-write-new > glob-writable/created.env && ! /bin/sh -c 'printf nope > glob-writable/blocked.txt' && printf glob-write",
+                    ],
+                    "cwd": str(child_cwd),
+                    "permissionProfile": glob_write_permission_profile,
+                },
+            },
+            env,
+        )
+        assert permission_profile_glob_write["id"] == "command-exec-permission-profile-glob-write"
+        assert permission_profile_glob_write["result"]["exitCode"] == 0
+        assert permission_profile_glob_write["result"]["stdout"] == "glob-write"
+        assert glob_write_allowed.read_text(encoding="utf-8") == "glob-write-allowed"
+        assert child_cwd.joinpath("glob-writable/created.env").read_text(encoding="utf-8") == "glob-write-new"
+        assert not glob_write_blocked.exists()
+
+        glob_write_carveout_secret = child_cwd / "glob-write-carveout-secret"
+        glob_write_carveout_secret.mkdir()
+        glob_write_carveout_allowed = glob_write_carveout_secret / "allowed.env"
+        glob_write_carveout_allowed.write_text("write-glob-carveout", encoding="utf-8")
+        glob_write_carveout_blocked = glob_write_carveout_secret / "blocked.txt"
+        glob_write_carveout_blocked.write_text("write-glob-carveout-blocked", encoding="utf-8")
+        glob_write_carveout_editable = child_cwd / "glob-write-carveout-editable"
+        glob_write_carveout_editable.mkdir()
+        glob_write_carveout_permission_profile = {
+            "type": "managed",
+            "fileSystem": {
+                "type": "restricted",
+                "globScanMaxDepth": 2,
+                "entries": [
+                    {
+                        "path": {"type": "special", "value": {"kind": "root"}},
+                        "access": "read",
+                    },
+                    {
+                        "path": {
+                            "type": "glob_pattern",
+                            "pattern": "glob-write-carveout-editable/**/*.env",
+                        },
+                        "access": "write",
+                    },
+                    {
+                        "path": {
+                            "type": "glob_pattern",
+                            "pattern": "glob-write-carveout-secret/**/*.env",
+                        },
+                        "access": "read",
+                    },
+                    {
+                        "path": {"type": "path", "path": str(glob_write_carveout_secret)},
+                        "access": "none",
+                    },
+                ],
+            },
+            "network": {"enabled": False},
+        }
+        permission_profile_glob_write_carveout = request_stdio_app_server(
+            binary,
+            {
+                "jsonrpc": "2.0",
+                "id": "command-exec-permission-profile-glob-write-carveout",
+                "method": "command/exec",
+                "params": {
+                    "command": [
+                        "/bin/sh",
+                        "-c",
+                        f"cat {shlex.quote(str(glob_write_carveout_allowed))} && ! cat {shlex.quote(str(glob_write_carveout_blocked))} && printf write-glob-carveout-created > glob-write-carveout-editable/new.env && printf glob-write-carveout",
+                    ],
+                    "cwd": str(child_cwd),
+                    "permissionProfile": glob_write_carveout_permission_profile,
+                },
+            },
+            env,
+        )
+        assert (
+            permission_profile_glob_write_carveout["id"]
+            == "command-exec-permission-profile-glob-write-carveout"
+        )
+        assert permission_profile_glob_write_carveout["result"]["exitCode"] == 0
+        assert (
+            permission_profile_glob_write_carveout["result"]["stdout"]
+            == "write-glob-carveoutglob-write-carveout"
+        )
+        assert (
+            glob_write_carveout_editable.joinpath("new.env").read_text(encoding="utf-8")
+            == "write-glob-carveout-created"
+        )
+
+        glob_write_denied_root = child_cwd / "glob-write-denied-root"
+        glob_write_denied_root.mkdir()
+        glob_write_denied_root_permission_profile = {
+            "type": "managed",
+            "fileSystem": {
+                "type": "restricted",
+                "globScanMaxDepth": 2,
+                "entries": [
+                    {
+                        "path": {"type": "special", "value": {"kind": "root"}},
+                        "access": "read",
+                    },
+                    {
+                        "path": {
+                            "type": "glob_pattern",
+                            "pattern": "glob-write-denied-root/**/*.env",
+                        },
+                        "access": "write",
+                    },
+                    {
+                        "path": {"type": "path", "path": str(glob_write_denied_root)},
+                        "access": "none",
+                    },
+                ],
+            },
+            "network": {"enabled": False},
+        }
+        permission_profile_glob_write_denied_root = request_stdio_app_server(
+            binary,
+            {
+                "jsonrpc": "2.0",
+                "id": "command-exec-permission-profile-glob-write-denied-root",
+                "method": "command/exec",
+                "params": {
+                    "command": [
+                        "/bin/sh",
+                        "-c",
+                        "printf glob-write-denied-root > glob-write-denied-root/allowed.env && ! cat glob-write-denied-root/allowed.env && ! /bin/sh -c 'printf nope > glob-write-denied-root/blocked.txt' && printf glob-write-denied-root",
+                    ],
+                    "cwd": str(child_cwd),
+                    "permissionProfile": glob_write_denied_root_permission_profile,
+                },
+            },
+            env,
+        )
+        assert (
+            permission_profile_glob_write_denied_root["id"]
+            == "command-exec-permission-profile-glob-write-denied-root"
+        )
+        assert permission_profile_glob_write_denied_root["result"]["exitCode"] == 0
+        assert (
+            permission_profile_glob_write_denied_root["result"]["stdout"]
+            == "glob-write-denied-root"
+        )
+        assert (
+            glob_write_denied_root.joinpath("allowed.env").read_text(encoding="utf-8")
+            == "glob-write-denied-root"
+        )
+        assert not glob_write_denied_root.joinpath("blocked.txt").exists()
+
+        tmp_alias_writable_dir = Path("/tmp") / root.name / "glob-absolute-writable"
+        tmp_alias_writable_dir.mkdir()
+        tmp_alias_write_allowed = tmp_alias_writable_dir / "editable.env"
+        tmp_alias_write_permission_profile = {
+            "type": "managed",
+            "fileSystem": {
+                "type": "restricted",
+                "globScanMaxDepth": 2,
+                "entries": [
+                    {
+                        "path": {"type": "special", "value": {"kind": "root"}},
+                        "access": "read",
+                    },
+                    {
+                        "path": {"type": "glob_pattern", "pattern": f"{tmp_alias_writable_dir}/**/*.env"},
+                        "access": "write",
+                    },
+                ],
+            },
+            "network": {"enabled": False},
+        }
+        permission_profile_tmp_alias_glob_write = request_stdio_app_server(
+            binary,
+            {
+                "jsonrpc": "2.0",
+                "id": "command-exec-permission-profile-tmp-alias-glob-write",
+                "method": "command/exec",
+                "params": {
+                    "command": [
+                        "/bin/sh",
+                        "-c",
+                        f"printf tmp-alias-glob-write > {shlex.quote(str(tmp_alias_write_allowed))} && printf tmp-alias-glob-write",
+                    ],
+                    "cwd": str(child_cwd),
+                    "permissionProfile": tmp_alias_write_permission_profile,
+                },
+            },
+            env,
+        )
+        assert (
+            permission_profile_tmp_alias_glob_write["id"]
+            == "command-exec-permission-profile-tmp-alias-glob-write"
+        )
+        assert permission_profile_tmp_alias_glob_write["result"]["exitCode"] == 0
+        assert permission_profile_tmp_alias_glob_write["result"]["stdout"] == "tmp-alias-glob-write"
+        assert tmp_alias_write_allowed.read_text(encoding="utf-8") == "tmp-alias-glob-write"
+
+        glob_blind_write_target = glob_writable_dir / "hidden.env"
+        glob_blind_write_target.write_text("old-hidden", encoding="utf-8")
+        glob_blind_write_permission_profile = {
+            "type": "managed",
+            "fileSystem": {
+                "type": "restricted",
+                "globScanMaxDepth": 2,
+                "entries": [
+                    {
+                        "path": {"type": "special", "value": {"kind": "root"}},
+                        "access": "read",
+                    },
+                    {
+                        "path": {"type": "glob_pattern", "pattern": "glob-writable/**/*.env"},
+                        "access": "write",
+                    },
+                    {
+                        "path": {"type": "glob_pattern", "pattern": "glob-writable/**/*.env"},
+                        "access": "none",
+                    },
+                ],
+            },
+            "network": {"enabled": False},
+        }
+        permission_profile_glob_blind_write = request_stdio_app_server(
+            binary,
+            {
+                "jsonrpc": "2.0",
+                "id": "command-exec-permission-profile-glob-blind-write",
+                "method": "command/exec",
+                "params": {
+                    "command": [
+                        "/bin/sh",
+                        "-c",
+                        "! cat glob-writable/hidden.env && /bin/sh -c 'printf glob-blind-write > glob-writable/hidden.env' && printf glob-blind-write",
+                    ],
+                    "cwd": str(child_cwd),
+                    "permissionProfile": glob_blind_write_permission_profile,
+                },
+            },
+            env,
+        )
+        assert (
+            permission_profile_glob_blind_write["id"]
+            == "command-exec-permission-profile-glob-blind-write"
+        )
+        assert permission_profile_glob_blind_write["result"]["exitCode"] == 0
+        assert permission_profile_glob_blind_write["result"]["stdout"] == "glob-blind-write"
+        assert glob_blind_write_target.read_text(encoding="utf-8") == "glob-blind-write"
+
+        glob_blind_write_subset_dir = glob_writable_dir / "secrets"
+        glob_blind_write_subset_dir.mkdir()
+        glob_blind_write_subset_target = glob_blind_write_subset_dir / "hidden.env"
+        glob_blind_write_subset_target.write_text("old-subset-hidden", encoding="utf-8")
+        glob_blind_write_subset_permission_profile = {
+            "type": "managed",
+            "fileSystem": {
+                "type": "restricted",
+                "globScanMaxDepth": 2,
+                "entries": [
+                    {
+                        "path": {"type": "special", "value": {"kind": "root"}},
+                        "access": "read",
+                    },
+                    {
+                        "path": {"type": "glob_pattern", "pattern": "glob-writable/**/*.env"},
+                        "access": "write",
+                    },
+                    {
+                        "path": {"type": "glob_pattern", "pattern": "glob-writable/secrets/**/*.env"},
+                        "access": "none",
+                    },
+                ],
+            },
+            "network": {"enabled": False},
+        }
+        permission_profile_glob_blind_write_subset = request_stdio_app_server(
+            binary,
+            {
+                "jsonrpc": "2.0",
+                "id": "command-exec-permission-profile-glob-blind-write-subset",
+                "method": "command/exec",
+                "params": {
+                    "command": [
+                        "/bin/sh",
+                        "-c",
+                        "! cat glob-writable/secrets/hidden.env && /bin/sh -c 'printf glob-blind-write-subset > glob-writable/secrets/hidden.env' && printf glob-blind-write-subset",
+                    ],
+                    "cwd": str(child_cwd),
+                    "permissionProfile": glob_blind_write_subset_permission_profile,
+                },
+            },
+            env,
+        )
+        assert (
+            permission_profile_glob_blind_write_subset["id"]
+            == "command-exec-permission-profile-glob-blind-write-subset"
+        )
+        assert permission_profile_glob_blind_write_subset["result"]["exitCode"] == 0
+        assert (
+            permission_profile_glob_blind_write_subset["result"]["stdout"]
+            == "glob-blind-write-subset"
+        )
+        assert (
+            glob_blind_write_subset_target.read_text(encoding="utf-8")
+            == "glob-blind-write-subset"
+        )
+
+        glob_escape_dir = narrow_blocked_root / "glob-escape-outside"
+        glob_escape_dir.mkdir()
+        glob_escape_link = child_cwd / "glob-link"
+        glob_escape_link.symlink_to(glob_escape_dir, target_is_directory=True)
+        permission_profile_glob_symlink_escape = request_stdio_app_server(
+            binary,
+            {
+                "jsonrpc": "2.0",
+                "id": "command-exec-permission-profile-glob-symlink-escape",
+                "method": "command/exec",
+                "params": {
+                    "command": [
+                        "/bin/sh",
+                        "-c",
+                        f"! /bin/sh -c 'printf nope > {shlex.quote('glob-link/escaped.env')}' && printf glob-symlink-escape",
+                    ],
+                    "cwd": str(child_cwd),
+                    "permissionProfile": {
+                        "type": "managed",
+                        "fileSystem": {
+                            "type": "restricted",
+                            "globScanMaxDepth": 2,
+                            "entries": [
+                                {
+                                    "path": {"type": "special", "value": {"kind": "root"}},
+                                    "access": "read",
+                                },
+                                {
+                                    "path": {"type": "glob_pattern", "pattern": "glob-link/**/*.env"},
+                                    "access": "write",
+                                },
+                            ],
+                        },
+                        "network": {"enabled": False},
+                    },
+                },
+            },
+            env,
+        )
+        assert (
+            permission_profile_glob_symlink_escape["id"]
+            == "command-exec-permission-profile-glob-symlink-escape"
+        )
+        assert permission_profile_glob_symlink_escape["result"]["exitCode"] == 0
+        assert permission_profile_glob_symlink_escape["result"]["stdout"] == "glob-symlink-escape"
+        assert not glob_escape_dir.joinpath("escaped.env").exists()
+
+        permission_profile_glob_wildcard_symlink_escape = request_stdio_app_server(
+            binary,
+            {
+                "jsonrpc": "2.0",
+                "id": "command-exec-permission-profile-glob-wildcard-symlink-escape",
+                "method": "command/exec",
+                "params": {
+                    "command": [
+                        "/bin/sh",
+                        "-c",
+                        f"! /bin/sh -c 'printf nope > {shlex.quote('glob-link/escaped-wildcard.env')}' && printf glob-wildcard-symlink-escape",
+                    ],
+                    "cwd": str(child_cwd),
+                    "permissionProfile": {
+                        "type": "managed",
+                        "fileSystem": {
+                            "type": "restricted",
+                            "globScanMaxDepth": 2,
+                            "entries": [
+                                {
+                                    "path": {"type": "special", "value": {"kind": "root"}},
+                                    "access": "read",
+                                },
+                                {
+                                    "path": {"type": "glob_pattern", "pattern": "glob-*/**/*.env"},
+                                    "access": "write",
+                                },
+                            ],
+                        },
+                        "network": {"enabled": False},
+                    },
+                },
+            },
+            env,
+        )
+        assert (
+            permission_profile_glob_wildcard_symlink_escape["id"]
+            == "command-exec-permission-profile-glob-wildcard-symlink-escape"
+        )
+        assert permission_profile_glob_wildcard_symlink_escape["result"]["exitCode"] == 0
+        assert (
+            permission_profile_glob_wildcard_symlink_escape["result"]["stdout"]
+            == "glob-wildcard-symlink-escape"
+        )
+        assert not glob_escape_dir.joinpath("escaped-wildcard.env").exists()
+
+        permission_profile_absolute_glob_symlink_escape = request_stdio_app_server(
+            binary,
+            {
+                "jsonrpc": "2.0",
+                "id": "command-exec-permission-profile-absolute-glob-symlink-escape",
+                "method": "command/exec",
+                "params": {
+                    "command": [
+                        "/bin/sh",
+                        "-c",
+                        f"! /bin/sh -c 'printf nope > {shlex.quote(str(glob_escape_link / 'escaped-absolute.env'))}' && printf absolute-glob-symlink-escape",
+                    ],
+                    "cwd": str(child_cwd),
+                    "permissionProfile": {
+                        "type": "managed",
+                        "fileSystem": {
+                            "type": "restricted",
+                            "globScanMaxDepth": 2,
+                            "entries": [
+                                {
+                                    "path": {"type": "special", "value": {"kind": "root"}},
+                                    "access": "read",
+                                },
+                                {
+                                    "path": {
+                                        "type": "glob_pattern",
+                                        "pattern": f"{glob_escape_link}/**/*.env",
+                                    },
+                                    "access": "write",
+                                },
+                            ],
+                        },
+                        "network": {"enabled": False},
+                    },
+                },
+            },
+            env,
+        )
+        assert (
+            permission_profile_absolute_glob_symlink_escape["id"]
+            == "command-exec-permission-profile-absolute-glob-symlink-escape"
+        )
+        assert permission_profile_absolute_glob_symlink_escape["result"]["exitCode"] == 0
+        assert (
+            permission_profile_absolute_glob_symlink_escape["result"]["stdout"]
+            == "absolute-glob-symlink-escape"
+        )
+        assert not glob_escape_dir.joinpath("escaped-absolute.env").exists()
+
         glob_read_denied_dir = child_cwd / "glob-denied"
         glob_read_denied_dir.mkdir()
         glob_read_denied_target = glob_read_denied_dir / "token.secret"
@@ -31476,35 +32557,6 @@ def run_command_exec_rpc_smoke(binary: Path) -> None:
         assert permission_profile_glob_read_deny_overlap["result"]["exitCode"] == 0
         assert permission_profile_glob_read_deny_overlap["result"]["stdout"] == "glob-read-deny-overlap"
         assert glob_read_denied_target.read_text(encoding="utf-8") == "nope"
-
-        unsupported_permission_profile = request_stdio_app_server(
-            binary,
-            {
-                "jsonrpc": "2.0",
-                "id": "command-exec-permission-profile-unsupported",
-                "method": "command/exec",
-                "params": {
-                    "command": ["/bin/echo", "unused"],
-                    "permissionProfile": {
-                        "type": "managed",
-                        "fileSystem": {
-                            "type": "restricted",
-                            "entries": [
-                                {
-                                    "path": {"type": "glob_pattern", "pattern": "**/*.env"},
-                                    "access": "write",
-                                }
-                            ],
-                        },
-                        "network": {"enabled": False},
-                    },
-                },
-            },
-            env,
-        )
-        assert unsupported_permission_profile["id"] == "command-exec-permission-profile-unsupported"
-        assert unsupported_permission_profile["error"]["code"] == -32603
-        assert "permissionProfile shape" in unsupported_permission_profile["error"]["message"]
 
         null_env = request_stdio_app_server(
             binary,
