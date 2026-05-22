@@ -104,6 +104,7 @@ pub fn main(init: std.process.Init) !void {
                 .{},
             ),
             error.ExecServerCommandFailed => {},
+            error.HookStoppedTurn => {},
             error.InvalidMcpServerTransport => std.debug.print(
                 "error: invalid transport\n",
                 .{},
@@ -318,6 +319,10 @@ fn mainInner(init: std.process.Init) !void {
             overrides.runtime.sandbox_mode = .danger_full_access;
             continue;
         }
+        if (std.mem.eql(u8, arg, "--dangerously-bypass-hook-trust")) {
+            overrides.runtime.bypass_hook_trust = true;
+            continue;
+        }
         if (std.mem.eql(u8, arg, "--search")) {
             overrides.runtime.web_search_mode = .live;
             continue;
@@ -522,6 +527,7 @@ fn mainInner(init: std.process.Init) !void {
         if (std.mem.eql(u8, cmd, "app-server")) {
             try app_server_cmd.runWithOptions(allocator, &args, .{
                 .feature_overrides = runtime_feature_overrides,
+                .bypass_hook_trust = overrides.runtime.bypass_hook_trust orelse false,
             });
             return;
         }
@@ -1223,6 +1229,10 @@ fn parseSessionCommandArgs(allocator: std.mem.Allocator, args: []const []const u
             parsed.runtime_overrides.sandbox_mode = .danger_full_access;
             continue;
         }
+        if (!end_options and std.mem.eql(u8, arg, "--dangerously-bypass-hook-trust")) {
+            parsed.runtime_overrides.bypass_hook_trust = true;
+            continue;
+        }
         if (!end_options and std.mem.eql(u8, arg, "--search")) {
             parsed.runtime_overrides.web_search_mode = .live;
             continue;
@@ -1373,6 +1383,8 @@ fn printHelp() !void {
         \\                          Danger: approval=never and sandbox=danger-full-access
         \\  codex-zig --dangerously-bypass-approvals-and-sandbox ...
         \\                          Alias for --yolo
+        \\  codex-zig --dangerously-bypass-hook-trust ...
+        \\                          Run enabled hooks without persisted hook trust
         \\  codex-zig --search ...
         \\                          Enable live web search for Responses turns
         \\  codex-zig --remote unix://PATH
@@ -1784,6 +1796,7 @@ test "session command flags merge interactive overrides" {
         "/tmp/b.png",
         "-c",
         "review_model=gpt-session-review",
+        "--dangerously-bypass-hook-trust",
         "--no-alt-screen",
     };
     var parsed = try parseSessionCommandArgs(allocator, argv[0..], true);
@@ -1795,6 +1808,7 @@ test "session command flags merge interactive overrides" {
     try std.testing.expectEqual(config.WebSearchMode.live, parsed.runtime_overrides.web_search_mode.?);
     try std.testing.expectEqual(config.SandboxMode.workspace_write, parsed.runtime_overrides.sandbox_mode.?);
     try std.testing.expectEqual(config.ApprovalPolicy.on_request, parsed.runtime_overrides.approval_policy.?);
+    try std.testing.expectEqual(true, parsed.runtime_overrides.bypass_hook_trust.?);
     try std.testing.expectEqualStrings("gpt-5.1-test", parsed.runtime_overrides.model.?);
     try std.testing.expectEqualStrings("gpt-session-review", parsed.runtime_overrides.review_model.?);
     try std.testing.expectEqualStrings("work", parsed.profile.?);

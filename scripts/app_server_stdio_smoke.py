@@ -23904,6 +23904,175 @@ def run_user_prompt_submit_hook_notification_smoke(binary: Path) -> None:
         shutil.rmtree(root, ignore_errors=True)
 
 
+def run_hook_trust_bypass_smoke(binary: Path) -> None:
+    server, base_url = start_turn_responses_server()
+    root = Path(tempfile.mkdtemp(prefix="codex-zig-app-server-hook-bypass-", dir="/tmp"))
+    codex_home = root / "codex-home"
+    cwd = root / "repo"
+    hook_script = cwd / ".codex" / "bypass_hook.py"
+    hook_log = root / "bypass_hook_log.jsonl"
+    proc: subprocess.Popen[str] | None = None
+    try:
+        codex_home.mkdir()
+        cwd.mkdir()
+        hook_script.parent.mkdir(parents=True)
+        codex_home.joinpath("config.toml").write_text(
+            f'openai_base_url = "{base_url}"\nmodel = "gpt-hook-bypass"\n',
+            encoding="utf-8",
+        )
+        hook_script.write_text(
+            "\n".join(
+                [
+                    "import json",
+                    "from pathlib import Path",
+                    "payload = json.load(__import__('sys').stdin)",
+                    f"Path({json.dumps(str(hook_log))}).write_text(json.dumps(payload, separators=(',', ':')) + '\\n', encoding='utf-8')",
+                    "print(json.dumps({'hookSpecificOutput': {'hookEventName': 'UserPromptSubmit', 'additionalContext': 'bypassed hook context'}}))",
+                    "",
+                ]
+            ),
+            encoding="utf-8",
+        )
+        cwd.joinpath(".codex", "config.toml").write_text(
+            "\n".join(
+                [
+                    "[features]",
+                    "hooks = true",
+                    "",
+                    "[[hooks.UserPromptSubmit]]",
+                    "",
+                    "[[hooks.UserPromptSubmit.hooks]]",
+                    'type = "command"',
+                    f'command = "python3 {hook_script}"',
+                    "",
+                ]
+            ),
+            encoding="utf-8",
+        )
+
+        env = os.environ.copy()
+        env["CODEX_HOME"] = str(codex_home)
+        env["OPENAI_API_KEY"] = "test-api-key"
+        env.pop("CODEX_ACCESS_TOKEN", None)
+        env.pop("SHELL", None)
+        proc = subprocess.Popen(
+            [str(binary), "--dangerously-bypass-hook-trust", "app-server"],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            env=env,
+        )
+
+        def rpc(request_id: str, method: str, params: dict | None = None) -> dict:
+            request = {"jsonrpc": "2.0", "id": request_id, "method": method}
+            if params is not None:
+                request["params"] = params
+            write_json_line(proc, request)
+            return read_json_line(proc, 5)
+
+        start = rpc(
+            "hook-bypass-thread-start",
+            "thread/start",
+            {
+                "cwd": str(cwd),
+                "approvalPolicy": "never",
+                "sandbox": "danger-full-access",
+            },
+        )
+        assert start["id"] == "hook-bypass-thread-start"
+        thread = start["result"]["thread"]
+        thread_id = thread["id"]
+        assert_thread_started_notification(read_json_line(proc, 5), thread)
+        warning = read_json_line(proc, 5)
+        assert warning["method"] == "warning"
+        assert warning["params"]["threadId"] == thread_id
+        assert "--dangerously-bypass-hook-trust" in warning["params"]["message"]
+
+        hooks = rpc("hook-bypass-list", "hooks/list", {"cwds": [str(cwd)]})
+        hook = hooks["result"]["data"][0]["hooks"][0]
+        assert hook["eventName"] == "userPromptSubmit"
+        assert hook["enabled"] is True
+        assert hook["trustStatus"] == "untrusted"
+
+        first_turn = rpc(
+            "hook-bypass-turn-start",
+            "turn/start",
+            {"threadId": thread_id, "input": [{"type": "text", "text": "bypass hook prompt"}]},
+        )
+        turn_id = first_turn["result"]["turn"]["id"]
+        assert_thread_status_notification(read_json_line(proc, 5), thread_id, "active")
+        assert read_json_line(proc, 5)["method"] == "turn/started"
+        hook_started = read_json_line(proc, 5)
+        assert hook_started["method"] == "hook/started"
+        assert hook_started["params"]["turnId"] == turn_id
+        hook_completed = read_json_line(proc, 5)
+        assert hook_completed["method"] == "hook/completed"
+        assert hook_completed["params"]["run"]["entries"] == [
+            {"kind": "context", "text": "bypassed hook context"}
+        ]
+        assert read_json_line(proc, 5)["method"] == "item/started"
+        assert read_json_line(proc, 5)["method"] == "item/completed"
+        assert read_json_line(proc, 5)["method"] == "item/started"
+        assert read_json_line(proc, 5)["method"] == "item/agentMessage/delta"
+        assert read_json_line(proc, 5)["method"] == "item/completed"
+        assert read_json_line(proc, 5)["method"] == "turn/completed"
+        assert_thread_status_notification(read_json_line(proc, 5), thread_id, "idle")
+        assert hook_log.exists()
+        request_texts = request_input_texts_by_role(server.request_bodies[-1])
+        assert request_texts.get("developer") == ["bypassed hook context"]
+
+        disable = rpc(
+            "hook-bypass-disable",
+            "config/batchWrite",
+            {
+                "edits": [
+                    {
+                        "keyPath": "hooks.state",
+                        "value": {hook["key"]: {"enabled": False}},
+                        "mergeStrategy": "upsert",
+                    }
+                ],
+                "reloadUserConfig": True,
+                "expectedVersion": None,
+            },
+        )
+        assert disable["result"]["status"] == "ok"
+        disabled_hooks = rpc("hook-bypass-list-disabled", "hooks/list", {"cwds": [str(cwd)]})
+        disabled_hook = disabled_hooks["result"]["data"][0]["hooks"][0]
+        assert disabled_hook["enabled"] is False
+        assert disabled_hook["trustStatus"] == "untrusted"
+
+        before_disabled_turn_log = hook_log.read_text(encoding="utf-8")
+        second_turn = rpc(
+            "hook-bypass-disabled-turn-start",
+            "turn/start",
+            {"threadId": thread_id, "input": [{"type": "text", "text": "disabled bypass hook prompt"}]},
+        )
+        assert second_turn["id"] == "hook-bypass-disabled-turn-start"
+        assert_thread_status_notification(read_json_line(proc, 5), thread_id, "active")
+        assert read_json_line(proc, 5)["method"] == "turn/started"
+        assert read_json_line(proc, 5)["method"] == "item/started"
+        assert read_json_line(proc, 5)["method"] == "item/completed"
+        assert read_json_line(proc, 5)["method"] == "item/started"
+        assert read_json_line(proc, 5)["method"] == "item/agentMessage/delta"
+        assert read_json_line(proc, 5)["method"] == "item/completed"
+        assert read_json_line(proc, 5)["method"] == "turn/completed"
+        assert_thread_status_notification(read_json_line(proc, 5), thread_id, "idle")
+        assert hook_log.read_text(encoding="utf-8") == before_disabled_turn_log
+    finally:
+        if proc is not None and proc.poll() is None:
+            assert proc.stdin is not None
+            proc.stdin.close()
+            try:
+                proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                proc.wait(timeout=5)
+        server.shutdown()
+        shutil.rmtree(root, ignore_errors=True)
+
+
 def run_user_prompt_submit_plugin_hook_environment_smoke(binary: Path) -> None:
     server, base_url = start_turn_responses_server()
     root = Path(tempfile.mkdtemp(prefix="codex-zig-app-server-plugin-hook-env-", dir="/tmp"))
@@ -54310,6 +54479,8 @@ def main() -> None:
     print("app-server-session-start-hook-clear-stop-e2e: ok")
     run_user_prompt_submit_hook_notification_smoke(binary)
     print("app-server-user-prompt-submit-hook-notification-e2e: ok")
+    run_hook_trust_bypass_smoke(binary)
+    print("app-server-hook-trust-bypass-e2e: ok")
     run_user_prompt_submit_plugin_hook_environment_smoke(binary)
     print("app-server-user-prompt-submit-plugin-hook-environment-e2e: ok")
     run_user_prompt_submit_hook_block_smoke(binary)

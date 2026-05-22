@@ -148,6 +148,10 @@ pub const Hook = struct {
     pub fn shouldRun(self: Hook) bool {
         return self.enabled and self.trust_status == .trusted;
     }
+
+    pub fn shouldRunWithBypass(self: Hook, bypass_hook_trust: bool) bool {
+        return self.enabled and (bypass_hook_trust or self.trust_status == .trusted);
+    }
 };
 
 const HookState = struct {
@@ -166,7 +170,7 @@ const HookStates = struct {
 
     fn deinit(self: HookStates, allocator: std.mem.Allocator) void {
         for (self.entries) |entry| entry.deinit(allocator);
-        allocator.free(self.entries);
+        if (self.entries.len > 0) allocator.free(self.entries);
     }
 
     fn find(self: HookStates, key: []const u8) ?HookState {
@@ -249,7 +253,20 @@ const PartialHook = struct {
     }
 };
 
+pub const ListOptions = struct {
+    ignore_user_config: bool = false,
+};
+
 pub fn list(allocator: std.mem.Allocator, codex_home: []const u8, cwd_inputs: []const []const u8) !Result {
+    return listWithOptions(allocator, codex_home, cwd_inputs, .{});
+}
+
+pub fn listWithOptions(
+    allocator: std.mem.Allocator,
+    codex_home: []const u8,
+    cwd_inputs: []const []const u8,
+    options: ListOptions,
+) !Result {
     const resolved_cwds = if (cwd_inputs.len == 0)
         try defaultCwdList(allocator)
     else
@@ -263,7 +280,7 @@ pub fn list(allocator: std.mem.Allocator, codex_home: []const u8, cwd_inputs: []
     }
 
     for (resolved_cwds) |cwd| {
-        const entry = try listForCwd(allocator, codex_home, cwd);
+        const entry = try listForCwd(allocator, codex_home, cwd, options);
         try entries.append(allocator, entry);
     }
 
@@ -301,7 +318,12 @@ pub fn startupWarnings(allocator: std.mem.Allocator, codex_home: []const u8) !St
     return .{ .items = try warnings.toOwnedSlice(allocator) };
 }
 
-fn listForCwd(allocator: std.mem.Allocator, codex_home: []const u8, cwd: []const u8) !Entry {
+fn listForCwd(
+    allocator: std.mem.Allocator,
+    codex_home: []const u8,
+    cwd: []const u8,
+    options: ListOptions,
+) !Entry {
     var hooks = std.ArrayList(Hook).empty;
     errdefer {
         for (hooks.items) |hook| hook.deinit(allocator);
@@ -321,11 +343,16 @@ fn listForCwd(allocator: std.mem.Allocator, codex_home: []const u8, cwd: []const
 
     const user_config_path = try config.configTomlPath(allocator, codex_home);
     defer allocator.free(user_config_path);
-    const hook_states = try loadHookStatesFromConfigFile(allocator, user_config_path);
+    const hook_states = if (options.ignore_user_config)
+        HookStates{}
+    else
+        try loadHookStatesFromConfigFile(allocator, user_config_path);
     defer hook_states.deinit(allocator);
-    const user_hooks_json_path = try std.fs.path.join(allocator, &.{ codex_home, "hooks.json" });
-    defer allocator.free(user_hooks_json_path);
-    try appendHooksFromLayer(allocator, user_config_path, user_hooks_json_path, .user, hook_states, &hooks, &warnings, &errors, &display_order);
+    if (!options.ignore_user_config) {
+        const user_hooks_json_path = try std.fs.path.join(allocator, &.{ codex_home, "hooks.json" });
+        defer allocator.free(user_hooks_json_path);
+        try appendHooksFromLayer(allocator, user_config_path, user_hooks_json_path, .user, hook_states, &hooks, &warnings, &errors, &display_order);
+    }
 
     const project_config_path = try std.fs.path.join(allocator, &.{ cwd, ".codex", "config.toml" });
     defer allocator.free(project_config_path);
@@ -333,7 +360,9 @@ fn listForCwd(allocator: std.mem.Allocator, codex_home: []const u8, cwd: []const
     defer allocator.free(project_hooks_json_path);
     try appendHooksFromLayer(allocator, project_config_path, project_hooks_json_path, .project, hook_states, &hooks, &warnings, &errors, &display_order);
 
-    try appendPluginHooks(allocator, codex_home, user_config_path, hook_states, &hooks, &warnings, &display_order);
+    if (!options.ignore_user_config) {
+        try appendPluginHooks(allocator, codex_home, user_config_path, hook_states, &hooks, &warnings, &display_order);
+    }
 
     const owned_cwd = try allocator.dupe(u8, cwd);
     errdefer allocator.free(owned_cwd);
@@ -1720,4 +1749,27 @@ test "hooks list applies user hook state table" {
     const hook = result.entries[0].hooks[0];
     try std.testing.expectEqual(false, hook.enabled);
     try std.testing.expectEqual(TrustStatus.trusted, hook.trust_status);
+}
+
+test "hook trust bypass allows enabled untrusted hooks but respects disabled state" {
+    const untrusted = Hook{
+        .key = "demo:pre_tool_use:0:0",
+        .event_name = .pre_tool_use,
+        .matcher = "Bash",
+        .command = "echo bypass",
+        .timeout_sec = 5,
+        .status_message = null,
+        .source_path = "/tmp/hooks.json",
+        .source = .user,
+        .display_order = 0,
+        .enabled = true,
+        .current_hash = "sha256:demo",
+        .trust_status = .untrusted,
+    };
+    try std.testing.expect(!untrusted.shouldRun());
+    try std.testing.expect(untrusted.shouldRunWithBypass(true));
+
+    var disabled = untrusted;
+    disabled.enabled = false;
+    try std.testing.expect(!disabled.shouldRunWithBypass(true));
 }

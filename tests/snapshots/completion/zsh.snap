@@ -3,7 +3,7 @@
 _codex_zig() {
     local -a commands global_options shells
     commands=(a app app-server apply auth-status cloud cloud-tasks completion debug doctor e exec exec-server execpolicy features fork help login logout mcp mcp-server plugin remote-control remote-fork review resume sandbox sessions update)
-    global_options=(--help -h --version -V --profile -p --cd -C --add-dir --config -c --model -m --image -i --enable --disable --oss --local-provider --ask-for-approval -a --approval-policy --sandbox -s --dangerously-bypass-approvals-and-sandbox --yolo --search --remote --remote-auth-token-env --remote-control --remote-control-bind --no-alt-screen)
+    global_options=(--help -h --version -V --profile -p --cd -C --add-dir --config -c --model -m --image -i --enable --disable --oss --local-provider --ask-for-approval -a --approval-policy --sandbox -s --dangerously-bypass-approvals-and-sandbox --yolo --dangerously-bypass-hook-trust --search --remote --remote-auth-token-env --remote-control --remote-control-bind --no-alt-screen)
     shells=(bash elvish fish powershell zsh)
     if [[ $words[2] == completion ]]; then
         _describe 'shell' shells
@@ -26,6 +26,7 @@ _codex_zig() {
         '--approval-policy[Approval policy]:(untrusted on-failure on-request never)' \
         '(-s --sandbox)'{-s,--sandbox}'[Sandbox mode]:(read-only workspace-write danger-full-access)' \
         '--yolo[Disable approvals and sandbox]' \
+        '--dangerously-bypass-hook-trust[Run enabled hooks without persisted hook trust]' \
         '--search[Enable live web search]' \
         '--remote[Connect interactive TUI to remote app-server]:addr:' \
         '--remote-auth-token-env[Read remote app-server token from env]:env:' \

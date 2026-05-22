@@ -382,11 +382,13 @@ const AppServerOptions = struct {
 
 pub const InvocationOptions = struct {
     feature_overrides: features_cmd.FeatureOverrides = .{},
+    bypass_hook_trust: bool = false,
 };
 
 const AppServerState = struct {
     deferred_command_exec_stdio: bool = false,
     experimental_api_enabled: bool = false,
+    bypass_hook_trust: bool = false,
     cli_feature_overrides: features_cmd.FeatureOverrides = .{},
     runtime_feature_enablement: features_cmd.FeatureOverrides = .{},
     loaded_threads: std.ArrayList(LoadedThread) = .empty,
@@ -438,6 +440,7 @@ fn initAppServerState(
 ) !AppServerState {
     var state = AppServerState{
         .deferred_command_exec_stdio = deferred_command_exec_stdio,
+        .bypass_hook_trust = invocation_options.bypass_hook_trust,
         .cli_feature_overrides = try invocation_options.feature_overrides.clone(allocator),
     };
     errdefer state.deinit(allocator);
@@ -30055,6 +30058,7 @@ fn prepareReviewStartHooks(
             cfg.model,
             hookPermissionMode(cfg.approval_policy),
             source,
+            state.bypass_hook_trust,
         );
     }
     if (setup.session_start_hooks.contexts.items.len > 0) {
@@ -30072,6 +30076,7 @@ fn prepareReviewStartHooks(
             cfg.model,
             hookPermissionMode(cfg.approval_policy),
             prompt,
+            state.bypass_hook_trust,
         );
     }
     if (review_progress_sent) {
@@ -30262,6 +30267,7 @@ fn handleTurnStart(
             cfg.model,
             hookPermissionMode(cfg.approval_policy),
             source,
+            state.bypass_hook_trust,
         );
     }
     if (session_start_hooks.contexts.items.len > 0) {
@@ -30281,6 +30287,7 @@ fn handleTurnStart(
             cfg.model,
             hookPermissionMode(cfg.approval_policy),
             input.prompt,
+            state.bypass_hook_trust,
         );
     }
 
@@ -31218,6 +31225,7 @@ fn runSessionStartHooks(
     model: []const u8,
     permission_mode: []const u8,
     source: []const u8,
+    bypass_hook_trust: bool,
 ) !HookRuntimeResult {
     var runtime = HookRuntimeResult{};
     errdefer runtime.deinit(allocator);
@@ -31234,7 +31242,7 @@ fn runSessionStartHooks(
     defer joinPendingHookCommandRuns(&runs);
 
     for (listed.entries[0].hooks) |hook| {
-        if (hook.event_name != .session_start or !hook.shouldRun() or !(try hookMatcherMatchesInput(allocator, hook.matcher, source))) continue;
+        if (hook.event_name != .session_start or !hook.shouldRunWithBypass(bypass_hook_trust) or !(try hookMatcherMatchesInput(allocator, hook.matcher, source))) continue;
         const hook_run_id = try renderHookRunId(allocator, hook);
         var hook_run_id_moved = false;
         errdefer if (!hook_run_id_moved) allocator.free(hook_run_id);
@@ -31312,6 +31320,7 @@ fn runUserPromptSubmitHooks(
     model: []const u8,
     permission_mode: []const u8,
     prompt: []const u8,
+    bypass_hook_trust: bool,
 ) !HookRuntimeResult {
     var runtime = HookRuntimeResult{};
     errdefer runtime.deinit(allocator);
@@ -31328,7 +31337,7 @@ fn runUserPromptSubmitHooks(
     defer joinPendingHookCommandRuns(&runs);
 
     for (listed.entries[0].hooks) |hook| {
-        if (hook.event_name != .user_prompt_submit or !hook.shouldRun()) continue;
+        if (hook.event_name != .user_prompt_submit or !hook.shouldRunWithBypass(bypass_hook_trust)) continue;
         const hook_run_id = try renderHookRunId(allocator, hook);
         var hook_run_id_moved = false;
         errdefer if (!hook_run_id_moved) allocator.free(hook_run_id);
@@ -40743,6 +40752,10 @@ fn queueHookStartupWarningNotifications(
     thread_id: []const u8,
 ) !void {
     if (notificationMethodOptedOut(state, "warning")) return;
+
+    if (state.bypass_hook_trust) {
+        try queueWarningNotification(allocator, state, thread_id, "`--dangerously-bypass-hook-trust` is enabled. Enabled hooks may run without review for this invocation.");
+    }
 
     var warnings = try hooks_list.startupWarnings(allocator, codex_home);
     defer warnings.deinit(allocator);

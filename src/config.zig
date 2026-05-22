@@ -47,6 +47,7 @@ pub const Config = struct {
     tui_terminal_title: ?StringList,
     tui_alternate_screen: AltScreenMode,
     background_terminal_max_timeout: u64 = DEFAULT_BACKGROUND_TERMINAL_MAX_TIMEOUT_MS,
+    bypass_hook_trust: bool = false,
 
     pub fn deinit(self: *Config, allocator: std.mem.Allocator) void {
         allocator.free(self.codex_home);
@@ -197,6 +198,7 @@ pub const RuntimeOverrides = struct {
     developer_instructions: ?[]const u8 = null,
     compact_prompt: ?[]const u8 = null,
     tui_alternate_screen: ?AltScreenMode = null,
+    bypass_hook_trust: ?bool = null,
 };
 
 pub fn mergeRuntimeOverrides(base: RuntimeOverrides, overrides: RuntimeOverrides) RuntimeOverrides {
@@ -222,6 +224,7 @@ pub fn mergeRuntimeOverrides(base: RuntimeOverrides, overrides: RuntimeOverrides
     if (overrides.developer_instructions) |value| merged.developer_instructions = value;
     if (overrides.compact_prompt) |value| merged.compact_prompt = value;
     if (overrides.tui_alternate_screen) |value| merged.tui_alternate_screen = value;
+    if (overrides.bypass_hook_trust) |value| merged.bypass_hook_trust = value;
     return merged;
 }
 
@@ -409,6 +412,9 @@ pub fn applyRuntimeOverrides(
     }
     if (overrides.tui_alternate_screen) |mode| {
         cfg.tui_alternate_screen = mode;
+    }
+    if (overrides.bypass_hook_trust) |value| {
+        cfg.bypass_hook_trust = value;
     }
 }
 
@@ -1052,6 +1058,7 @@ pub fn loadWithOptions(allocator: std.mem.Allocator, options: LoadOptions) !Conf
         .tui_terminal_title = tui_terminal_title,
         .tui_alternate_screen = tui_alternate_screen,
         .background_terminal_max_timeout = background_terminal_max_timeout,
+        .bypass_hook_trust = false,
     };
 }
 

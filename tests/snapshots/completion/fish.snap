@@ -18,6 +18,7 @@ complete -c codex-zig -s a -l ask-for-approval -xa 'untrusted on-failure on-requ
 complete -c codex-zig -l approval-policy -xa 'untrusted on-failure on-request never' -d 'Approval policy'
 complete -c codex-zig -s s -l sandbox -xa 'read-only workspace-write danger-full-access' -d 'Sandbox mode'
 complete -c codex-zig -l yolo -d 'Disable approvals and sandbox'
+complete -c codex-zig -l dangerously-bypass-hook-trust -d 'Run enabled hooks without persisted hook trust'
 complete -c codex-zig -l search -d 'Enable live web search'
 complete -c codex-zig -l remote -r -d 'Connect interactive TUI to remote app-server'
 complete -c codex-zig -l remote-auth-token-env -r -d 'Read remote app-server token from env'
