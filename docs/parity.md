@@ -718,8 +718,9 @@ project/current-working-directory writable subpaths and concrete absolute or
 special-path read-deny roots plus deny-read glob-pattern entries into the macOS
 seatbelt wrapper. Absolute `unknown` special paths are accepted for read,
 write, and none entries, including safe relative subpaths. Read/write glob
-entries and non-absolute `unknown` special paths still return explicit
-unsupported-profile errors.
+entries now lower to seatbelt regex allow rules, with `globScanMaxDepth`
+constraining `**` allow-pattern depth up to a capped maximum of 64.
+Non-absolute `unknown` special paths remain rejected.
 
 Additional app-server config/read coverage: `config/read` now includes
 `instructions`, `developer_instructions`, and `compact_prompt` in effective
