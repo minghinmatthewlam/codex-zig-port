@@ -28755,7 +28755,7 @@ fn fetchRemoteAppDirectoryPagesIfAvailable(allocator: std.mem.Allocator, pages: 
 fn appDirectoryCredentialsUseCodexBackend(credentials: auth_mod.Credentials) bool {
     return switch (credentials.mode) {
         .chatgpt, .chatgpt_auth_tokens, .agent_identity => true,
-        .api_key, .local_oss => false,
+        .api_key, .local_oss, .provider_no_auth => false,
     };
 }
 
@@ -43201,7 +43201,7 @@ fn handlePluginSkillRead(allocator: std.mem.Allocator, id_value: std.json.Value,
     defer credentials.deinit(allocator);
     switch (credentials.mode) {
         .chatgpt, .chatgpt_auth_tokens, .agent_identity => {},
-        .api_key, .local_oss => return renderJsonRpcError(allocator, id_value, -32602, "chatgpt authentication required to read remote plugin skill details"),
+        .api_key, .local_oss, .provider_no_auth => return renderJsonRpcError(allocator, id_value, -32602, "chatgpt authentication required to read remote plugin skill details"),
     }
 
     const result = remote_plugin.fetchSkillReadJson(allocator, cfg.chatgpt_base_url, credentials, params.remote_plugin_id, params.skill_name) catch |err| {
@@ -43364,7 +43364,7 @@ fn loadRemotePluginShareContext(allocator: std.mem.Allocator) !RemotePluginShare
     errdefer credentials.deinit(allocator);
     switch (credentials.mode) {
         .chatgpt, .chatgpt_auth_tokens, .agent_identity => {},
-        .api_key, .local_oss => return error.RemotePluginShareAuthRequired,
+        .api_key, .local_oss, .provider_no_auth => return error.RemotePluginShareAuthRequired,
     }
 
     return .{ .cfg = cfg, .credentials = credentials };
@@ -43477,7 +43477,7 @@ fn handlePluginInstall(allocator: std.mem.Allocator, state: *AppServerState, id_
         defer credentials.deinit(allocator);
         switch (credentials.mode) {
             .chatgpt, .chatgpt_auth_tokens, .agent_identity => {},
-            .api_key, .local_oss => return renderJsonRpcError(allocator, id_value, -32602, "chatgpt authentication required to install remote plugin"),
+            .api_key, .local_oss, .provider_no_auth => return renderJsonRpcError(allocator, id_value, -32602, "chatgpt authentication required to install remote plugin"),
         }
 
         const install_result = remote_plugin.install(
@@ -43586,7 +43586,7 @@ fn handlePluginUninstall(allocator: std.mem.Allocator, state: *AppServerState, i
     defer credentials.deinit(allocator);
     switch (credentials.mode) {
         .chatgpt, .chatgpt_auth_tokens, .agent_identity => {},
-        .api_key, .local_oss => return renderJsonRpcError(allocator, id_value, -32602, "chatgpt authentication required to uninstall remote plugin"),
+        .api_key, .local_oss, .provider_no_auth => return renderJsonRpcError(allocator, id_value, -32602, "chatgpt authentication required to uninstall remote plugin"),
     }
 
     remote_plugin.uninstall(allocator, cfg.chatgpt_base_url, credentials, cfg.codex_home, params.plugin_id) catch |err| {
@@ -43815,7 +43815,7 @@ fn fetchRemotePluginListMarketplaces(
     defer credentials.deinit(allocator);
     switch (credentials.mode) {
         .chatgpt, .chatgpt_auth_tokens, .agent_identity => {},
-        .api_key, .local_oss => return error.RemotePluginUnsupportedAuthMode,
+        .api_key, .local_oss, .provider_no_auth => return error.RemotePluginUnsupportedAuthMode,
     }
 
     return remote_plugin.fetchMarketplacesJson(allocator, cfg.chatgpt_base_url, credentials, remote_sources);
@@ -43870,7 +43870,7 @@ fn handlePluginRead(allocator: std.mem.Allocator, id_value: std.json.Value, para
         defer credentials.deinit(allocator);
         switch (credentials.mode) {
             .chatgpt, .chatgpt_auth_tokens, .agent_identity => {},
-            .api_key, .local_oss => return renderJsonRpcError(allocator, id_value, -32602, "chatgpt authentication required to read remote plugin details"),
+            .api_key, .local_oss, .provider_no_auth => return renderJsonRpcError(allocator, id_value, -32602, "chatgpt authentication required to read remote plugin details"),
         }
 
         const result = remote_plugin.fetchReadJson(allocator, cfg.chatgpt_base_url, credentials, params.plugin_name) catch |err| {
@@ -60325,7 +60325,7 @@ fn handleAccountRateLimitsRead(allocator: std.mem.Allocator, id_value: std.json.
 
     switch (credentials.mode) {
         .chatgpt, .chatgpt_auth_tokens, .agent_identity => {},
-        .api_key, .local_oss => return renderJsonRpcError(allocator, id_value, -32602, "chatgpt authentication required to read rate limits"),
+        .api_key, .local_oss, .provider_no_auth => return renderJsonRpcError(allocator, id_value, -32602, "chatgpt authentication required to read rate limits"),
     }
 
     const result = account_rate_limits.fetchJson(allocator, cfg.chatgpt_base_url, credentials) catch |err| {
@@ -60359,7 +60359,7 @@ fn handleSendAddCreditsNudgeEmail(allocator: std.mem.Allocator, id_value: std.js
 
     switch (credentials.mode) {
         .chatgpt, .chatgpt_auth_tokens, .agent_identity => {},
-        .api_key, .local_oss => return renderJsonRpcError(allocator, id_value, -32602, "chatgpt authentication required to notify workspace owner"),
+        .api_key, .local_oss, .provider_no_auth => return renderJsonRpcError(allocator, id_value, -32602, "chatgpt authentication required to notify workspace owner"),
     }
 
     const status = account_nudge.sendAddCreditsNudgeEmail(allocator, cfg.chatgpt_base_url, credentials, credit_type) catch |err| {
@@ -60448,7 +60448,7 @@ fn authStatusFields(credentials: auth_mod.Credentials, include_token: bool) Auth
                 .auth_token = if (include_token) credentials.token else null,
             },
         .agent_identity => .{ .auth_method = authMethodLabel(credentials.mode) },
-        .local_oss => .{},
+        .local_oss, .provider_no_auth => .{},
     };
 }
 
@@ -60458,7 +60458,15 @@ fn authMethodLabel(mode: auth_mod.Credentials.Mode) ?[]const u8 {
         .chatgpt => "chatgpt",
         .chatgpt_auth_tokens => "chatgptAuthTokens",
         .agent_identity => "agentIdentity",
-        .local_oss => null,
+        .local_oss, .provider_no_auth => null,
+    };
+}
+
+fn authCacheModeLabel(mode: auth_mod.Credentials.Mode) []const u8 {
+    return authMethodLabel(mode) orelse switch (mode) {
+        .local_oss => "local_oss",
+        .provider_no_auth => "provider_no_auth",
+        else => unreachable,
     };
 }
 
@@ -60588,7 +60596,7 @@ fn renderOpenAiAccountJson(allocator: std.mem.Allocator, cfg: *const config.Conf
             }
             return allocator.dupe(u8, "null");
         },
-        .local_oss => return allocator.dupe(u8, "null"),
+        .local_oss, .provider_no_auth => return allocator.dupe(u8, "null"),
     }
 }
 
@@ -61032,7 +61040,7 @@ fn modelCatalogOnlineRefreshAllowed(cfg: *const config.Config, credentials: auth
     return switch (credentials.mode) {
         .chatgpt, .chatgpt_auth_tokens, .agent_identity => cfg.oss_provider == null and cfg.model_provider_requires_openai_auth,
         .api_key => cfg.model_provider_auth_command != null,
-        .local_oss => false,
+        .local_oss, .provider_no_auth => false,
     };
 }
 
@@ -61047,7 +61055,7 @@ fn modelCatalogShouldScopeCredentials(cfg: *const config.Config, credentials: au
     if (cfg.oss_provider != null or !cfg.model_provider_requires_openai_auth) return false;
     return switch (credentials.mode) {
         .chatgpt, .chatgpt_auth_tokens, .agent_identity => true,
-        .api_key, .local_oss => false,
+        .api_key, .local_oss, .provider_no_auth => false,
     };
 }
 
@@ -61165,10 +61173,10 @@ fn appendModelCatalogCacheCredentialKeyParts(
         allocator,
         key,
         "credential.mode",
-        authMethodLabel(creds.mode) orelse "local_oss",
+        authCacheModeLabel(creds.mode),
     );
     switch (creds.mode) {
-        .local_oss => {},
+        .local_oss, .provider_no_auth => {},
         else => try appendModelCatalogCacheHashedKeyPart(allocator, key, "credential.token", creds.token),
     }
     if (creds.account_id) |account_id| {
@@ -61500,7 +61508,7 @@ fn modelCatalogRefreshUrl(
     const base_url = switch (credentials.mode) {
         .chatgpt, .chatgpt_auth_tokens, .agent_identity => cfg.chatgpt_base_url,
         .api_key => cfg.openai_base_url,
-        .local_oss => return error.ModelCatalogRefreshUnavailable,
+        .local_oss, .provider_no_auth => return error.ModelCatalogRefreshUnavailable,
     };
 
     var url = std.ArrayList(u8).empty;
@@ -61727,7 +61735,7 @@ fn modelListUsesCodexBackend(allocator: std.mem.Allocator) bool {
 fn modelCatalogCredentialsUseCodexBackend(credentials: auth_mod.Credentials) bool {
     return switch (credentials.mode) {
         .chatgpt, .chatgpt_auth_tokens, .agent_identity => true,
-        .api_key, .local_oss => false,
+        .api_key, .local_oss, .provider_no_auth => false,
     };
 }
 

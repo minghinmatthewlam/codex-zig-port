@@ -301,7 +301,7 @@ pub fn createTurnWithOptions(
 
     const base_url = switch (credentials.mode) {
         .chatgpt, .chatgpt_auth_tokens, .agent_identity => cfg.chatgpt_base_url,
-        .api_key, .local_oss => cfg.openai_base_url,
+        .api_key, .local_oss, .provider_no_auth => cfg.openai_base_url,
     };
     const wire_path = switch (cfg.model_provider_wire_api) {
         .responses => "responses",
@@ -388,7 +388,7 @@ fn fetchTurn(
         for (provider_env_header_values.items) |value| allocator.free(value);
         provider_env_header_values.deinit(allocator);
     }
-    if (credentials.mode != .local_oss) {
+    if (credentials.mode != .local_oss and credentials.mode != .provider_no_auth) {
         auth_header = try auth.authorizationHeader(allocator, credentials);
         try headers.append(allocator, .{ .name = "Authorization", .value = auth_header.? });
     }

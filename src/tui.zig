@@ -2606,7 +2606,7 @@ fn printHeader(cfg: config.Config, credentials: auth.Credentials, cwd: []const u
         credentials.describe(),
         switch (credentials.mode) {
             .chatgpt, .chatgpt_auth_tokens, .agent_identity => cfg.chatgpt_base_url,
-            .api_key, .local_oss => cfg.openai_base_url,
+            .api_key, .local_oss, .provider_no_auth => cfg.openai_base_url,
         },
         cwd,
         cfg.approval_policy.label(),
@@ -3213,7 +3213,7 @@ fn printStatus(
         credentials.describe(),
         switch (credentials.mode) {
             .chatgpt, .chatgpt_auth_tokens, .agent_identity => cfg.chatgpt_base_url,
-            .api_key, .local_oss => cfg.openai_base_url,
+            .api_key, .local_oss, .provider_no_auth => cfg.openai_base_url,
         },
         cwd,
         session_path,

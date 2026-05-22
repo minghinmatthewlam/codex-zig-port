@@ -33,6 +33,7 @@ pub const Credentials = struct {
         agent_identity,
         api_key,
         local_oss,
+        provider_no_auth,
     };
 
     pub fn deinit(self: *Credentials, allocator: std.mem.Allocator) void {
@@ -48,6 +49,7 @@ pub const Credentials = struct {
             .agent_identity => "Access token",
             .api_key => "API key",
             .local_oss => "Local OSS provider",
+            .provider_no_auth => "Provider auth not required",
         };
     }
 };
@@ -166,6 +168,14 @@ pub fn load(allocator: std.mem.Allocator, codex_home: []const u8) !Credentials {
 }
 
 pub fn loadForConfig(allocator: std.mem.Allocator, cfg: *const config.Config) !Credentials {
+    if (!cfg.model_provider_requires_openai_auth and
+        cfg.model_provider_env_key == null and
+        cfg.model_provider_bearer_token == null and
+        cfg.model_provider_auth_command == null)
+    {
+        return providerNoAuthCredentials(allocator);
+    }
+
     return loadWithProviderAuth(
         allocator,
         cfg.codex_home,
@@ -458,12 +468,16 @@ fn loadStoredWithOptions(
 }
 
 pub fn authorizationHeader(allocator: std.mem.Allocator, credentials: Credentials) ![]const u8 {
-    if (credentials.mode == .local_oss) return error.LocalOssAuthHeaderUnavailable;
+    if (credentials.mode == .local_oss or credentials.mode == .provider_no_auth) return error.AuthHeaderUnavailable;
     return std.fmt.allocPrint(allocator, "Bearer {s}", .{credentials.token});
 }
 
 pub fn localOssCredentials(allocator: std.mem.Allocator) !Credentials {
     return .{ .mode = .local_oss, .token = try allocator.dupe(u8, "") };
+}
+
+pub fn providerNoAuthCredentials(allocator: std.mem.Allocator) !Credentials {
+    return .{ .mode = .provider_no_auth, .token = try allocator.dupe(u8, "") };
 }
 
 fn isAgentIdentityAuthMode(mode: []const u8) bool {
@@ -1560,6 +1574,37 @@ test "parses chatgpt auth" {
     try std.testing.expectEqual(Credentials.Mode.chatgpt, creds.mode);
     try std.testing.expectEqualStrings("tok", creds.token);
     try std.testing.expectEqualStrings("acct", creds.account_id.?);
+}
+
+test "loadForConfig accepts providers that do not require auth" {
+    const allocator = std.testing.allocator;
+    const cfg = config.Config{
+        .codex_home = ".",
+        .active_profile = null,
+        .model = "local-model",
+        .model_provider_requires_openai_auth = false,
+        .openai_base_url = "http://127.0.0.1:1234/v1",
+        .chatgpt_base_url = "https://chatgpt.invalid/backend-api/codex",
+        .oss_provider = null,
+        .installation_id = "install-test",
+        .approval_policy = .on_request,
+        .sandbox_mode = .workspace_write,
+        .web_search_mode = null,
+        .model_reasoning_effort = null,
+        .service_tier = null,
+        .syntax_theme = null,
+        .personality = null,
+        .tui_status_line = null,
+        .tui_terminal_title = null,
+        .tui_alternate_screen = .auto,
+    };
+
+    var credentials = try loadForConfig(allocator, &cfg);
+    defer credentials.deinit(allocator);
+
+    try std.testing.expectEqual(Credentials.Mode.provider_no_auth, credentials.mode);
+    try std.testing.expectEqualStrings("", credentials.token);
+    try std.testing.expectError(error.AuthHeaderUnavailable, authorizationHeader(allocator, credentials));
 }
 
 test "cli auth store key uses cli prefix and stable short hash" {

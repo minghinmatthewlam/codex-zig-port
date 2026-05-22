@@ -1872,7 +1872,7 @@ fn hostOwnedCodexAppsServer(
 fn credentialsUseCodexBackend(credentials: auth_mod.Credentials) bool {
     return switch (credentials.mode) {
         .chatgpt, .chatgpt_auth_tokens, .agent_identity => true,
-        .api_key, .local_oss => false,
+        .api_key, .local_oss, .provider_no_auth => false,
     };
 }
 
