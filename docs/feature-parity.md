@@ -42,9 +42,15 @@ Zig TUI help in `src/tui.zig`, and the broader narrative tracker in
   queued input while a turn is running, `/compact` interactions, active tool
   interruption, and accurate background-process cleanup.
 - Close major missing TUI slash commands that affect daily use:
-  `/ide`, `/hooks`, `/skills`, `/goal`, `/agent` / `/subagents`,
+  `/ide`, `/hooks`, `/skills`, `/agent` / `/subagents`,
   `/experimental`, `/approve`, `/memories`, `/apps`, `/plugins`, `/feedback`,
-  `/pets` / `/pet`, `/realtime`, `/settings`, and `/btw`.
+  `/pets` / `/pet`, `/realtime`, and `/settings`.
+- Local `/goal` basic set/view/edit-hint/clear/pause/resume handling is covered
+  in the Zig TUI when the `goals` feature is enabled, and non-empty
+  `/btw <prompt>` is covered as a side-conversation alias. Richer goal
+  picker/editor flows, budget accounting, active-turn integration, remote
+  goal-store parity, and empty side-conversation UI parity remain under the
+  active-turn and session-store buckets.
 - Replace the simple slash-command handling with Rust-like command popup and
   argument flows where they materially affect usability: model picker,
   permissions picker, keymap flow, plan flow, status/title pickers, session
@@ -184,8 +190,8 @@ Zig TUI help in `src/tui.zig`, and the broader narrative tracker in
 2. App-server daemon and remote-control command forms.
 3. Active-turn/TUI lifecycle: interruption, steering, queued input, process
    tracking, and lifecycle notifications.
-4. TUI slash-command feature gaps: `/goal`, `/skills`, `/hooks`, `/apps`,
-   `/plugins`, `/ide`, `/experimental`, and `/approve`.
+4. TUI slash-command feature gaps: `/skills`, `/hooks`, `/apps`, `/plugins`,
+   `/ide`, `/experimental`, and `/approve`.
 5. Plugin CLI `add/list/remove`.
 6. Session/thread store parity needed by resume/fork and desktop clients.
 7. MCP lifecycle depth.

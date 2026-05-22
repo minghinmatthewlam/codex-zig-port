@@ -6,6 +6,7 @@ const api = @import("api.zig");
 const auth = @import("auth.zig");
 const config = @import("config.zig");
 const env = @import("env.zig");
+const features_cmd = @import("features_cmd.zig");
 const git_diff = @import("git_diff.zig");
 const login = @import("login.zig");
 const local_remote_control = @import("local_remote_control.zig");
@@ -57,6 +58,7 @@ pub const Options = struct {
     remote_auth_token_env: ?[]const u8 = null,
     local_remote_control: bool = false,
     remote_control_bind: ?[]const u8 = null,
+    feature_overrides: features_cmd.FeatureOverrides = .{},
 };
 
 pub fn run(allocator: std.mem.Allocator) !void {
@@ -231,6 +233,10 @@ pub fn runWithOptions(allocator: std.mem.Allocator, options: Options) !void {
     if (options.oss) {
         try config.applyOssMode(&cfg, allocator, options.oss_provider, options.runtime_overrides.model != null);
     }
+    var feature_overrides = try features_cmd.loadFeatureOverridesForProfile(allocator, cfg.codex_home, cfg.active_profile);
+    defer feature_overrides.deinit(allocator);
+    try feature_overrides.putAll(allocator, options.feature_overrides);
+    const goals_enabled = feature_overrides.get("goals") orelse false;
 
     var credentials = if (options.oss)
         try auth.localOssCredentials(allocator)
@@ -329,7 +335,7 @@ pub fn runWithOptions(allocator: std.mem.Allocator, options: Options) !void {
     if (options.initial_prompt) |initial_prompt| {
         const prompt = std.mem.trim(u8, initial_prompt, " \t\r\n");
         if (prompt.len > 0) {
-            runPrompt(allocator, cfg, &credentials, &transcript, session_path, prompt, options.additional_writable_roots, pending_input_images) catch |err| {
+            runPrompt(allocator, cfg, &credentials, &transcript, session_path, prompt, options.additional_writable_roots, pending_input_images, feature_overrides) catch |err| {
                 std.debug.print("\nerror: {s}\n", .{@errorName(err)});
             };
             refreshLocalRemoteControlSnapshot(allocator, &local_remote_server, cwd, &transcript);
@@ -371,7 +377,7 @@ pub fn runWithOptions(allocator: std.mem.Allocator, options: Options) !void {
                         std.debug.print("\nremote › {s}\n", .{remote_prompt});
                         const input_images = pending_input_images;
                         pending_input_images = &.{};
-                        runUserPrompt(allocator, cfg, &credentials, &transcript, session_path, remote_prompt, options.additional_writable_roots, &state, input_images) catch |err| {
+                        runUserPrompt(allocator, cfg, &credentials, &transcript, session_path, remote_prompt, options.additional_writable_roots, &state, input_images, feature_overrides) catch |err| {
                             std.debug.print("\nerror: {s}\n", .{@errorName(err)});
                         };
                         refreshLocalRemoteControlSnapshot(allocator, &local_remote_server, cwd, &transcript);
@@ -385,7 +391,7 @@ pub fn runWithOptions(allocator: std.mem.Allocator, options: Options) !void {
             const read_len = try std.posix.read(std.posix.STDIN_FILENO, &stdin_read_buffer);
             if (read_len == 0) {
                 if (stdin_line.items.len > 0) {
-                    const should_quit = try handleInteractivePromptLine(allocator, &cfg, &credentials, &transcript, &session_path, cwd, stdin_line.items, &state, options.additional_writable_roots, &pending_input_images, &local_remote_server, options.remote_control_bind);
+                    const should_quit = try handleInteractivePromptLine(allocator, &cfg, &credentials, &transcript, &session_path, cwd, stdin_line.items, &state, options.additional_writable_roots, &pending_input_images, &local_remote_server, options.remote_control_bind, goals_enabled, feature_overrides);
                     refreshLocalRemoteControlSnapshot(allocator, &local_remote_server, cwd, &transcript);
                     if (should_quit) break;
                 }
@@ -395,7 +401,7 @@ pub fn runWithOptions(allocator: std.mem.Allocator, options: Options) !void {
             for (stdin_read_buffer[0..read_len]) |byte| {
                 if (byte == '\n') {
                     prompt_visible = false;
-                    should_quit = try handleInteractivePromptLine(allocator, &cfg, &credentials, &transcript, &session_path, cwd, stdin_line.items, &state, options.additional_writable_roots, &pending_input_images, &local_remote_server, options.remote_control_bind);
+                    should_quit = try handleInteractivePromptLine(allocator, &cfg, &credentials, &transcript, &session_path, cwd, stdin_line.items, &state, options.additional_writable_roots, &pending_input_images, &local_remote_server, options.remote_control_bind, goals_enabled, feature_overrides);
                     refreshLocalRemoteControlSnapshot(allocator, &local_remote_server, cwd, &transcript);
                     stdin_line.clearRetainingCapacity();
                     if (should_quit) break;
@@ -424,6 +430,8 @@ fn handleInteractivePromptLine(
     pending_input_images: *[]const []const u8,
     local_remote_server: *?local_remote_control.Server,
     remote_control_bind: ?[]const u8,
+    goals_enabled: bool,
+    feature_overrides: features_cmd.FeatureOverrides,
 ) !bool {
     const prompt = std.mem.trim(u8, line, " \t\r\n");
     if (prompt.len == 0) return false;
@@ -434,7 +442,7 @@ fn handleInteractivePromptLine(
         };
         return false;
     }
-    const slash_action = handleSlashCommand(allocator, cfg, credentials, transcript, session_path, cwd, prompt, state, additional_writable_roots, local_remote_server, remote_control_bind) catch |err| {
+    const slash_action = handleSlashCommand(allocator, cfg, credentials, transcript, session_path, cwd, prompt, state, additional_writable_roots, local_remote_server, remote_control_bind, goals_enabled, feature_overrides) catch |err| {
         std.debug.print("error: {s}\n", .{@errorName(err)});
         return false;
     };
@@ -447,7 +455,7 @@ fn handleInteractivePromptLine(
 
     const input_images = pending_input_images.*;
     pending_input_images.* = &.{};
-    runUserPrompt(allocator, cfg.*, credentials, transcript, session_path.*, prompt, additional_writable_roots, state, input_images) catch |err| {
+    runUserPrompt(allocator, cfg.*, credentials, transcript, session_path.*, prompt, additional_writable_roots, state, input_images, feature_overrides) catch |err| {
         std.debug.print("\nerror: {s}\n", .{@errorName(err)});
     };
     return false;
@@ -2424,8 +2432,9 @@ fn runPrompt(
     prompt: []const u8,
     additional_writable_roots: []const []const u8,
     input_images: []const []const u8,
+    feature_overrides: features_cmd.FeatureOverrides,
 ) !void {
-    try runPromptWithToolMode(allocator, cfg, credentials, transcript, session_path, prompt, additional_writable_roots, true, false, input_images);
+    try runPromptWithToolMode(allocator, cfg, credentials, transcript, session_path, prompt, additional_writable_roots, true, false, input_images, feature_overrides);
 }
 
 fn runPromptWithToolMode(
@@ -2439,14 +2448,18 @@ fn runPromptWithToolMode(
     include_tools: bool,
     render_plan_blocks: bool,
     input_images: []const []const u8,
+    feature_overrides: features_cmd.FeatureOverrides,
 ) !void {
     std.debug.print("\nassistant:\n", .{});
+    var turn_feature_overrides = try localTuiTurnFeatureOverrides(allocator, feature_overrides);
+    defer turn_feature_overrides.deinit(allocator);
     const answer = try session.runTurnWithOptions(allocator, cfg, credentials, transcript, prompt, .{
         .stream_text = true,
         .additional_writable_roots = additional_writable_roots,
         .include_tools = include_tools,
         .plan_mode = render_plan_blocks,
         .input_images = input_images,
+        .feature_overrides = turn_feature_overrides,
     });
     defer allocator.free(answer);
     if (render_plan_blocks and answer.len > 0) {
@@ -2470,6 +2483,7 @@ fn runUserPrompt(
     additional_writable_roots: []const []const u8,
     state: *TuiState,
     input_images: []const []const u8,
+    feature_overrides: features_cmd.FeatureOverrides,
 ) !void {
     var expanded_prompt: ?[]const u8 = null;
     defer if (expanded_prompt) |value| allocator.free(value);
@@ -2482,7 +2496,7 @@ fn runUserPrompt(
         break :blk value;
     };
 
-    try runPromptWithToolMode(allocator, cfg, credentials, transcript, session_path, prompt_for_model, additional_writable_roots, !state.plan_mode, state.plan_mode, input_images);
+    try runPromptWithToolMode(allocator, cfg, credentials, transcript, session_path, prompt_for_model, additional_writable_roots, !state.plan_mode, state.plan_mode, input_images, feature_overrides);
     state.clearMentions(allocator);
 }
 
@@ -2493,6 +2507,7 @@ fn runSidePrompt(
     transcript: *const session.Transcript,
     prompt: []const u8,
     additional_writable_roots: []const []const u8,
+    feature_overrides: features_cmd.FeatureOverrides,
 ) !void {
     const trimmed = std.mem.trim(u8, prompt, " \t\r\n");
     if (trimmed.len == 0) {
@@ -2504,14 +2519,31 @@ fn runSidePrompt(
     defer side_transcript.deinit(allocator);
 
     std.debug.print("\nside conversation:\n", .{});
+    var turn_feature_overrides = try localTuiTurnFeatureOverrides(allocator, feature_overrides);
+    defer turn_feature_overrides.deinit(allocator);
     const answer = try session.runTurnWithOptions(allocator, cfg, credentials, &side_transcript, trimmed, .{
         .stream_text = true,
         .additional_writable_roots = additional_writable_roots,
+        .feature_overrides = turn_feature_overrides,
     });
     defer allocator.free(answer);
     if (answer.len == 0 or answer[answer.len - 1] != '\n') {
         std.debug.print("\n", .{});
     }
+}
+
+fn localTuiTurnFeatureOverrides(allocator: std.mem.Allocator, feature_overrides: features_cmd.FeatureOverrides) !features_cmd.FeatureOverrides {
+    var turn_feature_overrides = try feature_overrides.clone(allocator);
+    errdefer turn_feature_overrides.deinit(allocator);
+
+    // The local TUI has no callbacks for these tools yet. Keep the feature
+    // values for local slash-command behavior, but do not advertise tools that
+    // would only return "unavailable" after the model calls them.
+    try turn_feature_overrides.put(allocator, "request_permissions_tool", false);
+    try turn_feature_overrides.put(allocator, "request_user_input_tool", false);
+    try turn_feature_overrides.put(allocator, "default_mode_request_user_input", false);
+    try turn_feature_overrides.put(allocator, "goal_tools", false);
+    return turn_feature_overrides;
 }
 
 fn buildPromptWithMentions(
@@ -2695,6 +2727,8 @@ fn handleSlashCommand(
     additional_writable_roots: []const []const u8,
     local_remote_server: *?local_remote_control.Server,
     remote_control_bind: ?[]const u8,
+    goals_enabled: bool,
+    feature_overrides: features_cmd.FeatureOverrides,
 ) !?SlashAction {
     const parts = parseSlash(prompt) orelse return null;
 
@@ -2706,7 +2740,7 @@ fn handleSlashCommand(
     }
 
     if (std.ascii.eqlIgnoreCase(parts.name, "help")) {
-        printSlashHelp();
+        printSlashHelp(goals_enabled);
         return .handled;
     }
 
@@ -2715,12 +2749,12 @@ fn handleSlashCommand(
             std.debug.print("{s} already exists here. Skipping /init to avoid overwriting it.\n", .{agents_filename});
             return .handled;
         }
-        try runPrompt(allocator, cfg.*, credentials, transcript, session_path.*, init_prompt, additional_writable_roots, &.{});
+        try runPrompt(allocator, cfg.*, credentials, transcript, session_path.*, init_prompt, additional_writable_roots, &.{}, feature_overrides);
         return .handled;
     }
 
     if (std.ascii.eqlIgnoreCase(parts.name, "compact")) {
-        try runCompact(allocator, cfg.*, credentials, transcript, session_path.*, additional_writable_roots);
+        try runCompact(allocator, cfg.*, credentials, transcript, session_path.*, additional_writable_roots, feature_overrides);
         return .handled;
     }
 
@@ -2786,8 +2820,15 @@ fn handleSlashCommand(
         return .handled;
     }
 
-    if (std.ascii.eqlIgnoreCase(parts.name, "side")) {
-        try runSidePrompt(allocator, cfg.*, credentials, transcript, parts.args, additional_writable_roots);
+    if (std.ascii.eqlIgnoreCase(parts.name, "side") or std.ascii.eqlIgnoreCase(parts.name, "btw")) {
+        try runSidePrompt(allocator, cfg.*, credentials, transcript, parts.args, additional_writable_roots, feature_overrides);
+        return .handled;
+    }
+
+    if (std.ascii.eqlIgnoreCase(parts.name, "goal")) {
+        // Rust parity: disabled /goal commands are handled silently.
+        if (!goals_enabled) return .handled;
+        try handleGoalCommand(allocator, transcript, session_path.*, parts.args);
         return .handled;
     }
 
@@ -2851,7 +2892,7 @@ fn handleSlashCommand(
         defer allocator.free(review_prompt);
         var review_cfg = cfg.*;
         review_cfg.model = review.selectedModelForReview(cfg.model, cfg.review_model);
-        try runPrompt(allocator, review_cfg, credentials, transcript, session_path.*, review_prompt, additional_writable_roots, &.{});
+        try runPrompt(allocator, review_cfg, credentials, transcript, session_path.*, review_prompt, additional_writable_roots, &.{}, feature_overrides);
         return .handled;
     }
 
@@ -3008,7 +3049,7 @@ fn parseSlash(prompt: []const u8) ?SlashParts {
     return .{ .name = name, .args = args };
 }
 
-fn printSlashHelp() void {
+fn printSlashHelp(goals_enabled: bool) void {
     std.debug.print(
         \\commands:
         \\  /help             show this help
@@ -3039,6 +3080,13 @@ fn printSlashHelp() void {
         \\  /history [n]      show recent transcript items
         \\  /mention <path>   include a file in the next message
         \\  /side <prompt>    ask in an ephemeral fork
+        \\  /btw <prompt>     alias for /side
+        \\
+    , .{});
+    if (goals_enabled) {
+        std.debug.print("  /goal [command]   show, set, edit, pause, resume, or clear goal\n", .{});
+    }
+    std.debug.print(
         \\  /rollout          show the active session JSONL path
         \\  /sessions [n]     list saved Zig sessions
         \\  /diff             show git status and diff, including untracked files
@@ -3077,6 +3125,7 @@ fn runCompact(
     transcript: *session.Transcript,
     session_path: []const u8,
     additional_writable_roots: []const []const u8,
+    feature_overrides: features_cmd.FeatureOverrides,
 ) !void {
     const previous_items = transcript.history.items.len;
     if (previous_items == 0) {
@@ -3089,6 +3138,7 @@ fn runCompact(
         .stream_text = true,
         .additional_writable_roots = additional_writable_roots,
         .include_tools = false,
+        .feature_overrides = feature_overrides,
     });
     defer allocator.free(answer);
 
@@ -3736,6 +3786,149 @@ fn mentionFile(allocator: std.mem.Allocator, cwd: []const u8, state: *TuiState, 
     std.debug.print("mentioned: {s}\n", .{path});
 }
 
+const max_goal_objective_chars = 4000;
+
+fn handleGoalCommand(
+    allocator: std.mem.Allocator,
+    transcript: *session.Transcript,
+    session_path: []const u8,
+    args: []const u8,
+) !void {
+    const trimmed = std.mem.trim(u8, args, " \t\r\n");
+    if (trimmed.len == 0) {
+        printGoal(transcript);
+        return;
+    }
+
+    if (std.ascii.eqlIgnoreCase(trimmed, "clear")) {
+        const had_goal = transcript.goal != null;
+        if (!had_goal) {
+            std.debug.print("No goal to clear\nThis thread does not currently have a goal.\n", .{});
+            return;
+        }
+        transcript.clearGoal(allocator);
+        try session_store.saveTranscript(allocator, session_path, transcript);
+        std.debug.print("Goal cleared\n", .{});
+        return;
+    }
+
+    if (std.ascii.eqlIgnoreCase(trimmed, "pause")) {
+        try updateGoalStatus(allocator, transcript, session_path, "paused");
+        return;
+    }
+
+    if (std.ascii.eqlIgnoreCase(trimmed, "resume")) {
+        try updateGoalStatus(allocator, transcript, session_path, "active");
+        return;
+    }
+
+    if (std.ascii.eqlIgnoreCase(trimmed, "edit")) {
+        printGoalEditHint(transcript);
+        return;
+    }
+
+    const char_count = std.unicode.utf8CountCodepoints(trimmed) catch trimmed.len;
+    if (char_count > max_goal_objective_chars) {
+        std.debug.print("Goal objective is too long: {d} characters. Limit: {d} characters.\n", .{
+            char_count,
+            max_goal_objective_chars,
+        });
+        return;
+    }
+
+    const now = currentUnixSeconds();
+    try transcript.setGoal(allocator, .{
+        .objective = trimmed,
+        .status = "active",
+        .token_budget = null,
+        .tokens_used = 0,
+        .time_used_seconds = 0,
+        .created_at = now,
+        .updated_at = now,
+    });
+    try session_store.saveTranscript(allocator, session_path, transcript);
+    printGoal(transcript);
+}
+
+fn updateGoalStatus(
+    allocator: std.mem.Allocator,
+    transcript: *session.Transcript,
+    session_path: []const u8,
+    status: []const u8,
+) !void {
+    if (transcript.goal) |*goal| {
+        const copy = try allocator.dupe(u8, status);
+        const previous_status = goal.status;
+        const previous_updated_at = goal.updated_at;
+        goal.status = copy;
+        goal.updated_at = currentUnixSeconds();
+        session_store.saveTranscript(allocator, session_path, transcript) catch |err| {
+            goal.status = previous_status;
+            goal.updated_at = previous_updated_at;
+            allocator.free(copy);
+            return err;
+        };
+        allocator.free(previous_status);
+        printGoal(transcript);
+    } else {
+        std.debug.print("No goal is currently set.\n", .{});
+        return;
+    }
+}
+
+fn printGoal(transcript: *const session.Transcript) void {
+    const goal = transcript.goal orelse {
+        std.debug.print("Usage: /goal <objective>\nNo goal is currently set.\n", .{});
+        return;
+    };
+    std.debug.print("Goal\nStatus: {s}\nObjective: {s}\nTime used: {d}s\nTokens used: {d}\n", .{
+        goalStatusLabel(goal.status),
+        goal.objective,
+        goal.time_used_seconds,
+        goal.tokens_used,
+    });
+    if (goal.token_budget) |budget| {
+        std.debug.print("Token budget: {d}\n", .{budget});
+    }
+    if (goalStatusIsActive(goal.status)) {
+        std.debug.print("\nCommands: /goal edit, /goal pause, /goal clear\n", .{});
+    } else if (goalStatusCanResume(goal.status)) {
+        std.debug.print("\nCommands: /goal edit, /goal resume, /goal clear\n", .{});
+    } else {
+        std.debug.print("\nCommands: /goal edit, /goal clear\n", .{});
+    }
+}
+
+fn goalStatusLabel(status: []const u8) []const u8 {
+    if (std.mem.eql(u8, status, "usageLimited")) return "usage limited";
+    if (std.mem.eql(u8, status, "budgetLimited")) return "limited by budget";
+    return status;
+}
+
+fn goalStatusIsActive(status: []const u8) bool {
+    return std.mem.eql(u8, status, "active");
+}
+
+fn goalStatusCanResume(status: []const u8) bool {
+    return std.mem.eql(u8, status, "paused") or
+        std.mem.eql(u8, status, "blocked") or
+        std.mem.eql(u8, status, "usageLimited");
+}
+
+fn printGoalEditHint(transcript: *const session.Transcript) void {
+    if (transcript.goal == null) {
+        std.debug.print("No goal is currently set.\nUsage: /goal <objective>\n", .{});
+        return;
+    }
+    printGoal(transcript);
+    std.debug.print("Edit goal: enter /goal <objective> to replace the current goal.\n", .{});
+}
+
+fn currentUnixSeconds() i64 {
+    const now_ns = std.Io.Timestamp.now(std.Io.Threaded.global_single_threaded.io(), .real).nanoseconds;
+    return @intCast(@divTrunc(now_ns, 1_000_000_000));
+}
+
 fn printDiff(allocator: std.mem.Allocator, args: []const u8) !void {
     const trimmed = std.mem.trim(u8, args, " \t\r\n");
     if (trimmed.len != 0) {
@@ -4138,6 +4331,14 @@ test "parse slash command names and args" {
     const side = parseSlash("/side explore alternative").?;
     try std.testing.expectEqualStrings("side", side.name);
     try std.testing.expectEqualStrings("explore alternative", side.args);
+
+    const btw = parseSlash("/btw explore alternative").?;
+    try std.testing.expectEqualStrings("btw", btw.name);
+    try std.testing.expectEqualStrings("explore alternative", btw.args);
+
+    const goal = parseSlash("/goal --tokens 98.5K improve coverage").?;
+    try std.testing.expectEqualStrings("goal", goal.name);
+    try std.testing.expectEqualStrings("--tokens 98.5K improve coverage", goal.args);
 
     const rollout = parseSlash("/rollout").?;
     try std.testing.expectEqualStrings("rollout", rollout.name);
@@ -4727,6 +4928,26 @@ test "remote TUI waits past many ignored notifications" {
         .writer = &output.writer,
     };
     try streamRemoteTurnUntilCompleted(&transport, "thread-1", "turn-1");
+}
+
+test "local TUI turn overrides suppress callback-backed tools" {
+    const allocator = std.testing.allocator;
+    var feature_overrides = features_cmd.FeatureOverrides{};
+    defer feature_overrides.deinit(allocator);
+    try feature_overrides.put(allocator, "goals", true);
+    try feature_overrides.put(allocator, "request_permissions_tool", true);
+    try feature_overrides.put(allocator, "request_user_input_tool", true);
+    try feature_overrides.put(allocator, "default_mode_request_user_input", true);
+    try feature_overrides.put(allocator, "goal_tools", true);
+
+    var turn_feature_overrides = try localTuiTurnFeatureOverrides(allocator, feature_overrides);
+    defer turn_feature_overrides.deinit(allocator);
+
+    try std.testing.expectEqual(true, turn_feature_overrides.get("goals").?);
+    try std.testing.expectEqual(false, turn_feature_overrides.get("request_permissions_tool").?);
+    try std.testing.expectEqual(false, turn_feature_overrides.get("request_user_input_tool").?);
+    try std.testing.expectEqual(false, turn_feature_overrides.get("default_mode_request_user_input").?);
+    try std.testing.expectEqual(false, turn_feature_overrides.get("goal_tools").?);
 }
 
 test "parse resume picker selection" {

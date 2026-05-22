@@ -394,6 +394,7 @@ fn mainInner(init: std.process.Init) !void {
             .remote_auth_token_env = overrides.remote_auth_token_env,
             .local_remote_control = overrides.local_remote_control,
             .remote_control_bind = overrides.remote_control_bind,
+            .feature_overrides = runtime_feature_overrides,
         });
         return;
     }
@@ -585,7 +586,7 @@ fn mainInner(init: std.process.Init) !void {
                 printRemoteForkHelp();
                 return;
             }
-            var launch = try prepareSessionLaunchOptions(allocator, overrides, initial_image_files.items, parsed);
+            var launch = try prepareSessionLaunchOptions(allocator, overrides, runtime_feature_overrides, initial_image_files.items, parsed);
             defer launch.deinit(allocator);
             var imported = try remote_fork.importRemoteFork(allocator, parsed.target.?);
             defer imported.deinit(allocator);
@@ -605,7 +606,7 @@ fn mainInner(init: std.process.Init) !void {
                 printResumeHelp();
                 return;
             }
-            var launch = try prepareSessionLaunchOptions(allocator, overrides, initial_image_files.items, parsed);
+            var launch = try prepareSessionLaunchOptions(allocator, overrides, runtime_feature_overrides, initial_image_files.items, parsed);
             defer launch.deinit(allocator);
             if (parsed.last) {
                 var options = launch.tui_options;
@@ -634,7 +635,7 @@ fn mainInner(init: std.process.Init) !void {
                 printForkHelp();
                 return;
             }
-            var launch = try prepareSessionLaunchOptions(allocator, overrides, initial_image_files.items, parsed);
+            var launch = try prepareSessionLaunchOptions(allocator, overrides, runtime_feature_overrides, initial_image_files.items, parsed);
             defer launch.deinit(allocator);
             if (parsed.last) {
                 var options = launch.tui_options;
@@ -695,6 +696,7 @@ fn mainInner(init: std.process.Init) !void {
             .remote_auth_token_env = overrides.remote_auth_token_env,
             .local_remote_control = overrides.local_remote_control,
             .remote_control_bind = overrides.remote_control_bind,
+            .feature_overrides = runtime_feature_overrides,
         });
         return;
     }
@@ -710,6 +712,7 @@ fn mainInner(init: std.process.Init) !void {
         .remote_auth_token_env = overrides.remote_auth_token_env,
         .local_remote_control = overrides.local_remote_control,
         .remote_control_bind = overrides.remote_control_bind,
+        .feature_overrides = runtime_feature_overrides,
     });
 }
 
@@ -1019,6 +1022,7 @@ fn collectRemainingArgs(
 fn prepareSessionLaunchOptions(
     allocator: std.mem.Allocator,
     overrides: CliOverrides,
+    feature_overrides: features_cmd.FeatureOverrides,
     initial_image_files: []const []const u8,
     parsed: SessionCommandArgs,
 ) !SessionLaunchOptions {
@@ -1047,6 +1051,7 @@ fn prepareSessionLaunchOptions(
             .remote_auth_token_env = parsed.remote_auth_token_env orelse overrides.remote_auth_token_env,
             .local_remote_control = overrides.local_remote_control or parsed.local_remote_control,
             .remote_control_bind = parsed.remote_control_bind orelse overrides.remote_control_bind,
+            .feature_overrides = feature_overrides,
         },
     };
 }
