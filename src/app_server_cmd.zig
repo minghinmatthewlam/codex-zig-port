@@ -10926,7 +10926,7 @@ const REQUEST_PERMISSION_PROFILE_JSON_DEFS =
     \\      "properties": {
     \\        "read": { "type": ["array", "null"], "items": { "$ref": "#/$defs/AbsolutePathBuf" } },
     \\        "write": { "type": ["array", "null"], "items": { "$ref": "#/$defs/AbsolutePathBuf" } },
-    \\        "globScanMaxDepth": { "type": ["integer", "null"], "format": "uint", "minimum": 1 },
+    \\        "globScanMaxDepth": { "type": ["integer", "null"], "format": "uint", "minimum": 1, "maximum": 64 },
     \\        "entries": { "type": ["array", "null"], "items": { "$ref": "#/$defs/FileSystemSandboxEntry" } }
     \\      },
     \\      "additionalProperties": true
@@ -10999,7 +10999,7 @@ const PERMISSIONS_REQUEST_APPROVAL_RESPONSE_JSON_SCHEMA =
     \\      "properties": {
     \\        "read": { "type": ["array", "null"], "items": { "$ref": "#/$defs/AbsolutePathBuf" } },
     \\        "write": { "type": ["array", "null"], "items": { "$ref": "#/$defs/AbsolutePathBuf" } },
-    \\        "globScanMaxDepth": { "type": ["integer", "null"], "format": "uint", "minimum": 1 },
+    \\        "globScanMaxDepth": { "type": ["integer", "null"], "format": "uint", "minimum": 1, "maximum": 64 },
     \\        "entries": { "type": ["array", "null"], "items": { "$ref": "#/$defs/FileSystemSandboxEntry" } }
     \\      },
     \\      "additionalProperties": true
@@ -16412,7 +16412,7 @@ const PERMISSION_PROFILE_FILE_SYSTEM_PERMISSIONS_JSON_SCHEMA =
     \\          "type": "array",
     \\          "items": { "$ref": "FileSystemSandboxEntry.json" }
     \\        },
-    \\        "globScanMaxDepth": { "type": ["integer", "null"], "minimum": 1 }
+    \\        "globScanMaxDepth": { "type": ["integer", "null"], "minimum": 1, "maximum": 64 }
     \\      },
     \\      "additionalProperties": true
     \\    },
@@ -18217,7 +18217,7 @@ const GUARDIAN_AUTO_REVIEW_JSON_DEFS =
     \\      "properties": {
     \\        "read": { "type": ["array", "null"], "items": { "$ref": "#/$defs/AbsolutePathBuf" } },
     \\        "write": { "type": ["array", "null"], "items": { "$ref": "#/$defs/AbsolutePathBuf" } },
-    \\        "globScanMaxDepth": { "type": "integer", "format": "uint", "minimum": 1 },
+    \\        "globScanMaxDepth": { "type": "integer", "format": "uint", "minimum": 1, "maximum": 64 },
     \\        "entries": { "type": "array", "items": { "$ref": "#/$defs/FileSystemSandboxEntry" } }
     \\      },
     \\      "additionalProperties": true
@@ -22238,7 +22238,7 @@ const APP_SERVER_PROTOCOL_SCHEMA_BUNDLE =
     \\              "type": "array",
     \\              "items": { "$ref": "#/$defs/FileSystemSandboxEntry" }
     \\            },
-    \\            "globScanMaxDepth": { "type": ["integer", "null"], "minimum": 1 }
+    \\            "globScanMaxDepth": { "type": ["integer", "null"], "minimum": 1, "maximum": 64 }
     \\          },
     \\          "additionalProperties": true
     \\        },
@@ -23300,7 +23300,7 @@ const APP_SERVER_PROTOCOL_SCHEMA_BUNDLE =
     \\      "properties": {
     \\        "read": { "type": ["array", "null"], "items": { "$ref": "#/$defs/AbsolutePathBuf" } },
     \\        "write": { "type": ["array", "null"], "items": { "$ref": "#/$defs/AbsolutePathBuf" } },
-    \\        "globScanMaxDepth": { "type": "integer", "format": "uint", "minimum": 1 },
+    \\        "globScanMaxDepth": { "type": "integer", "format": "uint", "minimum": 1, "maximum": 64 },
     \\        "entries": { "type": "array", "items": { "$ref": "#/$defs/FileSystemSandboxEntry" } }
     \\      },
     \\      "additionalProperties": true
@@ -45136,6 +45136,11 @@ const CommandExecSandbox = struct {
     mode: config.SandboxMode,
     writable_roots: []const []const u8 = &.{},
     readable_roots: []const []const u8 = &.{},
+    readable_globs: []const []const u8 = &.{},
+    readable_root_carveouts: []const []const u8 = &.{},
+    readable_glob_carveouts: []const []const u8 = &.{},
+    writable_globs: []const []const u8 = &.{},
+    allow_glob_max_depth: ?usize = null,
     read_denied_roots: []const []const u8 = &.{},
     read_denied_globs: []const []const u8 = &.{},
     owned_paths: []const []const u8 = &.{},
@@ -45146,6 +45151,10 @@ const CommandExecSandbox = struct {
     fn deinit(self: *CommandExecSandbox, allocator: std.mem.Allocator) void {
         allocator.free(self.writable_roots);
         allocator.free(self.readable_roots);
+        allocator.free(self.readable_globs);
+        allocator.free(self.readable_root_carveouts);
+        allocator.free(self.readable_glob_carveouts);
+        allocator.free(self.writable_globs);
         allocator.free(self.read_denied_roots);
         allocator.free(self.read_denied_globs);
         for (self.owned_paths) |path| allocator.free(path);
@@ -45163,7 +45172,9 @@ const CommandExecPermissionProfileSummary = struct {
     tmpdir_write: bool = false,
     slash_tmp_write: bool = false,
     readable_roots: std.ArrayList([]const u8) = .empty,
+    readable_globs: std.ArrayList([]const u8) = .empty,
     path_writable_roots: std.ArrayList([]const u8) = .empty,
+    writable_globs: std.ArrayList([]const u8) = .empty,
     read_denied_roots: std.ArrayList([]const u8) = .empty,
     read_denied_globs: std.ArrayList([]const u8) = .empty,
     owned_paths: std.ArrayList([]const u8) = .empty,
@@ -45171,7 +45182,9 @@ const CommandExecPermissionProfileSummary = struct {
 
     fn deinit(self: *CommandExecPermissionProfileSummary, allocator: std.mem.Allocator) void {
         self.readable_roots.deinit(allocator);
+        self.readable_globs.deinit(allocator);
         self.path_writable_roots.deinit(allocator);
+        self.writable_globs.deinit(allocator);
         self.read_denied_roots.deinit(allocator);
         self.read_denied_globs.deinit(allocator);
         for (self.owned_paths.items) |path| allocator.free(path);
@@ -45271,7 +45284,7 @@ fn handleCommandExec(allocator: std.mem.Allocator, state: *AppServerState, id_va
             error.InvalidCommandExecPermissionProfileFileSystem => return try renderJsonRpcError(allocator, id_value, -32602, "permissionProfile.fileSystem must be an object"),
             error.InvalidCommandExecPermissionProfileFileSystemType => return try renderJsonRpcError(allocator, id_value, -32602, "permissionProfile.fileSystem.type must be restricted or unrestricted"),
             error.InvalidCommandExecPermissionProfileEntries => return try renderJsonRpcError(allocator, id_value, -32602, "permissionProfile.fileSystem.entries must be an array"),
-            error.InvalidCommandExecPermissionProfileGlobScanMaxDepth => return try renderJsonRpcError(allocator, id_value, -32602, "permissionProfile.fileSystem.globScanMaxDepth must be a positive integer or null"),
+            error.InvalidCommandExecPermissionProfileGlobScanMaxDepth => return try renderJsonRpcError(allocator, id_value, -32602, "permissionProfile.fileSystem.globScanMaxDepth must be a positive integer no greater than 64 or null"),
             error.InvalidCommandExecPermissionProfileEntry => return try renderJsonRpcError(allocator, id_value, -32602, "permissionProfile file-system entries must include object path/access fields"),
             error.UnsupportedCommandExecPermissionProfile => return try renderJsonRpcError(allocator, id_value, -32603, "command/exec permissionProfile shape is parsed but not implemented yet"),
             else => return err,
@@ -45304,6 +45317,11 @@ fn handleCommandExec(allocator: std.mem.Allocator, state: *AppServerState, id_va
             .include_platform_defaults = command_sandbox.include_platform_defaults,
             .network_enabled = command_sandbox.network_enabled,
             .readable_roots = command_sandbox.readable_roots,
+            .readable_globs = command_sandbox.readable_globs,
+            .readable_root_carveouts = command_sandbox.readable_root_carveouts,
+            .readable_glob_carveouts = command_sandbox.readable_glob_carveouts,
+            .writable_globs = command_sandbox.writable_globs,
+            .allow_glob_max_depth = command_sandbox.allow_glob_max_depth,
             .read_denied_roots = command_sandbox.read_denied_roots,
             .read_denied_globs = command_sandbox.read_denied_globs,
         });
@@ -47401,13 +47419,13 @@ fn parseCommandExecPermissionProfile(
     if (file_system_type != .string) return error.InvalidCommandExecPermissionProfileFileSystemType;
 
     if (std.mem.eql(u8, file_system_type.string, "unrestricted")) {
-        try validateCommandExecPermissionProfileGlobScanMaxDepth(file_system_value.object);
+        _ = try parseCommandExecPermissionProfileGlobScanMaxDepth(file_system_value.object);
         return try commandExecFullFilesystemSandbox(allocator, network_enabled);
     }
     if (!std.mem.eql(u8, file_system_type.string, "restricted")) {
         return error.InvalidCommandExecPermissionProfileFileSystemType;
     }
-    try validateCommandExecPermissionProfileGlobScanMaxDepth(file_system_value.object);
+    const glob_scan_max_depth = try parseCommandExecPermissionProfileGlobScanMaxDepth(file_system_value.object);
 
     const entries_value = file_system_value.object.get("entries") orelse return error.InvalidCommandExecPermissionProfileEntries;
     if (entries_value != .array) return error.InvalidCommandExecPermissionProfileEntries;
@@ -47424,11 +47442,11 @@ fn parseCommandExecPermissionProfile(
         if (summary.read_denied_roots.items.len > 0 or summary.read_denied_globs.items.len > 0) {
             const roots = try allocator.alloc([]const u8, 1);
             roots[0] = "/";
-            return try commandExecSandboxFromPermissionSummary(allocator, &summary, .workspace_write, roots, false, network_enabled);
+            return try commandExecSandboxFromPermissionSummary(allocator, &summary, .workspace_write, roots, false, network_enabled, glob_scan_max_depth);
         }
         return try commandExecFullFilesystemSandbox(allocator, network_enabled);
     }
-    if (summary.project_roots_write or summary.tmpdir_write or summary.slash_tmp_write or summary.path_writable_roots.items.len > 0) {
+    if (summary.project_roots_write or summary.tmpdir_write or summary.slash_tmp_write or summary.path_writable_roots.items.len > 0 or summary.writable_globs.items.len > 0) {
         if (!summary.root_read) return error.UnsupportedCommandExecPermissionProfile;
         const explicit_roots = try summary.path_writable_roots.toOwnedSlice(allocator);
         summary.path_writable_roots = .empty;
@@ -47439,13 +47457,13 @@ fn parseCommandExecPermissionProfile(
             if (summary.tmpdir_write) commandExecCurrentAbsoluteEnv("TMPDIR") else null,
             if (summary.slash_tmp_write) "/tmp" else null,
         );
-        return try commandExecSandboxFromPermissionSummary(allocator, &summary, .workspace_write, roots, summary.project_roots_write, network_enabled);
+        return try commandExecSandboxFromPermissionSummary(allocator, &summary, .workspace_write, roots, summary.project_roots_write, network_enabled, glob_scan_max_depth);
     }
     if (summary.root_read) {
-        return try commandExecSandboxFromPermissionSummary(allocator, &summary, .read_only, try allocator.alloc([]const u8, 0), true, network_enabled);
+        return try commandExecSandboxFromPermissionSummary(allocator, &summary, .read_only, try allocator.alloc([]const u8, 0), true, network_enabled, glob_scan_max_depth);
     }
-    if (summary.non_root_read and (summary.readable_roots.items.len > 0 or summary.include_platform_defaults)) {
-        return try commandExecSandboxFromPermissionSummary(allocator, &summary, .read_only, try allocator.alloc([]const u8, 0), true, network_enabled);
+    if (summary.non_root_read and (summary.readable_roots.items.len > 0 or summary.readable_globs.items.len > 0 or summary.include_platform_defaults)) {
+        return try commandExecSandboxFromPermissionSummary(allocator, &summary, .read_only, try allocator.alloc([]const u8, 0), true, network_enabled, glob_scan_max_depth);
     }
     return error.UnsupportedCommandExecPermissionProfile;
 }
@@ -47457,6 +47475,7 @@ fn commandExecSandboxFromPermissionSummary(
     writable_roots: []const []const u8,
     include_cwd_write_root: bool,
     network_enabled: bool,
+    glob_scan_max_depth: ?usize,
 ) !CommandExecSandbox {
     errdefer allocator.free(writable_roots);
 
@@ -47466,6 +47485,29 @@ fn commandExecSandboxFromPermissionSummary(
     const read_denied_globs = try summary.read_denied_globs.toOwnedSlice(allocator);
     summary.read_denied_globs = .empty;
     errdefer allocator.free(read_denied_globs);
+    const readable_root_carveouts = if (summary.root_read) blk: {
+        const roots = try summary.readable_roots.toOwnedSlice(allocator);
+        summary.readable_roots = .empty;
+        break :blk roots;
+    } else try allocator.alloc([]const u8, 0);
+    errdefer allocator.free(readable_root_carveouts);
+    const readable_glob_carveouts = if (summary.root_read) blk: {
+        const globs = try summary.readable_globs.toOwnedSlice(allocator);
+        summary.readable_globs = .empty;
+        break :blk globs;
+    } else try allocator.alloc([]const u8, 0);
+    errdefer allocator.free(readable_glob_carveouts);
+    const readable_globs = if (summary.root_read)
+        try allocator.alloc([]const u8, 0)
+    else blk: {
+        const globs = try summary.readable_globs.toOwnedSlice(allocator);
+        summary.readable_globs = .empty;
+        break :blk globs;
+    };
+    errdefer allocator.free(readable_globs);
+    const writable_globs = try summary.writable_globs.toOwnedSlice(allocator);
+    summary.writable_globs = .empty;
+    errdefer allocator.free(writable_globs);
     const readable_roots = if (summary.root_read)
         try allocator.alloc([]const u8, 0)
     else blk: {
@@ -47483,6 +47525,11 @@ fn commandExecSandboxFromPermissionSummary(
         .mode = mode,
         .writable_roots = writable_roots,
         .readable_roots = readable_roots,
+        .readable_globs = readable_globs,
+        .readable_root_carveouts = readable_root_carveouts,
+        .readable_glob_carveouts = readable_glob_carveouts,
+        .writable_globs = writable_globs,
+        .allow_glob_max_depth = glob_scan_max_depth,
         .read_denied_roots = read_denied_roots,
         .read_denied_globs = read_denied_globs,
         .owned_paths = owned_paths,
@@ -47520,9 +47567,9 @@ fn parseCommandExecPermissionNetwork(value: ?std.json.Value) !bool {
     return enabled.bool;
 }
 
-fn validateCommandExecPermissionProfileGlobScanMaxDepth(object: std.json.ObjectMap) !void {
-    const value = object.get("globScanMaxDepth") orelse return;
-    if (value == .null) return;
+fn parseCommandExecPermissionProfileGlobScanMaxDepth(object: std.json.ObjectMap) !?usize {
+    const value = object.get("globScanMaxDepth") orelse return null;
+    if (value == .null) return null;
     const depth = switch (value) {
         .integer => |integer| blk: {
             if (integer <= 0) return error.InvalidCommandExecPermissionProfileGlobScanMaxDepth;
@@ -47532,6 +47579,9 @@ fn validateCommandExecPermissionProfileGlobScanMaxDepth(object: std.json.ObjectM
         else => return error.InvalidCommandExecPermissionProfileGlobScanMaxDepth,
     };
     if (depth == 0) return error.InvalidCommandExecPermissionProfileGlobScanMaxDepth;
+    if (depth > @as(u64, @intCast(sandbox_mod.max_allow_glob_scan_depth))) return error.InvalidCommandExecPermissionProfileGlobScanMaxDepth;
+    if (depth > std.math.maxInt(usize)) return error.InvalidCommandExecPermissionProfileGlobScanMaxDepth;
+    return @intCast(depth);
 }
 
 fn addCommandExecPermissionProfileEntry(
@@ -47550,8 +47600,12 @@ fn addCommandExecPermissionProfileEntry(
         return;
     }
     if (std.mem.eql(u8, access_value.string, "read")) {
-        if (try commandExecPermissionPathIsGlobPattern(path)) {
-            summary.unsupported = true;
+        if (try commandExecPermissionPathGlobPattern(allocator, path)) |pattern| {
+            errdefer allocator.free(pattern);
+            summary.non_root_read = true;
+            try summary.owned_paths.append(allocator, pattern);
+            errdefer _ = summary.owned_paths.pop();
+            try summary.readable_globs.append(allocator, pattern);
             return;
         }
         if (commandExecPermissionPathIsRoot(path) catch |err| switch (err) {
@@ -47567,8 +47621,11 @@ fn addCommandExecPermissionProfileEntry(
         return error.InvalidCommandExecPermissionProfileEntry;
     }
 
-    if (try commandExecPermissionPathIsGlobPattern(path)) {
-        summary.unsupported = true;
+    if (try commandExecPermissionPathGlobPattern(allocator, path)) |pattern| {
+        errdefer allocator.free(pattern);
+        try summary.owned_paths.append(allocator, pattern);
+        errdefer _ = summary.owned_paths.pop();
+        try summary.writable_globs.append(allocator, pattern);
         return;
     }
     if (try commandExecPermissionPathIsRoot(path)) {
@@ -47615,7 +47672,7 @@ fn addCommandExecPermissionReadDenyRoot(
     path: std.json.Value,
     cwd: ?[]const u8,
 ) !void {
-    if (try commandExecPermissionPathGlobPattern(allocator, path, cwd)) |pattern| {
+    if (try commandExecPermissionPathGlobPattern(allocator, path)) |pattern| {
         errdefer allocator.free(pattern);
         try summary.owned_paths.append(allocator, pattern);
         errdefer _ = summary.owned_paths.pop();
@@ -47760,7 +47817,6 @@ fn commandExecPermissionUnknownSpecialAbsolutePath(
 fn commandExecPermissionPathGlobPattern(
     allocator: std.mem.Allocator,
     value: std.json.Value,
-    cwd: ?[]const u8,
 ) !?[]const u8 {
     if (value != .object) return error.InvalidCommandExecPermissionProfileEntry;
     const type_value = value.object.get("type") orelse return error.InvalidCommandExecPermissionProfileEntry;
@@ -47772,20 +47828,7 @@ fn commandExecPermissionPathGlobPattern(
     if (std.fs.path.isAbsolute(pattern_value.string)) return try allocator.dupe(u8, pattern_value.string);
     if (!commandExecSafeRelativeGlobPattern(pattern_value.string)) return error.InvalidCommandExecPermissionProfileEntry;
 
-    const base = try realPathFileAllocPlain(allocator, cwd orelse ".");
-    defer allocator.free(base);
-    const resolved: []const u8 = try std.fs.path.resolve(allocator, &.{ base, pattern_value.string });
-    return resolved;
-}
-
-fn commandExecPermissionPathIsGlobPattern(value: std.json.Value) !bool {
-    if (value != .object) return error.InvalidCommandExecPermissionProfileEntry;
-    const type_value = value.object.get("type") orelse return error.InvalidCommandExecPermissionProfileEntry;
-    if (type_value != .string) return error.InvalidCommandExecPermissionProfileEntry;
-    if (!std.mem.eql(u8, type_value.string, "glob_pattern")) return false;
-    const pattern_value = value.object.get("pattern") orelse return error.InvalidCommandExecPermissionProfileEntry;
-    if (pattern_value != .string or pattern_value.string.len == 0) return error.InvalidCommandExecPermissionProfileEntry;
-    return true;
+    return try allocator.dupe(u8, pattern_value.string);
 }
 
 fn commandExecSafeRelativeGlobPattern(pattern: []const u8) bool {
