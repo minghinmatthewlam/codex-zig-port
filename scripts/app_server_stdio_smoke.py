@@ -3817,7 +3817,7 @@ def exercise_json_rpc(write_line, read_line) -> None:
     assert thread_goal_set_invalid_status["id"] == "thread-goal-set-invalid-status"
     assert thread_goal_set_invalid_status["error"]["code"] == -32600
     assert (
-        "goal status must be active, paused, budgetLimited, complete, or null"
+        "goal status must be active, paused, blocked, usageLimited, budgetLimited, complete, or null"
         in thread_goal_set_invalid_status["error"]["message"]
     )
 
@@ -20101,7 +20101,7 @@ def run_goal_state_db_smoke(binary: Path) -> None:
                     thread_id TEXT PRIMARY KEY NOT NULL REFERENCES threads(id) ON DELETE CASCADE,
                     goal_id TEXT NOT NULL,
                     objective TEXT NOT NULL,
-                    status TEXT NOT NULL CHECK(status IN ('active', 'paused', 'budget_limited', 'complete')),
+                    status TEXT NOT NULL CHECK(status IN ('active', 'paused', 'blocked', 'usage_limited', 'budget_limited', 'complete')),
                     token_budget INTEGER,
                     tokens_used INTEGER NOT NULL DEFAULT 0,
                     time_used_seconds INTEGER NOT NULL DEFAULT 0,
@@ -20278,6 +20278,36 @@ def run_goal_state_db_smoke(binary: Path) -> None:
             assert preserved_budget_limited["result"]["goal"]["status"] == "budgetLimited"
             assert preserved_budget_limited["result"]["goal"]["tokenBudget"] == 123
             assert preserved_budget_limited["result"]["goal"]["tokensUsed"] == 124
+            assert read_json_line(proc, 5)["method"] == "thread/goal/updated"
+            assert (
+                sqlite_row(
+                    state_db_path,
+                    "SELECT status, token_budget FROM thread_goals WHERE thread_id = ?",
+                    (thread_id,),
+                )
+                == ("budget_limited", 123)
+            )
+
+            write_json_line(
+                proc,
+                {
+                    "jsonrpc": "2.0",
+                    "id": "thread-goal-preserve-budget-limited-blocked-state-db-unloaded",
+                    "method": "thread/goal/set",
+                    "params": {
+                        "threadId": thread_id,
+                        "objective": "persist state db goal",
+                        "status": "blocked",
+                    },
+                },
+            )
+            preserved_budget_limited_blocked = read_json_line(proc, 5)
+            assert (
+                preserved_budget_limited_blocked["id"]
+                == "thread-goal-preserve-budget-limited-blocked-state-db-unloaded"
+            )
+            assert preserved_budget_limited_blocked["result"]["goal"]["status"] == "budgetLimited"
+            assert preserved_budget_limited_blocked["result"]["goal"]["tokenBudget"] == 123
             assert read_json_line(proc, 5)["method"] == "thread/goal/updated"
             assert (
                 sqlite_row(
@@ -47967,6 +47997,8 @@ def run_json_schema_smoke(binary: Path) -> None:
         assert thread_goal_status["enum"] == [
             "active",
             "paused",
+            "blocked",
+            "usageLimited",
             "budgetLimited",
             "complete",
         ]
@@ -52808,7 +52840,7 @@ def run_typescript_generation_smoke(binary: Path) -> None:
             out_dir / "v2" / "ThreadGoalStatus.ts"
         ).read_text(encoding="utf-8")
         assert (
-            'export type ThreadGoalStatus = "active" | "paused" | "budgetLimited" | "complete";'
+            'export type ThreadGoalStatus = "active" | "paused" | "blocked" | "usageLimited" | "budgetLimited" | "complete";'
             in thread_goal_status
         )
         thread_goal = (out_dir / "v2" / "ThreadGoal.ts").read_text(

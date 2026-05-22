@@ -648,7 +648,7 @@ pub fn updateThreadGoal(
     var status = update.status orelse existing.status;
     if (std.mem.eql(u8, existing.status, "budgetLimited") and
         update.status != null and
-        std.mem.eql(u8, update.status.?, "paused"))
+        budgetLimitedPreservesStatus(update.status.?))
     {
         status = "budgetLimited";
     }
@@ -799,13 +799,33 @@ fn threadGoalFromStatement(allocator: std.mem.Allocator, statement: *sqlite.Stat
 }
 
 fn apiGoalStatus(status: []const u8) []const u8 {
+    if (std.mem.eql(u8, status, "usage_limited")) return "usageLimited";
     if (std.mem.eql(u8, status, "budget_limited")) return "budgetLimited";
     return status;
 }
 
 fn stateGoalStatus(status: []const u8) []const u8 {
+    if (std.mem.eql(u8, status, "usageLimited")) return "usage_limited";
     if (std.mem.eql(u8, status, "budgetLimited")) return "budget_limited";
     return status;
+}
+
+fn budgetLimitedPreservesStatus(requested_status: []const u8) bool {
+    return std.mem.eql(u8, requested_status, "paused") or std.mem.eql(u8, requested_status, "blocked");
+}
+
+test "thread goal status maps api and stored variants" {
+    try std.testing.expectEqualStrings("usageLimited", apiGoalStatus("usage_limited"));
+    try std.testing.expectEqualStrings("budgetLimited", apiGoalStatus("budget_limited"));
+    try std.testing.expectEqualStrings("blocked", apiGoalStatus("blocked"));
+
+    try std.testing.expectEqualStrings("usage_limited", stateGoalStatus("usageLimited"));
+    try std.testing.expectEqualStrings("budget_limited", stateGoalStatus("budgetLimited"));
+    try std.testing.expectEqualStrings("blocked", stateGoalStatus("blocked"));
+
+    try std.testing.expect(budgetLimitedPreservesStatus("paused"));
+    try std.testing.expect(budgetLimitedPreservesStatus("blocked"));
+    try std.testing.expect(!budgetLimitedPreservesStatus("complete"));
 }
 
 fn statusAfterBudgetLimit(status: []const u8, tokens_used: i64, token_budget: ?i64) []const u8 {

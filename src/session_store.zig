@@ -948,10 +948,25 @@ fn applyStoredTokenUsageInfo(transcript: *session.Transcript, object: std.json.O
 fn normalizeGoalStatus(status: []const u8) ?[]const u8 {
     if (std.mem.eql(u8, status, "active")) return status;
     if (std.mem.eql(u8, status, "paused")) return status;
+    if (std.mem.eql(u8, status, "blocked")) return status;
+    if (std.mem.eql(u8, status, "usageLimited")) return status;
+    if (std.mem.eql(u8, status, "usage_limited")) return "usageLimited";
     if (std.mem.eql(u8, status, "budgetLimited")) return status;
     if (std.mem.eql(u8, status, "budget_limited")) return "budgetLimited";
     if (std.mem.eql(u8, status, "complete")) return status;
     return null;
+}
+
+test "session store normalizes all Rust goal statuses" {
+    try std.testing.expectEqualStrings("active", normalizeGoalStatus("active").?);
+    try std.testing.expectEqualStrings("paused", normalizeGoalStatus("paused").?);
+    try std.testing.expectEqualStrings("blocked", normalizeGoalStatus("blocked").?);
+    try std.testing.expectEqualStrings("usageLimited", normalizeGoalStatus("usageLimited").?);
+    try std.testing.expectEqualStrings("usageLimited", normalizeGoalStatus("usage_limited").?);
+    try std.testing.expectEqualStrings("budgetLimited", normalizeGoalStatus("budgetLimited").?);
+    try std.testing.expectEqualStrings("budgetLimited", normalizeGoalStatus("budget_limited").?);
+    try std.testing.expectEqualStrings("complete", normalizeGoalStatus("complete").?);
+    try std.testing.expectEqual(@as(?[]const u8, null), normalizeGoalStatus("stopped"));
 }
 
 fn jsonStringField(object: std.json.ObjectMap, name: []const u8) ?[]const u8 {

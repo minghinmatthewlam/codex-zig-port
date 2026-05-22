@@ -881,9 +881,9 @@ pub fn buildRequestBodyWithOptions(
         const update_goal_tool = Tool{
             .type = "function",
             .name = "update_goal",
-            .description = "Update the existing goal.\nUse this tool only to mark the goal achieved.\nSet status to `complete` only when the objective has actually been achieved and no required work remains.\nDo not mark a goal complete merely because its budget is nearly exhausted or because you are stopping work.\nYou cannot use this tool to pause, resume, or budget-limit a goal; those status changes are controlled by the user or system.\nWhen marking a budgeted goal achieved with status `complete`, report the final token usage from the tool result to the user.",
+            .description = "Update the existing goal.\nUse this tool only to mark the goal achieved or blocked.\nSet status to `complete` only when the objective has actually been achieved and no required work remains.\nSet status to `blocked` only when the goal cannot currently proceed until something external changes.\nDo not mark a goal complete merely because its budget is nearly exhausted or because you are stopping work.\nYou cannot use this tool to pause, resume, or budget-limit a goal; those status changes are controlled by the user or system.\nWhen marking a budgeted goal achieved with status `complete`, report the final token usage from the tool result to the user.",
             .parameters = try appendParsedJsonValue(allocator, &parsed_parameter_values,
-                \\{"type":"object","properties":{"status":{"type":"string","enum":["complete"],"description":"Required. Set to complete only when the objective is achieved and no required work remains."}},"required":["status"],"additionalProperties":false}
+                \\{"type":"object","properties":{"status":{"type":"string","enum":["complete","blocked"],"description":"Required. Set to complete only when the objective is achieved and no required work remains. Set to blocked only when the goal cannot currently proceed without a user decision, missing dependency, or external unblock."}},"required":["status"],"additionalProperties":false}
             ),
         };
         const list_mcp_resources_tool = Tool{
@@ -2095,6 +2095,7 @@ test "goal tools are exposed when enabled for loaded turns" {
             saw_update = true;
             const status = tool.object.get("parameters").?.object.get("properties").?.object.get("status").?.object;
             try std.testing.expectEqualStrings("complete", status.get("enum").?.array.items[0].string);
+            try std.testing.expectEqualStrings("blocked", status.get("enum").?.array.items[1].string);
         }
     }
     try std.testing.expect(saw_get);

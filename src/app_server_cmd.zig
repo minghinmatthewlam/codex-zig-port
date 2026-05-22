@@ -7460,7 +7460,7 @@ const THREAD_SET_NAME_RESPONSE_TS =
 
 const THREAD_GOAL_STATUS_TS =
     GENERATED_TS_HEADER ++
-    \\export type ThreadGoalStatus = "active" | "paused" | "budgetLimited" | "complete";
+    \\export type ThreadGoalStatus = "active" | "paused" | "blocked" | "usageLimited" | "budgetLimited" | "complete";
     \\
     ;
 
@@ -19014,7 +19014,7 @@ const THREAD_GOAL_STATUS_JSON_SCHEMA =
     \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
     \\  "title": "ThreadGoalStatus",
     \\  "type": "string",
-    \\  "enum": ["active", "paused", "budgetLimited", "complete"]
+    \\  "enum": ["active", "paused", "blocked", "usageLimited", "budgetLimited", "complete"]
     \\}
     \\
 ;
@@ -19038,7 +19038,7 @@ const THREAD_GOAL_JSON_SCHEMA =
     \\  "$defs": {
     \\    "ThreadGoalStatus": {
     \\      "type": "string",
-    \\      "enum": ["active", "paused", "budgetLimited", "complete"]
+    \\      "enum": ["active", "paused", "blocked", "usageLimited", "budgetLimited", "complete"]
     \\    }
     \\  },
     \\  "additionalProperties": false
@@ -19066,7 +19066,7 @@ const THREAD_GOAL_SET_PARAMS_JSON_SCHEMA =
     \\  "$defs": {
     \\    "ThreadGoalStatus": {
     \\      "type": "string",
-    \\      "enum": ["active", "paused", "budgetLimited", "complete"]
+    \\      "enum": ["active", "paused", "blocked", "usageLimited", "budgetLimited", "complete"]
     \\    }
     \\  },
     \\  "additionalProperties": true
@@ -19086,7 +19086,7 @@ const THREAD_GOAL_SET_RESPONSE_JSON_SCHEMA =
     \\  "$defs": {
     \\    "ThreadGoalStatus": {
     \\      "type": "string",
-    \\      "enum": ["active", "paused", "budgetLimited", "complete"]
+    \\      "enum": ["active", "paused", "blocked", "usageLimited", "budgetLimited", "complete"]
     \\    },
     \\    "ThreadGoal": {
     \\      "type": "object",
@@ -19140,7 +19140,7 @@ const THREAD_GOAL_GET_RESPONSE_JSON_SCHEMA =
     \\  "$defs": {
     \\    "ThreadGoalStatus": {
     \\      "type": "string",
-    \\      "enum": ["active", "paused", "budgetLimited", "complete"]
+    \\      "enum": ["active", "paused", "blocked", "usageLimited", "budgetLimited", "complete"]
     \\    },
     \\    "ThreadGoal": {
     \\      "type": "object",
@@ -19205,7 +19205,7 @@ const THREAD_GOAL_UPDATED_NOTIFICATION_JSON_SCHEMA =
     \\  "$defs": {
     \\    "ThreadGoalStatus": {
     \\      "type": "string",
-    \\      "enum": ["active", "paused", "budgetLimited", "complete"]
+    \\      "enum": ["active", "paused", "blocked", "usageLimited", "budgetLimited", "complete"]
     \\    },
     \\    "ThreadGoal": {
     \\      "type": "object",
@@ -23799,7 +23799,7 @@ const APP_SERVER_PROTOCOL_SCHEMA_BUNDLE =
     \\    },
     \\    "ThreadGoalStatus": {
     \\      "type": "string",
-    \\      "enum": ["active", "paused", "budgetLimited", "complete"]
+    \\      "enum": ["active", "paused", "blocked", "usageLimited", "budgetLimited", "complete"]
     \\    },
     \\    "ThreadGoal": {
     \\      "type": "object",
@@ -27357,8 +27357,8 @@ fn validateUpdateGoalToolParams(object: std.json.ObjectMap) ?[]const u8 {
         return "update_goal only accepts status";
     }
     const status = object.get("status") orelse return "goal status is required";
-    if (status != .string or !std.mem.eql(u8, status.string, "complete")) {
-        return "update_goal can only mark the existing goal complete; pause, resume, and budget-limited status changes are controlled by the user or system";
+    if (status != .string or !(std.mem.eql(u8, status.string, "complete") or std.mem.eql(u8, status.string, "blocked"))) {
+        return "update_goal can only mark the existing goal complete or blocked; pause, resume, and budget-limited status changes are controlled by the user or system";
     }
     return null;
 }
@@ -33546,12 +33546,16 @@ fn loadedThreadGoalStatusAfterBudgetLimit(status: []const u8, tokens_used: i64, 
 
 fn loadedThreadGoalUpdatedStatus(existing_status: []const u8, status: ?[]const u8, tokens_used: i64, token_budget: ?i64) []const u8 {
     if (status) |requested_status| {
-        if (std.mem.eql(u8, existing_status, "budgetLimited") and std.mem.eql(u8, requested_status, "paused")) {
+        if (std.mem.eql(u8, existing_status, "budgetLimited") and budgetLimitedPreservesStatus(requested_status)) {
             return "budgetLimited";
         }
         return loadedThreadGoalStatusAfterBudgetLimit(requested_status, tokens_used, token_budget);
     }
     return loadedThreadGoalStatusAfterBudgetLimit(existing_status, tokens_used, token_budget);
+}
+
+fn budgetLimitedPreservesStatus(requested_status: []const u8) bool {
+    return std.mem.eql(u8, requested_status, "paused") or std.mem.eql(u8, requested_status, "blocked");
 }
 
 fn clearLoadedThreadGoal(allocator: std.mem.Allocator, thread: *LoadedThread) !bool {
@@ -42119,7 +42123,7 @@ fn validateThreadGoalSetParams(object: std.json.ObjectMap) ?[]const u8 {
         }
     }
     if (object.get("status")) |value| {
-        if (!optionalEnumStringIsValid(value, &.{ "active", "paused", "budgetLimited", "complete" })) return "goal status must be active, paused, budgetLimited, complete, or null";
+        if (!optionalEnumStringIsValid(value, &.{ "active", "paused", "blocked", "usageLimited", "budgetLimited", "complete" })) return "goal status must be active, paused, blocked, usageLimited, budgetLimited, complete, or null";
     }
     if (object.get("tokenBudget")) |value| {
         if (validateThreadGoalBudgetValue(value, "tokenBudget", has_objective, has_token_budget)) |message| return message;
@@ -65097,6 +65101,30 @@ test "app-server goal accounting derives token and elapsed usage from baselines"
     }));
     try std.testing.expectEqual(@as(i64, 70), loadedThreadGoalStartTotalForSavedUsage(100, 30));
     try std.testing.expectEqual(@as(i64, -30), loadedThreadGoalStartTotalForSavedUsage(0, 30));
+}
+
+test "app-server thread goal status matches Rust variants" {
+    try std.testing.expect(std.mem.indexOf(u8, THREAD_GOAL_STATUS_TS, "\"blocked\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, THREAD_GOAL_STATUS_TS, "\"usageLimited\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, THREAD_GOAL_STATUS_JSON_SCHEMA, "\"blocked\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, THREAD_GOAL_STATUS_JSON_SCHEMA, "\"usageLimited\"") != null);
+
+    const allocator = std.testing.allocator;
+    for ([_][]const u8{ "active", "paused", "blocked", "usageLimited", "budgetLimited", "complete" }) |status| {
+        const input = try std.fmt.allocPrint(allocator, "{{\"threadId\":\"thread-1\",\"status\":\"{s}\"}}", .{status});
+        defer allocator.free(input);
+        var parsed = try std.json.parseFromSlice(std.json.Value, allocator, input, .{});
+        defer parsed.deinit();
+        try std.testing.expectEqual(@as(?[]const u8, null), validateThreadGoalSetParams(parsed.value.object));
+    }
+
+    try std.testing.expectEqualStrings("budgetLimited", loadedThreadGoalUpdatedStatus("budgetLimited", "paused", 124, 123));
+    try std.testing.expectEqualStrings("budgetLimited", loadedThreadGoalUpdatedStatus("budgetLimited", "blocked", 124, 123));
+    try std.testing.expectEqualStrings("complete", loadedThreadGoalUpdatedStatus("budgetLimited", "complete", 124, 123));
+
+    var blocked_tool = try std.json.parseFromSlice(std.json.Value, allocator, "{\"status\":\"blocked\"}", .{});
+    defer blocked_tool.deinit();
+    try std.testing.expectEqual(@as(?[]const u8, null), validateUpdateGoalToolParams(blocked_tool.value.object));
 }
 
 test "app-server goal reads persist refreshed accounting" {
