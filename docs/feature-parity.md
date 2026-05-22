@@ -72,7 +72,10 @@ Zig TUI help in `src/tui.zig`, and the broader narrative tracker in
   current bounded Zig checks.
 - Add root and exec support for `--strict-config`.
 - Add root and exec support for `--profile-v2 <CONFIG_PROFILE_V2>`.
-- Add root and exec support for `--dangerously-bypass-hook-trust`.
+- Root and exec `--dangerously-bypass-hook-trust` parsing is implemented, and
+  app-server plus non-interactive exec/review hook execution now runs enabled
+  untrusted/modified hooks for that invocation while preserving disabled hook
+  state.
 - Decide whether unknown bare top-level command names that match Rust
   subcommands but are not implemented should launch the TUI as a prompt or fail
   with a command error now that `doctor` has a real command path.
@@ -148,7 +151,7 @@ Zig TUI help in `src/tui.zig`, and the broader narrative tracker in
   network allow-list policy, network proxy behavior, and recursive descendant
   denial tracking.
 - Align command/tool approval flows with Rust for additional permission
-  requests, auto-review denials, hook trust bypass, and guardian retry behavior.
+  requests, auto-review denials, and guardian retry behavior.
 
 ### Cloud and Desktop Features
 
