@@ -63,15 +63,19 @@ Zig TUI help in `src/tui.zig`, and the broader narrative tracker in
 
 ### Root CLI Command and Flag Coverage
 
-- Implement `codex doctor`. Rust exposes `doctor --json`, `--summary`, `--all`,
-  `--no-color`, and `--ascii`; Zig currently has no `doctor` command and treats
-  `doctor --help` as an interactive prompt.
+- Basic `codex doctor` command routing is implemented in Zig with Rust-shaped
+  help, human output, JSON top-level fields, grouped check rows, and
+  `--json`, `--summary`, `--all`, `--no-color`, `--ascii`, `-c/--config`,
+  `--enable`, and `--disable` parsing. Remaining doctor parity is exact
+  diagnostic depth: Rust's full installation, search, state DB, WebSocket,
+  provider reachability, and background-daemon probes are deeper than the
+  current bounded Zig checks.
 - Add root and exec support for `--strict-config`.
 - Add root and exec support for `--profile-v2 <CONFIG_PROFILE_V2>`.
 - Add root and exec support for `--dangerously-bypass-hook-trust`.
 - Decide whether unknown bare top-level command names that match Rust
   subcommands but are not implemented should launch the TUI as a prompt or fail
-  with a command error. `doctor` currently demonstrates the surprising path.
+  with a command error now that `doctor` has a real command path.
 
 ### App-Server Daemon and Remote Control
 
@@ -185,8 +189,8 @@ Zig TUI help in `src/tui.zig`, and the broader narrative tracker in
 
 ## Current Working Order
 
-1. Root CLI command/flag parity: `doctor`, `--strict-config`, `--profile-v2`,
-   and hook-trust bypass.
+1. Root CLI command/flag parity: finish doctor diagnostic depth, then add
+   `--strict-config`, `--profile-v2`, and hook-trust bypass.
 2. App-server daemon and remote-control command forms.
 3. Active-turn/TUI lifecycle: interruption, steering, queued input, process
    tracking, and lifecycle notifications.

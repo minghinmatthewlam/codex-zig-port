@@ -11,6 +11,7 @@ const cloud_cmd = @import("cloud_cmd.zig");
 const completion_cmd = @import("completion_cmd.zig");
 const config = @import("config.zig");
 const debug_cmd = @import("debug_cmd.zig");
+const doctor_cmd = @import("doctor_cmd.zig");
 const env = @import("env.zig");
 const exec = @import("exec.zig");
 const exec_server_cmd = @import("exec_server_cmd.zig");
@@ -79,6 +80,7 @@ pub fn main(init: std.process.Init) !void {
                 "error: update command failed\n",
                 .{},
             ),
+            error.DoctorChecksFailed => {},
             error.ResponsesApiProxyHelpRequested => std.process.exit(0),
             error.ResponsesApiProxyMissingApiKey => std.debug.print(
                 "error: API key must be provided via stdin (e.g. printenv OPENAI_API_KEY | codex responses-api-proxy)\n",
@@ -454,6 +456,17 @@ fn mainInner(init: std.process.Init) !void {
             try login.runLogout(allocator);
             return;
         }
+        if (std.mem.eql(u8, cmd, "doctor")) {
+            try doctor_cmd.runWithOptions(allocator, &args, .{
+                .profile = overrides.profile,
+                .runtime_overrides = overrides.runtime,
+                .feature_overrides = runtime_feature_overrides,
+                .oss = overrides.oss,
+                .oss_provider = overrides.oss_provider,
+                .version = version,
+            });
+            return;
+        }
         if (std.mem.eql(u8, cmd, "review")) {
             try review.runWithOptions(allocator, &args, .{
                 .profile = overrides.profile,
@@ -794,6 +807,7 @@ fn commandRejectsRootRemote(cmd: []const u8) bool {
     return std.mem.eql(u8, cmd, "auth-status") or
         std.mem.eql(u8, cmd, "login") or
         std.mem.eql(u8, cmd, "logout") or
+        std.mem.eql(u8, cmd, "doctor") or
         std.mem.eql(u8, cmd, "review") or
         std.mem.eql(u8, cmd, "sandbox") or
         std.mem.eql(u8, cmd, "features") or
@@ -873,6 +887,8 @@ fn runHelpCommand(args: *std.process.Args.Iterator) !void {
         login.printLoginHelp();
     } else if (std.mem.eql(u8, target, "logout")) {
         printLogoutHelp();
+    } else if (std.mem.eql(u8, target, "doctor")) {
+        doctor_cmd.printHelp();
     } else if (std.mem.eql(u8, target, "mcp")) {
         mcp_cmd.printHelp();
     } else if (std.mem.eql(u8, target, "mcp-server")) {
@@ -1328,6 +1344,7 @@ fn printHelp() !void {
         \\  codex-zig remote-control
         \\                          Headless app-server remote control
         \\  codex-zig auth-status  Check local Codex auth reuse
+        \\  codex-zig doctor       Diagnose local installation and config
         \\  codex-zig help [COMMAND]
         \\                          Print general or command-specific help
         \\  codex-zig --profile NAME ...
@@ -1853,6 +1870,7 @@ test "root remote is only accepted for interactive commands" {
     try std.testing.expect(commandRejectsRootRemote("remote-control"));
     try std.testing.expect(commandRejectsRootRemote("cloud"));
     try std.testing.expect(commandRejectsRootRemote("cloud-tasks"));
+    try std.testing.expect(commandRejectsRootRemote("doctor"));
     try std.testing.expect(commandRejectsRootRemote("update"));
     try std.testing.expect(commandRejectsRootRemote("responses-api-proxy"));
     try std.testing.expect(!commandRejectsRootRemote("resume"));

@@ -16,6 +16,18 @@ Feature-only parity priorities are tracked separately in
 `docs/feature-parity.md`. This file remains the detailed runtime, protocol,
 schema, and edge-case parity ledger.
 
+Current `codex doctor` coverage: Zig routes `doctor` as a real top-level
+subcommand instead of treating it as an interactive prompt, supports
+command-specific help plus Rust-visible `--json`, `--summary`, `--all`,
+`--no-color`, `--ascii`, `-c/--config`, `--enable`, and `--disable` flags, and
+emits a Rust-shaped JSON report with `schemaVersion`, `generatedAt`,
+`overallStatus`, `codexVersion`, and a check map keyed by diagnostic ID. The
+bounded local checks cover install/update detection, runtime, search mode,
+config load, auth presence, MCP config parsing, sandbox config, network env,
+app-server paths, terminal streams, and state paths. Rust's deeper reachability,
+WebSocket, state DB integrity, background daemon, bundled-search, and detailed
+installation probes remain planned exact-depth parity.
+
 Current app-server `hooks/list` coverage: user `$CODEX_HOME/config.toml`,
 `$CODEX_HOME/hooks.json`, per-cwd `.codex/config.toml`, and per-cwd
 `.codex/hooks.json` command hooks, Rust-shaped `cwds` params and JSON fields,
