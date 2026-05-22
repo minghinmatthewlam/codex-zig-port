@@ -28,6 +28,7 @@ const modules = .{
     @import("git_apply.zig"),
     @import("git_diff.zig"),
     @import("git_remote_diff.zig"),
+    @import("hook_runtime.zig"),
     @import("hooks_list.zig"),
     @import("input_images.zig"),
     @import("login.zig"),

@@ -5,6 +5,7 @@ const cli_utils = @import("cli_utils.zig");
 const config = @import("config.zig");
 const features_cmd = @import("features_cmd.zig");
 const git_diff = @import("git_diff.zig");
+const hook_runtime = @import("hook_runtime.zig");
 const review_output = @import("review_output.zig");
 const review_prompt = @import("review_prompt.zig");
 const session = @import("session.zig");
@@ -100,6 +101,9 @@ pub fn runRawArgsWithOptions(allocator: std.mem.Allocator, raw_args: []const []c
         runtime_overrides.sandbox_mode = .danger_full_access;
     }
     try config.applyRuntimeOverrides(&cfg, allocator, runtime_overrides);
+    if (cfg.bypass_hook_trust) {
+        try cli_utils.writeStderr("warning: " ++ hook_runtime.BYPASS_HOOK_TRUST_WARNING ++ "\n");
+    }
     if (options.oss) {
         try config.applyOssMode(&cfg, allocator, options.oss_provider, runtime_overrides.model != null);
     }
@@ -140,15 +144,50 @@ pub fn runRawArgsWithOptions(allocator: std.mem.Allocator, raw_args: []const []c
     else
         try session_store.createSessionPath(allocator, cfg.codex_home);
     defer if (session_path) |path| allocator.free(path);
+    if (session_path) |path| {
+        try session_store.saveTranscript(allocator, path, &transcript);
+    }
 
     const effective_json_events = options.json_events or parsed.json;
     var output_schema = try review_output.parseOutputSchema(allocator);
     defer output_schema.deinit();
+    const cwd = try std.Io.Dir.cwd().realPathFileAlloc(std.Io.Threaded.global_single_threaded.io(), ".", allocator);
+    defer allocator.free(cwd);
+    const hook_session_id = try hook_runtime.sessionIdForPayload(allocator, session_path, "review");
+    defer allocator.free(hook_session_id);
+    const hook_turn_id = try hook_runtime.turnIdForPayload(allocator, "review-turn");
+    defer allocator.free(hook_turn_id);
+    var hook_result = try hook_runtime.runPromptHooks(allocator, .{
+        .codex_home = cfg.codex_home,
+        .cwd = cwd,
+        .session_id = hook_session_id,
+        .turn_id = hook_turn_id,
+        .transcript_path = session_path,
+        .model = cfg.model,
+        .approval_policy = cfg.approval_policy,
+        .prompt = prompt,
+        .session_start_source = "startup",
+        .bypass_hook_trust = cfg.bypass_hook_trust,
+        .hooks_enabled = feature_overrides.get("hooks") orelse true,
+        .ignore_user_config = effective_ignore_user_config,
+    });
+    defer hook_result.deinit(allocator);
+    try hook_runtime.writeMessagesToStderr(hook_result.messages.items);
+    if (hook_result.should_stop) {
+        try hook_runtime.appendStoppedContexts(allocator, &transcript, &hook_result);
+        if (session_path) |path| {
+            try session_store.saveTranscript(allocator, path, &transcript);
+        }
+        return error.HookStoppedTurn;
+    }
+
     const answer = try session.runTurnWithOptions(allocator, cfg, &credentials, &transcript, prompt, .{
         .prompt_for_approval = false,
         .feature_overrides = feature_overrides,
         .json_events = effective_json_events,
         .output_schema = output_schema.value,
+        .developer_messages_before_user = hook_result.session_start_contexts.items,
+        .developer_messages_after_user = hook_result.contexts.items,
     });
     defer allocator.free(answer);
     const display_answer = try review_output.renderText(allocator, answer);
@@ -266,6 +305,10 @@ fn parseArgsWithOptions(allocator: std.mem.Allocator, args: []const []const u8, 
         }
         if (!end_options and parse_options.allow_exec_options and std.mem.eql(u8, arg, "--dangerously-bypass-approvals-and-sandbox")) {
             parsed.dangerously_bypass_approvals_and_sandbox = true;
+            continue;
+        }
+        if (!end_options and parse_options.allow_exec_options and std.mem.eql(u8, arg, "--dangerously-bypass-hook-trust")) {
+            parsed.config_overrides.bypass_hook_trust = true;
             continue;
         }
         if (!end_options and std.mem.eql(u8, arg, "--uncommitted")) {
@@ -581,6 +624,7 @@ test "exec review args parse exec-local controls" {
         "--ignore-rules",
         "--skip-git-repo-check",
         "--dangerously-bypass-approvals-and-sandbox",
+        "--dangerously-bypass-hook-trust",
         "--uncommitted",
     };
     const parsed = try parseArgsWithOptions(allocator, argv[0..], .{ .allow_exec_options = true });
@@ -594,6 +638,7 @@ test "exec review args parse exec-local controls" {
     try std.testing.expect(parsed.ignore_rules);
     try std.testing.expect(parsed.skip_git_repo_check);
     try std.testing.expect(parsed.dangerously_bypass_approvals_and_sandbox);
+    try std.testing.expectEqual(true, parsed.config_overrides.bypass_hook_trust.?);
     try std.testing.expect(parsed.uncommitted);
 }
 

@@ -6937,6 +6937,554 @@ def run_exec_equals_options_smoke(binary: Path) -> None:
         shutil.rmtree(temp_root, ignore_errors=True)
 
 
+def run_exec_hook_trust_bypass_smoke(binary: Path) -> None:
+    temp_root = Path(tempfile.mkdtemp(prefix="codex-zig-cli-exec-hook-bypass-", dir="/tmp"))
+    server, base_url = start_exec_responses_server()
+    try:
+        env = make_exec_mock_env(temp_root, base_url)
+        repo = temp_root / "repo"
+        repo.mkdir()
+        hook_script = repo / ".codex" / "bypass_hook.py"
+        session_hook_script = repo / ".codex" / "session_hook.py"
+        hook_log = temp_root / "exec_bypass_hook_log.json"
+        session_hook_log = temp_root / "exec_session_hook_log.json"
+        hook_script.parent.mkdir(parents=True)
+        session_hook_script.write_text(
+            "\n".join(
+                [
+                    "import json",
+                    "from pathlib import Path",
+                    "payload = json.load(__import__('sys').stdin)",
+                    "transcript_path = Path(payload['transcript_path'])",
+                    "payload['transcript_exists'] = transcript_path.exists()",
+                    f"Path({json.dumps(str(session_hook_log))}).write_text(json.dumps(payload, separators=(',', ':')), encoding='utf-8')",
+                    "print(json.dumps({'hookSpecificOutput': {'hookEventName': 'SessionStart', 'additionalContext': 'exec startup hook context'}}))",
+                    "",
+                ]
+            ),
+            encoding="utf-8",
+        )
+        hook_script.write_text(
+            "\n".join(
+                [
+                    "import json",
+                    "from pathlib import Path",
+                    "payload = json.load(__import__('sys').stdin)",
+                    "transcript_path = Path(payload['transcript_path'])",
+                    "payload['transcript_exists'] = transcript_path.exists()",
+                    f"Path({json.dumps(str(hook_log))}).write_text(json.dumps(payload, separators=(',', ':')), encoding='utf-8')",
+                    "print(json.dumps({'hookSpecificOutput': {'hookEventName': 'UserPromptSubmit', 'additionalContext': 'exec bypass hook context'}}))",
+                    "",
+                ]
+            ),
+            encoding="utf-8",
+        )
+        (repo / ".codex" / "config.toml").write_text(
+            "\n".join(
+                [
+                    "[features]",
+                    "hooks = true",
+                    "",
+                    "[[hooks.SessionStart]]",
+                    "",
+                    "[[hooks.SessionStart.hooks]]",
+                    'type = "command"',
+                    f'command = "python3 {session_hook_script}"',
+                    "",
+                    "[[hooks.UserPromptSubmit]]",
+                    "",
+                    "[[hooks.UserPromptSubmit.hooks]]",
+                    'type = "command"',
+                    f'command = "python3 {hook_script}"',
+                    "",
+                ]
+            ),
+            encoding="utf-8",
+        )
+
+        ordinary = subprocess.run(
+            [
+                str(binary.resolve()),
+                "exec",
+                "--skip-git-repo-check",
+                "--approval-policy=never",
+                "ordinary",
+                "prompt",
+            ],
+            cwd=repo,
+            env=env,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=10,
+            check=True,
+        )
+        assert ordinary.stdout == "stored reply\n"
+        assert hook_log.exists() is False
+        assert session_hook_log.exists() is False
+        assert len(server.request_bodies) == 1
+        ordinary_developer = [
+            item
+            for item in server.request_bodies[0]["input"]
+            if item.get("role") == "developer"
+        ]
+        assert ordinary_developer == []
+
+        bypass = subprocess.run(
+            [
+                str(binary.resolve()),
+                "exec",
+                "--skip-git-repo-check",
+                "--approval-policy=never",
+                "--dangerously-bypass-hook-trust",
+                "hooked",
+                "prompt",
+            ],
+            cwd=repo,
+            env=env,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=10,
+            check=True,
+        )
+        assert bypass.stdout == "stored reply\n"
+        assert "--dangerously-bypass-hook-trust" in bypass.stderr
+        assert hook_log.exists()
+        assert session_hook_log.exists()
+        session_hook_payload = json.loads(session_hook_log.read_text(encoding="utf-8"))
+        assert session_hook_payload["hook_event_name"] == "SessionStart"
+        assert session_hook_payload["source"] == "startup"
+        assert session_hook_payload["transcript_exists"] is True
+        hook_payload = json.loads(hook_log.read_text(encoding="utf-8"))
+        assert hook_payload["hook_event_name"] == "UserPromptSubmit"
+        assert hook_payload["prompt"] == "hooked prompt"
+        assert hook_payload["transcript_path"]
+        assert hook_payload["transcript_exists"] is True
+        assert hook_payload["session_id"] != hook_payload["transcript_path"]
+        assert "/" not in hook_payload["session_id"]
+        assert hook_payload["turn_id"].startswith("exec-turn-")
+        assert len(server.request_bodies) == 2
+        request_input = server.request_bodies[1]["input"]
+        role_texts = [
+            (
+                item.get("role"),
+                [
+                    content.get("text")
+                    for content in item.get("content", [])
+                    if content.get("type") == "input_text"
+                ],
+            )
+            for item in request_input
+            if item.get("role") in {"developer", "user"}
+        ]
+        assert role_texts == [
+            ("developer", ["exec startup hook context"]),
+            ("user", ["hooked prompt"]),
+            ("developer", ["exec bypass hook context"]),
+        ]
+        developer_texts = [
+            content["text"]
+            for item in request_input
+            if item.get("role") == "developer"
+            for content in item.get("content", [])
+            if content.get("type") == "input_text"
+        ]
+        user_texts = [
+            content["text"]
+            for item in request_input
+            if item.get("role") == "user"
+            for content in item.get("content", [])
+            if content.get("type") == "input_text"
+        ]
+        assert developer_texts == ["exec startup hook context", "exec bypass hook context"]
+        assert user_texts[-1] == "hooked prompt"
+
+        before_disabled_hook_log = hook_log.read_text(encoding="utf-8")
+        before_disabled_session_hook_log = session_hook_log.read_text(encoding="utf-8")
+        disabled = subprocess.run(
+            [
+                str(binary.resolve()),
+                "exec",
+                "--skip-git-repo-check",
+                "--approval-policy=never",
+                "--disable",
+                "hooks",
+                "--dangerously-bypass-hook-trust",
+                "disabled",
+                "hooks",
+            ],
+            cwd=repo,
+            env=env,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=10,
+            check=True,
+        )
+        assert disabled.stdout == "stored reply\n"
+        assert hook_log.read_text(encoding="utf-8") == before_disabled_hook_log
+        assert session_hook_log.read_text(encoding="utf-8") == before_disabled_session_hook_log
+        assert len(server.request_bodies) == 3
+        disabled_developer = [
+            item
+            for item in server.request_bodies[2]["input"]
+            if item.get("role") == "developer"
+        ]
+        assert disabled_developer == []
+
+        concurrent_repo = temp_root / "concurrent-repo"
+        concurrent_repo.mkdir()
+        concurrent_hook_dir = concurrent_repo / ".codex"
+        concurrent_hook_dir.mkdir(parents=True)
+        barrier_script = concurrent_hook_dir / "barrier_hook.py"
+        marker_a = temp_root / "barrier-a.ready"
+        marker_b = temp_root / "barrier-b.ready"
+        barrier_script.write_text(
+            "\n".join(
+                [
+                    "import json",
+                    "import sys",
+                    "import time",
+                    "from pathlib import Path",
+                    "own = Path(sys.argv[1])",
+                    "other = Path(sys.argv[2])",
+                    "context = sys.argv[3]",
+                    "own.write_text('ready', encoding='utf-8')",
+                    "deadline = time.monotonic() + 3",
+                    "while not other.exists():",
+                    "    if time.monotonic() >= deadline:",
+                    "        print(json.dumps({'decision': 'block', 'reason': 'missing peer hook'}))",
+                    "        raise SystemExit(0)",
+                    "    time.sleep(0.02)",
+                    "print(json.dumps({'hookSpecificOutput': {'hookEventName': 'UserPromptSubmit', 'additionalContext': context}}))",
+                    "",
+                ]
+            ),
+            encoding="utf-8",
+        )
+        (concurrent_repo / ".codex" / "config.toml").write_text(
+            "\n".join(
+                [
+                    "[features]",
+                    "hooks = true",
+                    "",
+                    "[[hooks.UserPromptSubmit]]",
+                    "",
+                    "[[hooks.UserPromptSubmit.hooks]]",
+                    'type = "command"',
+                    f"command = \"python3 {shlex.quote(str(barrier_script))} {shlex.quote(str(marker_a))} {shlex.quote(str(marker_b))} {shlex.quote('concurrent hook A')}\"",
+                    "timeout = 5",
+                    "",
+                    "[[hooks.UserPromptSubmit.hooks]]",
+                    'type = "command"',
+                    f"command = \"python3 {shlex.quote(str(barrier_script))} {shlex.quote(str(marker_b))} {shlex.quote(str(marker_a))} {shlex.quote('concurrent hook B')}\"",
+                    "timeout = 5",
+                    "",
+                ]
+            ),
+            encoding="utf-8",
+        )
+        concurrent_started = time.monotonic()
+        concurrent = subprocess.run(
+            [
+                str(binary.resolve()),
+                "exec",
+                "--skip-git-repo-check",
+                "--approval-policy=never",
+                "--dangerously-bypass-hook-trust",
+                "concurrent",
+                "hooks",
+            ],
+            cwd=concurrent_repo,
+            env=env,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=10,
+            check=True,
+        )
+        concurrent_elapsed = time.monotonic() - concurrent_started
+        assert concurrent.stdout == "stored reply\n"
+        assert concurrent_elapsed < 2.5, concurrent_elapsed
+        assert len(server.request_bodies) == 4
+        concurrent_developer_texts = [
+            content["text"]
+            for item in server.request_bodies[3]["input"]
+            if item.get("role") == "developer"
+            for content in item.get("content", [])
+            if content.get("type") == "input_text"
+        ]
+        assert concurrent_developer_texts == ["concurrent hook A", "concurrent hook B"]
+
+        user_repo = temp_root / "user-repo"
+        user_repo.mkdir()
+        user_hook_script = temp_root / "user_bypass_hook.py"
+        user_hook_log = temp_root / "user_bypass_hook_log.json"
+        user_hook_script.write_text(
+            "\n".join(
+                [
+                    "import json",
+                    "from pathlib import Path",
+                    "payload = json.load(__import__('sys').stdin)",
+                    f"Path({json.dumps(str(user_hook_log))}).write_text(json.dumps(payload, separators=(',', ':')), encoding='utf-8')",
+                    "print(json.dumps({'hookSpecificOutput': {'hookEventName': 'UserPromptSubmit', 'additionalContext': 'ignored user hook context'}}))",
+                    "",
+                ]
+            ),
+            encoding="utf-8",
+        )
+        Path(env["CODEX_HOME"], "config.toml").write_text(
+            "\n".join(
+                [
+                    f'openai_base_url = "{base_url}"',
+                    "",
+                    "[features]",
+                    "hooks = true",
+                    "",
+                    "[[hooks.UserPromptSubmit]]",
+                    "",
+                    "[[hooks.UserPromptSubmit.hooks]]",
+                    'type = "command"',
+                    f'command = "python3 {user_hook_script}"',
+                    "",
+                ]
+            ),
+            encoding="utf-8",
+        )
+        ignored_user_config = subprocess.run(
+            [
+                str(binary.resolve()),
+                "exec",
+                "--ignore-user-config",
+                "-c",
+                f"openai_base_url='{base_url}'",
+                "--skip-git-repo-check",
+                "--approval-policy=never",
+                "--dangerously-bypass-hook-trust",
+                "ignored",
+                "user",
+                "config",
+            ],
+            cwd=user_repo,
+            env=env,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=10,
+            check=True,
+        )
+        assert ignored_user_config.stdout == "stored reply\n"
+        assert user_hook_log.exists() is False
+        assert len(server.request_bodies) == 5
+        ignored_developer = [
+            item
+            for item in server.request_bodies[4]["input"]
+            if item.get("role") == "developer"
+        ]
+        assert ignored_developer == []
+
+        missing_shell_repo = temp_root / "missing-shell-repo"
+        missing_shell_repo.mkdir()
+        missing_shell_hook_dir = missing_shell_repo / ".codex"
+        missing_shell_hook_dir.mkdir(parents=True)
+        (missing_shell_repo / ".codex" / "config.toml").write_text(
+            "\n".join(
+                [
+                    "[features]",
+                    "hooks = true",
+                    "",
+                    "[[hooks.UserPromptSubmit]]",
+                    "",
+                    "[[hooks.UserPromptSubmit.hooks]]",
+                    'type = "command"',
+                    'command = "echo should-not-abort"',
+                    "",
+                ]
+            ),
+            encoding="utf-8",
+        )
+        missing_shell_env = env.copy()
+        missing_shell_env["SHELL"] = str(temp_root / "does-not-exist" / "shell")
+        before_missing_shell_requests = len(server.request_bodies)
+        missing_shell = subprocess.run(
+            [
+                str(binary.resolve()),
+                "exec",
+                "--skip-git-repo-check",
+                "--approval-policy=never",
+                "--dangerously-bypass-hook-trust",
+                "missing",
+                "shell",
+                "hook",
+            ],
+            cwd=missing_shell_repo,
+            env=missing_shell_env,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=10,
+            check=True,
+        )
+        assert missing_shell.stdout == "stored reply\n"
+        assert "hook: hook failed to run: FileNotFound" in missing_shell.stderr
+        assert len(server.request_bodies) == before_missing_shell_requests + 1
+        missing_shell_developer = [
+            item
+            for item in server.request_bodies[-1]["input"]
+            if item.get("role") == "developer"
+        ]
+        assert missing_shell_developer == []
+
+        block_repo = temp_root / "block-repo"
+        block_repo.mkdir()
+        block_hook_script = block_repo / ".codex" / "block_hook.py"
+        block_hook_script.parent.mkdir(parents=True)
+        block_hook_script.write_text(
+            "\n".join(
+                [
+                    "import sys",
+                    "sys.stderr.write('blocked by hook\\n')",
+                    "sys.exit(2)",
+                    "",
+                ]
+            ),
+            encoding="utf-8",
+        )
+        (block_repo / ".codex" / "config.toml").write_text(
+            "\n".join(
+                [
+                    "[features]",
+                    "hooks = true",
+                    "",
+                    "[[hooks.UserPromptSubmit]]",
+                    "",
+                    "[[hooks.UserPromptSubmit.hooks]]",
+                    'type = "command"',
+                    f'command = "python3 {block_hook_script}"',
+                    "",
+                ]
+            ),
+            encoding="utf-8",
+        )
+        blocked = subprocess.run(
+            [
+                str(binary.resolve()),
+                "exec",
+                "--skip-git-repo-check",
+                "--approval-policy=never",
+                "--dangerously-bypass-hook-trust",
+                "blocked",
+                "prompt",
+            ],
+            cwd=block_repo,
+            env=env,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=10,
+        )
+        assert blocked.returncode != 0
+        assert "hook: blocked by hook" in blocked.stderr
+        assert "HookStoppedTurn" not in blocked.stderr
+        assert len(server.request_bodies) == before_missing_shell_requests + 1
+
+        resume_temp = temp_root / "resume-stop"
+        resume_temp.mkdir()
+        resume_env = make_exec_mock_env(resume_temp, base_url)
+        resume_repo = resume_temp / "repo"
+        resume_repo.mkdir()
+        seeded = subprocess.run(
+            [
+                str(binary.resolve()),
+                "exec",
+                "--skip-git-repo-check",
+                "--approval-policy=never",
+                "seed",
+                "resume",
+            ],
+            cwd=resume_repo,
+            env=resume_env,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=10,
+            check=True,
+        )
+        assert seeded.stdout == "stored reply\n"
+        session_files = sorted(Path(resume_env["CODEX_HOME"]).rglob("*.jsonl"))
+        assert len(session_files) == 1
+        session_path = session_files[0]
+
+        resume_hook_script = resume_repo / ".codex" / "resume_stop_hook.py"
+        resume_hook_script.parent.mkdir(parents=True)
+        resume_hook_script.write_text(
+            "\n".join(
+                [
+                    "import json",
+                    "print(json.dumps({",
+                    "    'decision': 'block',",
+                    "    'reason': 'stop after context',",
+                    "    'hookSpecificOutput': {",
+                    "        'hookEventName': 'UserPromptSubmit',",
+                    "        'additionalContext': 'resume stop context',",
+                    "    },",
+                    "}))",
+                    "",
+                ]
+            ),
+            encoding="utf-8",
+        )
+        (resume_repo / ".codex" / "config.toml").write_text(
+            "\n".join(
+                [
+                    "[features]",
+                    "hooks = true",
+                    "",
+                    "[[hooks.UserPromptSubmit]]",
+                    "",
+                    "[[hooks.UserPromptSubmit.hooks]]",
+                    'type = "command"',
+                    f'command = "python3 {resume_hook_script}"',
+                    "",
+                ]
+            ),
+            encoding="utf-8",
+        )
+        before_resume_stop_requests = len(server.request_bodies)
+        stopped_resume = subprocess.run(
+            [
+                str(binary.resolve()),
+                "exec",
+                "resume",
+                "--last",
+                "--skip-git-repo-check",
+                "--approval-policy=never",
+                "--dangerously-bypass-hook-trust",
+                "blocked",
+                "resumed",
+                "prompt",
+            ],
+            cwd=resume_repo,
+            env=resume_env,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=10,
+        )
+        assert stopped_resume.returncode != 0
+        assert "hook: stop after context" in stopped_resume.stderr
+        assert "HookStoppedTurn" not in stopped_resume.stderr
+        assert len(server.request_bodies) == before_resume_stop_requests
+        transcript_text = session_path.read_text(encoding="utf-8")
+        assert "resume stop context" in transcript_text
+        assert "blocked resumed prompt" not in transcript_text
+    finally:
+        server.shutdown()
+        server.server_close()
+        shutil.rmtree(temp_root, ignore_errors=True)
+
+
 def run_exec_resume_option_smoke(binary: Path) -> None:
     temp_root = Path(tempfile.mkdtemp(prefix="codex-zig-cli-exec-resume-", dir="/tmp"))
     server, base_url = start_exec_responses_server()
@@ -10372,6 +10920,7 @@ def main() -> None:
     run_exec_review_smoke(binary)
     run_review_stdin_smoke(binary)
     run_exec_equals_options_smoke(binary)
+    run_exec_hook_trust_bypass_smoke(binary)
     run_exec_resume_option_smoke(binary)
     run_exec_stdin_smoke(binary)
     run_exec_provider_env_key_smoke(binary)
@@ -10413,6 +10962,7 @@ def main() -> None:
     print("cli-exec-review-e2e: ok")
     print("cli-review-stdin-e2e: ok")
     print("cli-exec-options-e2e: ok")
+    print("cli-exec-hook-trust-bypass-e2e: ok")
     print("cli-exec-resume-options-e2e: ok")
     print("cli-exec-stdin-e2e: ok")
     print("cli-exec-provider-env-key-e2e: ok")

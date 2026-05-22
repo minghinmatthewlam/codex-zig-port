@@ -5,6 +5,7 @@ const auth = @import("auth.zig");
 const cli_utils = @import("cli_utils.zig");
 const config = @import("config.zig");
 const features_cmd = @import("features_cmd.zig");
+const hook_runtime = @import("hook_runtime.zig");
 const input_images = @import("input_images.zig");
 const review = @import("review.zig");
 const session = @import("session.zig");
@@ -183,6 +184,9 @@ pub fn runWithOptions(allocator: std.mem.Allocator, args: *std.process.Args.Iter
     defer cfg.deinit(allocator);
     try config.applyRuntimeOverrides(&cfg, allocator, options.runtime_overrides);
     try config.applyRuntimeOverrides(&cfg, allocator, parsed.config_overrides);
+    if (cfg.bypass_hook_trust) {
+        try cli_utils.writeStderr("warning: " ++ hook_runtime.BYPASS_HOOK_TRUST_WARNING ++ "\n");
+    }
 
     var feature_overrides = features_cmd.FeatureOverrides{};
     defer feature_overrides.deinit(allocator);
@@ -230,6 +234,39 @@ pub fn runWithOptions(allocator: std.mem.Allocator, args: *std.process.Args.Iter
             session_path = try session_store.createSessionPath(allocator, cfg.codex_home);
         }
     }
+    if (session_path) |path| {
+        try session_store.saveTranscript(allocator, path, &transcript);
+    }
+
+    const cwd = try std.Io.Dir.cwd().realPathFileAlloc(std.Io.Threaded.global_single_threaded.io(), ".", allocator);
+    defer allocator.free(cwd);
+    const hook_session_id = try hook_runtime.sessionIdForPayload(allocator, session_path, "exec");
+    defer allocator.free(hook_session_id);
+    const hook_turn_id = try hook_runtime.turnIdForPayload(allocator, "exec-turn");
+    defer allocator.free(hook_turn_id);
+    var hook_result = try hook_runtime.runPromptHooks(allocator, .{
+        .codex_home = cfg.codex_home,
+        .cwd = cwd,
+        .session_id = hook_session_id,
+        .turn_id = hook_turn_id,
+        .transcript_path = session_path,
+        .model = cfg.model,
+        .approval_policy = cfg.approval_policy,
+        .prompt = prompt,
+        .session_start_source = if (parsed.resume_target != null) "resume" else "startup",
+        .bypass_hook_trust = cfg.bypass_hook_trust,
+        .hooks_enabled = feature_overrides.get("hooks") orelse true,
+        .ignore_user_config = parsed.ignore_user_config,
+    });
+    defer hook_result.deinit(allocator);
+    try hook_runtime.writeMessagesToStderr(hook_result.messages.items);
+    if (hook_result.should_stop) {
+        try hook_runtime.appendStoppedContexts(allocator, &transcript, &hook_result);
+        if (session_path) |path| {
+            try session_store.saveTranscript(allocator, path, &transcript);
+        }
+        return error.HookStoppedTurn;
+    }
 
     const answer = try session.runTurnWithOptions(allocator, cfg, &credentials, &transcript, prompt, .{
         .auto_approve = parsed.auto_approve,
@@ -238,6 +275,8 @@ pub fn runWithOptions(allocator: std.mem.Allocator, args: *std.process.Args.Iter
         .additional_writable_roots = additional_writable_roots,
         .output_schema = output_schema.value(),
         .input_images = loaded_images.data_urls,
+        .developer_messages_before_user = hook_result.session_start_contexts.items,
+        .developer_messages_after_user = hook_result.contexts.items,
         .feature_overrides = feature_overrides,
     });
     defer allocator.free(answer);
@@ -285,6 +324,10 @@ fn parseArgs(allocator: std.mem.Allocator, args: []const []const u8) !ExecArgs {
             parsed.dangerously_bypass_approvals_and_sandbox = true;
             parsed.approval_policy = .never;
             parsed.sandbox_mode = .danger_full_access;
+            continue;
+        }
+        if (!end_options and std.mem.eql(u8, arg, "--dangerously-bypass-hook-trust")) {
+            parsed.config_overrides.bypass_hook_trust = true;
             continue;
         }
         if (!end_options and (std.mem.eql(u8, arg, "--model") or std.mem.eql(u8, arg, "-m"))) {
@@ -726,6 +769,8 @@ pub fn printHelp() void {
         \\  --yolo                  Danger: approval=never and sandbox=danger-full-access
         \\  --dangerously-bypass-approvals-and-sandbox
         \\                          Alias for --yolo
+        \\  --dangerously-bypass-hook-trust
+        \\                          Run enabled hooks without persisted hook trust
         \\  -m, --model MODEL       Override the model
         \\  --oss                   Use a local open-source provider
         \\  --local-provider NAME   Local OSS provider: lmstudio or ollama
@@ -784,6 +829,8 @@ fn printResumeHelp() void {
         \\  -m, --model MODEL       Override the model
         \\  --dangerously-bypass-approvals-and-sandbox
         \\                          Danger: approval=never and sandbox=danger-full-access
+        \\  --dangerously-bypass-hook-trust
+        \\                          Run enabled hooks without persisted hook trust
         \\  --skip-git-repo-check   Allow exec outside a Git repository
         \\  --ephemeral             Do not save or resume a session file
         \\  --ignore-user-config    Do not load CODEX_HOME/config.toml
@@ -817,6 +864,8 @@ fn printReviewHelp() void {
         \\  --title TITLE           Optional commit title for review context
         \\  --dangerously-bypass-approvals-and-sandbox
         \\                          Danger: approval=never and sandbox=danger-full-access
+        \\  --dangerously-bypass-hook-trust
+        \\                          Run enabled hooks without persisted hook trust
         \\  --skip-git-repo-check   Allow exec review outside a Git repository
         \\  --ephemeral             Do not save a session file
         \\  --ignore-user-config    Do not load CODEX_HOME/config.toml
@@ -893,6 +942,16 @@ test "exec args parse runtime feature toggles" {
 
     try std.testing.expectEqual(true, parsed.feature_overrides.get("goals").?);
     try std.testing.expectEqual(false, parsed.feature_overrides.get("shell_tool").?);
+    try std.testing.expectEqualStrings("say hello", parsed.prompt.?);
+}
+
+test "exec args parse hook trust bypass" {
+    const allocator = std.testing.allocator;
+    const argv = [_][]const u8{ "--dangerously-bypass-hook-trust", "say", "hello" };
+    const parsed = try parseArgs(allocator, argv[0..]);
+    defer parsed.deinit(allocator);
+
+    try std.testing.expectEqual(true, parsed.config_overrides.bypass_hook_trust.?);
     try std.testing.expectEqualStrings("say hello", parsed.prompt.?);
 }
 

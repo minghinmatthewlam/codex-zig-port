@@ -544,6 +544,7 @@ pub const TurnOptions = struct {
     mcp_tool_call_progress_callback: ?McpToolCallProgressCallback = null,
     mcp_startup_status_callback: ?mcp_runtime.StartupStatusCallback = null,
     external_auth_refresh_callback: ?api.ExternalAuthRefreshCallback = null,
+    developer_messages_before_user: []const []const u8 = &.{},
     developer_messages_after_user: []const []const u8 = &.{},
     feature_overrides: features_cmd.FeatureOverrides = .{},
     workdir: ?[]const u8 = null,
@@ -1013,6 +1014,9 @@ pub fn runTurnWithOptions(
     prompt: []const u8,
     options: TurnOptions,
 ) ![]const u8 {
+    for (options.developer_messages_before_user) |developer_message| {
+        try transcript.appendDeveloperMessage(allocator, developer_message);
+    }
     try transcript.appendUserMessageWithImages(allocator, prompt, options.input_images);
     const token_usage_turn_index = lastMessageTurnIndex(transcript) orelse 0;
     for (options.developer_messages_after_user) |developer_message| {
