@@ -1,0 +1,194 @@
+# Feature Parity Gap List
+
+Last checked: 2026-05-22.
+
+This file tracks user-facing feature parity against the local Rust Codex CLI
+reference, not CI, release, OSS hygiene, byte-for-byte fixture parity, or
+purely internal generator parity. The current reference is:
+
+- Rust checkout: `/Users/matthewlam/dev/codex` at
+  `5381240f57fe326b13bc81325f3c61596592fc7a`
+- Installed Rust CLI: `codex-cli 0.133.0`
+- Zig checkout: `35d82bde4c2735e22f202c2805e79b9a3cc66273`
+- Zig CLI: `codex-zig 0.0.1`
+
+The source evidence for this pass was the Rust and Zig root help output,
+targeted subcommand help output, Rust CLI command definitions in
+`codex-rs/cli/src/main.rs`, Rust TUI slash-command definitions in
+`codex-rs/tui/src/slash_command.rs`, Zig command dispatch in `src/main.zig`,
+Zig TUI help in `src/tui.zig`, and the broader narrative tracker in
+`docs/parity.md`.
+
+## Priority Rules
+
+- P0: Blocks believable macOS daily-driver feature parity.
+- P1: Important user-facing parity, but a narrower CLI/TUI daily-driver can
+  still work without it.
+- P2: Useful parity or product polish that should follow the P0/P1 runtime
+  gaps.
+- Excluded: tests, CI, release/deployment, branch protection, code signing,
+  byte-for-byte fixtures, and internal-only generator parity unless a generated
+  artifact is required by a user-facing desktop or remote-control flow.
+
+## P0 Gaps
+
+### TUI and Active-Turn Lifecycle
+
+- Implement true active-turn runtime state across interactive TUI and
+  app-server loaded threads. Current Zig turn execution is still largely
+  synchronous; Rust supports active turn state, interruption, steering, richer
+  lifecycle events, and same-turn control.
+- Add robust user interruption and steering behavior in the TUI, including
+  queued input while a turn is running, `/compact` interactions, active tool
+  interruption, and accurate background-process cleanup.
+- Close major missing TUI slash commands that affect daily use:
+  `/ide`, `/hooks`, `/skills`, `/goal`, `/agent` / `/subagents`,
+  `/experimental`, `/approve`, `/memories`, `/apps`, `/plugins`, `/feedback`,
+  `/pets` / `/pet`, `/realtime`, `/settings`, and `/btw`.
+- Replace the simple slash-command handling with Rust-like command popup and
+  argument flows where they materially affect usability: model picker,
+  permissions picker, keymap flow, plan flow, status/title pickers, session
+  pickers, file mentions, skill mentions, and attached image handling during
+  queued commands.
+- Fill rich transcript/rendering gaps that users see during real work:
+  command cells, approval overlays, hook events, MCP cells, plan cards,
+  markdown/diff rendering, resize behavior, and richer inline/alternate-screen
+  layout.
+
+### Root CLI Command and Flag Coverage
+
+- Implement `codex doctor`. Rust exposes `doctor --json`, `--summary`, `--all`,
+  `--no-color`, and `--ascii`; Zig currently has no `doctor` command and treats
+  `doctor --help` as an interactive prompt.
+- Add root and exec support for `--strict-config`.
+- Add root and exec support for `--profile-v2 <CONFIG_PROFILE_V2>`.
+- Add root and exec support for `--dangerously-bypass-hook-trust`.
+- Decide whether unknown bare top-level command names that match Rust
+  subcommands but are not implemented should launch the TUI as a prompt or fail
+  with a command error. `doctor` currently demonstrates the surprising path.
+
+### App-Server Daemon and Remote Control
+
+- Implement `codex app-server daemon` user-facing subcommands:
+  `bootstrap`, `start`, `restart`, `enable-remote-control`,
+  `disable-remote-control`, `stop`, and `version`.
+- Implement Rust-shaped `codex remote-control start|stop` plus `--json`.
+  Zig currently starts a headless app-server for bare `remote-control` but does
+  not accept the Rust start/stop command form.
+- Close app-server active-turn feature gaps needed by desktop clients:
+  real async turns, active turn status, interruption, steering, server-request
+  dispatch, lifecycle notification completeness, and non-stdio deferred command
+  responses.
+
+### Plugin CLI and TUI User Flows
+
+- Implement CLI `codex plugin add`, `codex plugin list`, and
+  `codex plugin remove`. Zig currently exposes marketplace management at the
+  CLI but rejects these Rust plugin subcommands.
+- Implement TUI `/plugins` and `/apps` browsing/management flows, reusing the
+  existing app-server plugin/app runtime where possible.
+- Close user-visible app-server plugin gaps that remain after CLI/TUI routing:
+  remote catalog cache synchronization, plugin cache update parity, app auth
+  lookups, and product-gated local detail behavior.
+
+## P1 Gaps
+
+### Sessions, Threads, Resume, and Fork
+
+- Bring resume/fork/list/read/archive/unarchive/rollback behavior closer to
+  Rust state DB behavior, including active-vs-archived filtering, metadata,
+  cwd filtering, search, pagination, and status.
+- Add richer resume/fork picker UI in the TUI, including Rust-like grouping,
+  filtering, selected row details, cwd display, and remote/imported session
+  handling.
+- Implement remote thread-store read/list/archive/unarchive/name/metadata
+  behavior where user-visible desktop or remote-control flows depend on it.
+- Improve transcript fidelity for restored turns, tool outputs, local images,
+  skill mentions, compaction, interrupted turns, and token usage attribution.
+
+### MCP User Flows
+
+- Implement thread-owned MCP runtime reuse instead of one-shot snapshots where
+  Rust keeps live server state.
+- Add persistent streamable HTTP server notification streams, progress,
+  cancellation, startup/reload status accuracy, queued manager refreshes, and
+  live status updates.
+- Finish MCP server tool-call lifecycle parity through both model tools and
+  app-server requests, including elicitation, approvals, errors, and
+  notification ordering.
+- Keep macOS keychain-backed OAuth behavior aligned with Rust, including edge
+  cases around `auto` and `keyring` credential-store modes.
+
+### Config and Requirements That Affect Users
+
+- Finish full user/project/system/managed config-layer behavior for fields that
+  affect CLI, TUI, tools, MCP, plugins, app-server, hooks, and sandboxing.
+- Add strict-config validation behavior once the recognized config surface is
+  sufficiently modeled.
+- Implement profile-v2 layering and expose it consistently across root,
+  interactive, exec, review, app-server, and debug surfaces.
+- Finish managed/cloud requirements enforcement for approval policy, reviewer,
+  sandbox, network, hooks, apps, plugins, features, and residency where those
+  requirements change user-visible behavior.
+
+### Sandbox and Tool Permission Features
+
+- Finish macOS custom permission-profile enforcement beyond the currently
+  supported root/glob cases: narrow read allowlists, managed requirements,
+  network allow-list policy, network proxy behavior, and recursive descendant
+  denial tracking.
+- Align command/tool approval flows with Rust for additional permission
+  requests, auto-review denials, hook trust bypass, and guardian retry behavior.
+
+### Cloud and Desktop Features
+
+- Complete the remaining cloud task flows behind `codex cloud`: task creation,
+  status/list, apply, diff, and TUI picker behavior against the current backend
+  contract.
+- Finish desktop app and remote-control user flows beyond launching/opening:
+  phone fork/share flow, durable daemon control, and local browser controller
+  parity.
+
+## P2 Gaps
+
+### Completion, Help, and Error Polish
+
+- Bring completion output closer to Rust for all user-facing command/flag
+  surfaces after the command set is complete.
+- Normalize help/error behavior for implemented commands, especially app-server
+  generator help, hidden commands, aliases, and command-specific usage text.
+- Remove or hide Zig-only demo commands from normal feature-parity reporting if
+  they are not intended user-facing Codex behavior.
+
+### Debug and Diagnostic Tools
+
+- Keep `debug models`, `debug prompt-input`, and `debug app-server` aligned
+  with Rust behavior.
+- Decide whether Zig-only `debug clear-memories` remains visible, hidden, or is
+  aligned with the Rust hidden debug surface.
+- Implement `doctor` before investing further in lower-value debug polish,
+  because `doctor` is the visible user diagnostic entrypoint in Rust.
+
+### Cross-Platform Feature Tail
+
+- Linux and Windows sandbox command implementations are outside the macOS-first
+  goal, but the commands should keep returning clear Rust-compatible
+  unsupported-platform behavior until those platforms become in scope.
+- Cross-platform keyring backends are outside the macOS-first feature goal
+  unless they affect macOS `auto`/`keyring` behavior.
+
+## Current Working Order
+
+1. Root CLI command/flag parity: `doctor`, `--strict-config`, `--profile-v2`,
+   and hook-trust bypass.
+2. App-server daemon and remote-control command forms.
+3. Active-turn/TUI lifecycle: interruption, steering, queued input, process
+   tracking, and lifecycle notifications.
+4. TUI slash-command feature gaps: `/goal`, `/skills`, `/hooks`, `/apps`,
+   `/plugins`, `/ide`, `/experimental`, and `/approve`.
+5. Plugin CLI `add/list/remove`.
+6. Session/thread store parity needed by resume/fork and desktop clients.
+7. MCP lifecycle depth.
+8. Cloud task feature completion.
+
+This order favors visible feature holes before deeper exact-behavior polish.

@@ -12,6 +12,10 @@ branch merge base. Failed git probes, non-git directories, and unavailable
 default branches leave the optional item omitted instead of surfacing a UI
 error.
 
+Feature-only parity priorities are tracked separately in
+`docs/feature-parity.md`. This file remains the detailed runtime, protocol,
+schema, and edge-case parity ledger.
+
 Current app-server `hooks/list` coverage: user `$CODEX_HOME/config.toml`,
 `$CODEX_HOME/hooks.json`, per-cwd `.codex/config.toml`, and per-cwd
 `.codex/hooks.json` command hooks, Rust-shaped `cwds` params and JSON fields,
