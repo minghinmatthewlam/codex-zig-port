@@ -4,6 +4,8 @@ const builtin = @import("builtin");
 const config = @import("config.zig");
 
 const sandbox_exec_path = "/usr/bin/sandbox-exec";
+pub const max_allow_glob_scan_depth: usize = 64;
+const max_allow_glob_symlink_scan_entries = 50_000;
 pub const codex_sandbox_env_var = "CODEX_SANDBOX";
 pub const seatbelt_env_value = "seatbelt";
 
@@ -26,6 +28,11 @@ pub const WrapOptions = struct {
     include_platform_defaults: bool = false,
     network_enabled: bool = true,
     readable_roots: []const []const u8 = &.{},
+    readable_globs: []const []const u8 = &.{},
+    readable_root_carveouts: []const []const u8 = &.{},
+    readable_glob_carveouts: []const []const u8 = &.{},
+    writable_globs: []const []const u8 = &.{},
+    allow_glob_max_depth: ?usize = null,
     read_denied_roots: []const []const u8 = &.{},
     read_denied_globs: []const []const u8 = &.{},
     allow_unix_sockets: []const []const u8 = &.{},
@@ -125,6 +132,14 @@ pub fn wrapArgvWithPolicy(
 
     const resolved_readable_roots = try resolveReadableRoots(allocator, cwd, options.readable_roots);
     defer freeResolvedPaths(allocator, resolved_readable_roots);
+    const resolved_readable_globs = try resolveAllowGlobPatternsWithMaxDepth(allocator, cwd, options.readable_globs, options.allow_glob_max_depth);
+    defer freeResolvedPaths(allocator, resolved_readable_globs);
+    const resolved_readable_root_carveouts = try resolveReadableRoots(allocator, cwd, options.readable_root_carveouts);
+    defer freeResolvedPaths(allocator, resolved_readable_root_carveouts);
+    const resolved_readable_glob_carveouts = try resolveAllowGlobPatternsWithMaxDepth(allocator, cwd, options.readable_glob_carveouts, options.allow_glob_max_depth);
+    defer freeResolvedPaths(allocator, resolved_readable_glob_carveouts);
+    const resolved_writable_globs = try resolveAllowGlobPatternsWithMaxDepth(allocator, cwd, options.writable_globs, options.allow_glob_max_depth);
+    defer freeResolvedPaths(allocator, resolved_writable_globs);
     const resolved_read_denied_roots = try resolveReadDeniedRoots(allocator, cwd, options.read_denied_roots);
     defer freeResolvedPaths(allocator, resolved_read_denied_roots);
     const resolved_read_denied_globs = try resolveReadDeniedGlobPatterns(allocator, cwd, options.read_denied_globs);
@@ -132,12 +147,19 @@ pub fn wrapArgvWithPolicy(
     const resolved_unix_sockets = try resolveUnixSocketPaths(allocator, options.allow_unix_sockets);
     defer freeResolvedPaths(allocator, resolved_unix_sockets);
 
-    const profile = try buildProfileWithOptions(
+    const force_restricted_read_only = mode == .read_only and options.readable_globs.len > 0;
+    const profile = try buildProfileWithResolvedOptions(
         allocator,
         mode,
         cwd,
         resolved_roots,
         resolved_readable_roots,
+        resolved_readable_globs,
+        resolved_readable_root_carveouts,
+        resolved_readable_glob_carveouts,
+        resolved_writable_globs,
+        options.allow_glob_max_depth,
+        force_restricted_read_only,
         options.include_cwd_write_root,
         options.include_platform_defaults,
         options.network_enabled,
@@ -169,7 +191,7 @@ fn buildProfile(
     cwd: []const u8,
     additional_writable_roots: []const []const u8,
 ) ![]const u8 {
-    return buildProfileWithOptions(allocator, mode, cwd, additional_writable_roots, &.{}, true, false, true, &.{}, &.{}, 0);
+    return buildProfileWithOptions(allocator, mode, cwd, additional_writable_roots, &.{}, &.{}, &.{}, true, false, true, &.{}, &.{}, 0);
 }
 
 fn buildProfileWithOptions(
@@ -178,6 +200,48 @@ fn buildProfileWithOptions(
     cwd: []const u8,
     additional_writable_roots: []const []const u8,
     readable_roots: []const []const u8,
+    readable_globs: []const []const u8,
+    writable_globs: []const []const u8,
+    include_cwd_write_root: bool,
+    include_platform_defaults: bool,
+    network_enabled: bool,
+    read_denied_roots: []const []const u8,
+    read_denied_globs: []const []const u8,
+    unix_socket_path_count: usize,
+) ![]const u8 {
+    return buildProfileWithResolvedOptions(
+        allocator,
+        mode,
+        cwd,
+        additional_writable_roots,
+        readable_roots,
+        readable_globs,
+        &.{},
+        &.{},
+        writable_globs,
+        null,
+        false,
+        include_cwd_write_root,
+        include_platform_defaults,
+        network_enabled,
+        read_denied_roots,
+        read_denied_globs,
+        unix_socket_path_count,
+    );
+}
+
+fn buildProfileWithResolvedOptions(
+    allocator: std.mem.Allocator,
+    mode: config.SandboxMode,
+    cwd: []const u8,
+    additional_writable_roots: []const []const u8,
+    readable_roots: []const []const u8,
+    readable_globs: []const []const u8,
+    readable_root_carveouts: []const []const u8,
+    readable_glob_carveouts: []const []const u8,
+    writable_globs: []const []const u8,
+    allow_glob_max_depth: ?usize,
+    force_restricted_read_only: bool,
     include_cwd_write_root: bool,
     include_platform_defaults: bool,
     network_enabled: bool,
@@ -187,10 +251,10 @@ fn buildProfileWithOptions(
 ) ![]const u8 {
     return switch (mode) {
         .danger_full_access => error.SandboxNotNeeded,
-        .read_only => if (readable_roots.len > 0 or include_platform_defaults)
-            buildRestrictedReadOnlyProfile(allocator, readable_roots, include_platform_defaults, network_enabled, read_denied_roots, read_denied_globs, unix_socket_path_count)
+        .read_only => if (readable_roots.len > 0 or readable_globs.len > 0 or include_platform_defaults or force_restricted_read_only)
+            buildRestrictedReadOnlyProfile(allocator, readable_roots, readable_globs, allow_glob_max_depth, include_platform_defaults, network_enabled, read_denied_roots, read_denied_globs, unix_socket_path_count)
         else
-            buildReadOnlyProfile(allocator, network_enabled, read_denied_roots, read_denied_globs, unix_socket_path_count),
+            buildReadOnlyProfile(allocator, network_enabled, read_denied_roots, read_denied_globs, readable_root_carveouts, readable_glob_carveouts, allow_glob_max_depth, unix_socket_path_count),
         .workspace_write => blk: {
             var profile = std.ArrayList(u8).empty;
             errdefer profile.deinit(allocator);
@@ -206,10 +270,11 @@ fn buildProfileWithOptions(
             for (additional_writable_roots) |root| {
                 try appendWritableSubpath(allocator, &profile, root);
             }
+            try appendWritableGlobPatterns(allocator, &profile, writable_globs, allow_glob_max_depth);
             const writable_roots = try workspaceWriteRootsForGlobExceptions(allocator, cwd, additional_writable_roots, include_cwd_write_root);
             defer allocator.free(writable_roots);
-            try appendReadDeniedGlobPatterns(allocator, &profile, read_denied_globs, writable_roots, read_denied_roots);
-            try appendReadDeniedRoots(allocator, &profile, read_denied_roots);
+            try appendReadDeniedGlobPatterns(allocator, &profile, read_denied_globs, writable_roots, writable_globs, read_denied_roots, allow_glob_max_depth);
+            try appendReadDeniedRootsWithCarveouts(allocator, &profile, read_denied_roots, readable_root_carveouts, readable_glob_carveouts, writable_roots, writable_globs, allow_glob_max_depth, false);
             try appendNetworkPolicy(allocator, &profile, network_enabled);
             try appendUnixSocketPolicy(allocator, &profile, unix_socket_path_count);
             break :blk try profile.toOwnedSlice(allocator);
@@ -222,14 +287,17 @@ fn buildReadOnlyProfile(
     network_enabled: bool,
     read_denied_roots: []const []const u8,
     read_denied_globs: []const []const u8,
+    readable_root_carveouts: []const []const u8,
+    readable_glob_carveouts: []const []const u8,
+    allow_glob_max_depth: ?usize,
     unix_socket_path_count: usize,
 ) ![]const u8 {
     var profile = std.ArrayList(u8).empty;
     errdefer profile.deinit(allocator);
     try profile.appendSlice(allocator, baseProfile);
     try profile.appendSlice(allocator, readOnlyWritePolicy);
-    try appendReadDeniedRoots(allocator, &profile, read_denied_roots);
-    try appendReadDeniedGlobPatterns(allocator, &profile, read_denied_globs, &.{}, read_denied_roots);
+    try appendReadDeniedRootsWithCarveouts(allocator, &profile, read_denied_roots, readable_root_carveouts, readable_glob_carveouts, &.{}, &.{}, allow_glob_max_depth, false);
+    try appendReadDeniedGlobPatterns(allocator, &profile, read_denied_globs, &.{}, &.{}, read_denied_roots, allow_glob_max_depth);
     try appendNetworkPolicy(allocator, &profile, network_enabled);
     try appendUnixSocketPolicy(allocator, &profile, unix_socket_path_count);
     return profile.toOwnedSlice(allocator);
@@ -238,6 +306,8 @@ fn buildReadOnlyProfile(
 fn buildRestrictedReadOnlyProfile(
     allocator: std.mem.Allocator,
     readable_roots: []const []const u8,
+    readable_globs: []const []const u8,
+    allow_glob_max_depth: ?usize,
     include_platform_defaults: bool,
     network_enabled: bool,
     read_denied_roots: []const []const u8,
@@ -252,14 +322,15 @@ fn buildRestrictedReadOnlyProfile(
     for (readable_roots) |root| {
         try appendReadableSubpath(allocator, &profile, root, read_denied_roots);
     }
+    try appendReadableGlobPatterns(allocator, &profile, readable_globs, allow_glob_max_depth);
     try appendRestrictedNetworkPolicy(allocator, &profile, network_enabled);
     try appendUnixSocketPolicy(allocator, &profile, unix_socket_path_count);
     if (include_platform_defaults) {
         try profile.append(allocator, '\n');
         try profile.appendSlice(allocator, restrictedReadOnlyPlatformDefaults);
     }
-    try appendRestrictedReadDeniedRoots(allocator, &profile, read_denied_roots, readable_roots);
-    try appendReadDeniedGlobPatterns(allocator, &profile, read_denied_globs, &.{}, read_denied_roots);
+    try appendRestrictedReadDeniedRoots(allocator, &profile, read_denied_roots, readable_roots, readable_globs, allow_glob_max_depth);
+    try appendReadDeniedGlobPatterns(allocator, &profile, read_denied_globs, &.{}, &.{}, read_denied_roots, allow_glob_max_depth);
     return profile.toOwnedSlice(allocator);
 }
 
@@ -426,6 +497,25 @@ fn resolveReadableRoots(allocator: std.mem.Allocator, base_cwd: []const u8, root
 }
 
 pub fn resolveReadDeniedGlobPatterns(allocator: std.mem.Allocator, base_cwd: []const u8, patterns: []const []const u8) ![]const []const u8 {
+    return resolveGlobPatterns(allocator, base_cwd, patterns, .{ .mode = .deny });
+}
+
+fn resolveAllowGlobPatterns(allocator: std.mem.Allocator, base_cwd: []const u8, patterns: []const []const u8) ![]const []const u8 {
+    return resolveAllowGlobPatternsWithMaxDepth(allocator, base_cwd, patterns, null);
+}
+
+fn resolveAllowGlobPatternsWithMaxDepth(allocator: std.mem.Allocator, base_cwd: []const u8, patterns: []const []const u8, max_depth: ?usize) ![]const []const u8 {
+    return resolveGlobPatterns(allocator, base_cwd, patterns, .{ .mode = .allow, .allow_glob_max_depth = max_depth });
+}
+
+const GlobResolveMode = enum { allow, deny };
+
+const GlobResolveOptions = struct {
+    mode: GlobResolveMode,
+    allow_glob_max_depth: ?usize = null,
+};
+
+fn resolveGlobPatterns(allocator: std.mem.Allocator, base_cwd: []const u8, patterns: []const []const u8, options: GlobResolveOptions) ![]const []const u8 {
     var resolved = std.ArrayList([]const u8).empty;
     var moved = false;
     errdefer if (!moved) {
@@ -445,15 +535,218 @@ pub fn resolveReadDeniedGlobPatterns(allocator: std.mem.Allocator, base_cwd: []c
         var canonical_moved = false;
         errdefer if (!canonical_moved) allocator.free(canonical);
 
+        if (options.mode == .allow and globStaticPrefixWithinEquivalentRoot(original, base_cwd) and !globStaticPrefixWithinRoot(canonical, base_cwd)) {
+            allocator.free(original);
+            original_moved = true;
+            allocator.free(canonical);
+            canonical_moved = true;
+            continue;
+        }
+        if (options.mode == .allow and try allowGlobEscapesThroughWildcardSymlink(allocator, original, canonical, options.allow_glob_max_depth)) {
+            allocator.free(original);
+            original_moved = true;
+            allocator.free(canonical);
+            canonical_moved = true;
+            continue;
+        }
+
+        const include_canonical = options.mode == .deny or !globStaticPrefixWithinEquivalentRoot(original, base_cwd) or globStaticPrefixWithinRoot(canonical, base_cwd);
         try appendUniqueOwnedPath(allocator, &resolved, original);
         original_moved = true;
-        try appendUniqueOwnedPath(allocator, &resolved, canonical);
-        canonical_moved = true;
+        if (include_canonical) {
+            try appendUniqueOwnedPath(allocator, &resolved, canonical);
+            canonical_moved = true;
+        } else {
+            allocator.free(canonical);
+            canonical_moved = true;
+        }
     }
 
     const items = try resolved.toOwnedSlice(allocator);
     moved = true;
     return items;
+}
+
+fn globStaticPrefixWithinRoot(pattern: []const u8, root: []const u8) bool {
+    const prefix = globStaticDirectoryPrefix(pattern) orelse return false;
+    return pathWithinRoot(prefix, root);
+}
+
+fn globStaticPrefixWithinEquivalentRoot(pattern: []const u8, root: []const u8) bool {
+    const prefix = globStaticDirectoryPrefix(pattern) orelse return false;
+    return pathWithinRoot(prefix, root) or pathWithinMacOSPrivateAlias(prefix, root);
+}
+
+fn pathWithinMacOSPrivateAlias(path: []const u8, root: []const u8) bool {
+    if (builtin.os.tag != .macos) return false;
+    const private_prefix = "/private/";
+    if (!std.mem.startsWith(u8, root, private_prefix)) return false;
+    const alias_root = root["/private".len..];
+    return pathWithinRoot(path, alias_root);
+}
+
+const AllowGlobSymlinkScanState = struct {
+    scanned_entries: usize = 0,
+};
+
+fn allowGlobEscapesThroughWildcardSymlink(allocator: std.mem.Allocator, pattern: []const u8, canonical_pattern: []const u8, max_depth: ?usize) !bool {
+    if (firstGlobCharIndex(pattern) == null) return false;
+    const scan_root = globStaticDirectoryPrefix(pattern) orelse return false;
+    const allowed_root = globStaticDirectoryPrefix(canonical_pattern) orelse return false;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var dir = std.Io.Dir.openDirAbsolute(io, scan_root, .{ .iterate = true }) catch |err| switch (err) {
+        error.FileNotFound, error.NotDir => return false,
+        error.AccessDenied => return true,
+        else => return err,
+    };
+    defer dir.close(io);
+
+    var state: AllowGlobSymlinkScanState = .{};
+    return scanAllowGlobEscapingSymlinks(allocator, io, pattern, allowed_root, scan_root, &dir, &state, max_depth);
+}
+
+fn scanAllowGlobEscapingSymlinks(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    pattern: []const u8,
+    allowed_root: []const u8,
+    dir_path: []const u8,
+    dir: *std.Io.Dir,
+    state: *AllowGlobSymlinkScanState,
+    max_depth: ?usize,
+) !bool {
+    var iter = dir.iterate();
+    while (state.scanned_entries < max_allow_glob_symlink_scan_entries) {
+        const entry = iter.next(io) catch |err| switch (err) {
+            error.AccessDenied => return true,
+            else => return err,
+        };
+        const child = entry orelse break;
+        state.scanned_entries += 1;
+
+        const child_path = try std.fs.path.join(allocator, &.{ dir_path, child.name });
+        defer allocator.free(child_path);
+        const metadata = std.Io.Dir.cwd().statFile(io, child_path, .{ .follow_symlinks = false }) catch |err| switch (err) {
+            error.FileNotFound, error.NotDir => continue,
+            error.AccessDenied => if (try allowGlobMayMatchPathOrSubtree(allocator, pattern, child_path, max_depth)) return true else continue,
+            else => return err,
+        };
+
+        if (metadata.kind == .sym_link) {
+            const target = realPathAlloc(allocator, child_path) catch |err| switch (err) {
+                error.FileNotFound, error.NotDir => continue,
+                error.AccessDenied => if (try allowGlobMayMatchPathOrSubtree(allocator, pattern, child_path, max_depth)) return true else continue,
+                else => return err,
+            };
+            defer allocator.free(target);
+            if (try allowGlobMayMatchPathOrSubtree(allocator, pattern, child_path, max_depth)) {
+                if (!pathWithinRoot(target, allowed_root) and !pathWithinMacOSPrivateAlias(target, allowed_root)) return true;
+                // Seatbelt evaluates the resolved target path for wildcarded
+                // symlink traversals. Until target-side rules are materialized,
+                // reject matching symlinks fail-closed instead of emitting an
+                // alias-only allow rule that cannot authorize the access.
+                return true;
+            }
+            continue;
+        }
+
+        if (metadata.kind == .directory) {
+            if (!try allowGlobMayMatchPathSubtree(allocator, pattern, child_path, max_depth)) continue;
+            var child_dir = std.Io.Dir.openDirAbsolute(io, child_path, .{ .iterate = true }) catch |err| switch (err) {
+                error.FileNotFound, error.NotDir => continue,
+                error.AccessDenied => if (try allowGlobMayMatchPathSubtree(allocator, pattern, child_path, max_depth)) return true else continue,
+                else => return err,
+            };
+            defer child_dir.close(io);
+            if (try scanAllowGlobEscapingSymlinks(allocator, io, pattern, allowed_root, child_path, &child_dir, state, max_depth)) return true;
+        }
+    }
+    return state.scanned_entries >= max_allow_glob_symlink_scan_entries;
+}
+
+fn allowGlobMayMatchPathOrSubtree(allocator: std.mem.Allocator, pattern: []const u8, path: []const u8, max_depth: ?usize) !bool {
+    if (readDeniedGlobMatchesPath(pattern, path)) return true;
+    return allowGlobMayMatchPathSubtree(allocator, pattern, path, max_depth);
+}
+
+fn allowGlobMayMatchPathSubtree(allocator: std.mem.Allocator, pattern: []const u8, path: []const u8, max_depth: ?usize) !bool {
+    const subtree = try std.fmt.allocPrint(allocator, "{s}{s}", .{ path, std.fs.path.sep_str });
+    defer allocator.free(subtree);
+    return globMayMatchPathPrefix(pattern, subtree, max_depth);
+}
+
+fn globMayMatchPathPrefix(pattern: []const u8, prefix: []const u8, max_depth: ?usize) bool {
+    if (pattern.len == 0 or prefix.len == 0) return false;
+    return globMayMatchPathPrefixAt(pattern, 0, prefix, 0, max_depth);
+}
+
+fn globMayMatchPathPrefixAt(pattern: []const u8, pattern_index: usize, prefix: []const u8, prefix_index: usize, max_depth: ?usize) bool {
+    if (prefix_index == prefix.len) return true;
+    if (pattern_index == pattern.len or pattern_index > pattern.len) return false;
+
+    switch (pattern[pattern_index]) {
+        '*' => {
+            if (pattern_index + 1 < pattern.len and pattern[pattern_index + 1] == '*') {
+                const next_pattern_index = pattern_index + 2;
+                if (next_pattern_index < pattern.len and pattern[next_pattern_index] == '/') {
+                    const after_globstar_slash = next_pattern_index + 1;
+                    if (globMayMatchPathPrefixAt(pattern, after_globstar_slash, prefix, prefix_index, max_depth)) return true;
+                    var cursor = prefix_index;
+                    var consumed_dirs: usize = 0;
+                    while (cursor < prefix.len) : (cursor += 1) {
+                        if (prefix[cursor] != '/') continue;
+                        consumed_dirs += 1;
+                        if (max_depth) |depth| {
+                            if (consumed_dirs > depth) return false;
+                        }
+                        if (globMayMatchPathPrefixAt(pattern, after_globstar_slash, prefix, cursor + 1, max_depth)) return true;
+                    }
+                    return false;
+                }
+
+                var cursor = prefix_index;
+                var consumed_separators: usize = 0;
+                while (cursor <= prefix.len) : (cursor += 1) {
+                    if (max_depth == null or consumed_separators <= max_depth.?) {
+                        if (globMayMatchPathPrefixAt(pattern, next_pattern_index, prefix, cursor, max_depth)) return true;
+                        if (cursor == prefix.len and globTailMayMatchDescendant(pattern[next_pattern_index..])) return true;
+                    }
+                    if (cursor == prefix.len) break;
+                    if (prefix[cursor] == '/') {
+                        consumed_separators += 1;
+                        if (max_depth) |depth| {
+                            if (consumed_separators > depth) break;
+                        }
+                    }
+                }
+                return false;
+            }
+
+            if (globMayMatchPathPrefixAt(pattern, pattern_index + 1, prefix, prefix_index, max_depth)) return true;
+            var cursor = prefix_index;
+            while (cursor < prefix.len and prefix[cursor] != '/') : (cursor += 1) {
+                if (globMayMatchPathPrefixAt(pattern, pattern_index + 1, prefix, cursor + 1, max_depth)) return true;
+            }
+            return false;
+        },
+        '?' => {
+            if (prefix_index >= prefix.len or prefix[prefix_index] == '/') return false;
+            return globMayMatchPathPrefixAt(pattern, pattern_index + 1, prefix, prefix_index + 1, max_depth);
+        },
+        '[' => {
+            const class_end = globClassEnd(pattern, pattern_index) orelse {
+                if (prefix_index >= prefix.len or !globByteEqual('[', prefix[prefix_index])) return false;
+                return globMayMatchPathPrefixAt(pattern, pattern_index + 1, prefix, prefix_index + 1, max_depth);
+            };
+            if (prefix_index >= prefix.len or prefix[prefix_index] == '/') return false;
+            if (!globClassMatches(pattern[pattern_index + 1 .. class_end], prefix[prefix_index])) return false;
+            return globMayMatchPathPrefixAt(pattern, class_end + 1, prefix, prefix_index + 1, max_depth);
+        },
+        else => |byte| {
+            if (prefix_index >= prefix.len or !globByteEqual(byte, prefix[prefix_index])) return false;
+            return globMayMatchPathPrefixAt(pattern, pattern_index + 1, prefix, prefix_index + 1, max_depth);
+        },
+    }
 }
 
 fn appendUniqueOwnedPath(allocator: std.mem.Allocator, paths: *std.ArrayList([]const u8), path: []const u8) !void {
@@ -539,6 +832,17 @@ fn appendWritableSubpath(allocator: std.mem.Allocator, profile: *std.ArrayList(u
     try profile.appendSlice(allocator, line);
 }
 
+fn appendWritableGlobPatterns(
+    allocator: std.mem.Allocator,
+    profile: *std.ArrayList(u8),
+    patterns: []const []const u8,
+    max_depth: ?usize,
+) !void {
+    for (patterns) |pattern| {
+        try appendGlobRule(allocator, profile, "allow file-write*", pattern, .preserve, max_depth);
+    }
+}
+
 fn appendReadableSubpath(allocator: std.mem.Allocator, profile: *std.ArrayList(u8), path: []const u8, read_denied_roots: []const []const u8) !void {
     const escaped = try escapeSeatbeltString(allocator, path);
     defer allocator.free(escaped);
@@ -556,6 +860,17 @@ fn appendReadableSubpath(allocator: std.mem.Allocator, profile: *std.ArrayList(u
     );
     try appendReadableSubpathDenyRequirements(allocator, profile, path, read_denied_roots);
     try profile.appendSlice(allocator, "))\n");
+}
+
+fn appendReadableGlobPatterns(
+    allocator: std.mem.Allocator,
+    profile: *std.ArrayList(u8),
+    patterns: []const []const u8,
+    max_depth: ?usize,
+) !void {
+    for (patterns) |pattern| {
+        try appendGlobRule(allocator, profile, "allow file-read* file-test-existence", pattern, .preserve, max_depth);
+    }
 }
 
 fn appendReadableSubpathDenyRequirements(allocator: std.mem.Allocator, profile: *std.ArrayList(u8), readable_root: []const u8, read_denied_roots: []const []const u8) !void {
@@ -576,33 +891,106 @@ fn appendRestrictedReadDeniedRoots(
     profile: *std.ArrayList(u8),
     roots: []const []const u8,
     readable_roots: []const []const u8,
+    readable_globs: []const []const u8,
+    max_depth: ?usize,
+) !void {
+    try appendReadDeniedRootsWithCarveouts(allocator, profile, roots, readable_roots, readable_globs, &.{}, &.{}, max_depth, true);
+}
+
+fn appendReadDeniedRootsWithCarveouts(
+    allocator: std.mem.Allocator,
+    profile: *std.ArrayList(u8),
+    roots: []const []const u8,
+    readable_roots: []const []const u8,
+    readable_globs: []const []const u8,
+    writable_roots: []const []const u8,
+    writable_globs: []const []const u8,
+    max_depth: ?usize,
+    skip_root: bool,
 ) !void {
     for (roots) |root| {
-        if (std.mem.eql(u8, root, std.fs.path.sep_str)) continue;
+        if (skip_root and std.mem.eql(u8, root, std.fs.path.sep_str)) continue;
         const escaped = try escapeSeatbeltString(allocator, root);
         defer allocator.free(escaped);
+        const has_read_carveouts = try denyRootHasCarveouts(allocator, root, readable_roots, readable_globs, max_depth);
+        const has_write_carveouts = try denyRootHasCarveouts(allocator, root, writable_roots, writable_globs, max_depth);
 
-        try profile.print(allocator, "(deny file-read* (literal \"{s}\"))\n", .{escaped});
-        try profile.print(allocator, "(deny file-read* (require-all (subpath \"{s}\")", .{escaped});
-        try appendRestrictedReadDenyCarveouts(allocator, profile, root, readable_roots);
-        try profile.appendSlice(allocator, "))\n");
+        if (!skip_root and !has_read_carveouts and !has_write_carveouts) {
+            try profile.print(
+                allocator,
+                \\(deny file-read* (literal "{s}"))
+                \\(deny file-read* (subpath "{s}"))
+                \\(deny file-write* (literal "{s}"))
+                \\(deny file-write* (subpath "{s}"))
+                \\
+            ,
+                .{ escaped, escaped, escaped, escaped },
+            );
+            continue;
+        }
 
-        try profile.print(
-            allocator,
-            \\(deny file-write* (literal "{s}"))
-            \\(deny file-write* (subpath "{s}"))
-            \\
-        ,
-            .{ escaped, escaped },
-        );
+        if (has_read_carveouts or skip_root) {
+            try profile.print(allocator, "(deny file-read* (require-all (literal \"{s}\")", .{escaped});
+            try appendDenyRootCarveouts(allocator, profile, root, readable_roots, readable_globs, max_depth);
+            try profile.appendSlice(allocator, "))\n");
+            try profile.print(allocator, "(deny file-read* (require-all (subpath \"{s}\")", .{escaped});
+            try appendDenyRootCarveouts(allocator, profile, root, readable_roots, readable_globs, max_depth);
+            try profile.appendSlice(allocator, "))\n");
+        } else {
+            try profile.print(
+                allocator,
+                \\(deny file-read* (literal "{s}"))
+                \\(deny file-read* (subpath "{s}"))
+                \\
+            ,
+                .{ escaped, escaped },
+            );
+        }
+
+        if (!has_write_carveouts) {
+            try profile.print(
+                allocator,
+                \\(deny file-write* (literal "{s}"))
+                \\(deny file-write* (subpath "{s}"))
+                \\
+            ,
+                .{ escaped, escaped },
+            );
+        } else {
+            try profile.print(allocator, "(deny file-write* (require-all (literal \"{s}\")", .{escaped});
+            try appendDenyRootCarveouts(allocator, profile, root, writable_roots, writable_globs, max_depth);
+            try profile.appendSlice(allocator, "))\n");
+            try profile.print(allocator, "(deny file-write* (require-all (subpath \"{s}\")", .{escaped});
+            try appendDenyRootCarveouts(allocator, profile, root, writable_roots, writable_globs, max_depth);
+            try profile.appendSlice(allocator, "))\n");
+        }
     }
 }
 
-fn appendRestrictedReadDenyCarveouts(
+fn denyRootHasCarveouts(
+    allocator: std.mem.Allocator,
+    denied_root: []const u8,
+    carveout_roots: []const []const u8,
+    carveout_globs: []const []const u8,
+    max_depth: ?usize,
+) !bool {
+    for (carveout_roots) |carveout_root| {
+        if (std.mem.eql(u8, carveout_root, denied_root)) continue;
+        if (pathWithinRoot(carveout_root, denied_root)) return true;
+    }
+    for (carveout_globs) |carveout_glob| {
+        if (try globOverlapsDeniedRoot(allocator, carveout_glob, denied_root, max_depth)) return true;
+    }
+    return false;
+}
+
+fn appendDenyRootCarveouts(
     allocator: std.mem.Allocator,
     profile: *std.ArrayList(u8),
     denied_root: []const u8,
     readable_roots: []const []const u8,
+    readable_globs: []const []const u8,
+    max_depth: ?usize,
 ) !void {
     for (readable_roots) |readable_root| {
         if (std.mem.eql(u8, readable_root, denied_root)) continue;
@@ -615,25 +1003,27 @@ fn appendRestrictedReadDenyCarveouts(
             .{ escaped, escaped },
         );
     }
+    for (readable_globs) |readable_glob| {
+        if (!try globOverlapsDeniedRoot(allocator, readable_glob, denied_root, max_depth)) continue;
+        const regex = try seatbeltRegexForAllowGlobWithMaxDepth(allocator, readable_glob, max_depth);
+        defer allocator.free(regex);
+        const escaped = try escapeSeatbeltRawRegex(allocator, regex);
+        defer allocator.free(escaped);
+        try profile.print(allocator, " (require-not (regex #\"{s}\"))", .{escaped});
+    }
+}
+
+fn globOverlapsDeniedRoot(allocator: std.mem.Allocator, pattern: []const u8, denied_root: []const u8, max_depth: ?usize) !bool {
+    const prefix = globStaticDirectoryPrefix(pattern) orelse return false;
+    if (firstGlobCharIndex(pattern) == null) {
+        return pathWithinRoot(prefix, denied_root) and !std.mem.eql(u8, prefix, denied_root);
+    }
+    if (pathWithinRoot(prefix, denied_root)) return true;
+    return allowGlobMayMatchPathSubtree(allocator, pattern, denied_root, max_depth);
 }
 
 fn appendReadDeniedRoots(allocator: std.mem.Allocator, profile: *std.ArrayList(u8), roots: []const []const u8) !void {
-    for (roots) |root| {
-        const escaped = try escapeSeatbeltString(allocator, root);
-        defer allocator.free(escaped);
-        const block = try std.fmt.allocPrint(
-            allocator,
-            \\(deny file-read* (literal "{s}"))
-            \\(deny file-read* (subpath "{s}"))
-            \\(deny file-write* (literal "{s}"))
-            \\(deny file-write* (subpath "{s}"))
-            \\
-        ,
-            .{ escaped, escaped, escaped, escaped },
-        );
-        defer allocator.free(block);
-        try profile.appendSlice(allocator, block);
-    }
+    try appendReadDeniedRootsWithCarveouts(allocator, profile, roots, &.{}, &.{}, &.{}, &.{}, null, false);
 }
 
 fn appendReadDeniedGlobPatterns(
@@ -641,39 +1031,42 @@ fn appendReadDeniedGlobPatterns(
     profile: *std.ArrayList(u8),
     patterns: []const []const u8,
     writable_roots: []const []const u8,
+    writable_globs: []const []const u8,
     read_denied_roots: []const []const u8,
+    allow_glob_max_depth: ?usize,
 ) !void {
     for (patterns) |pattern| {
-        const regex = try seatbeltRegexForUnreadableGlob(allocator, pattern);
-        defer allocator.free(regex);
-        const escaped = try escapeSeatbeltRawRegex(allocator, regex);
-        defer allocator.free(escaped);
         // Allow overwriting existing glob-denied files only when the glob is wholly
         // inside a writable root and cannot cover a more specific denied root.
         // Directory-entry operations remain blocked.
         const can_allow_data_write = globPatternUnderAnyRoot(pattern, writable_roots) and !globPatternOverlapsAnyRoot(pattern, read_denied_roots);
-        const block = if (can_allow_data_write)
-            try std.fmt.allocPrint(
-                allocator,
-                \\(deny file-read* (regex #"{s}"))
-                \\(deny file-write* (regex #"{s}"))
-                \\(allow file-write-data (regex #"{s}"))
-                \\
-            ,
-                .{ escaped, escaped, escaped },
-            )
-        else
-            try std.fmt.allocPrint(
-                allocator,
-                \\(deny file-read* (regex #"{s}"))
-                \\(deny file-write* (regex #"{s}"))
-                \\
-            ,
-                .{ escaped, escaped },
-            );
-        defer allocator.free(block);
-        try profile.appendSlice(allocator, block);
+        try appendGlobRule(allocator, profile, "deny file-read*", pattern, .fold_ascii, null);
+        try appendGlobRule(allocator, profile, "deny file-write*", pattern, .fold_ascii, null);
+        if (can_allow_data_write) try appendGlobRule(allocator, profile, "allow file-write-data", pattern, .preserve, null);
     }
+
+    // Write glob allow rules are emitted before read-deny glob rules. Re-emit the
+    // data-write subset afterward so read-deny glob metadata blocks do not erase
+    // legitimate blind overwrites within a broader writable glob. Read-denied
+    // roots are appended after this and still override these allowances.
+    for (writable_globs) |pattern| {
+        try appendGlobRule(allocator, profile, "allow file-write-data", pattern, .preserve, allow_glob_max_depth);
+    }
+}
+
+fn appendGlobRule(
+    allocator: std.mem.Allocator,
+    profile: *std.ArrayList(u8),
+    effect: []const u8,
+    pattern: []const u8,
+    case_mode: GlobRegexCaseMode,
+    max_depth: ?usize,
+) !void {
+    const regex = try seatbeltRegexForGlob(allocator, pattern, case_mode, max_depth);
+    defer allocator.free(regex);
+    const escaped = try escapeSeatbeltRawRegex(allocator, regex);
+    defer allocator.free(escaped);
+    try profile.print(allocator, "({s} (regex #\"{s}\"))\n", .{ effect, escaped });
 }
 
 fn workspaceWriteRootsForGlobExceptions(
@@ -772,7 +1165,28 @@ fn escapeSeatbeltRawRegex(allocator: std.mem.Allocator, value: []const u8) ![]co
     return escaped.toOwnedSlice(allocator);
 }
 
+const GlobRegexCaseMode = enum {
+    preserve,
+    fold_ascii,
+};
+
 fn seatbeltRegexForUnreadableGlob(allocator: std.mem.Allocator, pattern: []const u8) ![]const u8 {
+    return seatbeltRegexForGlob(allocator, pattern, .fold_ascii, null);
+}
+
+fn seatbeltRegexForAllowGlob(allocator: std.mem.Allocator, pattern: []const u8) ![]const u8 {
+    return seatbeltRegexForAllowGlobWithMaxDepth(allocator, pattern, null);
+}
+
+fn seatbeltRegexForAllowGlobWithMaxDepth(allocator: std.mem.Allocator, pattern: []const u8, max_depth: ?usize) ![]const u8 {
+    return seatbeltRegexForGlob(allocator, pattern, .preserve, max_depth);
+}
+
+fn seatbeltRegexForGlob(allocator: std.mem.Allocator, pattern: []const u8, case_mode: GlobRegexCaseMode, max_depth: ?usize) ![]const u8 {
+    if (max_depth) |depth| {
+        if (depth > max_allow_glob_scan_depth) return error.AllowGlobMaxDepthExceeded;
+    }
+
     var regex = std.ArrayList(u8).empty;
     errdefer regex.deinit(allocator);
 
@@ -788,9 +1202,15 @@ fn seatbeltRegexForUnreadableGlob(allocator: std.mem.Allocator, pattern: []const
                     index += 2;
                     if (index < pattern.len and pattern[index] == '/') {
                         index += 1;
-                        try regex.appendSlice(allocator, "(.*/)?");
+                        if (max_depth) |depth|
+                            try appendBoundedGlobstarDirectories(allocator, &regex, depth)
+                        else
+                            try regex.appendSlice(allocator, "(.*/)?");
                     } else {
-                        try regex.appendSlice(allocator, ".*");
+                        if (max_depth) |depth|
+                            try appendBoundedGlobstarPath(allocator, &regex, depth)
+                        else
+                            try regex.appendSlice(allocator, ".*");
                     }
                     continue;
                 }
@@ -805,7 +1225,7 @@ fn seatbeltRegexForUnreadableGlob(allocator: std.mem.Allocator, pattern: []const
             '[' => {
                 saw_glob = true;
                 const class_start = index;
-                appendSeatbeltRegexClass(allocator, &regex, pattern, &index) catch |err| switch (err) {
+                appendSeatbeltRegexClass(allocator, &regex, pattern, &index, case_mode) catch |err| switch (err) {
                     error.InvalidGlobClass => try regex.appendSlice(allocator, "\\["),
                     else => return err,
                 };
@@ -815,7 +1235,7 @@ fn seatbeltRegexForUnreadableGlob(allocator: std.mem.Allocator, pattern: []const
                 saw_glob = true;
                 try regex.appendSlice(allocator, "\\]");
             },
-            else => try appendRegexEscapedByteFolded(allocator, &regex, byte),
+            else => try appendRegexEscapedByteWithCase(allocator, &regex, byte, case_mode),
         }
         index += 1;
     }
@@ -824,11 +1244,30 @@ fn seatbeltRegexForUnreadableGlob(allocator: std.mem.Allocator, pattern: []const
     return regex.toOwnedSlice(allocator);
 }
 
+fn appendBoundedGlobstarDirectories(allocator: std.mem.Allocator, regex: *std.ArrayList(u8), max_depth: usize) !void {
+    for (0..max_depth) |_| {
+        try regex.appendSlice(allocator, "([^/]*/)?");
+    }
+}
+
+fn appendBoundedGlobstarPath(allocator: std.mem.Allocator, regex: *std.ArrayList(u8), max_depth: usize) !void {
+    try regex.appendSlice(allocator, "[^/]*");
+    for (0..max_depth) |_| {
+        try regex.appendSlice(allocator, "(/[^/]*)?");
+    }
+}
+
+fn globTailMayMatchDescendant(pattern_tail: []const u8) bool {
+    if (pattern_tail.len == 0) return true;
+    return pattern_tail[0] != '/';
+}
+
 fn appendSeatbeltRegexClass(
     allocator: std.mem.Allocator,
     regex: *std.ArrayList(u8),
     pattern: []const u8,
     index: *usize,
+    case_mode: GlobRegexCaseMode,
 ) !void {
     var cursor = index.* + 1;
     var close: ?usize = null;
@@ -842,39 +1281,54 @@ fn appendSeatbeltRegexClass(
 
     try regex.append(allocator, '[');
     var class_index = index.* + 1;
+    var negated = false;
+    var literal_caret = false;
     if (class_index < end) {
         const first = pattern[class_index];
         if (first == '!') {
-            try regex.append(allocator, '^');
+            negated = true;
             class_index += 1;
         } else if (first == '^') {
-            try regex.appendSlice(allocator, "\\^");
+            literal_caret = true;
             class_index += 1;
         }
     }
+
+    var body = std.ArrayList(u8).empty;
+    defer body.deinit(allocator);
     var saw_literal_hyphen = false;
     while (class_index < end) : (class_index += 1) {
         const byte = pattern[class_index];
         if (class_index + 2 < end and pattern[class_index + 1] == '-' and byte != '-' and pattern[class_index + 2] != '-') {
-            try appendSeatbeltRegexClassRange(allocator, regex, byte, pattern[class_index + 2]);
+            try appendSeatbeltRegexClassRange(allocator, &body, byte, pattern[class_index + 2], case_mode);
             class_index += 2;
         } else if (byte == '-') {
             saw_literal_hyphen = true;
         } else if (byte == '\\') {
-            try regex.appendSlice(allocator, "\\\\");
+            try body.appendSlice(allocator, "\\\\");
         } else {
-            try appendSeatbeltRegexClassByteFolded(allocator, regex, byte);
+            try appendSeatbeltRegexClassByteWithCase(allocator, &body, byte, case_mode);
         }
     }
-    if (saw_literal_hyphen) {
+    if (negated) {
+        try regex.appendSlice(allocator, "^/");
+    }
+    if (saw_literal_hyphen and !negated) {
+        try regex.append(allocator, '-');
+    }
+    if (literal_caret) {
+        try regex.appendSlice(allocator, "\\^");
+    }
+    try regex.appendSlice(allocator, body.items);
+    if (saw_literal_hyphen and negated) {
         try regex.append(allocator, '-');
     }
     try regex.append(allocator, ']');
     index.* = end + 1;
 }
 
-fn appendSeatbeltRegexClassRange(allocator: std.mem.Allocator, regex: *std.ArrayList(u8), start: u8, end: u8) !void {
-    if (builtin.os.tag == .macos and (std.ascii.isAlphabetic(start) or std.ascii.isAlphabetic(end))) {
+fn appendSeatbeltRegexClassRange(allocator: std.mem.Allocator, regex: *std.ArrayList(u8), start: u8, end: u8, case_mode: GlobRegexCaseMode) !void {
+    if (case_mode == .fold_ascii and builtin.os.tag == .macos and (std.ascii.isAlphabetic(start) or std.ascii.isAlphabetic(end))) {
         const lower_start = std.ascii.toLower(start);
         const lower_end = std.ascii.toLower(end);
         const lo = @min(lower_start, lower_end);
@@ -893,8 +1347,8 @@ fn appendSeatbeltRegexClassRangeRaw(allocator: std.mem.Allocator, regex: *std.Ar
     try appendSeatbeltRegexClassByteRaw(allocator, regex, end);
 }
 
-fn appendSeatbeltRegexClassByteFolded(allocator: std.mem.Allocator, regex: *std.ArrayList(u8), byte: u8) !void {
-    if (builtin.os.tag == .macos and std.ascii.isAlphabetic(byte)) {
+fn appendSeatbeltRegexClassByteWithCase(allocator: std.mem.Allocator, regex: *std.ArrayList(u8), byte: u8, case_mode: GlobRegexCaseMode) !void {
+    if (case_mode == .fold_ascii and builtin.os.tag == .macos and std.ascii.isAlphabetic(byte)) {
         try appendSeatbeltRegexClassByteRaw(allocator, regex, std.ascii.toLower(byte));
         try appendSeatbeltRegexClassByteRaw(allocator, regex, std.ascii.toUpper(byte));
         return;
@@ -923,8 +1377,8 @@ fn appendRegexEscapedByte(allocator: std.mem.Allocator, regex: *std.ArrayList(u8
     }
 }
 
-fn appendRegexEscapedByteFolded(allocator: std.mem.Allocator, regex: *std.ArrayList(u8), byte: u8) !void {
-    if (builtin.os.tag == .macos and std.ascii.isAlphabetic(byte)) {
+fn appendRegexEscapedByteWithCase(allocator: std.mem.Allocator, regex: *std.ArrayList(u8), byte: u8, case_mode: GlobRegexCaseMode) !void {
+    if (case_mode == .fold_ascii and builtin.os.tag == .macos and std.ascii.isAlphabetic(byte)) {
         try regex.append(allocator, '[');
         try regex.append(allocator, std.ascii.toLower(byte));
         try regex.append(allocator, std.ascii.toUpper(byte));
@@ -935,8 +1389,8 @@ fn appendRegexEscapedByteFolded(allocator: std.mem.Allocator, regex: *std.ArrayL
     try appendRegexEscapedByte(allocator, regex, byte);
 }
 
-fn profileGlobRuleNeedle(allocator: std.mem.Allocator, effect: []const u8, pattern: []const u8) ![]const u8 {
-    const regex = try seatbeltRegexForUnreadableGlob(allocator, pattern);
+fn profileGlobRuleNeedle(allocator: std.mem.Allocator, effect: []const u8, pattern: []const u8, case_mode: GlobRegexCaseMode) ![]const u8 {
+    const regex = try seatbeltRegexForGlob(allocator, pattern, case_mode, null);
     defer allocator.free(regex);
     const escaped = try escapeSeatbeltRawRegex(allocator, regex);
     defer allocator.free(escaped);
@@ -945,14 +1399,28 @@ fn profileGlobRuleNeedle(allocator: std.mem.Allocator, effect: []const u8, patte
 
 fn expectProfileGlobRule(profile: []const u8, effect: []const u8, pattern: []const u8) !void {
     const allocator = std.testing.allocator;
-    const needle = try profileGlobRuleNeedle(allocator, effect, pattern);
+    const needle = try profileGlobRuleNeedle(allocator, effect, pattern, .fold_ascii);
+    defer allocator.free(needle);
+    try std.testing.expect(std.mem.indexOf(u8, profile, needle) != null);
+}
+
+fn expectProfileAllowGlobRule(profile: []const u8, effect: []const u8, pattern: []const u8) !void {
+    const allocator = std.testing.allocator;
+    const needle = try profileGlobRuleNeedle(allocator, effect, pattern, .preserve);
     defer allocator.free(needle);
     try std.testing.expect(std.mem.indexOf(u8, profile, needle) != null);
 }
 
 fn expectProfileOmitsGlobRule(profile: []const u8, effect: []const u8, pattern: []const u8) !void {
     const allocator = std.testing.allocator;
-    const needle = try profileGlobRuleNeedle(allocator, effect, pattern);
+    const needle = try profileGlobRuleNeedle(allocator, effect, pattern, .fold_ascii);
+    defer allocator.free(needle);
+    try std.testing.expect(std.mem.indexOf(u8, profile, needle) == null);
+}
+
+fn expectProfileOmitsFoldedAllowGlobRule(profile: []const u8, effect: []const u8, pattern: []const u8) !void {
+    const allocator = std.testing.allocator;
+    const needle = try profileGlobRuleNeedle(allocator, effect, pattern, .fold_ascii);
     defer allocator.free(needle);
     try std.testing.expect(std.mem.indexOf(u8, profile, needle) == null);
 }
@@ -1127,7 +1595,7 @@ test "seatbelt string escaping handles quotes and backslashes" {
 
 test "sandbox profile can disable network access" {
     const allocator = std.testing.allocator;
-    const profile = try buildProfileWithOptions(allocator, .workspace_write, "/tmp/codex-workspace", &.{}, &.{}, true, false, false, &.{}, &.{}, 0);
+    const profile = try buildProfileWithOptions(allocator, .workspace_write, "/tmp/codex-workspace", &.{}, &.{}, &.{}, &.{}, true, false, false, &.{}, &.{}, 0);
     defer allocator.free(profile);
 
     try std.testing.expect(std.mem.indexOf(u8, profile, "(deny network*)") != null);
@@ -1189,7 +1657,7 @@ test "relative unix socket paths resolve against provided base cwd" {
 
 test "sandbox profile can deny read roots" {
     const allocator = std.testing.allocator;
-    const profile = try buildProfileWithOptions(allocator, .workspace_write, "/tmp/codex-workspace", &.{}, &.{}, true, false, true, &.{"/tmp/codex-workspace/secret"}, &.{}, 0);
+    const profile = try buildProfileWithOptions(allocator, .workspace_write, "/tmp/codex-workspace", &.{}, &.{}, &.{}, &.{}, true, false, true, &.{"/tmp/codex-workspace/secret"}, &.{}, 0);
     defer allocator.free(profile);
 
     try std.testing.expect(std.mem.indexOf(u8, profile, "(deny file-read* (literal \"/tmp/codex-workspace/secret\"))") != null);
@@ -1198,7 +1666,7 @@ test "sandbox profile can deny read roots" {
 
 test "restricted read-only profile allows explicit readable roots" {
     const allocator = std.testing.allocator;
-    const profile = try buildProfileWithOptions(allocator, .read_only, "/tmp/codex-workspace", &.{}, &.{"/Users/example/repo"}, true, false, false, &.{}, &.{}, 0);
+    const profile = try buildProfileWithOptions(allocator, .read_only, "/tmp/codex-workspace", &.{}, &.{"/Users/example/repo"}, &.{}, &.{}, true, false, false, &.{}, &.{}, 0);
     defer allocator.free(profile);
 
     try std.testing.expect(std.mem.indexOf(u8, profile, "(deny default)") != null);
@@ -1210,9 +1678,99 @@ test "restricted read-only profile allows explicit readable roots" {
     try std.testing.expect(std.mem.indexOf(u8, profile, "(allow network-outbound)") == null);
 }
 
+test "restricted read-only profile allows readable glob patterns" {
+    const allocator = std.testing.allocator;
+    const profile = try buildProfileWithOptions(allocator, .read_only, "/tmp/codex-workspace", &.{}, &.{}, &.{"/Users/example/repo/**/*.env"}, &.{}, true, false, false, &.{}, &.{}, 0);
+    defer allocator.free(profile);
+
+    try std.testing.expect(std.mem.indexOf(u8, profile, "(deny default)") != null);
+    try expectProfileAllowGlobRule(profile, "allow file-read* file-test-existence", "/Users/example/repo/**/*.env");
+}
+
+test "restricted read-only profile carves readable glob patterns from deny roots" {
+    const allocator = std.testing.allocator;
+    const pattern = "/tmp/codex-workspace/secret/**/*.env";
+    const profile = try buildProfileWithOptions(allocator, .read_only, "/tmp/codex-workspace", &.{}, &.{}, &.{pattern}, &.{}, true, false, false, &.{"/tmp/codex-workspace/secret"}, &.{}, 0);
+    defer allocator.free(profile);
+
+    try expectProfileAllowGlobRule(profile, "allow file-read* file-test-existence", pattern);
+    const regex = try seatbeltRegexForAllowGlob(allocator, pattern);
+    defer allocator.free(regex);
+    const escaped = try escapeSeatbeltRawRegex(allocator, regex);
+    defer allocator.free(escaped);
+    const carveout = try std.fmt.allocPrint(allocator, "(require-not (regex #\"{s}\"))", .{escaped});
+    defer allocator.free(carveout);
+    try std.testing.expect(std.mem.indexOf(u8, profile, carveout) != null);
+}
+
+test "root-read profile carves readable glob patterns from deny roots" {
+    const allocator = std.testing.allocator;
+    const pattern = "/tmp/codex-workspace/secret/**/*.env";
+    const profile = try buildProfileWithResolvedOptions(allocator, .read_only, "/tmp/codex-workspace", &.{}, &.{}, &.{}, &.{}, &.{pattern}, &.{}, null, false, true, false, true, &.{"/tmp/codex-workspace/secret"}, &.{}, 0);
+    defer allocator.free(profile);
+
+    try std.testing.expect(std.mem.indexOf(u8, profile, "(allow default)") != null);
+    try expectProfileOmitsGlobRule(profile, "allow file-read* file-test-existence", pattern);
+    const regex = try seatbeltRegexForAllowGlob(allocator, pattern);
+    defer allocator.free(regex);
+    const escaped = try escapeSeatbeltRawRegex(allocator, regex);
+    defer allocator.free(escaped);
+    const carveout = try std.fmt.allocPrint(allocator, "(require-not (regex #\"{s}\"))", .{escaped});
+    defer allocator.free(carveout);
+    try std.testing.expect(std.mem.indexOf(u8, profile, carveout) != null);
+}
+
+test "root-read profile does not carve literal readable glob equal to deny root" {
+    const allocator = std.testing.allocator;
+    const pattern = "/tmp/codex-workspace/secret";
+    const profile = try buildProfileWithResolvedOptions(allocator, .read_only, "/tmp/codex-workspace", &.{}, &.{}, &.{}, &.{}, &.{pattern}, &.{}, null, false, true, false, true, &.{pattern}, &.{}, 0);
+    defer allocator.free(profile);
+
+    const regex = try seatbeltRegexForAllowGlob(allocator, pattern);
+    defer allocator.free(regex);
+    const escaped = try escapeSeatbeltRawRegex(allocator, regex);
+    defer allocator.free(escaped);
+    const carveout = try std.fmt.allocPrint(allocator, "(require-not (regex #\"{s}\"))", .{escaped});
+    defer allocator.free(carveout);
+    try std.testing.expect(std.mem.indexOf(u8, profile, carveout) == null);
+}
+
+test "root-read profile carves overlapping readable glob patterns from deny roots" {
+    const allocator = std.testing.allocator;
+    const pattern = "/tmp/codex-workspace/sec*/*.env";
+    const denied_root = "/tmp/codex-workspace/secret";
+    const profile = try buildProfileWithResolvedOptions(allocator, .read_only, "/tmp/codex-workspace", &.{}, &.{}, &.{}, &.{}, &.{pattern}, &.{}, null, false, true, false, true, &.{denied_root}, &.{}, 0);
+    defer allocator.free(profile);
+
+    const regex = try seatbeltRegexForAllowGlob(allocator, pattern);
+    defer allocator.free(regex);
+    const escaped = try escapeSeatbeltRawRegex(allocator, regex);
+    defer allocator.free(escaped);
+    const carveout = try std.fmt.allocPrint(allocator, "(require-not (regex #\"{s}\"))", .{escaped});
+    defer allocator.free(carveout);
+    try std.testing.expect(std.mem.indexOf(u8, profile, carveout) != null);
+}
+
+test "allow glob regex honors max depth for globstar directories" {
+    const allocator = std.testing.allocator;
+    const pattern = "/tmp/codex-workspace/**/*.env";
+    const regex = try seatbeltRegexForAllowGlobWithMaxDepth(allocator, pattern, 1);
+    defer allocator.free(regex);
+
+    try std.testing.expectEqualStrings("^/tmp/codex-workspace/([^/]*/)?[^/]*\\.env$", regex);
+}
+
+test "allow glob regex rejects excessive max depth" {
+    const allocator = std.testing.allocator;
+    try std.testing.expectError(
+        error.AllowGlobMaxDepthExceeded,
+        seatbeltRegexForAllowGlobWithMaxDepth(allocator, "/tmp/codex-workspace/**/*.env", max_allow_glob_scan_depth + 1),
+    );
+}
+
 test "restricted read-only profile gates platform defaults on minimal read" {
     const allocator = std.testing.allocator;
-    const profile = try buildProfileWithOptions(allocator, .read_only, "/tmp/codex-workspace", &.{}, &.{"/Users/example/repo"}, true, true, false, &.{}, &.{}, 0);
+    const profile = try buildProfileWithOptions(allocator, .read_only, "/tmp/codex-workspace", &.{}, &.{"/Users/example/repo"}, &.{}, &.{}, true, true, false, &.{}, &.{}, 0);
     defer allocator.free(profile);
 
     try std.testing.expect(std.mem.indexOf(u8, profile, "(allow file-read-data (subpath \"/bin\"))") != null);
@@ -1221,7 +1779,7 @@ test "restricted read-only profile gates platform defaults on minimal read" {
 
 test "restricted read-only profile applies deny roots after minimal defaults" {
     const allocator = std.testing.allocator;
-    const profile = try buildProfileWithOptions(allocator, .read_only, "/tmp/codex-workspace", &.{}, &.{"/tmp/allowed"}, true, true, false, &.{ "/tmp", "/tmp/secret" }, &.{}, 0);
+    const profile = try buildProfileWithOptions(allocator, .read_only, "/tmp/codex-workspace", &.{}, &.{"/tmp/allowed"}, &.{}, &.{}, true, true, false, &.{ "/tmp", "/tmp/secret" }, &.{}, 0);
     defer allocator.free(profile);
 
     const tmp_default_index = std.mem.indexOf(u8, profile, "(allow file-read* file-test-existence file-write* (subpath \"/tmp\"))").?;
@@ -1236,7 +1794,7 @@ test "restricted read-only profile applies deny roots after minimal defaults" {
 
 test "restricted read-only profile carves denied descendants from readable roots" {
     const allocator = std.testing.allocator;
-    const profile = try buildProfileWithOptions(allocator, .read_only, "/tmp/codex-workspace", &.{}, &.{"/Users/example/repo"}, true, false, false, &.{ "/", "/Users/example/repo/private" }, &.{}, 0);
+    const profile = try buildProfileWithOptions(allocator, .read_only, "/tmp/codex-workspace", &.{}, &.{"/Users/example/repo"}, &.{}, &.{}, true, false, false, &.{ "/", "/Users/example/repo/private" }, &.{}, 0);
     defer allocator.free(profile);
 
     try std.testing.expect(std.mem.indexOf(u8, profile, "(deny file-read* (subpath \"/\"))") == null);
@@ -1246,7 +1804,7 @@ test "restricted read-only profile carves denied descendants from readable roots
 
 test "restricted read-only profile can enable network access" {
     const allocator = std.testing.allocator;
-    const profile = try buildProfileWithOptions(allocator, .read_only, "/tmp/codex-workspace", &.{}, &.{"/Users/example/repo"}, true, false, true, &.{}, &.{}, 0);
+    const profile = try buildProfileWithOptions(allocator, .read_only, "/tmp/codex-workspace", &.{}, &.{"/Users/example/repo"}, &.{}, &.{}, true, false, true, &.{}, &.{}, 0);
     defer allocator.free(profile);
 
     try std.testing.expect(std.mem.indexOf(u8, profile, "(allow network-outbound)") != null);
@@ -1283,6 +1841,8 @@ test "restricted read-only sandbox honors explicit readable roots with minimal d
         allowed_root,
         &.{},
         &.{allowed_root},
+        &.{},
+        &.{},
         true,
         true,
         false,
@@ -1317,19 +1877,88 @@ test "restricted read-only sandbox honors explicit readable roots with minimal d
     try std.testing.expectError(error.FileNotFound, allowed_dir.dir.access(io, "write-blocked.txt", .{}));
 }
 
+test "sandbox profile allows write glob patterns" {
+    const allocator = std.testing.allocator;
+    const profile = try buildProfileWithOptions(allocator, .workspace_write, "/tmp/codex-workspace", &.{}, &.{}, &.{}, &.{"/tmp/codex-workspace/**/*.env"}, false, false, true, &.{}, &.{}, 0);
+    defer allocator.free(profile);
+
+    try expectProfileAllowGlobRule(profile, "allow file-write*", "/tmp/codex-workspace/**/*.env");
+    try std.testing.expect(std.mem.indexOf(u8, profile, "(allow file-write* (subpath \"/tmp/codex-workspace\"))") == null);
+}
+
+test "sandbox profile allows blind writes for matching write and deny globs" {
+    const allocator = std.testing.allocator;
+    const pattern = "/tmp/codex-workspace/**/*.env";
+    const profile = try buildProfileWithOptions(allocator, .workspace_write, "/tmp/codex-workspace", &.{}, &.{}, &.{}, &.{pattern}, false, false, true, &.{}, &.{pattern}, 0);
+    defer allocator.free(profile);
+
+    try expectProfileGlobRule(profile, "deny file-read*", pattern);
+    try expectProfileGlobRule(profile, "deny file-write*", pattern);
+    try expectProfileAllowGlobRule(profile, "allow file-write-data", pattern);
+}
+
+test "sandbox profile preserves blind writes covered by broader write globs" {
+    const allocator = std.testing.allocator;
+    const write_pattern = "/tmp/codex-workspace/**/*.env";
+    const deny_pattern = "/tmp/codex-workspace/secrets/**/*.env";
+    const profile = try buildProfileWithOptions(allocator, .workspace_write, "/tmp/codex-workspace", &.{}, &.{}, &.{}, &.{write_pattern}, false, false, true, &.{}, &.{deny_pattern}, 0);
+    defer allocator.free(profile);
+
+    try expectProfileGlobRule(profile, "deny file-read*", deny_pattern);
+    try expectProfileGlobRule(profile, "deny file-write*", deny_pattern);
+    try expectProfileAllowGlobRule(profile, "allow file-write-data", write_pattern);
+}
+
+test "sandbox profile preserves write glob grants under deny roots" {
+    const allocator = std.testing.allocator;
+    const write_pattern = "/tmp/codex-workspace/secret/**/*.env";
+    const denied_root = "/tmp/codex-workspace/secret";
+    const profile = try buildProfileWithResolvedOptions(allocator, .workspace_write, "/tmp/codex-workspace", &.{}, &.{}, &.{}, &.{}, &.{}, &.{write_pattern}, null, false, true, false, true, &.{denied_root}, &.{}, 0);
+    defer allocator.free(profile);
+
+    try expectProfileAllowGlobRule(profile, "allow file-write*", write_pattern);
+    const regex = try seatbeltRegexForAllowGlob(allocator, write_pattern);
+    defer allocator.free(regex);
+    const escaped_regex = try escapeSeatbeltRawRegex(allocator, regex);
+    defer allocator.free(escaped_regex);
+    const escaped_root = try escapeSeatbeltString(allocator, denied_root);
+    defer allocator.free(escaped_root);
+    const carveout = try std.fmt.allocPrint(allocator, "(deny file-write* (require-all (subpath \"{s}\") (require-not (regex #\"{s}\"))))", .{ escaped_root, escaped_regex });
+    defer allocator.free(carveout);
+    try std.testing.expect(std.mem.indexOf(u8, profile, carveout) != null);
+}
+
+test "workspace-write root-read profile carves readable glob patterns from deny roots" {
+    const allocator = std.testing.allocator;
+    const read_pattern = "/tmp/codex-workspace/secret/**/*.env";
+    const write_pattern = "/tmp/codex-workspace/editable/**/*.env";
+    const profile = try buildProfileWithResolvedOptions(allocator, .workspace_write, "/tmp/codex-workspace", &.{}, &.{}, &.{}, &.{}, &.{read_pattern}, &.{write_pattern}, null, false, true, false, true, &.{"/tmp/codex-workspace/secret"}, &.{}, 0);
+    defer allocator.free(profile);
+
+    try expectProfileAllowGlobRule(profile, "allow file-write*", write_pattern);
+    try expectProfileOmitsGlobRule(profile, "allow file-read* file-test-existence", read_pattern);
+    const regex = try seatbeltRegexForAllowGlob(allocator, read_pattern);
+    defer allocator.free(regex);
+    const escaped = try escapeSeatbeltRawRegex(allocator, regex);
+    defer allocator.free(escaped);
+    const carveout = try std.fmt.allocPrint(allocator, "(require-not (regex #\"{s}\"))", .{escaped});
+    defer allocator.free(carveout);
+    try std.testing.expect(std.mem.indexOf(u8, profile, carveout) != null);
+}
+
 test "sandbox profile can deny read glob patterns" {
     const allocator = std.testing.allocator;
-    const profile = try buildProfileWithOptions(allocator, .workspace_write, "/tmp/codex-workspace", &.{}, &.{}, true, false, true, &.{}, &.{"/tmp/codex-workspace/**/*.secret"}, 0);
+    const profile = try buildProfileWithOptions(allocator, .workspace_write, "/tmp/codex-workspace", &.{}, &.{}, &.{}, &.{}, true, false, true, &.{}, &.{"/tmp/codex-workspace/**/*.secret"}, 0);
     defer allocator.free(profile);
 
     try expectProfileGlobRule(profile, "deny file-read*", "/tmp/codex-workspace/**/*.secret");
     try expectProfileGlobRule(profile, "deny file-write*", "/tmp/codex-workspace/**/*.secret");
-    try expectProfileGlobRule(profile, "allow file-write-data", "/tmp/codex-workspace/**/*.secret");
+    try expectProfileAllowGlobRule(profile, "allow file-write-data", "/tmp/codex-workspace/**/*.secret");
 }
 
 test "sandbox profile keeps glob data write allow scoped to writable roots" {
     const allocator = std.testing.allocator;
-    const profile = try buildProfileWithOptions(allocator, .workspace_write, "/tmp/codex-workspace", &.{"/tmp/codex-extra"}, &.{}, false, false, true, &.{}, &.{"/tmp/codex-workspace/**/*.secret"}, 0);
+    const profile = try buildProfileWithOptions(allocator, .workspace_write, "/tmp/codex-workspace", &.{"/tmp/codex-extra"}, &.{}, &.{}, &.{}, false, false, true, &.{}, &.{"/tmp/codex-workspace/**/*.secret"}, 0);
     defer allocator.free(profile);
 
     try expectProfileGlobRule(profile, "deny file-read*", "/tmp/codex-workspace/**/*.secret");
@@ -1339,7 +1968,7 @@ test "sandbox profile keeps glob data write allow scoped to writable roots" {
 
 test "sandbox profile keeps glob data write allow case-sensitive" {
     const allocator = std.testing.allocator;
-    const profile = try buildProfileWithOptions(allocator, .workspace_write, "/tmp/codex-workspace", &.{}, &.{}, true, false, true, &.{}, &.{"/tmp/CODEX-WORKSPACE/**/*.secret"}, 0);
+    const profile = try buildProfileWithOptions(allocator, .workspace_write, "/tmp/codex-workspace", &.{}, &.{}, &.{}, &.{}, true, false, true, &.{}, &.{"/tmp/CODEX-WORKSPACE/**/*.secret"}, 0);
     defer allocator.free(profile);
 
     try expectProfileGlobRule(profile, "deny file-read*", "/tmp/CODEX-WORKSPACE/**/*.secret");
@@ -1349,17 +1978,17 @@ test "sandbox profile keeps glob data write allow case-sensitive" {
 
 test "sandbox profile keeps root slash glob data write allow" {
     const allocator = std.testing.allocator;
-    const profile = try buildProfileWithOptions(allocator, .workspace_write, "/tmp/codex-workspace", &.{"/"}, &.{}, false, false, true, &.{}, &.{"/**/*.secret"}, 0);
+    const profile = try buildProfileWithOptions(allocator, .workspace_write, "/tmp/codex-workspace", &.{"/"}, &.{}, &.{}, &.{}, false, false, true, &.{}, &.{"/**/*.secret"}, 0);
     defer allocator.free(profile);
 
     try expectProfileGlobRule(profile, "deny file-read*", "/**/*.secret");
     try expectProfileGlobRule(profile, "deny file-write*", "/**/*.secret");
-    try expectProfileGlobRule(profile, "allow file-write-data", "/**/*.secret");
+    try expectProfileAllowGlobRule(profile, "allow file-write-data", "/**/*.secret");
 }
 
 test "sandbox profile skips glob data write allow when explicit read root overlaps" {
     const allocator = std.testing.allocator;
-    const profile = try buildProfileWithOptions(allocator, .workspace_write, "/tmp/codex-workspace", &.{}, &.{}, true, false, true, &.{"/tmp/codex-workspace/secret-dir"}, &.{"/tmp/codex-workspace/**/*.secret"}, 0);
+    const profile = try buildProfileWithOptions(allocator, .workspace_write, "/tmp/codex-workspace", &.{}, &.{}, &.{}, &.{}, true, false, true, &.{"/tmp/codex-workspace/secret-dir"}, &.{"/tmp/codex-workspace/**/*.secret"}, 0);
     defer allocator.free(profile);
 
     try expectProfileOmitsGlobRule(profile, "allow file-write-data", "/tmp/codex-workspace/**/*.secret");
@@ -1368,10 +1997,10 @@ test "sandbox profile skips glob data write allow when explicit read root overla
 
 test "sandbox profile keeps literal glob data write allow outside explicit read roots" {
     const allocator = std.testing.allocator;
-    const profile = try buildProfileWithOptions(allocator, .workspace_write, "/tmp/codex-workspace", &.{}, &.{}, true, false, true, &.{"/tmp/codex-workspace/private2"}, &.{"/tmp/codex-workspace/private"}, 0);
+    const profile = try buildProfileWithOptions(allocator, .workspace_write, "/tmp/codex-workspace", &.{}, &.{}, &.{}, &.{}, true, false, true, &.{"/tmp/codex-workspace/private2"}, &.{"/tmp/codex-workspace/private"}, 0);
     defer allocator.free(profile);
 
-    try expectProfileGlobRule(profile, "allow file-write-data", "/tmp/codex-workspace/private");
+    try expectProfileAllowGlobRule(profile, "allow file-write-data", "/tmp/codex-workspace/private");
 }
 
 test "seatbelt glob regex folds ascii literals and classes on macos" {
@@ -1380,15 +2009,46 @@ test "seatbelt glob regex folds ascii literals and classes on macos" {
     defer allocator.free(regex);
 
     const expected = if (builtin.os.tag == .macos)
-        "^/[tT][mM][pP]/(.*/)?[a-cA-C][xX][^dD]\\.[sS][eE][cC][rR][eE][tT]$"
+        "^/[tT][mM][pP]/(.*/)?[a-cA-C][xX][^/dD]\\.[sS][eE][cC][rR][eE][tT]$"
     else
-        "^/tmp/(.*/)?[a-c]x[^d]\\.secret$";
+        "^/tmp/(.*/)?[a-c]x[^/d]\\.secret$";
     try std.testing.expectEqualStrings(expected, regex);
+}
+
+test "seatbelt allow glob regex preserves ascii case" {
+    const allocator = std.testing.allocator;
+    const pattern = "/tmp/Secrets/[A-C]x[!D].env";
+    const regex = try seatbeltRegexForAllowGlob(allocator, pattern);
+    defer allocator.free(regex);
+
+    try std.testing.expectEqualStrings("^/tmp/Secrets/[A-C]x[^/D]\\.env$", regex);
+
+    const profile = try buildProfileWithOptions(allocator, .workspace_write, "/tmp/codex-workspace", &.{}, &.{}, &.{}, &.{pattern}, false, false, true, &.{}, &.{}, 0);
+    defer allocator.free(profile);
+
+    try expectProfileAllowGlobRule(profile, "allow file-write*", pattern);
+    try expectProfileOmitsFoldedAllowGlobRule(profile, "allow file-write*", pattern);
+}
+
+test "seatbelt allow glob regex keeps negated classes within path component" {
+    const allocator = std.testing.allocator;
+    const regex = try seatbeltRegexForAllowGlob(allocator, "/tmp/repo/*[!x].env");
+    defer allocator.free(regex);
+
+    try std.testing.expectEqualStrings("^/tmp/repo/[^/]*[^/x]\\.env$", regex);
+}
+
+test "seatbelt allow glob regex keeps literal hyphens safe in negated classes" {
+    const allocator = std.testing.allocator;
+    const regex = try seatbeltRegexForAllowGlob(allocator, "/tmp/repo/[!-a].env");
+    defer allocator.free(regex);
+
+    try std.testing.expectEqualStrings("^/tmp/repo/[^/a-]\\.env$", regex);
 }
 
 test "seatbelt glob regex keeps literal hyphen classes valid" {
     const allocator = std.testing.allocator;
-    const profile = try buildProfileWithOptions(allocator, .workspace_write, "/tmp/codex-workspace", &.{}, &.{}, true, false, true, &.{}, &.{
+    const profile = try buildProfileWithOptions(allocator, .workspace_write, "/tmp/codex-workspace", &.{}, &.{}, &.{}, &.{}, true, false, true, &.{}, &.{
         "/tmp/codex-workspace/**/*[A-Za-z0-9_-].secret",
         "/tmp/codex-workspace/**/*[a-b-c].secret",
         "/tmp/codex-workspace/**/*[-a-b-].secret",
@@ -1414,6 +2074,14 @@ test "seatbelt glob regex keeps literal hyphen classes valid" {
         .exited => |code| code,
         else => 255,
     });
+}
+
+test "seatbelt glob regex keeps hyphen literal after escaped caret" {
+    const allocator = std.testing.allocator;
+    const regex = try seatbeltRegexForAllowGlob(allocator, "/tmp/repo/[^-a].env");
+    defer allocator.free(regex);
+
+    try std.testing.expect(std.mem.indexOf(u8, regex, "[-\\^a]") != null);
 }
 
 test "read-denied glob matcher mirrors seatbelt translation" {
@@ -1484,6 +2152,229 @@ test "read-denied glob resolver includes canonicalized static prefix" {
     defer allocator.free(target_pattern);
 
     const resolved = try resolveReadDeniedGlobPatterns(allocator, root, &.{alias_pattern});
+    defer freeResolvedPaths(allocator, resolved);
+
+    try std.testing.expectEqual(@as(usize, 2), resolved.len);
+    try std.testing.expectEqualStrings(alias_pattern, resolved[0]);
+    try std.testing.expectEqualStrings(target_pattern, resolved[1]);
+}
+
+test "allow glob resolver rejects relative symlink escapes outside cwd" {
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
+
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var dir = std.testing.tmpDir(.{});
+    defer dir.cleanup();
+
+    try dir.dir.createDirPath(io, "workspace");
+    try dir.dir.createDirPath(io, "outside");
+    try dir.dir.symLink(io, "../outside", "workspace/alias", .{ .is_directory = true });
+
+    const root = try dir.dir.realPathFileAlloc(io, ".", allocator);
+    defer allocator.free(root);
+    const workspace = try std.fs.path.join(allocator, &.{ root, "workspace" });
+    defer allocator.free(workspace);
+    const resolved = try resolveAllowGlobPatterns(allocator, workspace, &.{"alias/**/*.env"});
+    defer freeResolvedPaths(allocator, resolved);
+
+    try std.testing.expectEqual(@as(usize, 0), resolved.len);
+}
+
+test "allow glob resolver rejects wildcarded symlink escapes outside cwd" {
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
+
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var dir = std.testing.tmpDir(.{});
+    defer dir.cleanup();
+
+    try dir.dir.createDirPath(io, "workspace");
+    try dir.dir.createDirPath(io, "outside");
+    try dir.dir.symLink(io, "../outside", "workspace/glob-link", .{ .is_directory = true });
+
+    const root = try dir.dir.realPathFileAlloc(io, ".", allocator);
+    defer allocator.free(root);
+    const workspace = try std.fs.path.join(allocator, &.{ root, "workspace" });
+    defer allocator.free(workspace);
+    const resolved = try resolveAllowGlobPatterns(allocator, workspace, &.{"glob-*/**/*.env"});
+    defer freeResolvedPaths(allocator, resolved);
+
+    try std.testing.expectEqual(@as(usize, 0), resolved.len);
+}
+
+test "allow glob resolver rejects bare globstar symlink escapes outside cwd" {
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
+
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var dir = std.testing.tmpDir(.{});
+    defer dir.cleanup();
+
+    try dir.dir.createDirPath(io, "workspace");
+    try dir.dir.createDirPath(io, "outside");
+    try dir.dir.symLink(io, "../outside", "workspace/glob-link", .{ .is_directory = true });
+
+    const root = try dir.dir.realPathFileAlloc(io, ".", allocator);
+    defer allocator.free(root);
+    const workspace = try std.fs.path.join(allocator, &.{ root, "workspace" });
+    defer allocator.free(workspace);
+    const resolved = try resolveAllowGlobPatternsWithMaxDepth(allocator, workspace, &.{"**.env"}, 2);
+    defer freeResolvedPaths(allocator, resolved);
+
+    try std.testing.expectEqual(@as(usize, 0), resolved.len);
+}
+
+test "allow glob resolver rejects unreadable matching subtrees" {
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
+
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var dir = std.testing.tmpDir(.{});
+    defer dir.cleanup();
+
+    try dir.dir.createDirPath(io, "workspace/noread");
+    try dir.dir.createDirPath(io, "outside");
+
+    const root = try dir.dir.realPathFileAlloc(io, ".", allocator);
+    defer allocator.free(root);
+    const workspace = try std.fs.path.join(allocator, &.{ root, "workspace" });
+    defer allocator.free(workspace);
+    const outside = try std.fs.path.join(allocator, &.{ root, "outside" });
+    defer allocator.free(outside);
+
+    try dir.dir.symLink(io, outside, "workspace/noread/glob-link", .{ .is_directory = true });
+    try dir.dir.setFilePermissions(io, "workspace/noread", std.Io.File.Permissions.fromMode(0o111), .{});
+    defer dir.dir.setFilePermissions(io, "workspace/noread", std.Io.File.Permissions.fromMode(0o755), .{}) catch {};
+
+    const resolved = try resolveAllowGlobPatterns(allocator, workspace, &.{"**/*.env"});
+    defer freeResolvedPaths(allocator, resolved);
+
+    try std.testing.expectEqual(@as(usize, 0), resolved.len);
+}
+
+test "allow glob resolver rejects wildcarded symlinks inside cwd" {
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
+
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var dir = std.testing.tmpDir(.{});
+    defer dir.cleanup();
+
+    try dir.dir.createDirPath(io, "workspace/target");
+    try dir.dir.symLink(io, "target", "workspace/glob-link", .{ .is_directory = true });
+
+    const root = try dir.dir.realPathFileAlloc(io, ".", allocator);
+    defer allocator.free(root);
+    const workspace = try std.fs.path.join(allocator, &.{ root, "workspace" });
+    defer allocator.free(workspace);
+    const resolved = try resolveAllowGlobPatterns(allocator, workspace, &.{"glob-*/**/*.env"});
+    defer freeResolvedPaths(allocator, resolved);
+
+    try std.testing.expectEqual(@as(usize, 0), resolved.len);
+}
+
+test "allow glob resolver ignores symlinks beyond bounded glob depth" {
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
+
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var dir = std.testing.tmpDir(.{});
+    defer dir.cleanup();
+
+    try dir.dir.createDirPath(io, "workspace/deep");
+    try dir.dir.createDirPath(io, "outside");
+    try dir.dir.symLink(io, "../../outside", "workspace/deep/glob-link", .{ .is_directory = true });
+
+    const root = try dir.dir.realPathFileAlloc(io, ".", allocator);
+    defer allocator.free(root);
+    const workspace = try std.fs.path.join(allocator, &.{ root, "workspace" });
+    defer allocator.free(workspace);
+    const pattern = try std.fs.path.join(allocator, &.{ workspace, "**/*.env" });
+    defer allocator.free(pattern);
+
+    const resolved = try resolveAllowGlobPatternsWithMaxDepth(allocator, workspace, &.{"**/*.env"}, 1);
+    defer freeResolvedPaths(allocator, resolved);
+
+    try std.testing.expectEqual(@as(usize, 1), resolved.len);
+    try std.testing.expectEqualStrings(pattern, resolved[0]);
+}
+
+test "read-only allow glob resolver stays restricted after rejected globs" {
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
+
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var dir = std.testing.tmpDir(.{});
+    defer dir.cleanup();
+
+    try dir.dir.createDirPath(io, "workspace");
+    try dir.dir.createDirPath(io, "outside");
+    try dir.dir.symLink(io, "../outside", "workspace/alias", .{ .is_directory = true });
+
+    const root = try dir.dir.realPathFileAlloc(io, ".", allocator);
+    defer allocator.free(root);
+    const workspace = try std.fs.path.join(allocator, &.{ root, "workspace" });
+    defer allocator.free(workspace);
+
+    const argv = [_][]const u8{ "/bin/echo", "ok" };
+    var wrapped = try wrapArgvWithPolicy(allocator, .read_only, argv[0..], &.{}, .{
+        .cwd_override = workspace,
+        .readable_globs = &.{"alias/**/*.env"},
+    });
+    defer wrapped.deinit(allocator);
+
+    try std.testing.expect(std.mem.indexOf(u8, wrapped.profile, "(deny default)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, wrapped.profile, "(allow default)") == null);
+}
+
+test "allow glob resolver rejects absolute symlink escapes outside cwd" {
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
+
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var dir = std.testing.tmpDir(.{});
+    defer dir.cleanup();
+
+    try dir.dir.createDirPath(io, "workspace");
+    try dir.dir.createDirPath(io, "outside");
+    try dir.dir.symLink(io, "../outside", "workspace/alias", .{ .is_directory = true });
+
+    const root = try dir.dir.realPathFileAlloc(io, ".", allocator);
+    defer allocator.free(root);
+    const workspace = try std.fs.path.join(allocator, &.{ root, "workspace" });
+    defer allocator.free(workspace);
+    const alias_pattern = try std.fs.path.join(allocator, &.{ workspace, "alias", "**/*.env" });
+    defer allocator.free(alias_pattern);
+
+    const resolved = try resolveAllowGlobPatterns(allocator, workspace, &.{alias_pattern});
+    defer freeResolvedPaths(allocator, resolved);
+
+    try std.testing.expectEqual(@as(usize, 0), resolved.len);
+}
+
+test "absolute allow glob resolver keeps canonical targets outside cwd" {
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
+
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var dir = std.testing.tmpDir(.{});
+    defer dir.cleanup();
+
+    try dir.dir.createDirPath(io, "workspace");
+    try dir.dir.createDirPath(io, "outside-real");
+    try dir.dir.symLink(io, "outside-real", "outside-link", .{ .is_directory = true });
+
+    const root = try dir.dir.realPathFileAlloc(io, ".", allocator);
+    defer allocator.free(root);
+    const workspace = try std.fs.path.join(allocator, &.{ root, "workspace" });
+    defer allocator.free(workspace);
+    const alias_pattern = try std.fs.path.join(allocator, &.{ root, "outside-link", "**/*.env" });
+    defer allocator.free(alias_pattern);
+    const target_pattern = try std.fs.path.join(allocator, &.{ root, "outside-real", "**/*.env" });
+    defer allocator.free(target_pattern);
+
+    const resolved = try resolveAllowGlobPatterns(allocator, workspace, &.{alias_pattern});
     defer freeResolvedPaths(allocator, resolved);
 
     try std.testing.expectEqual(@as(usize, 2), resolved.len);
@@ -1732,7 +2623,7 @@ test "workspace-write sandbox can omit cwd write root" {
     defer allocator.free(extra_target);
 
     const additional_roots = [_][]const u8{extra_root};
-    const profile = try buildProfileWithOptions(allocator, .workspace_write, cwd_root, additional_roots[0..], &.{}, false, false, true, &.{}, &.{}, 0);
+    const profile = try buildProfileWithOptions(allocator, .workspace_write, cwd_root, additional_roots[0..], &.{}, &.{}, &.{}, false, false, true, &.{}, &.{}, 0);
     defer allocator.free(profile);
     const script = try std.fmt.allocPrint(
         allocator,
