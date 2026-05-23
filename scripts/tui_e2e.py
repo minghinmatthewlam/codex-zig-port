@@ -509,6 +509,13 @@ class MockResponsesHandler(BaseHTTPRequestHandler):
                     "delta": "side answer\n",
                 },
             )
+        elif "question with IDE context" in latest_prompt:
+            payload = sse(
+                {
+                    "type": "response.output_text.delta",
+                    "delta": "ide context received\n",
+                },
+            )
         elif "long remote answer" in latest_prompt:
             payload = sse(
                 {
@@ -4654,6 +4661,256 @@ def run_tui_memories_slash_smoke(
     run_memories_tui(["--disable=memories"], disabled=True)
 
 
+def read_ide_frame(conn: socket.socket) -> dict:
+    header = b""
+    while len(header) < 4:
+        chunk = conn.recv(4 - len(header))
+        if not chunk:
+            raise AssertionError("IDE context client closed before frame header")
+        header += chunk
+    length = int.from_bytes(header, "little")
+    payload = b""
+    while len(payload) < length:
+        chunk = conn.recv(length - len(payload))
+        if not chunk:
+            raise AssertionError("IDE context client closed before frame payload")
+        payload += chunk
+    return json.loads(payload)
+
+
+def write_ide_frame(conn: socket.socket, message: dict) -> None:
+    payload = json.dumps(message, separators=(",", ":")).encode()
+    conn.sendall(len(payload).to_bytes(4, "little") + payload)
+
+
+class MockIdeContextServer:
+    def __init__(self, socket_path: Path, expected_workspace: Path, connections: int) -> None:
+        self.socket_path = socket_path
+        self.expected_workspace = expected_workspace
+        self.connections = connections
+        self.requests: list[dict] = []
+        self.errors: list[BaseException] = []
+        self.thread = threading.Thread(target=self._serve, daemon=True)
+
+    def start(self) -> None:
+        self.thread.start()
+
+    def join(self) -> None:
+        self.thread.join(timeout=5)
+        if self.thread.is_alive():
+            raise AssertionError("mock IDE context server did not finish")
+        if self.errors:
+            raise AssertionError(f"mock IDE context server failed: {self.errors[0]}")
+        if len(self.requests) != self.connections:
+            raise AssertionError(
+                f"mock IDE context server saw {len(self.requests)} requests, expected {self.connections}"
+            )
+
+    def _serve(self) -> None:
+        try:
+            if self.socket_path.exists():
+                self.socket_path.unlink()
+            listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            try:
+                listener.bind(str(self.socket_path))
+                listener.listen()
+                for _ in range(self.connections):
+                    conn, _ = listener.accept()
+                    with conn:
+                        request = read_ide_frame(conn)
+                        self.requests.append(request)
+                        if request.get("type") != "request":
+                            raise AssertionError(f"unexpected IDE request type: {request!r}")
+                        if request.get("sourceClientId") != "codex-tui":
+                            raise AssertionError(f"unexpected IDE source client: {request!r}")
+                        if request.get("method") != "ide-context":
+                            raise AssertionError(f"unexpected IDE method: {request!r}")
+                        params = request.get("params")
+                        if not isinstance(params, dict):
+                            raise AssertionError(f"IDE request missing params: {request!r}")
+                        if params.get("workspaceRoot") != str(self.expected_workspace):
+                            raise AssertionError(f"unexpected IDE workspace root: {request!r}")
+                        write_ide_frame(
+                            conn,
+                            {
+                                "type": "response",
+                                "requestId": request.get("requestId"),
+                                "resultType": "success",
+                                "method": "ide-context",
+                                "handledByClientId": "vscode-client",
+                                "result": {
+                                    "type": "broadcast",
+                                    "ideContext": {
+                                        "activeFile": {
+                                            "label": "main.zig",
+                                            "path": "src/main.zig",
+                                            "fsPath": str(self.expected_workspace / "src/main.zig"),
+                                            "selection": {
+                                                "start": {"line": 0, "character": 4},
+                                                "end": {"line": 0, "character": 7},
+                                            },
+                                            "activeSelectionContent": "pub fn main() void {}",
+                                            "selections": [],
+                                        },
+                                        "openTabs": [
+                                            {
+                                                "label": "README.md",
+                                                "path": "README.md",
+                                                "fsPath": str(self.expected_workspace / "README.md"),
+                                            }
+                                        ],
+                                    },
+                                },
+                            },
+                        )
+            finally:
+                listener.close()
+        except BaseException as exc:
+            self.errors.append(exc)
+
+
+def run_tui_ide_slash_smoke(
+    binary: Path,
+    env: dict[str, str],
+    workspace: Path,
+    port: int,
+    server: MockResponsesServer,
+) -> None:
+    smoke_root = workspace / "tui-ide-smoke"
+    if smoke_root.exists():
+        shutil.rmtree(smoke_root)
+    smoke_home = smoke_root / "codex-home"
+    smoke_workspace = smoke_root / "workspace"
+    socket_root = smoke_root / "codex-ipc"
+    smoke_home.mkdir(parents=True)
+    smoke_workspace.mkdir(parents=True)
+    socket_root.mkdir(mode=0o700)
+    socket_root.chmod(0o700)
+    (smoke_workspace / "src").mkdir()
+    (smoke_workspace / "src" / "main.zig").write_text("pub fn main() void {}\n", encoding="utf-8")
+    (smoke_workspace / "README.md").write_text("demo readme\n", encoding="utf-8")
+    (smoke_home / "auth.json").write_text(
+        json.dumps(
+            {
+                "tokens": {
+                    "access_token": "tui-ide-token",
+                    "account_id": "acct_tui_ide",
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    socket_path = socket_root / "ide-context.sock"
+    ide_server = MockIdeContextServer(socket_path, smoke_workspace.resolve(), 2)
+    ide_server.start()
+
+    smoke_env = env.copy()
+    smoke_env["CODEX_HOME"] = str(smoke_home)
+    smoke_env["CODEX_ZIG_IDE_CONTEXT_SOCKET"] = str(socket_path)
+    smoke_env.setdefault("TERM", "xterm-256color")
+    start_request_count = len(server.request_bodies)
+    output = bytearray()
+    master_fd = -1
+    slave_fd = -1
+    master_fd, slave_fd = pty.openpty()
+    proc = None
+    try:
+        proc = subprocess.Popen(
+            [
+                str(binary),
+                "--no-alt-screen",
+                "-c",
+                f"chatgpt_base_url=http://127.0.0.1:{port}",
+            ],
+            cwd=smoke_workspace,
+            env=smoke_env,
+            stdin=slave_fd,
+            stdout=slave_fd,
+            stderr=slave_fd,
+            close_fds=True,
+        )
+        os.close(slave_fd)
+        slave_fd = -1
+
+        wait_for(master_fd, output, b"Type /help for commands", 8)
+
+        mark = len(output)
+        send_line(master_fd, "/help")
+        wait_for(master_fd, output, b"/ide [on|off|status]", 5, mark)
+
+        mark = len(output)
+        send_line(master_fd, "/ide status")
+        wait_for(master_fd, output, b"IDE context is off.", 5, mark)
+
+        mark = len(output)
+        send_line(master_fd, "/ide bogus")
+        wait_for(master_fd, output, b"Usage: /ide [on|off|status]", 5, mark)
+
+        mark = len(output)
+        send_line(master_fd, "/ide on")
+        wait_for(master_fd, output, b"IDE context is on.", 5, mark)
+        wait_for(
+            master_fd,
+            output,
+            b"Future messages will include your current IDE selection and open tabs.",
+            5,
+            mark,
+        )
+
+        mark = len(output)
+        send_line(master_fd, "question with IDE context")
+        wait_for(master_fd, output, b"ide context received", 10, mark)
+
+        matching_bodies = [
+            body
+            for body in server.request_bodies[start_request_count:]
+            if "question with IDE context" in latest_user_text(body.get("input", []))
+        ]
+        if not matching_bodies:
+            rendered = json.dumps(server.request_bodies[start_request_count:], indent=2)
+            raise AssertionError(f"IDE context prompt did not reach Responses mock:\n{rendered}")
+        prompt_text = latest_user_text(matching_bodies[-1].get("input", []))
+        for expected in [
+            "# Context from my IDE setup:",
+            "## Active file: src/main.zig",
+            "## Active selection of the file:",
+            "pub fn main() void {}",
+            "## Open tabs:",
+            "- README.md: README.md",
+            "## My request for Codex:",
+            "question with IDE context",
+        ]:
+            if expected not in prompt_text:
+                raise AssertionError(f"IDE context prompt missing {expected!r}:\n{prompt_text}")
+
+        mark = len(output)
+        send_line(master_fd, "/ide off")
+        wait_for(master_fd, output, b"IDE context is off.", 5, mark)
+
+        mark = len(output)
+        send_line(master_fd, "/quit")
+        wait_for(master_fd, output, b"bye", 5, mark)
+        read_available(master_fd, output)
+        exit_code = proc.wait(timeout=5)
+        if exit_code != 0:
+            rendered = output.decode(errors="replace")
+            raise AssertionError(f"IDE slash TUI exited with {exit_code}\n\n{rendered}")
+    finally:
+        if slave_fd >= 0:
+            os.close(slave_fd)
+        if master_fd >= 0:
+            os.close(master_fd)
+        if proc is not None and proc.poll() is None:
+            proc.terminate()
+            try:
+                proc.wait(timeout=2)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                proc.wait(timeout=2)
+        ide_server.join()
+
+
 def run_tui_experimental_slash_smoke(
     binary: Path,
     env: dict[str, str],
@@ -6036,6 +6293,7 @@ def run_e2e(binary: Path) -> str:
             run_tui_apps_slash_smoke(binary, env, workspace)
             run_tui_plugins_slash_smoke(binary, env, workspace)
             run_tui_memories_slash_smoke(binary, env, workspace)
+            run_tui_ide_slash_smoke(binary, env, workspace, port, server)
             run_tui_experimental_slash_smoke(binary, env, workspace)
             run_remote_websocket_tui_smoke(binary, env, workspace, port, server)
             run_remote_wss_tui_smoke(binary, env, workspace)
