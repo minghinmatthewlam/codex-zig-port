@@ -120,14 +120,17 @@ Zig TUI help in `src/tui.zig`, and the broader narrative tracker in
   app-server loaded threads, and `mcp-server` `codex-reply` sessions keep this
   runtime in memory across turns; non-stateful turns without a runtime do not
   advertise the subagent tools. Child turns strip parent-scoped callbacks before
-  running so child plan/goal/tool progress cannot mutate the parent thread. This
-  local runtime rejects role/model/reasoning/service-tier overrides and non-text
-  structured `items` until those Rust behaviors are implemented rather than
-  silently dropping them.
+  running so child plan/goal/tool progress cannot mutate the parent thread.
+  `spawn_agent` applies requested service-tier child overrides, and non-forked
+  spawns also apply requested model and reasoning-effort overrides. Full-history
+  forks still reject `agent_type`, model, and reasoning-effort overrides like
+  Rust. This local runtime still rejects `agent_type` role overrides and
+  non-text structured `items` until those Rust behaviors are implemented rather
+  than silently dropping them.
   Rust's background concurrent execution, persisted subagent threads, picker
-  navigation, thread switching, lifecycle notifications/hooks, model/reasoning
-  overrides, and v2 runtime behavior remain part of the broader subagent runtime
-  bucket.
+  navigation, thread switching, lifecycle notifications/hooks, full model-catalog
+  validation/fallback for child overrides, role config, and v2 runtime behavior
+  remain part of the broader subagent runtime bucket.
 - Basic local TUI `/skills` and `/hooks` list views are covered: `/skills`
   lists discovered repo/user/plugin skills with enabled state and load errors,
   and `/hooks` lists discovered lifecycle command hooks with event, source,
