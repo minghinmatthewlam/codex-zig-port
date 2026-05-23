@@ -2155,8 +2155,11 @@ def run_plugin_marketplace_smoke(
         capture_output=True,
         check=True,
     )
-    if "codex-zig plugin marketplace <COMMAND>" not in root_help.stderr:
+    if "codex-zig plugin <COMMAND>" not in root_help.stderr:
         raise AssertionError(f"expected plugin root help output:\n{root_help.stderr}")
+    for expected in ["add", "list", "marketplace", "remove"]:
+        if expected not in root_help.stderr:
+            raise AssertionError(f"expected plugin command {expected!r} in help:\n{root_help.stderr}")
 
     help_command = subprocess.run(
         [str(binary), "help", "plugin"],
@@ -2166,7 +2169,7 @@ def run_plugin_marketplace_smoke(
         capture_output=True,
         check=True,
     )
-    if "codex-zig plugin marketplace <COMMAND>" not in help_command.stderr:
+    if "codex-zig plugin <COMMAND>" not in help_command.stderr:
         raise AssertionError(f"expected help plugin output:\n{help_command.stderr}")
 
     marketplace_help = subprocess.run(
@@ -2183,11 +2186,28 @@ def run_plugin_marketplace_smoke(
         )
 
     help_cases = [
+        (["add", "--help"], "codex-zig plugin add"),
+        (["list", "--help"], "codex-zig plugin list"),
+        (["remove", "--help"], "codex-zig plugin remove"),
+    ]
+    for args, usage in help_cases:
+        result = subprocess.run(
+            [str(binary), "plugin", *args],
+            cwd=workspace,
+            env=env,
+            text=True,
+            capture_output=True,
+            check=True,
+        )
+        if usage not in result.stderr:
+            raise AssertionError(f"expected {usage} help output:\n{result.stderr}")
+
+    marketplace_help_cases = [
         (["add", "--help"], "codex-zig plugin marketplace add"),
         (["upgrade", "--help"], "codex-zig plugin marketplace upgrade"),
         (["remove", "--help"], "codex-zig plugin marketplace remove"),
     ]
-    for args, usage in help_cases:
+    for args, usage in marketplace_help_cases:
         result = subprocess.run(
             [str(binary), "plugin", "marketplace", *args],
             cwd=workspace,
@@ -2231,6 +2251,76 @@ def run_plugin_marketplace_smoke(
     )
     if "is already added" not in repeated.stderr:
         raise AssertionError(f"expected marketplace already-added output:\n{repeated.stderr}")
+
+    plugin_list = subprocess.run(
+        [str(binary), "plugin", "list", "--marketplace", "debug"],
+        cwd=workspace,
+        env=env,
+        text=True,
+        capture_output=True,
+        check=True,
+    )
+    if "Marketplace `debug`" not in plugin_list.stderr:
+        raise AssertionError(f"expected plugin marketplace heading:\n{plugin_list.stderr}")
+    if "sample@debug" not in plugin_list.stderr:
+        raise AssertionError(f"expected sample plugin in list:\n{plugin_list.stderr}")
+    if "not installed" not in plugin_list.stderr:
+        raise AssertionError(f"expected not-installed plugin state:\n{plugin_list.stderr}")
+
+    plugin_add = subprocess.run(
+        [str(binary), "plugin", "add", "sample@debug"],
+        cwd=workspace,
+        env=env,
+        text=True,
+        capture_output=True,
+        check=True,
+    )
+    if "Added plugin `sample` from marketplace `debug`." not in plugin_add.stderr:
+        raise AssertionError(f"expected plugin add output:\n{plugin_add.stderr}")
+    installed_plugin_root = Path(
+        env["CODEX_HOME"],
+        "plugins",
+        "cache",
+        "debug",
+        "sample",
+        "local",
+    )
+    if not installed_plugin_root.joinpath(".codex-plugin", "plugin.json").is_file():
+        raise AssertionError(f"expected installed plugin root: {installed_plugin_root}")
+    config_text = Path(env["CODEX_HOME"], "config.toml").read_text()
+    if '[plugins."sample@debug"]' not in config_text:
+        raise AssertionError(f"expected enabled plugin config entry:\n{config_text}")
+
+    plugin_list_installed = subprocess.run(
+        [str(binary), "plugin", "list", "-m", "debug"],
+        cwd=workspace,
+        env=env,
+        text=True,
+        capture_output=True,
+        check=True,
+    )
+    if "installed, enabled" not in plugin_list_installed.stderr:
+        raise AssertionError(
+            f"expected installed plugin state:\n{plugin_list_installed.stderr}"
+        )
+    if "local" not in plugin_list_installed.stderr:
+        raise AssertionError(f"expected installed plugin version:\n{plugin_list_installed.stderr}")
+
+    plugin_remove = subprocess.run(
+        [str(binary), "plugin", "remove", "sample", "--marketplace", "debug"],
+        cwd=workspace,
+        env=env,
+        text=True,
+        capture_output=True,
+        check=True,
+    )
+    if "Removed plugin `sample` from marketplace `debug`." not in plugin_remove.stderr:
+        raise AssertionError(f"expected plugin remove output:\n{plugin_remove.stderr}")
+    if installed_plugin_root.parent.exists():
+        raise AssertionError(f"expected plugin cache root to be removed: {installed_plugin_root.parent}")
+    config_text = Path(env["CODEX_HOME"], "config.toml").read_text()
+    if '[plugins."sample@debug"]' in config_text:
+        raise AssertionError(f"expected plugin config entry to be removed:\n{config_text}")
 
     remove = subprocess.run(
         [str(binary), "plugin", "marketplace", "remove", "debug"],
