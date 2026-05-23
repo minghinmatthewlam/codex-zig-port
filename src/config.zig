@@ -1,6 +1,7 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const env = @import("env.zig");
+const feature_registry = @import("feature_registry.zig");
 const model_catalog = @import("model_catalog.zig");
 
 pub const MIN_BACKGROUND_TERMINAL_EMPTY_POLL_TIMEOUT_MS: u64 = 5_000;
@@ -174,6 +175,7 @@ pub const StringMap = struct {
 pub const LoadOptions = struct {
     profile: ?[]const u8 = null,
     ignore_user_config: bool = false,
+    strict_config: bool = false,
 };
 
 pub const RuntimeOverrides = struct {
@@ -483,8 +485,8 @@ pub fn applyRawConfigOverride(
     profile_override: *?[]const u8,
     raw: []const u8,
 ) !void {
-    const eq = std.mem.indexOfScalar(u8, raw, '=') orelse return error.InvalidConfigOverride;
-    const key = std.mem.trim(u8, raw[0..eq], " \t");
+    const eq = tomlAssignmentEqualsIndex(raw) orelse return error.InvalidConfigOverride;
+    const key = try rawConfigOverrideKey(raw);
     const value = trimConfigOverrideValue(raw[eq + 1 ..]);
     if (key.len == 0) return error.InvalidConfigOverride;
 
@@ -533,6 +535,39 @@ pub fn applyRawConfigOverride(
     } else if (std.mem.eql(u8, key, "tui.alternate_screen") or std.mem.eql(u8, key, "tui_alternate_screen")) {
         runtime_overrides.tui_alternate_screen = try AltScreenMode.parse(value);
     }
+}
+
+pub fn rawConfigOverrideUnknownField(allocator: std.mem.Allocator, raw: []const u8) !?[]const u8 {
+    const key = try rawConfigOverrideKey(raw);
+    if (!strictConfigOverridePathAllowed(key)) return try allocator.dupe(u8, key);
+    if (try strictConfigInlineTableUnknownField(allocator, key, raw)) |field| return field;
+    return null;
+}
+
+pub fn rememberStrictConfigUnknownOverride(
+    allocator: std.mem.Allocator,
+    destination: *?[]const u8,
+    raw: []const u8,
+) !void {
+    if (try rawConfigOverrideUnknownField(allocator, raw)) |field| {
+        if (destination.* == null) {
+            destination.* = field;
+        } else {
+            allocator.free(field);
+        }
+    }
+}
+
+pub fn failStrictConfigUnknownCliOverride(field: []const u8) error{StrictConfigUnknownField} {
+    std.debug.print("error loading config: unknown configuration field `{s}` in -c/--config override\n", .{field});
+    return error.StrictConfigUnknownField;
+}
+
+fn rawConfigOverrideKey(raw: []const u8) ![]const u8 {
+    const eq = tomlAssignmentEqualsIndex(raw) orelse return error.InvalidConfigOverride;
+    const key = std.mem.trim(u8, raw[0..eq], " \t");
+    if (key.len == 0) return error.InvalidConfigOverride;
+    return key;
 }
 
 pub fn loadSandboxPermissionProfile(allocator: std.mem.Allocator, profile: []const u8) !SandboxPermissionProfile {
@@ -1016,6 +1051,13 @@ pub fn loadWithOptions(allocator: std.mem.Allocator, options: LoadOptions) !Conf
     errdefer if (tui_terminal_title) |*value| value.deinit(allocator);
     const tui_alternate_screen = try resolveTuiAlternateScreen(allocator, config_view);
     const background_terminal_max_timeout = try resolveBackgroundTerminalMaxTimeout(config_view);
+    if (options.strict_config) {
+        if (try config_view.strictConfigUnknownField(allocator)) |field| {
+            defer allocator.free(field);
+            std.debug.print("error loading config: unknown configuration field `{s}`\n", .{field});
+            return error.StrictConfigUnknownField;
+        }
+    }
 
     return .{
         .codex_home = codex_home,
@@ -1837,7 +1879,7 @@ fn tomlSectionMatchesKeyPath(line: []const u8, key_path: []const u8) bool {
 
 fn tomlKeyMatches(trimmed: []const u8, key: []const u8) bool {
     if (trimmed.len == 0 or trimmed[0] == '[') return false;
-    const eq = std.mem.indexOfScalar(u8, trimmed, '=') orelse return false;
+    const eq = tomlAssignmentEqualsIndex(trimmed) orelse return false;
     const lhs = std.mem.trim(u8, trimmed[0..eq], " \t");
     return std.mem.eql(u8, lhs, key);
 }
@@ -1898,21 +1940,76 @@ fn appendTomlStringLiteral(allocator: std.mem.Allocator, output: *std.ArrayList(
 
 const TomlMultilineScanState = struct {
     in_multiline_basic_string: bool = false,
+    in_multiline_literal_string: bool = false,
+    container_depth: usize = 0,
+    in_container_basic_string: bool = false,
+    in_container_literal_string: bool = false,
+    container_escaped: bool = false,
 
     fn skipBodyLine(self: *TomlMultilineScanState, line: []const u8) bool {
-        if (!self.in_multiline_basic_string) return false;
-        if (std.mem.indexOf(u8, line, "\"\"\"") != null) {
-            self.in_multiline_basic_string = false;
+        if (self.in_multiline_basic_string) {
+            if (std.mem.indexOf(u8, line, "\"\"\"") != null) {
+                self.in_multiline_basic_string = false;
+            }
+            return true;
         }
-        return true;
+        if (self.in_multiline_literal_string) {
+            if (std.mem.indexOf(u8, line, "'''") != null) {
+                self.in_multiline_literal_string = false;
+            }
+            return true;
+        }
+        if (self.container_depth > 0) {
+            self.observeContainerLine(line);
+            return true;
+        }
+        return false;
     }
 
     fn observeLine(self: *TomlMultilineScanState, line: []const u8) void {
-        const eq = std.mem.indexOfScalar(u8, line, '=') orelse return;
+        const eq = tomlAssignmentEqualsIndex(line) orelse return;
         const rhs = std.mem.trim(u8, line[eq + 1 ..], " \t");
-        if (!std.mem.startsWith(u8, rhs, "\"\"\"")) return;
-        if (std.mem.indexOf(u8, rhs[3..], "\"\"\"") == null) {
-            self.in_multiline_basic_string = true;
+        if (std.mem.startsWith(u8, rhs, "\"\"\"")) {
+            if (std.mem.indexOf(u8, rhs[3..], "\"\"\"") == null) {
+                self.in_multiline_basic_string = true;
+            }
+            return;
+        }
+        if (std.mem.startsWith(u8, rhs, "'''")) {
+            if (std.mem.indexOf(u8, rhs[3..], "'''") == null) {
+                self.in_multiline_literal_string = true;
+            }
+            return;
+        }
+        self.observeContainerLine(rhs);
+    }
+
+    fn observeContainerLine(self: *TomlMultilineScanState, line: []const u8) void {
+        for (line) |byte| {
+            if (self.in_container_basic_string) {
+                if (self.container_escaped) {
+                    self.container_escaped = false;
+                } else if (byte == '\\') {
+                    self.container_escaped = true;
+                } else if (byte == '"') {
+                    self.in_container_basic_string = false;
+                }
+                continue;
+            }
+            if (self.in_container_literal_string) {
+                if (byte == '\'') self.in_container_literal_string = false;
+                continue;
+            }
+            switch (byte) {
+                '#' => break,
+                '"' => self.in_container_basic_string = true,
+                '\'' => self.in_container_literal_string = true,
+                '[', '{' => self.container_depth += 1,
+                ']', '}' => {
+                    if (self.container_depth > 0) self.container_depth -= 1;
+                },
+                else => {},
+            }
         }
     }
 };
@@ -2348,6 +2445,37 @@ const ConfigView = struct {
         return state.toSandboxPermissionProfile(allocator, network_enabled.?);
     }
 
+    fn strictConfigUnknownField(self: ConfigView, allocator: std.mem.Allocator) !?[]const u8 {
+        var section: []const u8 = "";
+        var multiline = TomlMultilineScanState{};
+        var iter = std.mem.splitScalar(u8, self.bytes, '\n');
+        while (iter.next()) |line_raw| {
+            const line = std.mem.trim(u8, line_raw, " \t\r");
+            if (multiline.skipBodyLine(line_raw)) continue;
+            if (line.len == 0 or line[0] == '#') continue;
+            if (tomlSectionName(line)) |name| {
+                section = name;
+                if (!strictConfigSectionAllowed(section)) return try allocator.dupe(u8, section);
+                continue;
+            }
+            if (tomlAssignmentKey(line)) |key| {
+                const field = if (section.len == 0)
+                    try allocator.dupe(u8, key)
+                else
+                    try std.fmt.allocPrint(allocator, "{s}.{s}", .{ section, key });
+                errdefer allocator.free(field);
+                if (!strictConfigPathAllowed(field)) return field;
+                if (try strictConfigInlineTableUnknownField(allocator, field, line)) |inline_field| {
+                    allocator.free(field);
+                    return inline_field;
+                }
+                allocator.free(field);
+            }
+            multiline.observeLine(line);
+        }
+        return null;
+    }
+
     fn hasProfile(self: ConfigView, profile: []const u8) bool {
         var multiline = TomlMultilineScanState{};
         var iter = std.mem.splitScalar(u8, self.bytes, '\n');
@@ -2361,6 +2489,546 @@ const ConfigView = struct {
         return false;
     }
 };
+
+fn tomlSectionName(line: []const u8) ?[]const u8 {
+    if (line.len >= 4 and std.mem.startsWith(u8, line, "[[")) {
+        const close = tomlHeaderCloseIndex(line, 2, true) orelse return null;
+        if (!tomlHeaderRemainderAllowed(line[close + 2 ..])) return null;
+        return std.mem.trim(u8, line[2..close], " \t");
+    }
+    if (line.len >= 2 and line[0] == '[') {
+        const close = tomlHeaderCloseIndex(line, 1, false) orelse return null;
+        if (!tomlHeaderRemainderAllowed(line[close + 1 ..])) return null;
+        return std.mem.trim(u8, line[1..close], " \t");
+    }
+    return null;
+}
+
+fn tomlHeaderCloseIndex(line: []const u8, start: usize, array_table: bool) ?usize {
+    var index = start;
+    var in_quote = false;
+    var escaped = false;
+    while (index < line.len) : (index += 1) {
+        const byte = line[index];
+        if (in_quote) {
+            if (escaped) {
+                escaped = false;
+            } else if (byte == '\\') {
+                escaped = true;
+            } else if (byte == '"') {
+                in_quote = false;
+            }
+            continue;
+        }
+        if (byte == '#') return null;
+        if (byte == '"') {
+            in_quote = true;
+            continue;
+        }
+        if (array_table) {
+            if (byte == ']' and index + 1 < line.len and line[index + 1] == ']') return index;
+        } else if (byte == ']') {
+            return index;
+        }
+    }
+    return null;
+}
+
+fn tomlHeaderRemainderAllowed(rest: []const u8) bool {
+    const trimmed = std.mem.trim(u8, rest, " \t\r");
+    return trimmed.len == 0 or trimmed[0] == '#';
+}
+
+fn strictConfigSectionAllowed(section: []const u8) bool {
+    return strictConfigPathAllowed(section);
+}
+
+fn strictConfigPathAllowed(path: []const u8) bool {
+    if (path.len == 0) return false;
+    if (strictConfigRootPathAllowed(path)) return true;
+    const first = tomlDottedPathFirstSegment(path) orelse return false;
+    if (first.rest.len == 0) return false;
+    if (tomlSegmentMatches(first.raw, "features")) return strictConfigFeaturePathAllowed(first.rest);
+    if (tomlSegmentMatches(first.raw, "profiles")) return strictConfigProfilePathAllowed(first.rest);
+    if (tomlSegmentMatches(first.raw, "model_providers")) return strictConfigModelProviderPathAllowed(first.rest);
+    if (tomlSegmentMatches(first.raw, "mcp_servers")) return strictConfigMcpServerPathAllowed(first.rest);
+    if (tomlSegmentMatches(first.raw, "tui")) return strictConfigTuiPathAllowed(first.rest);
+    if (tomlSegmentMatches(first.raw, "sandbox_workspace_write")) return strictConfigSandboxWorkspaceWritePathAllowed(first.rest);
+    if (tomlSegmentMatches(first.raw, "history")) return strictConfigLeafPathAllowed(first.rest, &[_][]const u8{ "persistence", "max_bytes" });
+    if (tomlSegmentMatches(first.raw, "analytics")) return strictConfigLeafPathAllowed(first.rest, &[_][]const u8{"enabled"});
+    if (tomlSegmentMatches(first.raw, "feedback")) return strictConfigLeafPathAllowed(first.rest, &[_][]const u8{"enabled"});
+    if (tomlSegmentMatches(first.raw, "notice")) return strictConfigNoticePathAllowed(first.rest);
+    for (strict_config_opaque_roots) |root| {
+        if (strictConfigOpaqueRootPathAllowed(path, root)) return true;
+    }
+    return false;
+}
+
+fn strictConfigOverridePathAllowed(path: []const u8) bool {
+    if (std.mem.eql(u8, path, "tui_alternate_screen")) return true;
+    return strictConfigPathAllowed(path);
+}
+
+const strict_config_opaque_roots = [_][]const u8{
+    "desktop",
+    "permissions",
+    "sandbox",
+    "tools",
+    "hooks",
+    "projects",
+    "plugins",
+    "marketplaces",
+    "apps",
+    "notifications",
+    "external_agents",
+    "experimental_network",
+    "shell_environment_policy",
+    "debug",
+    "tool_suggest",
+    "agents",
+    "memories",
+    "skills",
+    "audio",
+    "realtime",
+    "experimental_thread_store",
+    "ghost_snapshot",
+    "otel",
+    "windows",
+};
+
+fn strictConfigRootPathAllowed(path: []const u8) bool {
+    const known = [_][]const u8{
+        "profile",
+        "model",
+        "review_model",
+        "model_context_window",
+        "model_auto_compact_token_limit",
+        "model_auto_compact_token_limit_scope",
+        "model_provider",
+        "openai_base_url",
+        "chatgpt_base_url",
+        "oss_provider",
+        "approval_policy",
+        "approvals_reviewer",
+        "auto_review",
+        "sandbox_mode",
+        "sandbox_workspace_write",
+        "default_permissions",
+        "web_search",
+        "model_reasoning_effort",
+        "plan_mode_reasoning_effort",
+        "model_reasoning_summary",
+        "model_verbosity",
+        "model_supports_reasoning_summaries",
+        "model_catalog_json",
+        "service_tier",
+        "syntax_theme",
+        "personality",
+        "instructions",
+        "base_instructions",
+        "developer_instructions",
+        "include_permissions_instructions",
+        "include_apps_instructions",
+        "include_collaboration_mode_instructions",
+        "include_environment_context",
+        "model_instructions_file",
+        "compact_prompt",
+        "forced_login_method",
+        "forced_chatgpt_workspace_id",
+        "cli_auth_credentials_store",
+        "mcp_oauth_credentials_store",
+        "mcp_oauth_callback_port",
+        "mcp_oauth_callback_url",
+        "project_doc_max_bytes",
+        "project_doc_fallback_filenames",
+        "tool_output_token_limit",
+        "background_terminal_max_timeout",
+        "allow_login_shell",
+        "notify",
+        "js_repl_node_path",
+        "js_repl_node_module_dirs",
+        "zsh_path",
+        "sqlite_home",
+        "log_dir",
+        "file_opener",
+        "hide_agent_reasoning",
+        "show_raw_agent_reasoning",
+        "apps_mcp_product_sku",
+        "experimental_realtime_ws_base_url",
+        "experimental_realtime_ws_model",
+        "experimental_realtime_ws_backend_prompt",
+        "experimental_realtime_ws_startup_context",
+        "experimental_realtime_start_instructions",
+        "experimental_thread_config_endpoint",
+        "experimental_thread_store_endpoint",
+        "experimental_compact_prompt_file",
+        "experimental_use_unified_exec_tool",
+        "project_root_markers",
+        "check_for_update_on_startup",
+        "disable_paste_burst",
+        "suppress_unstable_features_warning",
+        "features",
+        "profiles",
+        "model_providers",
+        "mcp_servers",
+        "tools",
+        "tui",
+        "hooks",
+        "projects",
+        "permissions",
+        "sandbox",
+        "plugins",
+        "marketplaces",
+        "apps",
+        "analytics",
+        "feedback",
+        "history",
+        "notifications",
+        "external_agents",
+        "experimental_network",
+        "shell_environment_policy",
+        "debug",
+        "tool_suggest",
+        "agents",
+        "memories",
+        "skills",
+        "audio",
+        "realtime",
+        "experimental_thread_store",
+        "ghost_snapshot",
+        "desktop",
+        "otel",
+        "windows",
+        "notice",
+    };
+    return stringInList(path, &known);
+}
+
+fn strictConfigFeaturePathAllowed(path: []const u8) bool {
+    if (path.len == 0) return false;
+    const key = tomlDottedPathFirstSegment(path) orelse return false;
+    if (!strictConfigFeatureKeyKnown(key.raw)) return false;
+    if (key.rest.len == 0) return true;
+    return strictConfigFeatureConfigPathAllowed(key.raw, key.rest);
+}
+
+fn strictConfigFeatureConfigPathAllowed(raw_key: []const u8, path: []const u8) bool {
+    if (tomlSegmentMatches(raw_key, "multi_agent_v2")) {
+        return strictConfigLeafPathAllowed(path, &[_][]const u8{
+            "enabled",
+            "max_concurrent_threads_per_session",
+            "min_wait_timeout_ms",
+            "max_wait_timeout_ms",
+            "default_wait_timeout_ms",
+            "usage_hint_enabled",
+            "usage_hint_text",
+            "root_agent_usage_hint_text",
+            "subagent_usage_hint_text",
+            "tool_namespace",
+            "hide_spawn_agent_metadata",
+            "non_code_mode_only",
+        });
+    }
+    if (tomlSegmentMatches(raw_key, "apps_mcp_path_override")) {
+        return strictConfigLeafPathAllowed(path, &[_][]const u8{ "enabled", "path" });
+    }
+    if (tomlSegmentMatches(raw_key, "network_proxy")) {
+        if (strictConfigMapLeafPathAllowed(path, "domains")) return true;
+        if (strictConfigMapLeafPathAllowed(path, "unix_sockets")) return true;
+        return strictConfigLeafPathAllowed(path, &[_][]const u8{
+            "enabled",
+            "proxy_url",
+            "enable_socks5",
+            "socks_url",
+            "enable_socks5_udp",
+            "allow_upstream_proxy",
+            "dangerously_allow_non_loopback_proxy",
+            "dangerously_allow_all_unix_sockets",
+            "mode",
+            "domains",
+            "unix_sockets",
+            "allow_local_binding",
+        });
+    }
+    return false;
+}
+
+fn strictConfigProfilePathAllowed(path: []const u8) bool {
+    const profile = tomlDottedPathFirstSegment(path) orelse return false;
+    if (profile.rest.len == 0) return true;
+    const nested = profile.rest;
+    const nested_first = tomlDottedPathFirstSegment(nested) orelse return false;
+    if (tomlSegmentMatches(nested_first.raw, "features")) {
+        return nested_first.rest.len == 0 or strictConfigFeaturePathAllowed(nested_first.rest);
+    }
+    return strictConfigPathAllowed(nested);
+}
+
+fn strictConfigModelProviderPathAllowed(path: []const u8) bool {
+    if (path.len == 0) return false;
+    const provider = tomlDottedPathFirstSegment(path) orelse return false;
+    if (provider.rest.len == 0) return true;
+    const nested = provider.rest;
+    if (strictConfigMapLeafPathAllowed(nested, "query_params") or
+        strictConfigMapLeafPathAllowed(nested, "http_headers") or
+        strictConfigMapLeafPathAllowed(nested, "env_http_headers"))
+    {
+        return true;
+    }
+    if (strictConfigKnownSubtablePathAllowed(nested, "auth", &[_][]const u8{ "command", "args", "cwd", "timeout_ms", "refresh_interval_ms" })) {
+        return true;
+    }
+    const known = [_][]const u8{
+        "base_url",
+        "wire_api",
+        "env_key",
+        "experimental_bearer_token",
+        "requires_openai_auth",
+        "query_params",
+        "http_headers",
+        "env_http_headers",
+        "auth",
+    };
+    return strictConfigLeafPathAllowed(nested, &known);
+}
+
+fn strictConfigMcpServerPathAllowed(path: []const u8) bool {
+    if (path.len == 0) return false;
+    const server = tomlDottedPathFirstSegment(path) orelse return false;
+    if (server.rest.len == 0) return true;
+    const nested = server.rest;
+    if (strictConfigMapLeafPathAllowed(nested, "env") or
+        strictConfigMapLeafPathAllowed(nested, "http_headers") or
+        strictConfigMapLeafPathAllowed(nested, "env_http_headers"))
+    {
+        return true;
+    }
+    if (strictConfigKnownSubtablePathAllowed(nested, "identity", &[_][]const u8{ "command", "url" })) {
+        return true;
+    }
+    const known = [_][]const u8{
+        "command",
+        "args",
+        "env",
+        "cwd",
+        "url",
+        "bearer_token",
+        "bearer_token_env_var",
+        "http_headers",
+        "env_http_headers",
+        "env_vars",
+        "scopes",
+        "enabled",
+        "disabled",
+        "required",
+        "startup_timeout_sec",
+        "tool_timeout_sec",
+        "oauth_resource",
+        "identity",
+    };
+    return strictConfigLeafPathAllowed(nested, &known);
+}
+
+fn strictConfigSandboxWorkspaceWritePathAllowed(path: []const u8) bool {
+    return strictConfigLeafPathAllowed(path, &[_][]const u8{
+        "writable_roots",
+        "network_access",
+        "exclude_tmpdir_env_var",
+        "exclude_slash_tmp",
+    });
+}
+
+fn strictConfigTuiPathAllowed(path: []const u8) bool {
+    if (path.len == 0) return false;
+    if (strictConfigMapLeafPathAllowed(path, "keymap") or
+        strictConfigMapLeafPathAllowed(path, "model_availability_nux"))
+    {
+        return true;
+    }
+    return strictConfigLeafPathAllowed(path, &[_][]const u8{
+        "notifications",
+        "notification_method",
+        "notification_condition",
+        "animations",
+        "show_tooltips",
+        "vim_mode_default",
+        "raw_output_mode",
+        "alternate_screen",
+        "status_line",
+        "status_line_use_colors",
+        "terminal_title",
+        "theme",
+        "pet",
+        "pet_anchor",
+        "session_picker_view",
+        "keymap",
+        "model_availability_nux",
+        "terminal_resize_reflow_max_rows",
+    });
+}
+
+fn strictConfigNoticePathAllowed(path: []const u8) bool {
+    if (path.len == 0) return false;
+    if (strictConfigMapLeafPathAllowed(path, "external_config_migration")) return true;
+    return strictConfigLeafPathAllowed(path, &[_][]const u8{
+        "hide_full_access_warning",
+        "hide_world_writable_warning",
+        "fast_default_opt_out",
+        "hide_rate_limit_model_nudge",
+        "hide_gpt5_1_migration_prompt",
+        "hide_gpt-5.1-codex-max_migration_prompt",
+        "external_config_migration",
+    });
+}
+
+fn strictConfigLeafPathAllowed(path: []const u8, known: anytype) bool {
+    const segment = tomlDottedPathFirstSegment(path) orelse return false;
+    return segment.rest.len == 0 and stringInList(segment.raw, known);
+}
+
+fn strictConfigMapLeafPathAllowed(path: []const u8, table: []const u8) bool {
+    const first = tomlDottedPathFirstSegment(path) orelse return false;
+    if (!tomlSegmentMatches(first.raw, table)) return false;
+    if (first.rest.len == 0) return true;
+    const leaf = tomlDottedPathFirstSegment(first.rest) orelse return false;
+    return leaf.rest.len == 0;
+}
+
+fn strictConfigKnownSubtablePathAllowed(path: []const u8, table: []const u8, known: anytype) bool {
+    const first = tomlDottedPathFirstSegment(path) orelse return false;
+    if (!tomlSegmentMatches(first.raw, table)) return false;
+    if (first.rest.len == 0) return true;
+    return strictConfigLeafPathAllowed(first.rest, known);
+}
+
+fn strictConfigInlineTableUnknownField(
+    allocator: std.mem.Allocator,
+    field: []const u8,
+    line: []const u8,
+) anyerror!?[]const u8 {
+    const eq = tomlAssignmentEqualsIndex(line) orelse return null;
+    const rhs = std.mem.trim(u8, line[eq + 1 ..], " \t");
+    const contents = try parseInlineTableContents(allocator, rhs) orelse return null;
+    defer allocator.free(contents);
+    return try strictConfigInlineTableContentsUnknownField(allocator, field, contents);
+}
+
+fn strictConfigInlineTableContentsUnknownField(
+    allocator: std.mem.Allocator,
+    parent: []const u8,
+    contents: []const u8,
+) anyerror!?[]const u8 {
+    var start: usize = 0;
+    var index: usize = 0;
+    var in_string = false;
+    var escaped = false;
+    var array_depth: usize = 0;
+    var table_depth: usize = 0;
+    while (index <= contents.len) : (index += 1) {
+        const at_end = index == contents.len;
+        if (!at_end) {
+            const byte = contents[index];
+            if (in_string) {
+                if (escaped) {
+                    escaped = false;
+                } else if (byte == '\\') {
+                    escaped = true;
+                } else if (byte == '"') {
+                    in_string = false;
+                }
+                continue;
+            }
+            if (byte == '"') {
+                in_string = true;
+                continue;
+            }
+            if (byte == '[') {
+                array_depth += 1;
+                continue;
+            }
+            if (byte == ']') {
+                if (array_depth == 0) return error.InvalidTomlInlineTable;
+                array_depth -= 1;
+                continue;
+            }
+            if (byte == '{') {
+                table_depth += 1;
+                continue;
+            }
+            if (byte == '}') {
+                if (table_depth == 0) return error.InvalidTomlInlineTable;
+                table_depth -= 1;
+                continue;
+            }
+            if (byte != ',' or array_depth != 0 or table_depth != 0) continue;
+        }
+
+        const entry = std.mem.trim(u8, contents[start..index], " \t\r\n");
+        start = index + 1;
+        if (entry.len == 0) continue;
+        const key = tomlAssignmentKey(entry) orelse continue;
+        const child = try std.fmt.allocPrint(allocator, "{s}.{s}", .{ parent, key });
+        errdefer allocator.free(child);
+        if (!strictConfigPathAllowed(child)) return child;
+        if (try strictConfigInlineTableUnknownField(allocator, child, entry)) |unknown| {
+            allocator.free(child);
+            return unknown;
+        }
+        allocator.free(child);
+    }
+    if (in_string or array_depth != 0 or table_depth != 0) return error.InvalidTomlInlineTable;
+    return null;
+}
+
+fn strictConfigOpaqueRootPathAllowed(path: []const u8, root: []const u8) bool {
+    const first = tomlDottedPathFirstSegment(path) orelse return false;
+    return tomlSegmentMatches(first.raw, root);
+}
+
+const TomlDottedPathSegment = struct {
+    raw: []const u8,
+    rest: []const u8,
+};
+
+fn tomlDottedPathFirstSegment(path: []const u8) ?TomlDottedPathSegment {
+    if (path.len == 0) return null;
+    var index: usize = 0;
+    while (index < path.len) : (index += 1) {
+        if (path[index] == '"') {
+            const close = tomlBasicStringClosingQuoteIndex(path[index..]) orelse return null;
+            index += close;
+            continue;
+        }
+        if (path[index] == '.') {
+            return .{ .raw = path[0..index], .rest = path[index + 1 ..] };
+        }
+    }
+    return .{ .raw = path, .rest = "" };
+}
+
+fn tomlSegmentMatches(segment: []const u8, expected: []const u8) bool {
+    if (tomlQuotedNameMatches(segment, expected)) return true;
+    return std.mem.eql(u8, segment, expected);
+}
+
+fn stringInList(value: []const u8, values: anytype) bool {
+    for (values) |item| {
+        if (tomlSegmentMatches(value, item)) return true;
+    }
+    return false;
+}
+
+fn strictConfigFeatureKeyKnown(key: []const u8) bool {
+    if (key.len >= 2 and key[0] == '"') {
+        const close = tomlBasicStringClosingQuoteIndex(key) orelse return false;
+        if (close + 1 != key.len) return false;
+        for (feature_registry.FeatureSpec.all) |feature| {
+            if (tomlBasicStringContentMatches(key[1..close], feature.key)) return true;
+        }
+        return false;
+    }
+    return feature_registry.isKnownFeature(key);
+}
 
 const SandboxFilesystemAccess = enum {
     read,
@@ -2425,7 +3093,7 @@ fn recordSandboxFilesystemLine(
     state: *CustomSandboxPermissionProfileState,
     line: []const u8,
 ) !void {
-    const eq = std.mem.indexOfScalar(u8, line, '=') orelse return;
+    const eq = tomlAssignmentEqualsIndex(line) orelse return;
     const raw_key = std.mem.trim(u8, line[0..eq], " \t");
     const rhs = std.mem.trim(u8, line[eq + 1 ..], " \t");
     if (raw_key.len == 0) return;
@@ -2657,10 +3325,40 @@ fn containsSandboxGlobChars(path: []const u8) bool {
 }
 
 fn tomlAssignmentKey(line: []const u8) ?[]const u8 {
-    const eq = std.mem.indexOfScalar(u8, line, '=') orelse return null;
+    const eq = tomlAssignmentEqualsIndex(line) orelse return null;
     const lhs = std.mem.trim(u8, line[0..eq], " \t");
     if (lhs.len == 0) return null;
     return lhs;
+}
+
+fn tomlAssignmentEqualsIndex(line: []const u8) ?usize {
+    var in_basic_string = false;
+    var in_literal_string = false;
+    var escaped = false;
+    for (line, 0..) |byte, index| {
+        if (in_basic_string) {
+            if (escaped) {
+                escaped = false;
+            } else if (byte == '\\') {
+                escaped = true;
+            } else if (byte == '"') {
+                in_basic_string = false;
+            }
+            continue;
+        }
+        if (in_literal_string) {
+            if (byte == '\'') in_literal_string = false;
+            continue;
+        }
+        switch (byte) {
+            '#' => return null,
+            '"' => in_basic_string = true,
+            '\'' => in_literal_string = true,
+            '=' => return index,
+            else => {},
+        }
+    }
+    return null;
 }
 
 fn isPermissionsProfileSection(line: []const u8, profile: []const u8, subsection: []const u8) bool {
@@ -2684,7 +3382,7 @@ fn isPermissionsProfileSection(line: []const u8, profile: []const u8, subsection
 }
 
 fn stringValueForKey(allocator: std.mem.Allocator, line: []const u8, key: []const u8) !?[]const u8 {
-    const eq = std.mem.indexOfScalar(u8, line, '=') orelse return null;
+    const eq = tomlAssignmentEqualsIndex(line) orelse return null;
     const lhs = std.mem.trim(u8, line[0..eq], " \t");
     if (!std.mem.eql(u8, lhs, key)) return null;
     const rhs = std.mem.trim(u8, line[eq + 1 ..], " \t");
@@ -2698,7 +3396,7 @@ fn stringValueForKeyAt(
     line: []const u8,
     key: []const u8,
 ) !?[]const u8 {
-    const eq = std.mem.indexOfScalar(u8, line, '=') orelse return null;
+    const eq = tomlAssignmentEqualsIndex(line) orelse return null;
     const lhs = std.mem.trim(u8, line[0..eq], " \t");
     if (!std.mem.eql(u8, lhs, key)) return null;
     const rhs_start = @min(line_start + eq + 1, bytes.len);
@@ -2706,7 +3404,7 @@ fn stringValueForKeyAt(
 }
 
 fn stringMapEntryForLine(allocator: std.mem.Allocator, line: []const u8) !?StringMapEntry {
-    const eq = std.mem.indexOfScalar(u8, line, '=') orelse return null;
+    const eq = tomlAssignmentEqualsIndex(line) orelse return null;
     const raw_key = std.mem.trim(u8, line[0..eq], " \t");
     if (raw_key.len == 0) return null;
     const rhs = std.mem.trim(u8, line[eq + 1 ..], " \t");
@@ -2725,7 +3423,7 @@ fn parseTomlKey(allocator: std.mem.Allocator, raw_key: []const u8) ![]const u8 {
 }
 
 fn inlineTableValueForKey(allocator: std.mem.Allocator, line: []const u8, key: []const u8) !?[]const u8 {
-    const eq = std.mem.indexOfScalar(u8, line, '=') orelse return null;
+    const eq = tomlAssignmentEqualsIndex(line) orelse return null;
     const lhs = std.mem.trim(u8, line[0..eq], " \t");
     if (!std.mem.eql(u8, lhs, key)) return null;
     const rhs = std.mem.trim(u8, line[eq + 1 ..], " \t");
@@ -2735,7 +3433,7 @@ fn inlineTableValueForKey(allocator: std.mem.Allocator, line: []const u8, key: [
 }
 
 fn stringArrayValueForKey(allocator: std.mem.Allocator, line: []const u8, key: []const u8) !?StringList {
-    const eq = std.mem.indexOfScalar(u8, line, '=') orelse return null;
+    const eq = tomlAssignmentEqualsIndex(line) orelse return null;
     const lhs = std.mem.trim(u8, line[0..eq], " \t");
     if (!std.mem.eql(u8, lhs, key)) return null;
     const rhs = std.mem.trim(u8, line[eq + 1 ..], " \t");
@@ -2743,7 +3441,7 @@ fn stringArrayValueForKey(allocator: std.mem.Allocator, line: []const u8, key: [
 }
 
 fn boolValueForKey(line: []const u8, key: []const u8) ?bool {
-    const eq = std.mem.indexOfScalar(u8, line, '=') orelse return null;
+    const eq = tomlAssignmentEqualsIndex(line) orelse return null;
     const lhs = std.mem.trim(u8, line[0..eq], " \t");
     if (!std.mem.eql(u8, lhs, key)) return null;
     const rhs = std.mem.trim(u8, line[eq + 1 ..], " \t");
@@ -2753,7 +3451,7 @@ fn boolValueForKey(line: []const u8, key: []const u8) ?bool {
 }
 
 fn u64ValueForKey(line: []const u8, key: []const u8) !?u64 {
-    const eq = std.mem.indexOfScalar(u8, line, '=') orelse return null;
+    const eq = tomlAssignmentEqualsIndex(line) orelse return null;
     const lhs = std.mem.trim(u8, line[0..eq], " \t");
     if (!std.mem.eql(u8, lhs, key)) return null;
     const rhs = std.mem.trim(u8, line[eq + 1 ..], " \t");
@@ -2761,7 +3459,7 @@ fn u64ValueForKey(line: []const u8, key: []const u8) !?u64 {
 }
 
 fn i64ValueForKey(line: []const u8, key: []const u8) !?i64 {
-    const eq = std.mem.indexOfScalar(u8, line, '=') orelse return null;
+    const eq = tomlAssignmentEqualsIndex(line) orelse return null;
     const lhs = std.mem.trim(u8, line[0..eq], " \t");
     if (!std.mem.eql(u8, lhs, key)) return null;
     const rhs = tomlScalarWithoutInlineComment(std.mem.trim(u8, line[eq + 1 ..], " \t"));
@@ -4037,6 +4735,250 @@ test "raw cli config override rejects missing assignment" {
     try std.testing.expectError(error.InvalidConfigOverride, applyRawConfigOverride(&runtime, &profile, "model"));
 }
 
+test "raw cli config override reports strict unknown fields" {
+    const allocator = std.testing.allocator;
+
+    try std.testing.expectEqual(null, try rawConfigOverrideUnknownField(allocator, "model=gpt-test"));
+    try std.testing.expectEqual(null, try rawConfigOverrideUnknownField(allocator, "features.goals=true"));
+    try std.testing.expectEqual(null, try rawConfigOverrideUnknownField(allocator, "features.apps=true"));
+    try std.testing.expectEqual(null, try rawConfigOverrideUnknownField(allocator, "features.apply_patch_freeform=true"));
+    try std.testing.expectEqual(null, try rawConfigOverrideUnknownField(allocator, "features.multi_agent_v2.enabled=true"));
+    try std.testing.expectEqual(null, try rawConfigOverrideUnknownField(allocator, "features.apps_mcp_path_override.path=\"/tmp/apps-mcp\""));
+    try std.testing.expectEqual(null, try rawConfigOverrideUnknownField(allocator, "features.network_proxy.domains.\"api.example.com\"=\"allow\""));
+    try std.testing.expectEqual(null, try rawConfigOverrideUnknownField(allocator, "mcp_servers.local.command=echo"));
+    try std.testing.expectEqual(null, try rawConfigOverrideUnknownField(allocator, "mcp_servers.\"local.test\".command=echo"));
+    try std.testing.expectEqual(null, try rawConfigOverrideUnknownField(allocator, "mcp_servers.\"foo=bar\".command=echo"));
+    try std.testing.expectEqual(null, try rawConfigOverrideUnknownField(allocator, "mcp_servers.local.scopes=[\"read\"]"));
+    try std.testing.expectEqual(null, try rawConfigOverrideUnknownField(allocator, "mcp_servers.local.env_vars=[\"TOKEN\"]"));
+    try std.testing.expectEqual(null, try rawConfigOverrideUnknownField(allocator, "model_providers.mock.http_headers.\"x-api.key\"=\"value\""));
+    try std.testing.expectEqual(null, try rawConfigOverrideUnknownField(allocator, "sandbox_workspace_write.network_access=true"));
+    try std.testing.expectEqual(null, try rawConfigOverrideUnknownField(allocator, "tui.theme=dracula"));
+    try std.testing.expectEqual(null, try rawConfigOverrideUnknownField(allocator, "tui_alternate_screen=never"));
+    try std.testing.expectEqual(null, try rawConfigOverrideUnknownField(allocator, "features={goals=true}"));
+    try std.testing.expectEqual(null, try rawConfigOverrideUnknownField(allocator, "features={multi_agent_v2={enabled=true}}"));
+    const foo = (try rawConfigOverrideUnknownField(allocator, "foo=bar")).?;
+    defer allocator.free(foo);
+    try std.testing.expectEqualStrings("foo", foo);
+    const feature = (try rawConfigOverrideUnknownField(allocator, "features.nope=true")).?;
+    defer allocator.free(feature);
+    try std.testing.expectEqualStrings("features.nope", feature);
+    const nested_feature = (try rawConfigOverrideUnknownField(allocator, "features.nope.goals=true")).?;
+    defer allocator.free(nested_feature);
+    try std.testing.expectEqualStrings("features.nope.goals", nested_feature);
+    const inline_feature = (try rawConfigOverrideUnknownField(allocator, "features={nope=true}")).?;
+    defer allocator.free(inline_feature);
+    try std.testing.expectEqualStrings("features.nope", inline_feature);
+    const mcp = (try rawConfigOverrideUnknownField(allocator, "mcp_servers.local.unknown_key=true")).?;
+    defer allocator.free(mcp);
+    try std.testing.expectEqualStrings("mcp_servers.local.unknown_key", mcp);
+    const tui = (try rawConfigOverrideUnknownField(allocator, "tui.unknown_key=true")).?;
+    defer allocator.free(tui);
+    try std.testing.expectEqualStrings("tui.unknown_key", tui);
+    const inline_provider_auth = (try rawConfigOverrideUnknownField(allocator, "model_providers.mock.auth={bogus=true}")).?;
+    defer allocator.free(inline_provider_auth);
+    try std.testing.expectEqualStrings("model_providers.mock.auth.bogus", inline_provider_auth);
+}
+
+test "strict config scan accepts known and opaque desktop fields" {
+    const allocator = std.testing.allocator;
+    const view = ConfigView{
+        .bytes =
+        \\model = "gpt-test"
+        \\
+        \\[features] # comment
+        \\goals = true
+        \\apps = true
+        \\apply_patch_freeform = true
+        \\
+        \\[features.multi_agent_v2]
+        \\enabled = true
+        \\max_concurrent_threads_per_session = 4
+        \\usage_hint_text = "Use focused workers."
+        \\
+        \\[features.apps_mcp_path_override]
+        \\path = "/tmp/apps-mcp"
+        \\
+        \\[features.network_proxy]
+        \\enabled = true
+        \\mode = "limited"
+        \\
+        \\[features.network_proxy.domains]
+        \\"api.example.com" = "allow"
+        \\
+        \\[features.network_proxy.unix_sockets]
+        \\"/tmp/proxy.sock" = "allow"
+        \\
+        \\[profiles."team.a".features]
+        \\shell_tool = true
+        \\
+        \\[profiles."team.a".features.multi_agent_v2]
+        \\enabled = true
+        \\
+        \\[tui] # comment
+        \\theme = "dracula"
+        \\alternate_screen = "never"
+        \\
+        \\[mcp_servers.local]
+        \\command = "echo"
+        \\args = [
+        \\  "--foo=bar",
+        \\]
+        \\env_vars = ["TOKEN"]
+        \\scopes = ["read"]
+        \\
+        \\[mcp_servers."local.test".env]
+        \\TOKEN = "value"
+        \\
+        \\[model_providers.mock]
+        \\base_url = "http://127.0.0.1:1/v1"
+        \\wire_api = "responses"
+        \\
+        \\[model_providers."mock.v1".auth]
+        \\command = "print-token"
+        \\timeout_ms = 1000
+        \\
+        \\[model_providers.inline]
+        \\auth = { command = "print-token", args = ["--json"], timeout_ms = 1000 }
+        \\
+        \\[permissions.demo.filesystem]
+        \\":root" = "read"
+        \\
+        \\[permissions.demo.network]
+        \\enabled = true
+        \\
+        \\[sandbox_workspace_write]
+        \\writable_roots = ["/tmp/codex-extra"]
+        \\network_access = true
+        \\exclude_tmpdir_env_var = false
+        \\exclude_slash_tmp = false
+        \\
+        \\[hooks.on_turn_start]
+        \\command = "echo"
+        \\
+        \\[skills."local.skill"]
+        \\path = "."
+        \\
+        \\[desktop]
+        \\appearanceTheme = "dark"
+        \\
+        \\[desktop.workspace]
+        \\collapsed = true
+        \\
+        ,
+    };
+
+    try std.testing.expectEqual(null, try view.strictConfigUnknownField(allocator));
+}
+
+test "strict config scan reports unknown nested fields" {
+    const allocator = std.testing.allocator;
+
+    const top_level = ConfigView{ .bytes = "unknown_key = true\n" };
+    const top_level_field = (try top_level.strictConfigUnknownField(allocator)).?;
+    defer allocator.free(top_level_field);
+    try std.testing.expectEqualStrings("unknown_key", top_level_field);
+
+    const feature = ConfigView{
+        .bytes =
+        \\[features]
+        \\nope = true
+        \\
+        ,
+    };
+    const feature_field = (try feature.strictConfigUnknownField(allocator)).?;
+    defer allocator.free(feature_field);
+    try std.testing.expectEqualStrings("features.nope", feature_field);
+
+    const nested_feature = ConfigView{
+        .bytes =
+        \\[features.nope]
+        \\goals = true
+        \\
+        ,
+    };
+    const nested_feature_field = (try nested_feature.strictConfigUnknownField(allocator)).?;
+    defer allocator.free(nested_feature_field);
+    try std.testing.expectEqualStrings("features.nope", nested_feature_field);
+
+    const feature_config = ConfigView{
+        .bytes =
+        \\[features.multi_agent_v2]
+        \\nope = true
+        \\
+        ,
+    };
+    const feature_config_field = (try feature_config.strictConfigUnknownField(allocator)).?;
+    defer allocator.free(feature_config_field);
+    try std.testing.expectEqualStrings("features.multi_agent_v2.nope", feature_config_field);
+
+    const profile_feature = ConfigView{
+        .bytes =
+        \\[profiles.work.features]
+        \\nope = true
+        \\
+        ,
+    };
+    const profile_feature_field = (try profile_feature.strictConfigUnknownField(allocator)).?;
+    defer allocator.free(profile_feature_field);
+    try std.testing.expectEqualStrings("profiles.work.features.nope", profile_feature_field);
+
+    const mcp = ConfigView{
+        .bytes =
+        \\[mcp_servers.local]
+        \\unknown_key = true
+        \\
+        ,
+    };
+    const mcp_field = (try mcp.strictConfigUnknownField(allocator)).?;
+    defer allocator.free(mcp_field);
+    try std.testing.expectEqualStrings("mcp_servers.local.unknown_key", mcp_field);
+
+    const tui = ConfigView{
+        .bytes =
+        \\[tui]
+        \\unknown_key = true
+        \\
+        ,
+    };
+    const tui_field = (try tui.strictConfigUnknownField(allocator)).?;
+    defer allocator.free(tui_field);
+    try std.testing.expectEqualStrings("tui.unknown_key", tui_field);
+
+    const dotted_provider = ConfigView{
+        .bytes =
+        \\model_provider = "mock"
+        \\model_providers.mock.base_url = "http://127.0.0.1:1/v1"
+        \\model_providers.mock.typo.base_url = "http://bad.example/v1"
+        \\
+        ,
+    };
+    const dotted_provider_field = (try dotted_provider.strictConfigUnknownField(allocator)).?;
+    defer allocator.free(dotted_provider_field);
+    try std.testing.expectEqualStrings("model_providers.mock.typo.base_url", dotted_provider_field);
+
+    const inline_auth = ConfigView{
+        .bytes =
+        \\[model_providers.mock]
+        \\auth = { command = "echo", bogus = true }
+        \\
+        ,
+    };
+    const inline_auth_field = (try inline_auth.strictConfigUnknownField(allocator)).?;
+    defer allocator.free(inline_auth_field);
+    try std.testing.expectEqualStrings("model_providers.mock.auth.bogus", inline_auth_field);
+
+    const nested_map = ConfigView{
+        .bytes =
+        \\[mcp_servers.local.env.FOO]
+        \\BAR = "value"
+        \\
+        ,
+    };
+    const nested_map_field = (try nested_map.strictConfigUnknownField(allocator)).?;
+    defer allocator.free(nested_map_field);
+    try std.testing.expectEqualStrings("mcp_servers.local.env.FOO.BAR", nested_map_field);
+}
+
 test "runtime model_provider override refreshes provider settings" {
     const allocator = std.testing.allocator;
     const io = std.Io.Threaded.global_single_threaded.io();
@@ -4203,6 +5145,19 @@ test "multiline string bodies are skipped while scanning config keys" {
 
     try std.testing.expectEqualStrings("real-model", model);
     try std.testing.expect(!view.hasProfile("embedded"));
+
+    const strict_view = ConfigView{
+        .bytes =
+        \\instructions = '''
+        \\foo = "bar"
+        \\[bad.section]
+        \\'''
+        \\model = "real-model"
+        \\
+        ,
+    };
+
+    try std.testing.expectEqual(null, try strict_view.strictConfigUnknownField(allocator));
 }
 
 test "profile base instructions override top-level instructions alias" {
