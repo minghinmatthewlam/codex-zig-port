@@ -121,7 +121,9 @@ Zig TUI help in `src/tui.zig`, and the broader narrative tracker in
   runtime in memory across turns; non-stateful turns without a runtime do not
   advertise the subagent tools. Child turns strip parent-scoped callbacks before
   running so child plan/goal/tool progress cannot mutate the parent thread.
-  `spawn_agent` applies requested service-tier child overrides, and non-forked
+  `spawn_agent` exposes Rust-shaped inherited-model guidance and bundled
+  model/reasoning/service-tier override summaries in its model-facing tool
+  description, applies requested service-tier child overrides, and non-forked
   spawns also apply requested model and reasoning-effort overrides with bundled
   model-catalog defaulting/validation, including unsupported inherited
   service-tier filtering. Full-history forks still reject `agent_type`, model,
