@@ -261,7 +261,7 @@ fn printPluginSelectionError(allocator: std.mem.Allocator, plugin: []const u8, m
 }
 
 fn loadPluginCommandContext(allocator: std.mem.Allocator) !PluginCommandContext {
-    const codex_home = try config.resolveCodexHome(allocator);
+    const codex_home = try resolvePluginCodexHome(allocator);
     errdefer allocator.free(codex_home);
     const config_path = try config.configTomlPath(allocator, codex_home);
     errdefer allocator.free(config_path);
@@ -271,6 +271,16 @@ fn loadPluginCommandContext(allocator: std.mem.Allocator) !PluginCommandContext 
         .config_path = config_path,
         .config_bytes = config_bytes,
     };
+}
+
+fn resolvePluginCodexHome(allocator: std.mem.Allocator) ![]const u8 {
+    const raw = try config.resolveCodexHome(allocator);
+    defer allocator.free(raw);
+    if (std.fs.path.isAbsolute(raw)) return allocator.dupe(u8, raw);
+
+    const cwd = try std.Io.Dir.cwd().realPathFileAlloc(std.Io.Threaded.global_single_threaded.io(), ".", allocator);
+    defer allocator.free(cwd);
+    return std.fs.path.resolve(allocator, &.{ cwd, raw });
 }
 
 fn addPluginAndPrint(allocator: std.mem.Allocator, selection: PluginSelection) !void {
@@ -823,7 +833,7 @@ fn runMarketplaceRemove(allocator: std.mem.Allocator, args: *std.process.Args.It
 }
 
 fn addMarketplaceAndPrint(allocator: std.mem.Allocator, source: []const u8, ref_name: ?[]const u8, sparse_paths: []const []const u8) !void {
-    const codex_home = try config.resolveCodexHome(allocator);
+    const codex_home = try resolvePluginCodexHome(allocator);
     defer allocator.free(codex_home);
     const config_path = try config.configTomlPath(allocator, codex_home);
     defer allocator.free(config_path);
@@ -846,7 +856,7 @@ fn addMarketplaceAndPrint(allocator: std.mem.Allocator, source: []const u8, ref_
 }
 
 fn upgradeMarketplacesAndPrint(allocator: std.mem.Allocator, marketplace_name: ?[]const u8) !void {
-    const codex_home = try config.resolveCodexHome(allocator);
+    const codex_home = try resolvePluginCodexHome(allocator);
     defer allocator.free(codex_home);
     const config_path = try config.configTomlPath(allocator, codex_home);
     defer allocator.free(config_path);
@@ -893,7 +903,7 @@ fn upgradeMarketplacesAndPrint(allocator: std.mem.Allocator, marketplace_name: ?
 }
 
 fn removeMarketplaceAndPrint(allocator: std.mem.Allocator, marketplace_name: []const u8) !void {
-    const codex_home = try config.resolveCodexHome(allocator);
+    const codex_home = try resolvePluginCodexHome(allocator);
     defer allocator.free(codex_home);
     const config_path = try config.configTomlPath(allocator, codex_home);
     defer allocator.free(config_path);

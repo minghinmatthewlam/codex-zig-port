@@ -2314,6 +2314,26 @@ def run_plugin_marketplace_smoke(
             f"expected plugin add to ignore unrelated marketplace load error:\n{filtered_add.stderr}"
         )
 
+    relative_home = workspace / "relative-codex-home"
+    relative_home.mkdir()
+    relative_env = env.copy()
+    relative_env["CODEX_HOME"] = relative_home.name
+    relative_home.joinpath("config.toml").write_text(
+        f'[marketplaces.debug]\nsource_type = "local"\nsource = "{source}"\n'
+    )
+    relative_list = subprocess.run(
+        [str(binary), "plugin", "list", "--marketplace", "debug"],
+        cwd=workspace,
+        env=relative_env,
+        text=True,
+        capture_output=True,
+        check=True,
+    )
+    if "sample@debug" not in relative_list.stderr:
+        raise AssertionError(
+            f"expected plugin list to support relative CODEX_HOME:\n{relative_list.stderr}"
+        )
+
     add = subprocess.run(
         [str(binary), "plugin", "marketplace", "add", str(source)],
         cwd=workspace,
