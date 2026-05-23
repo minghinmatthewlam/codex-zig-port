@@ -2334,6 +2334,47 @@ def run_plugin_marketplace_smoke(
             f"expected plugin list to support relative CODEX_HOME:\n{relative_list.stderr}"
         )
 
+    stale_home = workspace / "stale-cache-codex-home"
+    stale_home.mkdir()
+    stale_env = env.copy()
+    stale_env["CODEX_HOME"] = str(stale_home)
+    stale_home.joinpath("config.toml").write_text(
+        f'[marketplaces.debug]\nsource_type = "local"\nsource = "{source}"\n'
+    )
+    stale_add = subprocess.run(
+        [str(binary), "plugin", "add", "sample@debug"],
+        cwd=workspace,
+        env=stale_env,
+        text=True,
+        capture_output=True,
+        check=True,
+    )
+    if "Added plugin `sample` from marketplace `debug`." not in stale_add.stderr:
+        raise AssertionError(f"expected stale setup plugin add output:\n{stale_add.stderr}")
+    stale_config_path = stale_home / "config.toml"
+    stale_config_path.write_text(
+        stale_config_path.read_text().replace(
+            '\n[plugins."sample@debug"]\nenabled = true\n',
+            "\n",
+        )
+    )
+    stale_list = subprocess.run(
+        [str(binary), "plugin", "list", "--marketplace", "debug"],
+        cwd=workspace,
+        env=stale_env,
+        text=True,
+        capture_output=True,
+        check=True,
+    )
+    if "sample@debug" not in stale_list.stderr or "not installed" not in stale_list.stderr:
+        raise AssertionError(
+            f"expected cache-only plugin to be listed as not installed:\n{stale_list.stderr}"
+        )
+    if "installed, disabled" in stale_list.stderr:
+        raise AssertionError(
+            f"expected cache-only plugin not to look installed:\n{stale_list.stderr}"
+        )
+
     add = subprocess.run(
         [str(binary), "plugin", "marketplace", "add", str(source)],
         cwd=workspace,

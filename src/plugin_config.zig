@@ -62,6 +62,26 @@ pub fn enabledPluginIds(allocator: std.mem.Allocator, bytes: []const u8) ![]cons
     return ids.toOwnedSlice(allocator);
 }
 
+pub fn configuredPluginIds(allocator: std.mem.Allocator, bytes: []const u8) ![]const []const u8 {
+    var ids = std.ArrayList([]const u8).empty;
+    errdefer {
+        for (ids.items) |id| allocator.free(id);
+        ids.deinit(allocator);
+    }
+
+    var lines = std.mem.splitScalar(u8, bytes, '\n');
+    while (lines.next()) |raw_line| {
+        const line = std.mem.trim(u8, raw_line, " \t\r");
+        if (line.len == 0 or line[0] == '#') continue;
+        if (line[0] != '[') continue;
+        if (try parsePluginTableHeader(allocator, line)) |id| {
+            try ids.append(allocator, id);
+        }
+    }
+
+    return ids.toOwnedSlice(allocator);
+}
+
 pub fn freeStringList(allocator: std.mem.Allocator, values: []const []const u8) void {
     for (values) |value| allocator.free(value);
     allocator.free(values);
@@ -442,6 +462,12 @@ test "plugin config parses enabled plugin ids and feature flags" {
     try std.testing.expectEqual(@as(usize, 2), ids.len);
     try std.testing.expectEqualStrings("demo@test", ids[0]);
     try std.testing.expectEqualStrings("later@test", ids[1]);
+    const configured_ids = try configuredPluginIds(allocator, bytes);
+    defer freeStringList(allocator, configured_ids);
+    try std.testing.expectEqual(@as(usize, 3), configured_ids.len);
+    try std.testing.expectEqualStrings("demo@test", configured_ids[0]);
+    try std.testing.expectEqualStrings("disabled@test", configured_ids[1]);
+    try std.testing.expectEqualStrings("later@test", configured_ids[2]);
     const parts = splitPluginId(ids[0]).?;
     try std.testing.expectEqualStrings("demo", parts.name);
     try std.testing.expectEqualStrings("test", parts.marketplace);

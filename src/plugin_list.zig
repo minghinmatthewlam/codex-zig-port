@@ -352,20 +352,22 @@ pub fn renderResponseWithRemoteMarketplaces(
     var load_error_count: usize = 0;
 
     if (include_local) {
+        const configured_ids = try plugin_config.configuredPluginIds(allocator, config_bytes);
+        defer plugin_config.freeStringList(allocator, configured_ids);
         const enabled_ids = try plugin_config.enabledPluginIds(allocator, config_bytes);
         defer plugin_config.freeStringList(allocator, enabled_ids);
 
-        try appendMarketplacesForRoot(allocator, codex_home, codex_home, enabled_ids, &seen_plugin_ids, &marketplaces, &marketplace_count, &load_errors, &load_error_count);
+        try appendMarketplacesForRoot(allocator, codex_home, codex_home, configured_ids, enabled_ids, &seen_plugin_ids, &marketplaces, &marketplace_count, &load_errors, &load_error_count);
         const configured_roots = try marketplace_config.configuredMarketplaceRoots(allocator, codex_home, config_bytes);
         defer {
             for (configured_roots) |*root| root.deinit(allocator);
             allocator.free(configured_roots);
         }
         for (configured_roots) |root| {
-            try appendMarketplacesForRoot(allocator, codex_home, root.root, enabled_ids, &seen_plugin_ids, &marketplaces, &marketplace_count, &load_errors, &load_error_count);
+            try appendMarketplacesForRoot(allocator, codex_home, root.root, configured_ids, enabled_ids, &seen_plugin_ids, &marketplaces, &marketplace_count, &load_errors, &load_error_count);
         }
         for (cwds) |cwd| {
-            try appendMarketplacesForRoot(allocator, codex_home, cwd, enabled_ids, &seen_plugin_ids, &marketplaces, &marketplace_count, &load_errors, &load_error_count);
+            try appendMarketplacesForRoot(allocator, codex_home, cwd, configured_ids, enabled_ids, &seen_plugin_ids, &marketplaces, &marketplace_count, &load_errors, &load_error_count);
         }
     }
     if (remote_marketplaces_json) |json| {
@@ -391,6 +393,8 @@ pub fn renderConfiguredResponse(
         return allocator.dupe(u8, "{\"marketplaces\":[],\"marketplaceLoadErrors\":[],\"featuredPluginIds\":[]}");
     }
 
+    const configured_ids = try plugin_config.configuredPluginIds(allocator, config_bytes);
+    defer plugin_config.freeStringList(allocator, configured_ids);
     const enabled_ids = try plugin_config.enabledPluginIds(allocator, config_bytes);
     defer plugin_config.freeStringList(allocator, enabled_ids);
 
@@ -420,6 +424,7 @@ pub fn renderConfiguredResponse(
             codex_home,
             root.marketplace_name,
             root.root,
+            configured_ids,
             enabled_ids,
             &seen_plugin_ids,
             &marketplaces,
@@ -463,6 +468,8 @@ pub fn renderReadResponse(
 ) ![]const u8 {
     if (!plugin_config.pluginsFeatureEnabled(config_bytes)) return ReadError.PluginsDisabled;
 
+    const configured_ids = try plugin_config.configuredPluginIds(allocator, config_bytes);
+    defer plugin_config.freeStringList(allocator, configured_ids);
     const enabled_ids = try plugin_config.enabledPluginIds(allocator, config_bytes);
     defer plugin_config.freeStringList(allocator, enabled_ids);
 
@@ -518,6 +525,7 @@ pub fn renderReadResponse(
             plugin_id,
             source,
             plugin_value.object,
+            configured_ids,
             enabled_ids,
             manifest_parse.value,
             category,
@@ -617,6 +625,7 @@ fn appendMarketplacesForRoot(
     allocator: std.mem.Allocator,
     codex_home: []const u8,
     root: []const u8,
+    configured_ids: []const []const u8,
     enabled_ids: []const []const u8,
     seen_plugin_ids: *std.ArrayList([]const u8),
     marketplaces: *std.ArrayList(u8),
@@ -631,6 +640,7 @@ fn appendMarketplacesForRoot(
             allocator,
             codex_home,
             marketplace_path,
+            configured_ids,
             enabled_ids,
             seen_plugin_ids,
             marketplaces,
@@ -646,6 +656,7 @@ fn appendConfiguredMarketplaceFromRoot(
     codex_home: []const u8,
     configured_marketplace_name: []const u8,
     root: []const u8,
+    configured_ids: []const []const u8,
     enabled_ids: []const []const u8,
     seen_plugin_ids: *std.ArrayList([]const u8),
     marketplaces: *std.ArrayList(u8),
@@ -663,6 +674,7 @@ fn appendConfiguredMarketplaceFromRoot(
             codex_home,
             marketplace_path,
             bytes,
+            configured_ids,
             enabled_ids,
             seen_plugin_ids,
             marketplaces,
@@ -687,6 +699,7 @@ fn appendMarketplaceFromFile(
     allocator: std.mem.Allocator,
     codex_home: []const u8,
     marketplace_path: []const u8,
+    configured_ids: []const []const u8,
     enabled_ids: []const []const u8,
     seen_plugin_ids: *std.ArrayList([]const u8),
     marketplaces: *std.ArrayList(u8),
@@ -701,6 +714,7 @@ fn appendMarketplaceFromFile(
         codex_home,
         marketplace_path,
         bytes,
+        configured_ids,
         enabled_ids,
         seen_plugin_ids,
         marketplaces,
@@ -716,6 +730,7 @@ fn appendMarketplaceFromBytes(
     codex_home: []const u8,
     marketplace_path: []const u8,
     bytes: []const u8,
+    configured_ids: []const []const u8,
     enabled_ids: []const []const u8,
     seen_plugin_ids: *std.ArrayList([]const u8),
     marketplaces: *std.ArrayList(u8),
@@ -758,6 +773,7 @@ fn appendMarketplaceFromBytes(
             marketplace_path,
             marketplace_name,
             plugin_value,
+            configured_ids,
             enabled_ids,
             seen_plugin_ids,
             &plugins,
@@ -789,6 +805,7 @@ fn appendPluginFromMarketplaceEntry(
     marketplace_path: []const u8,
     marketplace_name: []const u8,
     plugin_value: std.json.Value,
+    configured_ids: []const []const u8,
     enabled_ids: []const []const u8,
     seen_plugin_ids: *std.ArrayList([]const u8),
     plugins: *std.ArrayList(u8),
@@ -835,6 +852,7 @@ fn appendPluginFromMarketplaceEntry(
         plugin_id,
         source,
         object,
+        configured_ids,
         enabled_ids,
         manifest_value,
         category,
@@ -850,11 +868,15 @@ fn appendPluginSummaryJson(
     plugin_id: []const u8,
     source: SourceRender,
     plugin_object: std.json.ObjectMap,
+    configured_ids: []const []const u8,
     enabled_ids: []const []const u8,
     manifest_value: ?std.json.Value,
     category: ?[]const u8,
 ) !void {
-    const installed = try installedPluginExists(allocator, codex_home, marketplace_name, plugin_name);
+    const installed = if (containsString(configured_ids, plugin_id))
+        try installedPluginExists(allocator, codex_home, marketplace_name, plugin_name)
+    else
+        false;
     const enabled = containsString(enabled_ids, plugin_id);
     const install_policy = installPolicy(plugin_object.get("policy"));
     const auth_policy = authPolicy(plugin_object.get("policy"));
@@ -3288,6 +3310,12 @@ test "plugin list renders local marketplaces with installed state and manifest m
     try std.testing.expect(std.mem.indexOf(u8, response, "\"enabled\":true") != null);
     try std.testing.expect(std.mem.indexOf(u8, response, "\"category\":\"Design\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, response, "\"keywords\":[\"api-key\",\"developer tools\"]") != null);
+
+    const cache_only_response = try renderResponse(allocator, codex_home, "[features]\nplugins = true\n", &.{repo}, true);
+    defer allocator.free(cache_only_response);
+    try std.testing.expect(std.mem.indexOf(u8, cache_only_response, "\"id\":\"enabled-plugin@codex-curated\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, cache_only_response, "\"installed\":false") != null);
+    try std.testing.expect(std.mem.indexOf(u8, cache_only_response, "\"enabled\":false") != null);
 
     const marketplace_path = try std.fs.path.join(allocator, &.{ repo, ".agents", "plugins", "marketplace.json" });
     defer allocator.free(marketplace_path);
