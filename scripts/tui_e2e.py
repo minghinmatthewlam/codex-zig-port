@@ -4180,6 +4180,7 @@ def run_tui_experimental_slash_smoke(
         proc = subprocess.Popen(
             [
                 str(binary),
+                "--enable=network_proxy",
                 "--no-alt-screen",
             ],
             cwd=smoke_workspace,
@@ -4197,31 +4198,33 @@ def run_tui_experimental_slash_smoke(
         mark = len(output)
         send_line(master_fd, "/help")
         wait_for(master_fd, output, b"/experimental", 5, mark)
+        wait_for(master_fd, output, b"!COMMAND", 5, mark)
 
         mark = len(output)
         send_line(master_fd, "/experimental")
         wait_for(master_fd, output, b"experimental features:", 5, mark)
-        wait_for(master_fd, output, b"Network proxy (disabled)", 5, mark)
+        wait_for(master_fd, output, b"Network proxy (enabled)", 5, mark)
         wait_for(master_fd, output, b"key: network_proxy", 5, mark)
+        wait_for(master_fd, output, b"Mentions v2 (disabled)", 5, mark)
         wait_for(master_fd, output, b"Terminal resize reflow (enabled)", 5, mark)
 
         mark = len(output)
-        send_line(master_fd, "/experimental enable network_proxy")
-        wait_for(master_fd, output, b"experimental feature `network_proxy`: enabled", 5, mark)
-        wait_for(master_fd, output, b"Network proxy (enabled)", 5, mark)
+        send_line(master_fd, "/experimental enable mentions_v2")
+        wait_for(master_fd, output, b"experimental feature `mentions_v2`: enabled", 5, mark)
+        wait_for(master_fd, output, b"Mentions v2 (enabled)", 5, mark)
         deadline = time.monotonic() + 5
         while time.monotonic() < deadline:
-            if config_path.exists() and "network_proxy = true" in config_path.read_text():
+            if config_path.exists() and "mentions_v2 = true" in config_path.read_text():
                 break
             time.sleep(0.05)
         else:
             rendered = output.decode(errors="replace")
-            raise AssertionError(f"network_proxy enable was not persisted\n\n{rendered}")
+            raise AssertionError(f"mentions_v2 enable was not persisted\n\n{rendered}")
 
         mark = len(output)
-        send_line(master_fd, "/experimental disable network_proxy")
-        wait_for(master_fd, output, b"experimental feature `network_proxy`: disabled", 5, mark)
-        wait_for(master_fd, output, b"Network proxy (disabled)", 5, mark)
+        send_line(master_fd, "/experimental disable mentions_v2")
+        wait_for(master_fd, output, b"experimental feature `mentions_v2`: disabled", 5, mark)
+        wait_for(master_fd, output, b"Mentions v2 (disabled)", 5, mark)
 
         mark = len(output)
         send_line(master_fd, "/experimental enable shell_tool")
@@ -4235,8 +4238,8 @@ def run_tui_experimental_slash_smoke(
         if exit_code != 0:
             rendered = output.decode(errors="replace")
             raise AssertionError(f"experimental slash TUI exited with {exit_code}\n\n{rendered}")
-        if config_path.exists() and "network_proxy = true" in config_path.read_text():
-            raise AssertionError("network_proxy disable did not clear the root default-false feature")
+        if config_path.exists() and "mentions_v2 = true" in config_path.read_text():
+            raise AssertionError("mentions_v2 disable did not clear the root default-false feature")
     finally:
         if slave_fd >= 0:
             os.close(slave_fd)

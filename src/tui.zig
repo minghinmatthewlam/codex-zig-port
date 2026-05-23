@@ -407,7 +407,7 @@ pub fn runWithOptions(allocator: std.mem.Allocator, options: Options) !void {
             const read_len = try std.posix.read(std.posix.STDIN_FILENO, &stdin_read_buffer);
             if (read_len == 0) {
                 if (stdin_line.items.len > 0) {
-                    const should_quit = try handleInteractivePromptLine(allocator, &cfg, &credentials, &transcript, &session_path, cwd, stdin_line.items, &state, options.additional_writable_roots, &pending_input_images, &local_remote_server, options.remote_control_bind, goals_enabled, feature_overrides);
+                    const should_quit = try handleInteractivePromptLine(allocator, &cfg, &credentials, &transcript, &session_path, cwd, stdin_line.items, &state, options.additional_writable_roots, &pending_input_images, &local_remote_server, options.remote_control_bind, goals_enabled, &feature_overrides);
                     refreshLocalRemoteControlSnapshot(allocator, &local_remote_server, cwd, &transcript);
                     if (should_quit) break;
                 }
@@ -417,7 +417,7 @@ pub fn runWithOptions(allocator: std.mem.Allocator, options: Options) !void {
             for (stdin_read_buffer[0..read_len]) |byte| {
                 if (byte == '\n') {
                     prompt_visible = false;
-                    should_quit = try handleInteractivePromptLine(allocator, &cfg, &credentials, &transcript, &session_path, cwd, stdin_line.items, &state, options.additional_writable_roots, &pending_input_images, &local_remote_server, options.remote_control_bind, goals_enabled, feature_overrides);
+                    should_quit = try handleInteractivePromptLine(allocator, &cfg, &credentials, &transcript, &session_path, cwd, stdin_line.items, &state, options.additional_writable_roots, &pending_input_images, &local_remote_server, options.remote_control_bind, goals_enabled, &feature_overrides);
                     refreshLocalRemoteControlSnapshot(allocator, &local_remote_server, cwd, &transcript);
                     stdin_line.clearRetainingCapacity();
                     if (should_quit) break;
@@ -447,7 +447,7 @@ fn handleInteractivePromptLine(
     local_remote_server: *?local_remote_control.Server,
     remote_control_bind: ?[]const u8,
     goals_enabled: bool,
-    feature_overrides: features_cmd.FeatureOverrides,
+    feature_overrides: *features_cmd.FeatureOverrides,
 ) !bool {
     const prompt = std.mem.trim(u8, line, " \t\r\n");
     if (prompt.len == 0) return false;
@@ -471,7 +471,7 @@ fn handleInteractivePromptLine(
 
     const input_images = pending_input_images.*;
     pending_input_images.* = &.{};
-    runUserPrompt(allocator, cfg.*, credentials, transcript, session_path.*, prompt, additional_writable_roots, state, input_images, feature_overrides) catch |err| {
+    runUserPrompt(allocator, cfg.*, credentials, transcript, session_path.*, prompt, additional_writable_roots, state, input_images, feature_overrides.*) catch |err| {
         std.debug.print("\nerror: {s}\n", .{@errorName(err)});
     };
     return false;
@@ -2744,7 +2744,7 @@ fn handleSlashCommand(
     local_remote_server: *?local_remote_control.Server,
     remote_control_bind: ?[]const u8,
     goals_enabled: bool,
-    feature_overrides: features_cmd.FeatureOverrides,
+    feature_overrides: *features_cmd.FeatureOverrides,
 ) !?SlashAction {
     const parts = parseSlash(prompt) orelse return null;
 
@@ -2765,12 +2765,12 @@ fn handleSlashCommand(
             std.debug.print("{s} already exists here. Skipping /init to avoid overwriting it.\n", .{agents_filename});
             return .handled;
         }
-        try runPrompt(allocator, cfg.*, credentials, transcript, session_path.*, init_prompt, additional_writable_roots, &.{}, feature_overrides);
+        try runPrompt(allocator, cfg.*, credentials, transcript, session_path.*, init_prompt, additional_writable_roots, &.{}, feature_overrides.*);
         return .handled;
     }
 
     if (std.ascii.eqlIgnoreCase(parts.name, "compact")) {
-        try runCompact(allocator, cfg.*, credentials, transcript, session_path.*, additional_writable_roots, feature_overrides);
+        try runCompact(allocator, cfg.*, credentials, transcript, session_path.*, additional_writable_roots, feature_overrides.*);
         return .handled;
     }
 
@@ -2820,7 +2820,7 @@ fn handleSlashCommand(
     }
 
     if (std.ascii.eqlIgnoreCase(parts.name, "experimental")) {
-        try handleExperimentalFeatures(allocator, cfg.*, parts.args);
+        try handleExperimentalFeatures(allocator, cfg.*, feature_overrides, parts.args);
         return .handled;
     }
 
@@ -2842,7 +2842,7 @@ fn handleSlashCommand(
     }
 
     if (std.ascii.eqlIgnoreCase(parts.name, "side") or std.ascii.eqlIgnoreCase(parts.name, "btw")) {
-        try runSidePrompt(allocator, cfg.*, credentials, transcript, parts.args, additional_writable_roots, feature_overrides);
+        try runSidePrompt(allocator, cfg.*, credentials, transcript, parts.args, additional_writable_roots, feature_overrides.*);
         return .handled;
     }
 
@@ -2923,7 +2923,7 @@ fn handleSlashCommand(
         defer allocator.free(review_prompt);
         var review_cfg = cfg.*;
         review_cfg.model = review.selectedModelForReview(cfg.model, cfg.review_model);
-        try runPrompt(allocator, review_cfg, credentials, transcript, session_path.*, review_prompt, additional_writable_roots, &.{}, feature_overrides);
+        try runPrompt(allocator, review_cfg, credentials, transcript, session_path.*, review_prompt, additional_writable_roots, &.{}, feature_overrides.*);
         return .handled;
     }
 
@@ -3690,10 +3690,10 @@ fn personalityLabel(personality: ?config.Personality) []const u8 {
     return if (personality) |value| value.label() else "unset";
 }
 
-fn handleExperimentalFeatures(allocator: std.mem.Allocator, cfg: config.Config, args: []const u8) !void {
+fn handleExperimentalFeatures(allocator: std.mem.Allocator, cfg: config.Config, feature_overrides: *features_cmd.FeatureOverrides, args: []const u8) !void {
     const trimmed = std.mem.trim(u8, args, " \t\r\n");
     if (trimmed.len == 0 or std.ascii.eqlIgnoreCase(trimmed, "list") or std.ascii.eqlIgnoreCase(trimmed, "status")) {
-        try printExperimentalFeatures(allocator, cfg.codex_home, cfg.active_profile);
+        printExperimentalFeatures(feature_overrides.*);
         return;
     }
     if (std.ascii.eqlIgnoreCase(trimmed, "help")) {
@@ -3735,21 +3735,19 @@ fn handleExperimentalFeatures(allocator: std.mem.Allocator, cfg: config.Config, 
     };
 
     _ = try features_cmd.persistFeatureOverride(allocator, cfg.codex_home, cfg.active_profile, spec.key, enabled);
+    try feature_overrides.put(allocator, spec.key, enabled);
     std.debug.print("experimental feature `{s}`: {s}\n", .{ spec.key, if (enabled) "enabled" else "disabled" });
-    try printExperimentalFeatures(allocator, cfg.codex_home, cfg.active_profile);
+    printExperimentalFeatures(feature_overrides.*);
 }
 
-fn printExperimentalFeatures(allocator: std.mem.Allocator, codex_home: []const u8, profile: ?[]const u8) !void {
-    var overrides = try features_cmd.loadFeatureOverridesForProfile(allocator, codex_home, profile);
-    defer overrides.deinit(allocator);
-
+fn printExperimentalFeatures(feature_overrides: features_cmd.FeatureOverrides) void {
     std.debug.print("experimental features:\n", .{});
     var count: usize = 0;
     for (features_cmd.FeatureSpec.all) |feature| {
         const name = feature.experimental_menu_name orelse continue;
         const description = feature.experimental_menu_description orelse "";
         count += 1;
-        const enabled = features_cmd.effectiveEnabled(overrides, feature.key) orelse feature.default_enabled;
+        const enabled = features_cmd.effectiveEnabled(feature_overrides, feature.key) orelse feature.default_enabled;
         std.debug.print("  [{s}] {s} ({s})\n", .{
             if (enabled) "x" else " ",
             name,
