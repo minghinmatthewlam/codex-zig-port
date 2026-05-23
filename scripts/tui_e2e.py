@@ -621,7 +621,7 @@ class MockResponsesHandler(BaseHTTPRequestHandler):
                     },
                 },
             )
-        elif latest_prompt.strip() == "check this":
+        elif latest_prompt.strip().startswith("check this"):
             payload = sse(
                 {
                     "type": "response.output_text.delta",
@@ -753,6 +753,16 @@ class MockResponsesHandler(BaseHTTPRequestHandler):
                                         "type": "image",
                                         "image_url": "https://example.test/subagent-spawn.png",
                                     },
+                                    {
+                                        "type": "skill",
+                                        "name": "subagent-smoke",
+                                        "path": self.server.subagent_skill_path,
+                                    },
+                                    {
+                                        "type": "mention",
+                                        "name": "drive",
+                                        "path": "app://google_drive",
+                                    },
                                 ],
                                 "model": "gpt-5.4",
                                 "service_tier": "fast",
@@ -869,6 +879,7 @@ class MockResponsesServer(ThreadingHTTPServer):
     post_headers: list[dict[str, str]]
     remote_fork_bundle: bytes
     task_conflict_diff: str
+    subagent_skill_path: str
 
 
 def start_mock_server(port: int) -> MockResponsesServer:
@@ -880,6 +891,7 @@ def start_mock_server(port: int) -> MockResponsesServer:
     server.post_paths = []
     server.post_headers = []
     server.remote_fork_bundle = b""
+    server.subagent_skill_path = ""
     server.task_conflict_diff = readme_change_diff(
         APPLY_TASK_CONFLICT_BASE, APPLY_TASK_CONFLICT_CLOUD
     )
@@ -7019,6 +7031,12 @@ def run_e2e(binary: Path) -> str:
             demo_file = workspace / "codex_zig_tui_file.txt"
             mention_file = workspace / "mention_context.txt"
             mention_file.write_text("codex zig mention context\n")
+            subagent_skill_file = workspace / ".codex" / "skills" / "subagent-smoke" / "SKILL.md"
+            subagent_skill_file.parent.mkdir(parents=True)
+            subagent_skill_file.write_text(
+                "# Subagent Smoke\n\nUse the subagent smoke skill.\n"
+            )
+            server.subagent_skill_path = str(subagent_skill_file)
             copy_capture = Path(home) / "copied.txt"
             copy_command = Path(home) / "copy_capture.py"
             copy_command.write_text(
@@ -7653,7 +7671,7 @@ def run_e2e(binary: Path) -> str:
             subagent_child_bodies = [
                 body
                 for body in server.request_bodies
-                if latest_user_text(body.get("input", [])) == child_prompt
+                if latest_user_text(body.get("input", [])).startswith(child_prompt)
             ]
             if not subagent_child_bodies:
                 raise AssertionError(f"expected subagent child turn for {child_prompt!r}")
@@ -7674,6 +7692,12 @@ def run_e2e(binary: Path) -> str:
                 raise AssertionError(
                     f"expected subagent child turn {child_prompt!r} to include image {image_url!r}"
                 )
+            if child_prompt == "check this":
+                child_text = latest_user_text(subagent_child_bodies[-1].get("input", []))
+                if "Use the subagent smoke skill." not in child_text:
+                    raise AssertionError("expected subagent spawn child turn to include skill body")
+                if "[mention:$drive](app://google_drive)" not in child_text:
+                    raise AssertionError("expected subagent spawn child turn to include mention marker")
         subagent_wait_bodies = [
             body
             for body in server.request_bodies

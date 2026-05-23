@@ -5,6 +5,7 @@ const api = @import("api.zig");
 const auth = @import("auth.zig");
 const config = @import("config.zig");
 const features_cmd = @import("features_cmd.zig");
+const input_context = @import("input_context.zig");
 const input_images = @import("input_images.zig");
 const mcp_runtime = @import("mcp_runtime.zig");
 const model_catalog = @import("model_catalog.zig");
@@ -1558,15 +1559,37 @@ const SubagentInputParseError = error{
     MissingInput,
     EmptyMessage,
     InvalidItems,
-    UnsupportedItems,
     EmptyItems,
 } || std.mem.Allocator.Error;
+
+const SubagentNamedPathInput = struct {
+    name: []const u8,
+    path: []const u8,
+
+    fn init(allocator: std.mem.Allocator, name: []const u8, path: []const u8) !SubagentNamedPathInput {
+        const owned_name = try allocator.dupe(u8, name);
+        errdefer allocator.free(owned_name);
+        const owned_path = try allocator.dupe(u8, path);
+        errdefer allocator.free(owned_path);
+        return .{
+            .name = owned_name,
+            .path = owned_path,
+        };
+    }
+
+    fn deinit(self: SubagentNamedPathInput, allocator: std.mem.Allocator) void {
+        allocator.free(self.name);
+        allocator.free(self.path);
+    }
+};
 
 const SubagentInput = struct {
     prompt: []const u8,
     preview: []const u8,
     image_urls: []const []const u8 = &.{},
     local_image_paths: []const []const u8 = &.{},
+    skills: []const SubagentNamedPathInput = &.{},
+    mentions: []const SubagentNamedPathInput = &.{},
     preview_is_prompt: bool = false,
 
     fn deinit(self: *SubagentInput, allocator: std.mem.Allocator) void {
@@ -1576,6 +1599,10 @@ const SubagentInput = struct {
         if (self.image_urls.len > 0) allocator.free(self.image_urls);
         for (self.local_image_paths) |path| allocator.free(path);
         if (self.local_image_paths.len > 0) allocator.free(self.local_image_paths);
+        for (self.skills) |skill| skill.deinit(allocator);
+        if (self.skills.len > 0) allocator.free(self.skills);
+        for (self.mentions) |mention| mention.deinit(allocator);
+        if (self.mentions.len > 0) allocator.free(self.mentions);
         self.* = .{
             .prompt = "",
             .preview = "",
@@ -2163,7 +2190,29 @@ fn appendSubagentOwnedString(
     };
 }
 
+fn appendSubagentNamedPath(
+    allocator: std.mem.Allocator,
+    values: *std.ArrayList(SubagentNamedPathInput),
+    value: SubagentNamedPathInput,
+) !void {
+    values.append(allocator, value) catch |err| {
+        value.deinit(allocator);
+        return err;
+    };
+}
+
 fn ownedSubagentStringList(allocator: std.mem.Allocator, values: *std.ArrayList([]const u8)) ![]const []const u8 {
+    if (values.items.len == 0) {
+        values.deinit(allocator);
+        return &.{};
+    }
+    return values.toOwnedSlice(allocator);
+}
+
+fn ownedSubagentNamedPathList(
+    allocator: std.mem.Allocator,
+    values: *std.ArrayList(SubagentNamedPathInput),
+) ![]const SubagentNamedPathInput {
     if (values.items.len == 0) {
         values.deinit(allocator);
         return &.{};
@@ -2194,6 +2243,18 @@ fn prepareSubagentInput(allocator: std.mem.Allocator, input: SubagentInput, base
             },
         };
         try appendSubagentOwnedString(allocator, &local_image_urls, image_url);
+    }
+
+    for (input.skills) |skill| {
+        const skill_block = try input_context.loadRegisteredSkillBlockFromBase(allocator, base_cwd, skill.name, skill.path);
+        defer allocator.free(skill_block);
+        try appendSubagentInputPreviewLine(allocator, &prompt, skill_block);
+    }
+
+    for (input.mentions) |mention| {
+        const mention_line = try input_context.renderNamedPathPreview(allocator, "mention", mention.name, mention.path);
+        defer allocator.free(mention_line);
+        try appendSubagentInputPreviewLine(allocator, &prompt, mention_line);
     }
 
     if (prompt.items.len == 0) try prompt.appendSlice(allocator, input.preview);
@@ -2266,6 +2327,18 @@ fn subagentInputFromArgs(allocator: std.mem.Allocator, object: std.json.ObjectMa
         for (local_image_paths.items) |path| allocator.free(path);
         local_image_paths.deinit(allocator);
     };
+    var skills = std.ArrayList(SubagentNamedPathInput).empty;
+    var skills_moved = false;
+    errdefer if (!skills_moved) {
+        for (skills.items) |skill| skill.deinit(allocator);
+        skills.deinit(allocator);
+    };
+    var mentions = std.ArrayList(SubagentNamedPathInput).empty;
+    var mentions_moved = false;
+    errdefer if (!mentions_moved) {
+        for (mentions.items) |mention| mention.deinit(allocator);
+        mentions.deinit(allocator);
+    };
     for (items.array.items) |item| {
         if (item != .object) return error.InvalidItems;
         const kind = requiredJsonStringField(item.object, "type") orelse "text";
@@ -2285,8 +2358,23 @@ fn subagentInputFromArgs(allocator: std.mem.Allocator, object: std.json.ObjectMa
             const preview_line = try renderSubagentLocalImagePreview(allocator, path);
             defer allocator.free(preview_line);
             try appendSubagentInputPreviewLine(allocator, &preview, preview_line);
+        } else if (std.mem.eql(u8, kind, "skill")) {
+            const name = requiredJsonStringField(item.object, "name") orelse return error.InvalidItems;
+            const path = requiredJsonStringField(item.object, "path") orelse return error.InvalidItems;
+            const skill = try SubagentNamedPathInput.init(allocator, name, path);
+            try appendSubagentNamedPath(allocator, &skills, skill);
+            const preview_line = try input_context.renderNamedPathPreview(allocator, "skill", skill.name, skill.path);
+            defer allocator.free(preview_line);
+            try appendSubagentInputPreviewLine(allocator, &preview, preview_line);
+        } else if (std.mem.eql(u8, kind, "mention")) {
+            const name = requiredJsonStringField(item.object, "name") orelse return error.InvalidItems;
+            const path = requiredJsonStringField(item.object, "path") orelse return error.InvalidItems;
+            const mention = try SubagentNamedPathInput.init(allocator, name, path);
+            try appendSubagentNamedPath(allocator, &mentions, mention);
+            const preview_line = try input_context.renderNamedPathPreview(allocator, "mention", mention.name, mention.path);
+            defer allocator.free(preview_line);
+            try appendSubagentInputPreviewLine(allocator, &preview, preview_line);
         } else {
-            if (std.mem.eql(u8, kind, "skill") or std.mem.eql(u8, kind, "mention")) return error.UnsupportedItems;
             return error.InvalidItems;
         }
     }
@@ -2307,11 +2395,25 @@ fn subagentInputFromArgs(allocator: std.mem.Allocator, object: std.json.ObjectMa
         for (local_image_paths_owned) |path| allocator.free(path);
         if (local_image_paths_owned.len > 0) allocator.free(local_image_paths_owned);
     }
+    const skills_owned = try ownedSubagentNamedPathList(allocator, &skills);
+    skills_moved = true;
+    errdefer {
+        for (skills_owned) |skill| skill.deinit(allocator);
+        if (skills_owned.len > 0) allocator.free(skills_owned);
+    }
+    const mentions_owned = try ownedSubagentNamedPathList(allocator, &mentions);
+    mentions_moved = true;
+    errdefer {
+        for (mentions_owned) |mention| mention.deinit(allocator);
+        if (mentions_owned.len > 0) allocator.free(mentions_owned);
+    }
     return .{
         .prompt = prompt_owned,
         .preview = preview_owned,
         .image_urls = images_owned,
         .local_image_paths = local_image_paths_owned,
+        .skills = skills_owned,
+        .mentions = mentions_owned,
     };
 }
 
@@ -2323,7 +2425,6 @@ fn subagentInputErrorMessage(err: SubagentInputParseError) []const u8 {
         error.MissingInput => "Provide one of: message or items",
         error.EmptyMessage => "Empty message can't be sent to an agent",
         error.InvalidItems => "items must be structured input items",
-        error.UnsupportedItems => "subagent items currently support text, image, and local_image items in codex-zig",
         error.EmptyItems => "Items can't be empty",
     };
 }
@@ -3424,7 +3525,38 @@ test "subagent input materializer resolves local images against turn workdir" {
     try std.testing.expect(std.mem.startsWith(u8, prepared.input_images[0], "data:image/png;base64,"));
 }
 
-test "subagent v1 runtime rejects unsupported role and skill mention items" {
+test "subagent input materializer injects skill items and mention markers" {
+    const allocator = std.testing.allocator;
+    var dir = std.testing.tmpDir(.{});
+    defer dir.cleanup();
+    try dir.dir.createDirPath(std.Io.Threaded.global_single_threaded.io(), ".codex/skills/demo");
+    try dir.dir.writeFile(std.Io.Threaded.global_single_threaded.io(), .{
+        .sub_path = ".codex/skills/demo/SKILL.md",
+        .data = "# Demo Skill\n\nUse this exact skill body.\n",
+    });
+    const base = try dir.dir.realPathFileAlloc(std.Io.Threaded.global_single_threaded.io(), ".", allocator);
+    defer allocator.free(base);
+
+    var parsed = try std.json.parseFromSlice(std.json.Value, allocator,
+        \\{"items":[{"type":"text","text":"use context"},{"type":"skill","name":"demo","path":".codex/skills/demo/SKILL.md"},{"type":"mention","name":"drive","path":"app://google_drive"}]}
+    , .{});
+    defer parsed.deinit();
+
+    var input = try subagentInputFromArgs(allocator, parsed.value.object);
+    defer input.deinit(allocator);
+    try std.testing.expectEqualStrings("use context\n[skill:$demo](.codex/skills/demo/SKILL.md)\n[mention:$drive](app://google_drive)", input.preview);
+    try std.testing.expectEqual(@as(usize, 1), input.skills.len);
+    try std.testing.expectEqual(@as(usize, 1), input.mentions.len);
+
+    var prepared = try prepareSubagentInput(allocator, input, base);
+    defer prepared.deinit(allocator);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.prompt, "use context\n<skill>\n<name>demo</name>") != null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.prompt, "<path>.codex/skills/demo/SKILL.md</path>") != null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.prompt, "Use this exact skill body.") != null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.prompt, "[mention:$drive](app://google_drive)") != null);
+}
+
+test "subagent v1 runtime rejects unsupported role and invalid structured items" {
     const allocator = std.testing.allocator;
     var runtime = SubagentRuntime{};
     defer runtime.deinit(allocator);
@@ -3456,9 +3588,9 @@ test "subagent v1 runtime rejects unsupported role and skill mention items" {
     try std.testing.expectEqualStrings("subagent invalid", model_type_result.summary);
     try std.testing.expect(std.mem.indexOf(u8, model_type_result.output, "model") != null);
 
-    var parsed = try std.json.parseFromSlice(std.json.Value, allocator, "{\"items\":[{\"type\":\"skill\",\"name\":\"demo\",\"path\":\"/tmp/SKILL.md\"}]}", .{});
+    var parsed = try std.json.parseFromSlice(std.json.Value, allocator, "{\"items\":[{\"type\":\"unknown\",\"text\":\"demo\"}]}", .{});
     defer parsed.deinit();
-    try std.testing.expectError(error.UnsupportedItems, subagentInputFromArgs(allocator, parsed.value.object));
+    try std.testing.expectError(error.InvalidItems, subagentInputFromArgs(allocator, parsed.value.object));
 }
 
 fn testPlanUpdated(ctx: *anyopaque, state: *const plan_tool.State) anyerror!void {

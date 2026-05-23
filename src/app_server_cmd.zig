@@ -21,6 +21,7 @@ const fuzzy_file_search = @import("fuzzy_file_search.zig");
 const git_diff = @import("git_diff.zig");
 const git_remote_diff = @import("git_remote_diff.zig");
 const hooks_list = @import("hooks_list.zig");
+const input_context = @import("input_context.zig");
 const image_inputs = @import("input_images.zig");
 const login_mod = @import("login.zig");
 const memory_reset = @import("memory_reset.zig");
@@ -841,10 +842,13 @@ const FuzzySearchSessionEntry = struct {
 const SkillsListCacheEntry = struct {
     cwd: []const u8,
     entry_json: []const u8,
+    skill_paths: []const []const u8,
 
     fn deinit(self: *SkillsListCacheEntry, allocator: std.mem.Allocator) void {
         allocator.free(self.cwd);
         allocator.free(self.entry_json);
+        for (self.skill_paths) |path| allocator.free(path);
+        if (self.skill_paths.len > 0) allocator.free(self.skill_paths);
     }
 };
 
@@ -32378,7 +32382,7 @@ fn handleTurnStart(
     defer local_images.deinit(allocator);
     const request_input_images = try combineTurnInputImages(allocator, input.image_urls, local_images.data_urls);
     defer if (request_input_images.len > 0) allocator.free(request_input_images);
-    var skill_injections = try loadTurnSkillInjections(allocator, input.skills);
+    var skill_injections = try loadTurnSkillInjections(allocator, state, thread.cwd, input.skills);
     defer skill_injections.deinit(allocator);
     const prompt_for_turn = try turnPromptWithContextBlocks(allocator, input.prompt, local_images.missing_placeholders, skill_injections.blocks);
     defer allocator.free(prompt_for_turn);
@@ -33173,7 +33177,12 @@ const TurnSkillInjections = struct {
     }
 };
 
-fn loadTurnSkillInjections(allocator: std.mem.Allocator, skills: []const TurnNamedPathInput) !TurnSkillInjections {
+fn loadTurnSkillInjections(
+    allocator: std.mem.Allocator,
+    state: *const AppServerState,
+    base_cwd: ?[]const u8,
+    skills: []const TurnNamedPathInput,
+) !TurnSkillInjections {
     if (skills.len == 0) return .{};
 
     var blocks = std.ArrayList([]const u8).empty;
@@ -33183,18 +33192,11 @@ fn loadTurnSkillInjections(allocator: std.mem.Allocator, skills: []const TurnNam
         blocks.deinit(allocator);
     };
 
+    const registered_paths = cachedSkillPathsForCwd(state, base_cwd);
     for (skills) |skill| {
-        const contents = std.Io.Dir.cwd().readFileAlloc(
-            std.Io.Threaded.global_single_threaded.io(),
-            skill.path,
-            allocator,
-            .limited(512 * 1024),
-        ) catch |err| blk: {
-            break :blk try std.fmt.allocPrint(allocator, "Codex could not read the skill file: {s}", .{@errorName(err)});
-        };
-        defer allocator.free(contents);
-
-        const block = try renderTurnSkillBlock(allocator, skill, contents);
+        const block = try input_context.loadRegisteredSkillBlockFromBaseWithOptions(allocator, base_cwd, skill.name, skill.path, .{
+            .registered_paths = registered_paths,
+        });
         blocks.append(allocator, block) catch |err| {
             allocator.free(block);
             return err;
@@ -33206,16 +33208,55 @@ fn loadTurnSkillInjections(allocator: std.mem.Allocator, skills: []const TurnNam
     return .{ .blocks = blocks_owned };
 }
 
-fn renderTurnSkillBlock(
-    allocator: std.mem.Allocator,
-    skill: TurnNamedPathInput,
-    contents: []const u8,
-) ![]const u8 {
-    return std.fmt.allocPrint(
-        allocator,
-        "<skill>\n<name>{s}</name>\n<path>{s}</path>\n{s}\n</skill>",
-        .{ skill.name, skill.path, contents },
-    );
+fn cachedSkillPathsForCwd(state: *const AppServerState, base_cwd: ?[]const u8) []const []const u8 {
+    const cwd = base_cwd orelse return &.{};
+    const cached = findSkillsListCacheEntry(state, cwd) orelse return &.{};
+    return cached.skill_paths;
+}
+
+test "skills list cache preserves enabled paths for turn skill injection" {
+    const allocator = std.testing.allocator;
+    var state = AppServerState{};
+    defer state.deinit(allocator);
+
+    const cwd = "/tmp/codex-zig-extra-root";
+    const extra_path = "/tmp/codex-zig-extra-root/shared/demo/SKILL.md";
+    const disabled_path = "/tmp/codex-zig-extra-root/shared/disabled/SKILL.md";
+    var skills = [_]skills_list.Skill{
+        .{
+            .name = "demo",
+            .description = "",
+            .short_description = null,
+            .interface = null,
+            .dependencies = null,
+            .path = extra_path,
+            .scope = "user",
+            .enabled = true,
+        },
+        .{
+            .name = "disabled",
+            .description = "",
+            .short_description = null,
+            .interface = null,
+            .dependencies = null,
+            .path = disabled_path,
+            .scope = "user",
+            .enabled = false,
+        },
+    };
+    var errors = [_]skills_list.SkillError{};
+    var entries = [_]skills_list.Entry{.{
+        .cwd = cwd,
+        .skills = &skills,
+        .errors = &errors,
+    }};
+    const result = skills_list.Result{ .entries = &entries };
+
+    try updateSkillsListCache(allocator, &state, result);
+
+    const paths = cachedSkillPathsForCwd(&state, cwd);
+    try std.testing.expectEqual(@as(usize, 1), paths.len);
+    try std.testing.expectEqualStrings(extra_path, paths[0]);
 }
 
 fn turnPromptWithContextBlocks(
@@ -46605,10 +46646,14 @@ fn updateSkillsListCache(allocator: std.mem.Allocator, state: *AppServerState, r
         try appendSkillsListEntryJson(allocator, &entry_json, entry);
         const owned_entry_json = try entry_json.toOwnedSlice(allocator);
         errdefer allocator.free(owned_entry_json);
+        const owned_skill_paths = try cloneEnabledSkillPaths(allocator, entry.skills);
+        errdefer freeOwnedStringSlice(allocator, owned_skill_paths);
 
         if (findSkillsListCacheEntryIndex(state, entry.cwd)) |index| {
             allocator.free(state.skills_list_cache.items[index].entry_json);
+            freeOwnedStringSlice(allocator, state.skills_list_cache.items[index].skill_paths);
             state.skills_list_cache.items[index].entry_json = owned_entry_json;
+            state.skills_list_cache.items[index].skill_paths = owned_skill_paths;
             continue;
         }
 
@@ -46617,8 +46662,32 @@ fn updateSkillsListCache(allocator: std.mem.Allocator, state: *AppServerState, r
         try state.skills_list_cache.append(allocator, .{
             .cwd = owned_cwd,
             .entry_json = owned_entry_json,
+            .skill_paths = owned_skill_paths,
         });
     }
+}
+
+fn cloneEnabledSkillPaths(allocator: std.mem.Allocator, skills: []const skills_list.Skill) ![]const []const u8 {
+    var paths = std.ArrayList([]const u8).empty;
+    errdefer {
+        for (paths.items) |path| allocator.free(path);
+        paths.deinit(allocator);
+    }
+
+    for (skills) |skill| {
+        if (!skill.enabled) continue;
+        const owned_path = try allocator.dupe(u8, skill.path);
+        paths.append(allocator, owned_path) catch |err| {
+            allocator.free(owned_path);
+            return err;
+        };
+    }
+    return paths.toOwnedSlice(allocator);
+}
+
+fn freeOwnedStringSlice(allocator: std.mem.Allocator, values: []const []const u8) void {
+    for (values) |value| allocator.free(value);
+    if (values.len > 0) allocator.free(values);
 }
 
 fn findSkillsListCacheEntry(state: *const AppServerState, cwd: []const u8) ?SkillsListCacheEntry {
