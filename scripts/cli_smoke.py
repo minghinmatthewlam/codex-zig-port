@@ -7799,6 +7799,434 @@ def run_strict_config_smoke(binary: Path) -> None:
         shutil.rmtree(temp_root, ignore_errors=True)
 
 
+def run_app_server_daemon_smoke(binary: Path) -> None:
+    temp_root = Path(tempfile.mkdtemp(prefix="codex-zig-app-server-daemon-", dir="/tmp"))
+    try:
+        env = os.environ.copy()
+        codex_home = temp_root / "codex-home"
+        codex_home.mkdir(parents=True)
+        env["CODEX_HOME"] = str(codex_home)
+        env.pop("OPENAI_API_KEY", None)
+        env.pop("CODEX_ACCESS_TOKEN", None)
+        expected_home = codex_home.resolve()
+        expected_socket = expected_home / "app-server-control" / "app-server-control.sock"
+        expected_managed = expected_home / "packages" / "standalone" / "current" / "codex"
+
+        daemon_help = subprocess.run(
+            [str(binary.resolve()), "app-server", "daemon", "--help"],
+            cwd=temp_root,
+            env=env,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=5,
+            check=True,
+        )
+        assert "Manage the local app-server daemon" in daemon_help.stderr
+        assert "enable-remote-control" in daemon_help.stderr
+        assert daemon_help.stdout == ""
+
+        stop = subprocess.run(
+            [str(binary.resolve()), "app-server", "daemon", "stop"],
+            cwd=temp_root,
+            env=env,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=5,
+            check=True,
+        )
+        assert stop.stderr == ""
+        stop_payload = json.loads(stop.stdout)
+        assert stop_payload == {
+            "status": "notRunning",
+            "managedCodexPath": str(expected_managed),
+            "managedCodexVersion": None,
+            "socketPath": str(expected_socket),
+            "cliVersion": "0.0.1",
+        }
+
+        default_home_env = env.copy()
+        default_home_env.pop("CODEX_HOME", None)
+        fresh_home = temp_root / "fresh-home"
+        fresh_home.mkdir()
+        default_home_env["HOME"] = str(fresh_home)
+        default_expected_home = fresh_home / ".codex"
+        default_stop = subprocess.run(
+            [str(binary.resolve()), "app-server", "daemon", "stop"],
+            cwd=temp_root,
+            env=default_home_env,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=5,
+            check=True,
+        )
+        assert default_stop.stderr == ""
+        assert json.loads(default_stop.stdout) == {
+            "status": "notRunning",
+            "managedCodexPath": str(default_expected_home / "packages" / "standalone" / "current" / "codex"),
+            "managedCodexVersion": None,
+            "socketPath": str(default_expected_home / "app-server-control" / "app-server-control.sock"),
+            "cliVersion": "0.0.1",
+        }
+
+        file_home = temp_root / "codex-home-file"
+        file_home.write_text("not a directory", encoding="utf-8")
+        file_home_env = env.copy()
+        file_home_env["CODEX_HOME"] = str(file_home)
+        file_home_stop = subprocess.run(
+            [str(binary.resolve()), "app-server", "daemon", "stop"],
+            cwd=temp_root,
+            env=file_home_env,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=5,
+        )
+        assert file_home_stop.returncode != 0
+        assert file_home_stop.stdout == ""
+        assert "Error: failed to resolve CODEX_HOME" in file_home_stop.stderr
+        assert "not a directory" in file_home_stop.stderr
+
+        enable = subprocess.run(
+            [str(binary.resolve()), "app-server", "daemon", "enable-remote-control"],
+            cwd=temp_root,
+            env=env,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=5,
+            check=True,
+        )
+        assert enable.stderr == ""
+        enable_payload = json.loads(enable.stdout)
+        assert enable_payload == {
+            "status": "enabled",
+            "remoteControlEnabled": True,
+            "socketPath": str(expected_socket),
+            "cliVersion": "0.0.1",
+        }
+        settings_path = expected_home / "app-server-daemon" / "settings.json"
+        assert json.loads(settings_path.read_text(encoding="utf-8")) == {
+            "remoteControlEnabled": True
+        }
+        assert (expected_home / "tmp" / "arg0").is_dir()
+        assert (expected_home / "app-server-daemon" / "daemon.lock").is_file()
+        assert (expected_home / "app-server-daemon" / "app-server.pid.lock").is_file()
+
+        enable_again = subprocess.run(
+            [str(binary.resolve()), "app-server", "daemon", "enable-remote-control"],
+            cwd=temp_root,
+            env=env,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=5,
+            check=True,
+        )
+        assert json.loads(enable_again.stdout)["status"] == "alreadyEnabled"
+
+        disable = subprocess.run(
+            [str(binary.resolve()), "app-server", "daemon", "disable-remote-control"],
+            cwd=temp_root,
+            env=env,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=5,
+            check=True,
+        )
+        disable_payload = json.loads(disable.stdout)
+        assert disable_payload == {
+            "status": "disabled",
+            "remoteControlEnabled": False,
+            "socketPath": str(expected_socket),
+            "cliVersion": "0.0.1",
+        }
+        assert json.loads(settings_path.read_text(encoding="utf-8")) == {
+            "remoteControlEnabled": False
+        }
+
+        version = subprocess.run(
+            [str(binary.resolve()), "app-server", "daemon", "version"],
+            cwd=temp_root,
+            env=env,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=5,
+        )
+        assert version.returncode != 0
+        assert version.stdout == ""
+        assert f"Error: failed to connect to {expected_socket}" in version.stderr
+        assert "No such file or directory (os error 2)" in version.stderr
+
+        start = subprocess.run(
+            [str(binary.resolve()), "app-server", "daemon", "start"],
+            cwd=temp_root,
+            env=env,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=5,
+        )
+        assert start.returncode != 0
+        assert start.stdout == ""
+        assert f"managed standalone Codex install not found at {expected_managed}" in start.stderr
+        assert "Install it with:" in start.stderr
+
+        live_server = subprocess.Popen(
+            [str(binary.resolve()), "app-server", "--listen", "unix://"],
+            cwd=temp_root,
+            env=env,
+            text=True,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+        try:
+            wait_for_exec_server_file(codex_home / "app-server-control" / "app-server-control.sock", live_server, 5)
+            live_version = subprocess.run(
+                [str(binary.resolve()), "app-server", "daemon", "version"],
+                cwd=temp_root,
+                env=env,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                timeout=5,
+                check=True,
+            )
+            live_version_payload = json.loads(live_version.stdout)
+            assert live_version_payload["status"] == "running"
+            assert live_version_payload["socketPath"] == str(expected_socket)
+            assert live_version_payload["appServerVersion"] == "0.0.1"
+
+            live_start = subprocess.run(
+                [str(binary.resolve()), "app-server", "daemon", "start"],
+                cwd=temp_root,
+                env=env,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                timeout=5,
+                check=True,
+            )
+            assert json.loads(live_start.stdout)["status"] == "alreadyRunning"
+
+            live_stop = subprocess.run(
+                [str(binary.resolve()), "app-server", "daemon", "stop"],
+                cwd=temp_root,
+                env=env,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                timeout=5,
+            )
+            assert live_stop.returncode != 0
+            assert live_stop.stdout == ""
+            assert "app server is running but is not managed by codex app-server daemon" in live_stop.stderr
+        finally:
+            live_server.terminate()
+            try:
+                live_server.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                live_server.kill()
+                live_server.wait(timeout=5)
+
+        expected_socket.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            expected_socket.unlink()
+        except FileNotFoundError:
+            pass
+        fake_socket = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        fake_socket.bind(str(expected_socket))
+        fake_socket.listen(1)
+
+        def hold_unknown_daemon_socket() -> None:
+            try:
+                conn, _ = fake_socket.accept()
+                with conn:
+                    time.sleep(3)
+            except OSError:
+                return
+
+        fake_socket_thread = threading.Thread(target=hold_unknown_daemon_socket, daemon=True)
+        fake_socket_thread.start()
+        try:
+            hanging_socket_stop = subprocess.run(
+                [str(binary.resolve()), "app-server", "daemon", "stop"],
+                cwd=temp_root,
+                env=env,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                timeout=6,
+                check=True,
+            )
+            assert hanging_socket_stop.stderr == ""
+            assert json.loads(hanging_socket_stop.stdout)["status"] == "notRunning"
+        finally:
+            fake_socket.close()
+            fake_socket_thread.join(timeout=4)
+            try:
+                expected_socket.unlink()
+            except FileNotFoundError:
+                pass
+
+        fake_version_socket = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        fake_version_socket.bind(str(expected_socket))
+        fake_version_socket.listen(1)
+
+        def hold_unknown_version_socket() -> None:
+            try:
+                conn, _ = fake_version_socket.accept()
+                with conn:
+                    time.sleep(3)
+            except OSError:
+                return
+
+        fake_version_thread = threading.Thread(target=hold_unknown_version_socket, daemon=True)
+        fake_version_thread.start()
+        try:
+            hanging_socket_version = subprocess.run(
+                [str(binary.resolve()), "app-server", "daemon", "version"],
+                cwd=temp_root,
+                env=env,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                timeout=6,
+            )
+            assert hanging_socket_version.returncode != 0
+            assert hanging_socket_version.stdout == ""
+            assert "timed out probing app-server control socket" in hanging_socket_version.stderr
+        finally:
+            fake_version_socket.close()
+            fake_version_thread.join(timeout=4)
+            try:
+                expected_socket.unlink()
+            except FileNotFoundError:
+                pass
+
+        expected_socket.parent.mkdir(parents=True, exist_ok=True)
+        stale_socket = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        stale_socket.bind(str(expected_socket))
+        stale_socket.close()
+        stale_stop = subprocess.run(
+            [str(binary.resolve()), "app-server", "daemon", "stop"],
+            cwd=temp_root,
+            env=env,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=5,
+            check=True,
+        )
+        assert stale_stop.stderr == ""
+        assert json.loads(stale_stop.stdout)["status"] == "notRunning"
+        stale_version = subprocess.run(
+            [str(binary.resolve()), "app-server", "daemon", "version"],
+            cwd=temp_root,
+            env=env,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=5,
+        )
+        assert stale_version.returncode != 0
+        assert stale_version.stdout == ""
+        assert "Connection refused" in stale_version.stderr
+        try:
+            expected_socket.unlink()
+        except FileNotFoundError:
+            pass
+
+        unknown = subprocess.run(
+            [str(binary.resolve()), "app-server", "daemon", "status"],
+            cwd=temp_root,
+            env=env,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=5,
+        )
+        assert unknown.returncode != 0
+        assert "unrecognized subcommand 'status'" in unknown.stderr
+
+        extra_arg = subprocess.run(
+            [str(binary.resolve()), "app-server", "daemon", "stop", "extra"],
+            cwd=temp_root,
+            env=env,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=5,
+        )
+        assert extra_arg.returncode != 0
+        assert "unexpected argument 'extra' found" in extra_arg.stderr
+        assert "app-server daemon stop [OPTIONS]" in extra_arg.stderr
+
+        missing_config = subprocess.run(
+            [str(binary.resolve()), "app-server", "daemon", "start", "--config"],
+            cwd=temp_root,
+            env=env,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=5,
+        )
+        assert missing_config.returncode != 0
+        assert "a value is required for '--config <key=value>'" in missing_config.stderr
+
+        settings_path.write_text("{bad", encoding="utf-8")
+        malformed_enable = subprocess.run(
+            [str(binary.resolve()), "app-server", "daemon", "enable-remote-control"],
+            cwd=temp_root,
+            env=env,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=5,
+        )
+        assert malformed_enable.returncode != 0
+        assert malformed_enable.stdout == ""
+        assert f"failed to parse daemon settings {settings_path}" in malformed_enable.stderr
+        assert settings_path.read_text(encoding="utf-8") == "{bad"
+
+        malformed_stop = subprocess.run(
+            [str(binary.resolve()), "app-server", "daemon", "stop"],
+            cwd=temp_root,
+            env=env,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=5,
+        )
+        assert malformed_stop.returncode != 0
+        assert malformed_stop.stdout == ""
+        assert f"failed to parse daemon settings {settings_path}" in malformed_stop.stderr
+        assert settings_path.read_text(encoding="utf-8") == "{bad"
+
+        settings_path.write_text("{}", encoding="utf-8")
+        missing_field_enable = subprocess.run(
+            [str(binary.resolve()), "app-server", "daemon", "enable-remote-control"],
+            cwd=temp_root,
+            env=env,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=5,
+        )
+        assert missing_field_enable.returncode != 0
+        assert missing_field_enable.stdout == ""
+        assert f"failed to parse daemon settings {settings_path}" in missing_field_enable.stderr
+        assert "missing field `remoteControlEnabled`" in missing_field_enable.stderr
+        assert settings_path.read_text(encoding="utf-8") == "{}"
+    finally:
+        shutil.rmtree(temp_root, ignore_errors=True)
+
+
 def run_exec_hook_trust_bypass_smoke(binary: Path) -> None:
     temp_root = Path(tempfile.mkdtemp(prefix="codex-zig-cli-exec-hook-bypass-", dir="/tmp"))
     server, base_url = start_exec_responses_server()
@@ -11784,6 +12212,7 @@ def main() -> None:
     run_exec_equals_options_smoke(binary)
     run_profile_v2_smoke(binary)
     run_strict_config_smoke(binary)
+    run_app_server_daemon_smoke(binary)
     run_exec_hook_trust_bypass_smoke(binary)
     run_exec_resume_option_smoke(binary)
     run_exec_stdin_smoke(binary)
@@ -11828,6 +12257,7 @@ def main() -> None:
     print("cli-exec-options-e2e: ok")
     print("cli-profile-v2-e2e: ok")
     print("cli-strict-config-e2e: ok")
+    print("cli-app-server-daemon-e2e: ok")
     print("cli-exec-hook-trust-bypass-e2e: ok")
     print("cli-exec-resume-options-e2e: ok")
     print("cli-exec-stdin-e2e: ok")
