@@ -43272,7 +43272,7 @@ def run_experimental_feature_rpc_smoke(binary: Path) -> None:
         assert by_name["apps"]["defaultEnabled"] is True
         assert by_name["goals"]["enabled"] is True
         assert by_name["goals"]["stage"] == "stable"
-        assert by_name["goals"]["displayName"] == "goals"
+        assert by_name["goals"]["displayName"] is None
         assert by_name["code_mode"]["enabled"] is True
 
         write_json_line(
