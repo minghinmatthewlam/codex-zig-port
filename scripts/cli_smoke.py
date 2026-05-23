@@ -6937,6 +6937,86 @@ def run_exec_equals_options_smoke(binary: Path) -> None:
         shutil.rmtree(temp_root, ignore_errors=True)
 
 
+def run_profile_v2_smoke(binary: Path) -> None:
+    temp_root = Path(tempfile.mkdtemp(prefix="codex-zig-cli-profile-v2-", dir="/tmp"))
+    server, base_url = start_exec_responses_server()
+    try:
+        env = make_exec_mock_env(temp_root, base_url)
+        profile_config = Path(env["CODEX_HOME"]) / "team.config.toml"
+        profile_config.write_text(
+            'model = "gpt-profile-v2"\n'
+            'sandbox_mode = "danger-full-access"\n',
+            encoding="utf-8",
+        )
+
+        root_result = subprocess.run(
+            [
+                str(binary.resolve()),
+                "--profile-v2",
+                "team",
+                "exec",
+                "--skip-git-repo-check",
+                "profile",
+                "root",
+            ],
+            cwd=temp_root,
+            env=env,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=5,
+            check=True,
+        )
+        assert root_result.stdout == "stored reply\n"
+        assert len(server.request_bodies) == 1
+        assert server.request_bodies[-1]["model"] == "gpt-profile-v2"
+        assert server.request_bodies[-1]["input"][-1]["content"][0]["text"] == "profile root"
+
+        exec_result = subprocess.run(
+            [
+                str(binary.resolve()),
+                "exec",
+                "--profile-v2",
+                "team",
+                "--skip-git-repo-check",
+                "profile",
+                "exec",
+            ],
+            cwd=temp_root,
+            env=env,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=5,
+            check=True,
+        )
+        assert exec_result.stdout == "stored reply\n"
+        assert len(server.request_bodies) == 2
+        assert server.request_bodies[-1]["model"] == "gpt-profile-v2"
+        assert server.request_bodies[-1]["input"][-1]["content"][0]["text"] == "profile exec"
+
+        unsupported_result = subprocess.run(
+            [
+                str(binary.resolve()),
+                "--profile-v2",
+                "team",
+                "doctor",
+            ],
+            cwd=temp_root,
+            env=env,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=5,
+        )
+        assert unsupported_result.returncode != 0
+        assert "--profile-v2 only applies to runtime commands" in unsupported_result.stderr
+    finally:
+        server.shutdown()
+        server.server_close()
+        shutil.rmtree(temp_root, ignore_errors=True)
+
+
 def run_strict_config_smoke(binary: Path) -> None:
     temp_root = Path(tempfile.mkdtemp(prefix="codex-zig-cli-strict-config-", dir="/tmp"))
     server, base_url = start_exec_responses_server()
@@ -11702,6 +11782,7 @@ def main() -> None:
     run_exec_review_smoke(binary)
     run_review_stdin_smoke(binary)
     run_exec_equals_options_smoke(binary)
+    run_profile_v2_smoke(binary)
     run_strict_config_smoke(binary)
     run_exec_hook_trust_bypass_smoke(binary)
     run_exec_resume_option_smoke(binary)
@@ -11745,6 +11826,7 @@ def main() -> None:
     print("cli-exec-review-e2e: ok")
     print("cli-review-stdin-e2e: ok")
     print("cli-exec-options-e2e: ok")
+    print("cli-profile-v2-e2e: ok")
     print("cli-strict-config-e2e: ok")
     print("cli-exec-hook-trust-bypass-e2e: ok")
     print("cli-exec-resume-options-e2e: ok")
