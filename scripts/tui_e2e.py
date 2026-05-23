@@ -4500,6 +4500,160 @@ def run_tui_plugins_slash_smoke(
     )
 
 
+def run_tui_memories_slash_smoke(
+    binary: Path,
+    env: dict[str, str],
+    workspace: Path,
+) -> None:
+    smoke_root = workspace / "tui-memories-smoke"
+    if smoke_root.exists():
+        shutil.rmtree(smoke_root)
+    smoke_home = smoke_root / "codex-home"
+    smoke_workspace = smoke_root / "workspace"
+    memories_dir = smoke_home / "memories"
+    smoke_workspace.mkdir(parents=True)
+    memories_dir.mkdir(parents=True)
+    smoke_home.mkdir(parents=True, exist_ok=True)
+    (smoke_home / "auth.json").write_text(
+        json.dumps(
+            {
+                "tokens": {
+                    "access_token": "tui-memories-token",
+                    "account_id": "acct_tui_memories",
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    (smoke_home / "config.toml").write_text(
+        "\n".join(
+            [
+                "[features]",
+                "memories = true",
+                "",
+                "[memories]",
+                "use_memories = false",
+                "generate_memories = true",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    (memories_dir / "MEMORY.md").write_text("stale memory index\n", encoding="utf-8")
+
+    def run_memories_tui(extra_args: list[str], disabled: bool = False) -> None:
+        smoke_env = env.copy()
+        smoke_env["CODEX_HOME"] = str(smoke_home)
+        smoke_env.setdefault("TERM", "xterm-256color")
+        output = bytearray()
+        master_fd = -1
+        slave_fd = -1
+        master_fd, slave_fd = pty.openpty()
+        proc = None
+        try:
+            proc = subprocess.Popen(
+                [
+                    str(binary),
+                    *extra_args,
+                    "--no-alt-screen",
+                ],
+                cwd=smoke_workspace,
+                env=smoke_env,
+                stdin=slave_fd,
+                stdout=slave_fd,
+                stderr=slave_fd,
+                close_fds=True,
+            )
+            os.close(slave_fd)
+            slave_fd = -1
+
+            wait_for(master_fd, output, b"Type /help for commands", 8)
+
+            mark = len(output)
+            send_line(master_fd, "/help")
+            wait_for(master_fd, output, b"/memories", 5, mark)
+
+            mark = len(output)
+            send_line(master_fd, "/memories")
+            if disabled:
+                wait_for(master_fd, output, b"feature: disabled", 5, mark)
+                wait_for(master_fd, output, b"use memories: off", 5, mark)
+                wait_for(master_fd, output, b"generate memories: on", 5, mark)
+            else:
+                wait_for(master_fd, output, b"feature: enabled", 5, mark)
+                wait_for(master_fd, output, b"use memories: off", 5, mark)
+                wait_for(master_fd, output, b"generate memories: on", 5, mark)
+
+                mark = len(output)
+                send_line(master_fd, "/memories use on")
+                wait_for(master_fd, output, b"use memories: on", 5, mark)
+
+                mark = len(output)
+                send_line(master_fd, "/memories generate off")
+                wait_for(master_fd, output, b"generate memories: off", 5, mark)
+
+                mark = len(output)
+                send_line(master_fd, "/memories bogus")
+                wait_for(
+                    master_fd,
+                    output,
+                    b"usage: /memories [status|enable|disable|use on|use off|generate on|generate off|reset]",
+                    5,
+                    mark,
+                )
+
+                mark = len(output)
+                send_line(master_fd, "/memories reset")
+                wait_for(master_fd, output, b"cleared memory directories under", 5, mark)
+
+            mark = len(output)
+            send_line(master_fd, "/quit")
+            wait_for(master_fd, output, b"bye", 5, mark)
+            read_available(master_fd, output)
+            exit_code = proc.wait(timeout=5)
+            if exit_code != 0:
+                rendered = output.decode(errors="replace")
+                raise AssertionError(f"memories slash TUI exited with {exit_code}\n\n{rendered}")
+        finally:
+            if slave_fd >= 0:
+                os.close(slave_fd)
+            if master_fd >= 0:
+                os.close(master_fd)
+            if proc is not None and proc.poll() is None:
+                proc.terminate()
+                try:
+                    proc.wait(timeout=2)
+                except subprocess.TimeoutExpired:
+                    proc.kill()
+                    proc.wait(timeout=2)
+
+    run_memories_tui([])
+    config_text = (smoke_home / "config.toml").read_text(encoding="utf-8")
+    if "use_memories = true" not in config_text:
+        raise AssertionError(f"/memories use on did not persist config:\n{config_text}")
+    if "generate_memories = false" not in config_text:
+        raise AssertionError(f"/memories generate off did not persist config:\n{config_text}")
+    if (memories_dir / "MEMORY.md").exists():
+        raise AssertionError("/memories reset did not clear memory files")
+
+    (smoke_home / "config.toml").write_text(
+        "\n".join(
+            [
+                "[features]",
+                "memories = true",
+                "",
+                "[memories]",
+                "use_memories = false",
+                "generate_memories = true",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    (memories_dir / "MEMORY.md").write_text("stale memory index\n", encoding="utf-8")
+    run_memories_tui(["--disable=memories"], disabled=True)
+
+
 def run_tui_experimental_slash_smoke(
     binary: Path,
     env: dict[str, str],
@@ -5881,6 +6035,7 @@ def run_e2e(binary: Path) -> str:
             run_tui_skills_hooks_slash_smoke(binary, env, workspace)
             run_tui_apps_slash_smoke(binary, env, workspace)
             run_tui_plugins_slash_smoke(binary, env, workspace)
+            run_tui_memories_slash_smoke(binary, env, workspace)
             run_tui_experimental_slash_smoke(binary, env, workspace)
             run_remote_websocket_tui_smoke(binary, env, workspace, port, server)
             run_remote_wss_tui_smoke(binary, env, workspace)
