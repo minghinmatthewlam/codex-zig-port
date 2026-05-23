@@ -9,7 +9,7 @@ purely internal generator parity. The current reference is:
 - Rust checkout: `/Users/matthewlam/dev/codex` at
   `5381240f57fe326b13bc81325f3c61596592fc7a`
 - Installed Rust CLI: `codex-cli 0.133.0`
-- Zig checkout: `2737d4b7d7d693042203780e2ec3787ac2352f96`
+- Zig checkout: `7fb445b81a1c84d323d1d1183ae7a05e9c131772`
 - Zig CLI: `codex-zig 0.0.1`
 
 The source evidence for this pass was the Rust and Zig root help output,
@@ -42,8 +42,7 @@ Zig TUI help in `src/tui.zig`, and the broader narrative tracker in
   queued input while a turn is running, `/compact` interactions, active tool
   interruption, and accurate background-process cleanup.
 - Close major missing TUI slash commands that affect daily use:
-  `/ide`, `/agent` / `/subagents`,
-  `/approve`, `/feedback`,
+  `/agent` / `/subagents`, `/approve`, `/feedback`,
   `/pets` / `/pet`, `/realtime`, and `/settings`.
 - Basic local TUI `/experimental` coverage is implemented as a text-mode
   feature browser/toggler: it lists Rust menu-visible experimental features
@@ -69,6 +68,14 @@ Zig TUI help in `src/tui.zig`, and the broader narrative tracker in
   memory toggles to `config.toml`, and can clear local memory files through the
   existing reset implementation. Rust's rich popup and confirmation UI remain
   planned TUI depth.
+- Basic local TUI `/ide` coverage is implemented for the daily-driver surface:
+  `/ide`, `/ide on`, `/ide off`, and `/ide status` toggle or report IDE
+  context, enabling connects to the local Codex IPC Unix socket, fetches
+  Rust-shaped `ide-context`, and prefixes subsequent local prompts with active
+  file, active selection, open tabs, and the shared
+  `## My request for Codex:` delimiter. Rust's rich status indicator, Windows
+  pipe transport, and deeper transcript replay/display trimming remain planned
+  TUI depth.
 - Basic local TUI `/skills` and `/hooks` list views are covered: `/skills`
   lists discovered repo/user/plugin skills with enabled state and load errors,
   and `/hooks` lists discovered lifecycle command hooks with event, source,
@@ -266,7 +273,7 @@ Zig TUI help in `src/tui.zig`, and the broader narrative tracker in
 2. Live app-server daemon lifecycle and remote-control command forms.
 3. Active-turn/TUI lifecycle: interruption, steering, queued input, process
    tracking, and lifecycle notifications.
-4. TUI slash-command feature gaps: `/ide` and `/approve`.
+4. TUI slash-command feature gaps: `/approve` and remaining rich popup commands.
 5. Rich plugin/app TUI management plus remaining remote/cache depth.
 6. Session/thread store parity needed by resume/fork and desktop clients.
 7. MCP lifecycle depth.
