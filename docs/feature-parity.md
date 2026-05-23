@@ -91,9 +91,14 @@ Zig TUI help in `src/tui.zig`, and the broader narrative tracker in
 
 ### App-Server Daemon and Remote Control
 
-- Implement `codex app-server daemon` user-facing subcommands:
-  `bootstrap`, `start`, `restart`, `enable-remote-control`,
-  `disable-remote-control`, `stop`, and `version`.
+- `codex app-server daemon` now exposes the Rust command family and covers
+  safe no-daemon behavior: `stop` reports `notRunning`, `version` reports the
+  missing default control socket, `bootstrap`/`start`/`restart` report the
+  missing managed standalone install, and `enable-remote-control` /
+  `disable-remote-control` write `app-server-daemon/settings.json` plus daemon
+  lock scaffolding. Remaining daemon parity is the live managed lifecycle:
+  starting, restarting, stopping, updating, and version-querying a running
+  managed daemon.
 - Implement Rust-shaped `codex remote-control start|stop` plus `--json`.
   Zig currently starts a headless app-server for bare `remote-control` but does
   not accept the Rust start/stop command form.
@@ -204,7 +209,7 @@ Zig TUI help in `src/tui.zig`, and the broader narrative tracker in
 
 1. Root CLI command/flag parity: finish doctor diagnostic depth and remaining
    exact strict-config/profile-v2 edge-case depth.
-2. App-server daemon and remote-control command forms.
+2. Live app-server daemon lifecycle and remote-control command forms.
 3. Active-turn/TUI lifecycle: interruption, steering, queued input, process
    tracking, and lifecycle notifications.
 4. TUI slash-command feature gaps: `/skills`, `/hooks`, `/apps`, `/plugins`,
