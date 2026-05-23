@@ -176,6 +176,24 @@ def has_tool_output(items: list[object], call_id: str) -> bool:
     )
 
 
+def tool_output_json(items: list[object], call_id: str) -> object | None:
+    for item in items:
+        if not (
+            isinstance(item, dict)
+            and item.get("type") == "function_call_output"
+            and item.get("call_id") == call_id
+        ):
+            continue
+        output = item.get("output")
+        if not isinstance(output, str):
+            return None
+        try:
+            return json.loads(output)
+        except json.JSONDecodeError:
+            return None
+    return None
+
+
 def has_tool_search_output(items: list[object], call_id: str) -> bool:
     return any(
         isinstance(item, dict)
@@ -594,6 +612,13 @@ class MockResponsesHandler(BaseHTTPRequestHandler):
                     },
                 },
             )
+        elif latest_prompt.strip() == "check this":
+            payload = sse(
+                {
+                    "type": "response.output_text.delta",
+                    "delta": "child checked this\n",
+                },
+            )
         elif "find subagent tools" in latest_prompt and has_tool_search_output(
             items, "call-tui-e2e-subagent-search"
         ):
@@ -620,13 +645,36 @@ class MockResponsesHandler(BaseHTTPRequestHandler):
                     },
                 },
             )
-        elif "try subagent spawn" in latest_prompt and has_tool_output(
-            items, "call-tui-e2e-spawn-agent"
-        ):
+        elif "try subagent spawn" in latest_prompt and has_tool_output(items, "call-tui-e2e-wait-agent"):
             payload = sse(
                 {
                     "type": "response.output_text.delta",
-                    "delta": "subagent runtime unavailable\n",
+                    "delta": "subagent completed\n",
+                },
+            )
+        elif "try subagent spawn" in latest_prompt and has_tool_output(
+            items, "call-tui-e2e-spawn-agent"
+        ):
+            spawn_output = tool_output_json(items, "call-tui-e2e-spawn-agent")
+            agent_id = (
+                spawn_output.get("agent_id")
+                if isinstance(spawn_output, dict) and isinstance(spawn_output.get("agent_id"), str)
+                else "agent-1"
+            )
+            payload = sse(
+                {
+                    "type": "response.output_text.delta",
+                    "delta": "I'll wait for the subagent.\n",
+                },
+                {
+                    "type": "response.output_item.done",
+                    "item": {
+                        "type": "function_call",
+                        "call_id": "call-tui-e2e-wait-agent",
+                        "namespace": "multi_agent_v1",
+                        "name": "wait_agent",
+                        "arguments": json.dumps({"targets": [agent_id]}, separators=(",", ":")),
+                    },
                 },
             )
         elif "try subagent spawn" in latest_prompt and has_tool_search_output(
@@ -7380,7 +7428,13 @@ def run_e2e(binary: Path) -> str:
 
             mark = len(output)
             send_line(master_fd, "try subagent spawn")
-            wait_for(master_fd, output, b"subagent runtime unavailable", 8, mark)
+            wait_for(master_fd, output, b"spawned agent", 8, mark)
+            wait_for(master_fd, output, b"waited for agent", 8, mark)
+            wait_for(master_fd, output, b"subagent completed", 8, mark)
+            send_line(master_fd, "/agent")
+            wait_for(master_fd, output, b"Agents:", 5, mark)
+            wait_for(master_fd, output, b"agent-1", 5, mark)
+            wait_for(master_fd, output, b"completed", 5, mark)
             read_available(master_fd, output, 0.2)
 
             mark = len(output)
@@ -7504,19 +7558,32 @@ def run_e2e(binary: Path) -> str:
         ]
         if not subagent_tool_output_bodies:
             raise AssertionError("expected tool_search output to include multi_agent_v1.spawn_agent")
-        subagent_unavailable_bodies = [
+        subagent_spawn_bodies = [
             body
             for body in server.request_bodies
             if any(
                 isinstance(item, dict)
                 and item.get("type") == "function_call_output"
                 and item.get("call_id") == "call-tui-e2e-spawn-agent"
-                and "subagent runtime execution is not implemented" in str(item.get("output", ""))
+                and '"agent_id":"agent-1"' in str(item.get("output", "")).replace(" ", "")
                 for item in body.get("input", [])
             )
         ]
-        if not subagent_unavailable_bodies:
-            raise AssertionError("expected multi_agent_v1.spawn_agent to return unavailable runtime output")
+        if not subagent_spawn_bodies:
+            raise AssertionError("expected multi_agent_v1.spawn_agent to return an agent id")
+        subagent_wait_bodies = [
+            body
+            for body in server.request_bodies
+            if any(
+                isinstance(item, dict)
+                and item.get("type") == "function_call_output"
+                and item.get("call_id") == "call-tui-e2e-wait-agent"
+                and '"completed":"childcheckedthis' in str(item.get("output", "")).replace(" ", "")
+                for item in body.get("input", [])
+            )
+        ]
+        if not subagent_wait_bodies:
+            raise AssertionError("expected multi_agent_v1.wait_agent to return completed child status")
         review_bodies = [
             body
             for body in server.request_bodies
