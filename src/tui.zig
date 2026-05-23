@@ -12,6 +12,7 @@ const hooks_list = @import("hooks_list.zig");
 const login = @import("login.zig");
 const local_remote_control = @import("local_remote_control.zig");
 const mcp_cmd = @import("mcp_cmd.zig");
+const plugin_list = @import("plugin_list.zig");
 const remote_ws_client = @import("remote_ws_client.zig");
 const review = @import("review.zig");
 const session = @import("session.zig");
@@ -2824,6 +2825,11 @@ fn handleSlashCommand(
         return .handled;
     }
 
+    if (std.ascii.eqlIgnoreCase(parts.name, "apps")) {
+        try handleApps(allocator, cfg.*, cwd, feature_overrides.*, parts.args);
+        return .handled;
+    }
+
     if (std.ascii.eqlIgnoreCase(parts.name, "rename")) {
         if (try renameThread(allocator, transcript, session_path.*, parts.args)) {
             try refreshTerminalTitle(allocator, cfg.*, cwd, transcript, session_path.*, state);
@@ -3103,6 +3109,7 @@ fn printSlashHelp(goals_enabled: bool) void {
         \\                    choose a communication style
         \\  /experimental [enable|disable FEATURE]
         \\                    list or toggle experimental features
+        \\  /apps             list installed and available apps
         \\  /rename <title>   set this session's persisted title
         \\  /model [name]     show or set the in-memory model for this session
         \\  /fast [on|off|status]
@@ -3688,6 +3695,127 @@ fn printPersonalityUsage() void {
 
 fn personalityLabel(personality: ?config.Personality) []const u8 {
     return if (personality) |value| value.label() else "unset";
+}
+
+fn handleApps(
+    allocator: std.mem.Allocator,
+    cfg: config.Config,
+    cwd: []const u8,
+    feature_overrides: features_cmd.FeatureOverrides,
+    args: []const u8,
+) !void {
+    const trimmed = std.mem.trim(u8, args, " \t\r\n");
+    if (trimmed.len != 0 and
+        !std.ascii.eqlIgnoreCase(trimmed, "list") and
+        !std.ascii.eqlIgnoreCase(trimmed, "status"))
+    {
+        printAppsUsage();
+        return;
+    }
+
+    const apps_enabled = features_cmd.effectiveEnabled(feature_overrides, "apps") orelse false;
+    if (!apps_enabled) {
+        std.debug.print("Apps are disabled.\nEnable the apps feature to use $ or /apps.\n", .{});
+        return;
+    }
+
+    const config_path = try config.configTomlPath(allocator, cfg.codex_home);
+    defer allocator.free(config_path);
+    const config_bytes = try config.readConfigTomlFile(allocator, config_path);
+    defer if (config_bytes) |bytes| allocator.free(bytes);
+    const apps_config_bytes = try appsListConfigBytes(allocator, config_bytes orelse "", feature_overrides);
+    defer allocator.free(apps_config_bytes);
+
+    var total: usize = 0;
+    const cwds = [_][]const u8{cwd};
+    const response = (try plugin_list.renderAppsListResponse(
+        allocator,
+        cfg.codex_home,
+        apps_config_bytes,
+        null,
+        cwds[0..],
+        0,
+        null,
+        &total,
+    )) orelse return error.InvalidAppsListResponse;
+    defer allocator.free(response);
+
+    try printAppsListResponse(allocator, response);
+}
+
+fn appsListConfigBytes(
+    allocator: std.mem.Allocator,
+    config_bytes: []const u8,
+    feature_overrides: features_cmd.FeatureOverrides,
+) ![]const u8 {
+    const plugins_enabled = features_cmd.effectiveEnabled(feature_overrides, "plugins") orelse false;
+    return features_cmd.configWithFeatureOverride(allocator, config_bytes, "plugins", plugins_enabled);
+}
+
+fn printAppsUsage() void {
+    std.debug.print("usage: /apps [list|status]\n", .{});
+}
+
+fn printAppsListResponse(allocator: std.mem.Allocator, response: []const u8) !void {
+    var parsed = try std.json.parseFromSlice(std.json.Value, allocator, response, .{});
+    defer parsed.deinit();
+
+    if (parsed.value != .object) return error.InvalidAppsListResponse;
+    const data = parsed.value.object.get("data") orelse return error.InvalidAppsListResponse;
+    if (data != .array) return error.InvalidAppsListResponse;
+
+    var installed: usize = 0;
+    for (data.array.items) |item| {
+        if (jsonObjectBool(item, "isAccessible") orelse false) installed += 1;
+    }
+
+    std.debug.print("apps:\n", .{});
+    std.debug.print("  installed {d} of {d} available apps\n", .{ installed, data.array.items.len });
+    if (data.array.items.len == 0) {
+        std.debug.print("  none\n", .{});
+        return;
+    }
+
+    for (data.array.items) |item| {
+        if (item != .object) return error.InvalidAppsListResponse;
+        const id = remoteObjectOptionalString(item, "id") orelse return error.InvalidAppsListResponse;
+        const name = remoteObjectOptionalString(item, "name") orelse id;
+        const enabled = jsonObjectBool(item, "isEnabled") orelse false;
+        const accessible = jsonObjectBool(item, "isAccessible") orelse false;
+        std.debug.print("  - {s} ({s}, {s})\n", .{
+            name,
+            if (enabled) "enabled" else "disabled",
+            if (accessible) "installed" else "not installed",
+        });
+
+        if (remoteObjectOptionalString(item, "description")) |description| {
+            if (description.len > 0) std.debug.print("      {s}\n", .{description});
+        }
+        std.debug.print("      id: {s}\n", .{id});
+        if (remoteObjectOptionalString(item, "installUrl")) |install_url| {
+            if (install_url.len > 0) std.debug.print("      install: {s}\n", .{install_url});
+        }
+        try printAppsPluginDisplayNames(item.object.get("pluginDisplayNames"));
+    }
+}
+
+fn printAppsPluginDisplayNames(value: ?std.json.Value) !void {
+    const plugin_names = value orelse return;
+    if (plugin_names != .array or plugin_names.array.items.len == 0) return;
+    std.debug.print("      plugins: ", .{});
+    for (plugin_names.array.items, 0..) |item, index| {
+        if (item != .string) return error.InvalidAppsListResponse;
+        if (index > 0) std.debug.print(", ", .{});
+        std.debug.print("{s}", .{item.string});
+    }
+    std.debug.print("\n", .{});
+}
+
+fn jsonObjectBool(value: std.json.Value, key: []const u8) ?bool {
+    if (value != .object) return null;
+    const field = value.object.get(key) orelse return null;
+    if (field != .bool) return null;
+    return field.bool;
 }
 
 fn handleExperimentalFeatures(allocator: std.mem.Allocator, cfg: config.Config, feature_overrides: *features_cmd.FeatureOverrides, args: []const u8) !void {
@@ -4503,6 +4631,10 @@ test "parse slash command names and args" {
     const experimental = parseSlash("/experimental enable network_proxy").?;
     try std.testing.expectEqualStrings("experimental", experimental.name);
     try std.testing.expectEqualStrings("enable network_proxy", experimental.args);
+
+    const apps = parseSlash("/apps status").?;
+    try std.testing.expectEqualStrings("apps", apps.name);
+    try std.testing.expectEqualStrings("status", apps.args);
 
     const remote_control = parseSlash("/remote-control stop").?;
     try std.testing.expectEqualStrings("remote-control", remote_control.name);

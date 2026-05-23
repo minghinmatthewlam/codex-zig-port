@@ -255,6 +255,16 @@ pub fn persistFeatureOverride(
     return feature;
 }
 
+pub fn configWithFeatureOverride(
+    allocator: std.mem.Allocator,
+    config_bytes: []const u8,
+    feature: []const u8,
+    enabled: bool,
+) ![]const u8 {
+    const canonical = feature_registry.canonicalFeatureKey(feature) orelse return error.UnknownFeature;
+    return updateFeatureConfig(allocator, config_bytes, null, canonical, .{ .set = enabled });
+}
+
 pub fn unstableFeaturesWarningMessage(
     allocator: std.mem.Allocator,
     codex_home: []const u8,
