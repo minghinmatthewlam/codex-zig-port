@@ -693,6 +693,52 @@ def start_mock_server(port: int) -> MockResponsesServer:
     return server
 
 
+class FeedbackEnvelopeHandler(BaseHTTPRequestHandler):
+    def do_POST(self) -> None:
+        length = int(self.headers.get("Content-Length", "0"))
+        body = self.rfile.read(length)
+        self.server.request_paths.append(self.path)
+        self.server.request_headers.append(
+            {key.lower(): value for key, value in self.headers.items()}
+        )
+        self.server.request_bodies.append(body)
+        self.send_response(200)
+        self.send_header("Content-Length", "0")
+        self.end_headers()
+
+    def log_message(self, fmt: str, *args: object) -> None:
+        return
+
+
+class FeedbackEnvelopeServer(ThreadingHTTPServer):
+    request_paths: list[str]
+    request_headers: list[dict[str, str]]
+    request_bodies: list[bytes]
+
+
+def start_feedback_envelope_server() -> tuple[FeedbackEnvelopeServer, str]:
+    server = FeedbackEnvelopeServer(("127.0.0.1", 0), FeedbackEnvelopeHandler)
+    server.request_paths = []
+    server.request_headers = []
+    server.request_bodies = []
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    return server, f"http://public@127.0.0.1:{server.server_port}/42"
+
+
+def wait_for_feedback_requests(
+    server: FeedbackEnvelopeServer,
+    count: int,
+    timeout: float = 5,
+) -> None:
+    deadline = time.monotonic() + timeout
+    while len(server.request_bodies) < count:
+        if time.monotonic() >= deadline:
+            raise AssertionError(
+                f"timed out waiting for {count} feedback request(s), saw {len(server.request_bodies)}"
+            )
+        time.sleep(0.05)
+
+
 def read_available(master_fd: int, output: bytearray, timeout: float = 0.05) -> None:
     while True:
         readable, _, _ = select.select([master_fd], [], [], timeout)
@@ -3531,12 +3577,14 @@ def run_remote_websocket_tui_smoke(
     server: MockResponsesServer,
 ) -> None:
     remote_home = Path(tempfile.mkdtemp(prefix="codex-zig-remote-ws-home-", dir="/tmp"))
+    feedback_server, feedback_dsn = start_feedback_envelope_server()
     token_file = remote_home / "app-server-token"
     token_file.write_text("super-secret-token\n", encoding="utf-8")
     app_env = os.environ.copy()
     app_env["CODEX_HOME"] = str(remote_home)
     app_env["OPENAI_API_KEY"] = "remote-websocket-api-key"
     app_env["CODEX_OSS_BASE_URL"] = f"http://127.0.0.1:{port}/v1"
+    app_env["CODEX_TEST_FEEDBACK_SENTRY_DSN"] = feedback_dsn
     app_env.pop("CODEX_ACCESS_TOKEN", None)
     remote_home.joinpath("config.toml").write_text(
         f'openai_base_url = "http://127.0.0.1:{port}"\nmodel = "gpt-remote-websocket"\n',
@@ -3563,6 +3611,7 @@ def run_remote_websocket_tui_smoke(
     client = None
     master_fd = -1
     body_start = len(server.request_bodies)
+    feedback_start = len(feedback_server.request_bodies)
     try:
         host, ws_port = wait_for_websocket_bind(app_server, 5)
         client_env = env.copy()
@@ -3592,6 +3641,21 @@ def run_remote_websocket_tui_smoke(
         if b"parsed but not implemented yet" in output:
             rendered = output.decode(errors="replace")
             raise AssertionError(f"remote websocket TUI still hit placeholder:\n\n{rendered}")
+        mark = len(output)
+        send_line(master_fd, "/feedback bug --no-logs remote websocket issue")
+        wait_for(
+            master_fd,
+            output,
+            b"Feedback recorded (no logs). Please open an issue using the following URL:",
+            8,
+            mark,
+        )
+        wait_for_feedback_requests(feedback_server, feedback_start + 1)
+        feedback_envelope = feedback_server.request_bodies[feedback_start]
+        if b'"classification":"bug"' not in feedback_envelope:
+            raise AssertionError(f"remote feedback envelope missing classification:\n{feedback_envelope!r}")
+        if b"remote websocket issue" not in feedback_envelope:
+            raise AssertionError(f"remote feedback envelope missing note:\n{feedback_envelope!r}")
         mark = len(output)
         send_line(master_fd, "/quit")
         wait_for(master_fd, output, b"bye", 5, mark)
@@ -3677,6 +3741,8 @@ def run_remote_websocket_tui_smoke(
             except subprocess.TimeoutExpired:
                 app_server.kill()
                 app_server.wait(timeout=5)
+        feedback_server.shutdown()
+        feedback_server.server_close()
         shutil.rmtree(remote_home, ignore_errors=True)
 
 
@@ -4228,6 +4294,112 @@ def run_tui_approve_slash_smoke(
             rendered = output.decode(errors="replace")
             raise AssertionError(f"approve slash TUI exited with {exit_code}\n\n{rendered}")
     finally:
+        if slave_fd >= 0:
+            os.close(slave_fd)
+        if master_fd >= 0:
+            os.close(master_fd)
+        if proc is not None and proc.poll() is None:
+            proc.terminate()
+            try:
+                proc.wait(timeout=2)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                proc.wait(timeout=2)
+
+
+def run_tui_feedback_slash_smoke(
+    binary: Path,
+    env: dict[str, str],
+    workspace: Path,
+) -> None:
+    smoke_root = workspace / "tui-feedback-smoke"
+    if smoke_root.exists():
+        shutil.rmtree(smoke_root)
+    smoke_home = smoke_root / "codex-home"
+    smoke_workspace = smoke_root / "workspace"
+    smoke_home.mkdir(parents=True)
+    smoke_workspace.mkdir(parents=True)
+
+    feedback_server, dsn = start_feedback_envelope_server()
+    smoke_env = env.copy()
+    smoke_env["CODEX_HOME"] = str(smoke_home)
+    smoke_env["CODEX_TEST_FEEDBACK_SENTRY_DSN"] = dsn
+    smoke_env.setdefault("TERM", "xterm-256color")
+    output = bytearray()
+    master_fd = -1
+    slave_fd = -1
+    master_fd, slave_fd = pty.openpty()
+    proc = None
+    try:
+        proc = subprocess.Popen(
+            [
+                str(binary),
+                "--no-alt-screen",
+            ],
+            cwd=smoke_workspace,
+            env=smoke_env,
+            stdin=slave_fd,
+            stdout=slave_fd,
+            stderr=slave_fd,
+            close_fds=True,
+        )
+        os.close(slave_fd)
+        slave_fd = -1
+
+        wait_for(master_fd, output, b"Type /help for commands", 8)
+
+        mark = len(output)
+        send_line(master_fd, "/help")
+        wait_for(master_fd, output, b"/feedback", 5, mark)
+
+        mark = len(output)
+        send_line(master_fd, "/feedback")
+        wait_for(master_fd, output, b"feedback categories:", 5, mark)
+        wait_for(master_fd, output, b"usage: /feedback <category>", 5, mark)
+
+        mark = len(output)
+        send_line(master_fd, "/feedback unknown")
+        wait_for(master_fd, output, b"unknown feedback category", 5, mark)
+
+        mark = len(output)
+        send_line(master_fd, "/feedback good-result --no-logs helpful result")
+        wait_for(master_fd, output, b"Feedback recorded (no logs). Thanks for the feedback!", 5, mark)
+        wait_for(master_fd, output, b"Thread ID:", 5, mark)
+        wait_for_feedback_requests(feedback_server, 1)
+        first_envelope = feedback_server.request_bodies[0]
+        if b'"classification":"good_result"' not in first_envelope:
+            raise AssertionError(f"feedback good-result envelope missing classification:\n{first_envelope!r}")
+        if b"helpful result" not in first_envelope:
+            raise AssertionError(f"feedback good-result envelope missing note:\n{first_envelope!r}")
+        if b'"filename":"codex-logs.log"' in first_envelope:
+            raise AssertionError("feedback --no-logs included codex logs")
+
+        mark = len(output)
+        send_line(master_fd, "/feedback bug --logs include traceback")
+        wait_for(master_fd, output, b"Feedback uploaded. Please open an issue using the following URL:", 5, mark)
+        wait_for(master_fd, output, b"https://github.com/openai/codex/issues/new?template=3-cli.yml", 5, mark)
+        wait_for_feedback_requests(feedback_server, 2)
+        second_envelope = feedback_server.request_bodies[1]
+        if b'"classification":"bug"' not in second_envelope:
+            raise AssertionError(f"feedback bug envelope missing classification:\n{second_envelope!r}")
+        if b"include traceback" not in second_envelope:
+            raise AssertionError(f"feedback bug envelope missing note:\n{second_envelope!r}")
+        if b'"filename":"codex-logs.log"' not in second_envelope:
+            raise AssertionError("feedback --logs did not include codex logs")
+        if b'"filename":"rollout-' not in second_envelope:
+            raise AssertionError("feedback --logs did not include the session rollout attachment")
+
+        mark = len(output)
+        send_line(master_fd, "/quit")
+        wait_for(master_fd, output, b"bye", 5, mark)
+        read_available(master_fd, output)
+        exit_code = proc.wait(timeout=5)
+        if exit_code != 0:
+            rendered = output.decode(errors="replace")
+            raise AssertionError(f"feedback slash TUI exited with {exit_code}\n\n{rendered}")
+    finally:
+        feedback_server.shutdown()
+        feedback_server.server_close()
         if slave_fd >= 0:
             os.close(slave_fd)
         if master_fd >= 0:
@@ -6370,6 +6542,7 @@ def run_e2e(binary: Path) -> str:
             run_local_remote_control_smoke(binary, env, workspace, port, server)
             run_local_remote_control_slash_smoke(binary, env, workspace, port, server)
             run_tui_approve_slash_smoke(binary, env, workspace)
+            run_tui_feedback_slash_smoke(binary, env, workspace)
             run_tui_skills_hooks_slash_smoke(binary, env, workspace)
             run_tui_apps_slash_smoke(binary, env, workspace)
             run_tui_plugins_slash_smoke(binary, env, workspace)

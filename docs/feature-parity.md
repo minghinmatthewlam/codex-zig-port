@@ -42,8 +42,7 @@ Zig TUI help in `src/tui.zig`, and the broader narrative tracker in
   queued input while a turn is running, `/compact` interactions, active tool
   interruption, and accurate background-process cleanup.
 - Close major missing TUI slash commands that affect daily use:
-  `/agent` / `/subagents`, `/feedback`,
-  `/pets` / `/pet`, `/realtime`, and `/settings`.
+  `/agent` / `/subagents`, `/pets` / `/pet`, `/realtime`, and `/settings`.
 - Basic local TUI `/experimental` coverage is implemented as a text-mode
   feature browser/toggler: it lists Rust menu-visible experimental features
   with effective enabled state, menu label, description, and config key, and
@@ -81,6 +80,13 @@ Zig TUI help in `src/tui.zig`, and the broader narrative tracker in
   inline args with usage, and prints Rust's no-denials guidance. Selecting and
   approving stored auto-review denials remains under the broader guardian retry
   and active-turn lifecycle buckets.
+- Basic local and remote TUI `/feedback` coverage is implemented as a
+  text-mode flow: `/feedback` lists the Rust categories, explicit
+  `/feedback <category> [--logs|--no-logs] [note...]` submits feedback, local
+  mode uploads directly with optional rollout-log attachment, and remote mode
+  routes through app-server `feedback/upload`. Rust's rich category picker,
+  consent popup, note editor, ring-buffer log capture, and employee-specific
+  routing UI remain planned depth.
 - Basic local TUI `/skills` and `/hooks` list views are covered: `/skills`
   lists discovered repo/user/plugin skills with enabled state and load errors,
   and `/hooks` lists discovered lifecycle command hooks with event, source,

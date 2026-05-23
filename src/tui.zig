@@ -6,6 +6,7 @@ const api = @import("api.zig");
 const auth = @import("auth.zig");
 const config = @import("config.zig");
 const env = @import("env.zig");
+const feedback_upload = @import("feedback_upload.zig");
 const features_cmd = @import("features_cmd.zig");
 const git_diff = @import("git_diff.zig");
 const hooks_list = @import("hooks_list.zig");
@@ -947,6 +948,11 @@ fn handleRemoteSlashCommand(
         return .handled;
     }
 
+    if (std.ascii.eqlIgnoreCase(parts.name, "feedback")) {
+        try handleRemoteFeedbackSlash(allocator, transport, thread_id.*, parts.args);
+        return .handled;
+    }
+
     if (std.ascii.eqlIgnoreCase(parts.name, "sessions")) {
         const limit = try parseSessionListLimit(parts.args);
         try printRemoteSessions(allocator, transport, limit);
@@ -1007,6 +1013,7 @@ fn printRemoteSlashHelp() void {
         \\  /approval [mode]
         \\  /sandbox [mode]
         \\  /approve
+        \\  /feedback [category] [--logs|--no-logs] [note...]
         \\  /sessions [N]
         \\  /clear
         \\  /new
@@ -3104,6 +3111,11 @@ fn handleSlashCommand(
         return .handled;
     }
 
+    if (std.ascii.eqlIgnoreCase(parts.name, "feedback")) {
+        try handleFeedbackSlash(allocator, credentials, transcript, session_path.*, parts.args);
+        return .handled;
+    }
+
     std.debug.print("unknown slash command: /{s} (try /help)\n", .{parts.name});
     return .handled;
 }
@@ -3118,6 +3130,253 @@ fn printNoAutoReviewDenials(args: []const u8) void {
         "No recent auto-review denials in this thread.\nDenials are recorded after auto-review rejects an action.\n",
         .{},
     );
+}
+
+const FeedbackCategory = enum {
+    bug,
+    bad_result,
+    good_result,
+    safety_check,
+    other,
+
+    fn classification(self: FeedbackCategory) []const u8 {
+        return switch (self) {
+            .bug => "bug",
+            .bad_result => "bad_result",
+            .good_result => "good_result",
+            .safety_check => "safety_check",
+            .other => "other",
+        };
+    }
+};
+
+const FeedbackSlashRequest = struct {
+    category: FeedbackCategory,
+    include_logs: bool = false,
+    reason: ?[]const u8 = null,
+};
+
+const FeedbackSlashParseResult = union(enum) {
+    help,
+    request: FeedbackSlashRequest,
+    invalid: []const u8,
+};
+
+const TokenRange = struct {
+    start: usize,
+    end: usize,
+};
+
+fn handleFeedbackSlash(
+    allocator: std.mem.Allocator,
+    credentials: *const auth.Credentials,
+    transcript: *const session.Transcript,
+    session_path: []const u8,
+    args: []const u8,
+) !void {
+    const parsed = parseFeedbackSlashArgs(args);
+    switch (parsed) {
+        .help => printFeedbackUsage(),
+        .invalid => |message| {
+            std.debug.print("{s}\n", .{message});
+            printFeedbackUsage();
+        },
+        .request => |request| {
+            const feedback_enabled = try config.loadFeedbackEnabled(allocator);
+            if (!feedback_enabled) {
+                std.debug.print("Sending feedback is disabled.\nThis action is disabled by configuration.\n", .{});
+                return;
+            }
+
+            try session_store.saveTranscript(allocator, session_path, transcript);
+            const thread_id = try session_store.sessionIdFromPath(allocator, session_path);
+            defer allocator.free(thread_id);
+            const extra_log_files: []const []const u8 = if (request.include_logs) &.{session_path} else &.{};
+            var metadata_buffer: [2]feedback_upload.Tag = undefined;
+            var metadata_count: usize = 0;
+            if (credentials.account_id) |account_id| {
+                metadata_buffer[metadata_count] = .{ .key = "account_id", .value = account_id };
+                metadata_count += 1;
+            }
+            if (credentials.chatgpt_user_id) |chatgpt_user_id| {
+                metadata_buffer[metadata_count] = .{ .key = "chatgpt_user_id", .value = chatgpt_user_id };
+                metadata_count += 1;
+            }
+
+            feedback_upload.upload(allocator, .{
+                .classification = request.category.classification(),
+                .reason = request.reason,
+                .thread_id = thread_id,
+                .include_logs = request.include_logs,
+                .extra_log_files = extra_log_files,
+                .metadata_tags = metadata_buffer[0..metadata_count],
+            }) catch |err| {
+                std.debug.print("Failed to upload feedback: {s}\n", .{@errorName(err)});
+                return;
+            };
+
+            printFeedbackSuccess(request.category, request.include_logs, thread_id);
+        },
+    }
+}
+
+fn handleRemoteFeedbackSlash(
+    allocator: std.mem.Allocator,
+    transport: *RemoteTransport,
+    thread_id: []const u8,
+    args: []const u8,
+) !void {
+    const parsed = parseFeedbackSlashArgs(args);
+    switch (parsed) {
+        .help => printFeedbackUsage(),
+        .invalid => |message| {
+            std.debug.print("{s}\n", .{message});
+            printFeedbackUsage();
+        },
+        .request => |request| {
+            const request_json = try renderRemoteFeedbackUploadRequest(allocator, thread_id, request);
+            defer allocator.free(request_json);
+            try transport.writeJson(request_json);
+
+            var response = try readRemoteResponse(transport, "feedback-upload");
+            defer response.deinit();
+            const uploaded_thread_id = remoteNestedString(response.value, &.{ "result", "threadId" }) catch thread_id;
+            printFeedbackSuccess(request.category, request.include_logs, uploaded_thread_id);
+        },
+    }
+}
+
+fn parseFeedbackSlashArgs(args: []const u8) FeedbackSlashParseResult {
+    const trimmed = std.mem.trim(u8, args, " \t\r\n");
+    if (trimmed.len == 0 or std.ascii.eqlIgnoreCase(trimmed, "help") or std.ascii.eqlIgnoreCase(trimmed, "list")) {
+        return .help;
+    }
+
+    const parsed_category = parseFeedbackCategory(trimmed) orelse return .{ .invalid = "unknown feedback category" };
+    var cursor = parsed_category.end;
+    var include_logs = false;
+    var reason: ?[]const u8 = null;
+
+    while (nextTokenRange(trimmed, cursor)) |token_range| {
+        const token = trimmed[token_range.start..token_range.end];
+        if (std.mem.eql(u8, token, "--logs")) {
+            include_logs = true;
+            cursor = token_range.end;
+            continue;
+        }
+        if (std.mem.eql(u8, token, "--no-logs")) {
+            include_logs = false;
+            cursor = token_range.end;
+            continue;
+        }
+        if (std.mem.startsWith(u8, token, "--")) {
+            return .{ .invalid = "unknown feedback option" };
+        }
+        reason = std.mem.trim(u8, trimmed[token_range.start..], " \t\r\n");
+        break;
+    }
+
+    if (reason) |value| {
+        if (value.len == 0) reason = null;
+    }
+
+    return .{ .request = .{
+        .category = parsed_category.category,
+        .include_logs = include_logs,
+        .reason = reason,
+    } };
+}
+
+const ParsedFeedbackCategory = struct {
+    category: FeedbackCategory,
+    end: usize,
+};
+
+fn parseFeedbackCategory(input: []const u8) ?ParsedFeedbackCategory {
+    const first = nextTokenRange(input, 0) orelse return null;
+    const first_token = input[first.start..first.end];
+    if (std.ascii.eqlIgnoreCase(first_token, "bug")) return .{ .category = .bug, .end = first.end };
+    if (std.ascii.eqlIgnoreCase(first_token, "other")) return .{ .category = .other, .end = first.end };
+    if (std.ascii.eqlIgnoreCase(first_token, "bad-result") or std.ascii.eqlIgnoreCase(first_token, "bad_result")) {
+        return .{ .category = .bad_result, .end = first.end };
+    }
+    if (std.ascii.eqlIgnoreCase(first_token, "good-result") or std.ascii.eqlIgnoreCase(first_token, "good_result")) {
+        return .{ .category = .good_result, .end = first.end };
+    }
+    if (std.ascii.eqlIgnoreCase(first_token, "safety-check") or std.ascii.eqlIgnoreCase(first_token, "safety_check")) {
+        return .{ .category = .safety_check, .end = first.end };
+    }
+
+    const second = nextTokenRange(input, first.end) orelse return null;
+    const second_token = input[second.start..second.end];
+    if (std.ascii.eqlIgnoreCase(first_token, "bad") and std.ascii.eqlIgnoreCase(second_token, "result")) {
+        return .{ .category = .bad_result, .end = second.end };
+    }
+    if (std.ascii.eqlIgnoreCase(first_token, "good") and std.ascii.eqlIgnoreCase(second_token, "result")) {
+        return .{ .category = .good_result, .end = second.end };
+    }
+    if (std.ascii.eqlIgnoreCase(first_token, "safety") and std.ascii.eqlIgnoreCase(second_token, "check")) {
+        return .{ .category = .safety_check, .end = second.end };
+    }
+    return null;
+}
+
+fn nextTokenRange(input: []const u8, start: usize) ?TokenRange {
+    var index = start;
+    while (index < input.len and (input[index] == ' ' or input[index] == '\t')) : (index += 1) {}
+    if (index >= input.len) return null;
+    const token_start = index;
+    while (index < input.len and input[index] != ' ' and input[index] != '\t' and input[index] != '\r' and input[index] != '\n') : (index += 1) {}
+    return .{ .start = token_start, .end = index };
+}
+
+fn printFeedbackUsage() void {
+    std.debug.print(
+        \\feedback categories:
+        \\  bug          Crash, error message, hang, or broken UI/behavior.
+        \\  bad-result   Output was off-target, incorrect, incomplete, or unhelpful.
+        \\  good-result  Helpful, correct, high-quality, or delightful result worth celebrating.
+        \\  safety-check Benign usage blocked due to safety checks or refusals.
+        \\  other        Slowness, feature suggestion, UX feedback, or anything else.
+        \\usage: /feedback <category> [--logs|--no-logs] [note...]
+        \\
+    , .{});
+}
+
+fn printFeedbackSuccess(category: FeedbackCategory, include_logs: bool, thread_id: []const u8) void {
+    const prefix = if (include_logs) "Feedback uploaded." else "Feedback recorded (no logs).";
+    if (category == .good_result) {
+        std.debug.print("{s} Thanks for the feedback!\n\n  Thread ID: {s}\n", .{ prefix, thread_id });
+        return;
+    }
+
+    const issue_url = "https://github.com/openai/codex/issues/new?template=3-cli.yml&steps=Uploaded%20thread:%20";
+    std.debug.print(
+        \\{s} Please open an issue using the following URL:
+        \\
+        \\  {s}{s}
+        \\
+        \\  Or mention your thread ID {s} in an existing issue.
+        \\
+    , .{ prefix, issue_url, thread_id, thread_id });
+}
+
+fn renderRemoteFeedbackUploadRequest(
+    allocator: std.mem.Allocator,
+    thread_id: []const u8,
+    request: FeedbackSlashRequest,
+) ![]const u8 {
+    var out = std.ArrayList(u8).empty;
+    errdefer out.deinit(allocator);
+
+    try out.appendSlice(allocator, "{\"jsonrpc\":\"2.0\",\"id\":\"feedback-upload\",\"method\":\"feedback/upload\",\"params\":{");
+    var first = true;
+    try appendJsonStringField(allocator, &out, &first, "classification", request.category.classification());
+    try appendJsonBoolField(allocator, &out, &first, "includeLogs", request.include_logs);
+    try appendJsonStringField(allocator, &out, &first, "threadId", thread_id);
+    if (request.reason) |reason| try appendJsonStringField(allocator, &out, &first, "reason", reason);
+    try out.appendSlice(allocator, "}}");
+    return out.toOwnedSlice(allocator);
 }
 
 fn handleLocalRemoteControlSlash(
@@ -3260,6 +3519,8 @@ fn printSlashHelp(goals_enabled: bool) void {
         \\  /memories         configure memory use and generation
         \\  /ide [on|off|status]
         \\                    include current selection and open tabs from your IDE
+        \\  /feedback [category] [--logs|--no-logs] [note...]
+        \\                    send feedback to maintainers
         \\  /rename <title>   set this session's persisted title
         \\  /model [name]     show or set the in-memory model for this session
         \\  /fast [on|off|status]
@@ -5225,6 +5486,10 @@ test "parse slash command names and args" {
     try std.testing.expectEqualStrings("hooks", hooks.name);
     try std.testing.expectEqualStrings("", hooks.args);
 
+    const feedback = parseSlash("/feedback bug --logs include traceback").?;
+    try std.testing.expectEqualStrings("feedback", feedback.name);
+    try std.testing.expectEqualStrings("bug --logs include traceback", feedback.args);
+
     const ps = parseSlash("/ps").?;
     try std.testing.expectEqualStrings("ps", ps.name);
     try std.testing.expectEqualStrings("", ps.args);
@@ -5246,6 +5511,28 @@ test "parse slash command names and args" {
     try std.testing.expectEqualStrings("check regressions", review_cmd.args);
 
     try std.testing.expect(parseSlash("hello") == null);
+}
+
+test "parse feedback slash args" {
+    try std.testing.expectEqual(FeedbackSlashParseResult.help, parseFeedbackSlashArgs(""));
+
+    const bug = parseFeedbackSlashArgs("bug --logs include traceback");
+    try std.testing.expectEqual(FeedbackCategory.bug, bug.request.category);
+    try std.testing.expect(bug.request.include_logs);
+    try std.testing.expectEqualStrings("include traceback", bug.request.reason.?);
+
+    const bad_result = parseFeedbackSlashArgs("bad result --no-logs wrong answer");
+    try std.testing.expectEqual(FeedbackCategory.bad_result, bad_result.request.category);
+    try std.testing.expect(!bad_result.request.include_logs);
+    try std.testing.expectEqualStrings("wrong answer", bad_result.request.reason.?);
+
+    const good_result = parseFeedbackSlashArgs("good-result");
+    try std.testing.expectEqual(FeedbackCategory.good_result, good_result.request.category);
+    try std.testing.expect(!good_result.request.include_logs);
+    try std.testing.expect(good_result.request.reason == null);
+
+    const unknown = parseFeedbackSlashArgs("unknown");
+    try std.testing.expectEqualStrings("unknown feedback category", unknown.invalid);
 }
 
 test "first display line trims multi-line values" {
