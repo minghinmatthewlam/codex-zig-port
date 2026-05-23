@@ -6309,6 +6309,19 @@ def run_features_profile_smoke(binary: Path) -> None:
         )
         assert "Enabled feature `code_mode` in config.toml." in under_development.stdout
         assert "Under-development features enabled: code_mode." in under_development.stderr
+        alias_under_development = subprocess.run(
+            [str(binary), "features", "enable", "telepathy"],
+            env=env,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=5,
+            check=True,
+        )
+        assert "Enabled feature `telepathy` in config.toml." in alias_under_development.stdout
+        assert "Under-development features enabled: chronicle." in alias_under_development.stderr
+        contents = (codex_home / "config.toml").read_text(encoding="utf-8")
+        assert "telepathy = true" in contents
 
         subprocess.run(
             [str(binary), "features", "enable", "goals"],
@@ -6352,7 +6365,30 @@ def run_features_profile_smoke(binary: Path) -> None:
         lines = listed.stdout.splitlines()
         assert any(line.startswith("memories ") and line.endswith(" true") for line in lines)
         contents = (codex_home / "config.toml").read_text(encoding="utf-8")
-        assert "memories = true" in contents
+        assert "memory_tool = true" in contents
+
+        subprocess.run(
+            [str(binary), "features", "disable", "memory_tool"],
+            env=env,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=5,
+            check=True,
+        )
+        contents = (codex_home / "config.toml").read_text(encoding="utf-8")
+        assert "memory_tool = false" in contents
+        listed = subprocess.run(
+            [str(binary), "features", "list"],
+            env=env,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=5,
+            check=True,
+        )
+        lines = listed.stdout.splitlines()
+        assert any(line.startswith("memories ") and line.endswith(" false") for line in lines)
 
         listed = subprocess.run(
             [str(binary), "--disable", "collab", "features", "list"],
