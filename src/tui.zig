@@ -2830,6 +2830,11 @@ fn handleSlashCommand(
         return .handled;
     }
 
+    if (std.ascii.eqlIgnoreCase(parts.name, "plugins")) {
+        try handlePlugins(allocator, cfg.*, cwd, feature_overrides.*, parts.args);
+        return .handled;
+    }
+
     if (std.ascii.eqlIgnoreCase(parts.name, "rename")) {
         if (try renameThread(allocator, transcript, session_path.*, parts.args)) {
             try refreshTerminalTitle(allocator, cfg.*, cwd, transcript, session_path.*, state);
@@ -3110,6 +3115,7 @@ fn printSlashHelp(goals_enabled: bool) void {
         \\  /experimental [enable|disable FEATURE]
         \\                    list or toggle experimental features
         \\  /apps             list installed and available apps
+        \\  /plugins          list available plugin marketplaces
         \\  /rename <title>   set this session's persisted title
         \\  /model [name]     show or set the in-memory model for this session
         \\  /fast [on|off|status]
@@ -3752,6 +3758,141 @@ fn appsListConfigBytes(
     return features_cmd.configWithFeatureOverride(allocator, config_bytes, "plugins", plugins_enabled);
 }
 
+fn handlePlugins(
+    allocator: std.mem.Allocator,
+    cfg: config.Config,
+    cwd: []const u8,
+    feature_overrides: features_cmd.FeatureOverrides,
+    args: []const u8,
+) !void {
+    const trimmed = std.mem.trim(u8, args, " \t\r\n");
+    if (trimmed.len != 0 and
+        !std.ascii.eqlIgnoreCase(trimmed, "list") and
+        !std.ascii.eqlIgnoreCase(trimmed, "status"))
+    {
+        printPluginsUsage();
+        return;
+    }
+
+    const plugins_enabled = features_cmd.effectiveEnabled(feature_overrides, "plugins") orelse false;
+    if (!plugins_enabled) {
+        std.debug.print("Plugins are disabled.\nEnable the plugins feature to use /plugins.\n", .{});
+        return;
+    }
+
+    const config_path = try config.configTomlPath(allocator, cfg.codex_home);
+    defer allocator.free(config_path);
+    const config_bytes = try config.readConfigTomlFile(allocator, config_path);
+    defer if (config_bytes) |bytes| allocator.free(bytes);
+    const plugins_config_bytes = try features_cmd.configWithFeatureOverride(allocator, config_bytes orelse "", "plugins", true);
+    defer allocator.free(plugins_config_bytes);
+
+    const cwds = [_][]const u8{cwd};
+    const response = try plugin_list.renderResponse(allocator, cfg.codex_home, plugins_config_bytes, cwds[0..], true);
+    defer allocator.free(response);
+
+    try printPluginsListResponse(allocator, response);
+}
+
+fn printPluginsUsage() void {
+    std.debug.print("usage: /plugins [list|status]\n", .{});
+}
+
+fn printPluginsListResponse(allocator: std.mem.Allocator, response: []const u8) !void {
+    var parsed = try std.json.parseFromSlice(std.json.Value, allocator, response, .{});
+    defer parsed.deinit();
+
+    if (parsed.value != .object) return error.InvalidPluginsListResponse;
+    const marketplaces = parsed.value.object.get("marketplaces") orelse return error.InvalidPluginsListResponse;
+    if (marketplaces != .array) return error.InvalidPluginsListResponse;
+
+    var installed: usize = 0;
+    var total: usize = 0;
+    for (marketplaces.array.items) |marketplace| {
+        const plugins = jsonObjectArrayItems(marketplace, "plugins") orelse return error.InvalidPluginsListResponse;
+        total += plugins.len;
+        for (plugins) |plugin| {
+            if (jsonObjectBool(plugin, "installed") orelse false) installed += 1;
+        }
+    }
+
+    std.debug.print("plugins:\n", .{});
+    std.debug.print("  installed {d} of {d} available plugins\n", .{ installed, total });
+    if (total == 0) {
+        std.debug.print("  none\n", .{});
+    }
+
+    for (marketplaces.array.items) |marketplace| {
+        const plugins = jsonObjectArrayItems(marketplace, "plugins") orelse return error.InvalidPluginsListResponse;
+        if (plugins.len == 0) continue;
+
+        const marketplace_name = remoteObjectOptionalString(marketplace, "name") orelse return error.InvalidPluginsListResponse;
+        const marketplace_display = jsonNestedOptionalString(marketplace, &.{ "interface", "displayName" }) orelse marketplace_name;
+        std.debug.print("  marketplace {s} ({s})\n", .{ marketplace_display, marketplace_name });
+        if (remoteObjectOptionalString(marketplace, "path")) |path| {
+            if (path.len > 0) std.debug.print("    path: {s}\n", .{path});
+        }
+
+        for (plugins) |plugin| {
+            try printPluginListItem(plugin);
+        }
+    }
+
+    if (jsonObjectArrayItems(parsed.value, "marketplaceLoadErrors")) |errors| {
+        if (errors.len > 0) {
+            std.debug.print("  load errors:\n", .{});
+            for (errors) |load_error| {
+                const path = remoteObjectOptionalString(load_error, "marketplacePath") orelse "unknown marketplace";
+                const message = remoteObjectOptionalString(load_error, "message") orelse "unknown error";
+                std.debug.print("    - {s}: {s}\n", .{ path, message });
+            }
+        }
+    }
+}
+
+fn printPluginListItem(plugin: std.json.Value) !void {
+    const id = remoteObjectOptionalString(plugin, "id") orelse return error.InvalidPluginsListResponse;
+    const name = remoteObjectOptionalString(plugin, "name") orelse id;
+    const display_name = jsonNestedOptionalString(plugin, &.{ "interface", "displayName" }) orelse name;
+    const enabled = jsonObjectBool(plugin, "enabled") orelse false;
+    const installed = jsonObjectBool(plugin, "installed") orelse false;
+    std.debug.print("    - {s} ({s}, {s})\n", .{
+        display_name,
+        if (enabled) "enabled" else "disabled",
+        if (installed) "installed" else "not installed",
+    });
+
+    var description = jsonNestedOptionalString(plugin, &.{ "interface", "shortDescription" });
+    if (description == null) description = jsonNestedOptionalString(plugin, &.{ "interface", "longDescription" });
+    if (description) |text| {
+        if (text.len > 0) std.debug.print("        {s}\n", .{text});
+    }
+    std.debug.print("        id: {s}\n", .{id});
+    if (jsonNestedOptionalString(plugin, &.{ "interface", "category" })) |category| {
+        if (category.len > 0) std.debug.print("        category: {s}\n", .{category});
+    }
+    try printOptionalStringArray("capabilities", jsonNestedArrayItems(plugin, &.{ "interface", "capabilities" }));
+    try printOptionalStringArray("keywords", jsonObjectArrayItems(plugin, "keywords"));
+}
+
+fn printOptionalStringArray(label: []const u8, items_opt: ?[]const std.json.Value) !void {
+    const items = items_opt orelse return;
+    if (items.len == 0) return;
+
+    var printed_any = false;
+    for (items) |item| {
+        if (item != .string) return error.InvalidPluginsListResponse;
+        if (!printed_any) {
+            std.debug.print("        {s}: ", .{label});
+        } else {
+            std.debug.print(", ", .{});
+        }
+        std.debug.print("{s}", .{item.string});
+        printed_any = true;
+    }
+    if (printed_any) std.debug.print("\n", .{});
+}
+
 fn printAppsUsage() void {
     std.debug.print("usage: /apps [list|status]\n", .{});
 }
@@ -3816,6 +3957,33 @@ fn jsonObjectBool(value: std.json.Value, key: []const u8) ?bool {
     const field = value.object.get(key) orelse return null;
     if (field != .bool) return null;
     return field.bool;
+}
+
+fn jsonObjectArrayItems(value: std.json.Value, key: []const u8) ?[]const std.json.Value {
+    if (value != .object) return null;
+    const field = value.object.get(key) orelse return null;
+    if (field != .array) return null;
+    return field.array.items;
+}
+
+fn jsonNestedOptionalString(value: std.json.Value, path: []const []const u8) ?[]const u8 {
+    var current = value;
+    for (path) |part| {
+        if (current != .object) return null;
+        current = current.object.get(part) orelse return null;
+    }
+    if (current != .string) return null;
+    return current.string;
+}
+
+fn jsonNestedArrayItems(value: std.json.Value, path: []const []const u8) ?[]const std.json.Value {
+    var current = value;
+    for (path) |part| {
+        if (current != .object) return null;
+        current = current.object.get(part) orelse return null;
+    }
+    if (current != .array) return null;
+    return current.array.items;
 }
 
 fn handleExperimentalFeatures(allocator: std.mem.Allocator, cfg: config.Config, feature_overrides: *features_cmd.FeatureOverrides, args: []const u8) !void {
@@ -4635,6 +4803,10 @@ test "parse slash command names and args" {
     const apps = parseSlash("/apps status").?;
     try std.testing.expectEqualStrings("apps", apps.name);
     try std.testing.expectEqualStrings("status", apps.args);
+
+    const plugins = parseSlash("/plugins list").?;
+    try std.testing.expectEqualStrings("plugins", plugins.name);
+    try std.testing.expectEqualStrings("list", plugins.args);
 
     const remote_control = parseSlash("/remote-control stop").?;
     try std.testing.expectEqualStrings("remote-control", remote_control.name);
