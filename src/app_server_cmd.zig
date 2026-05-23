@@ -56,9 +56,12 @@ const THREAD_LIST_DEFAULT_LIMIT = 25;
 const THREAD_LIST_MAX_LIMIT = 100;
 const THREAD_TURNS_DEFAULT_LIMIT = 25;
 const THREAD_TURNS_MAX_LIMIT = 100;
+const THREAD_UNLOADING_DELAY_MS: i64 = 30 * 60 * std.time.ms_per_s;
+const APP_SERVER_CONNECTION_POLL_MS: i32 = 100;
 const APP_LIST_DIRECTORY_MAX_PAGES = 20;
 const APP_LIST_DIRECTORY_CACHE_TTL_MS = 3600 * std.time.ms_per_s;
 const CODEX_CONNECTORS_TOKEN_ENV_VAR = "CODEX_CONNECTORS_TOKEN";
+const TEST_THREAD_UNLOAD_DELAY_ENV_VAR = "CODEX_TEST_APP_SERVER_THREAD_UNLOAD_DELAY_MS";
 const MANAGED_CONFIG_PATH_ENV_VAR = "CODEX_APP_SERVER_MANAGED_CONFIG_PATH";
 const SYSTEM_CONFIG_PATH_ENV_VAR = "CODEX_APP_SERVER_SYSTEM_CONFIG_PATH";
 const SYSTEM_REQUIREMENTS_PATH_ENV_VAR = "CODEX_APP_SERVER_SYSTEM_REQUIREMENTS_PATH";
@@ -216,9 +219,9 @@ const AppServerShutdownSignalHandlers = struct {
     }
 };
 
-fn acceptAppServerStream(server: *net.Server, shutdown_handlers: *const AppServerShutdownSignalHandlers) net.Server.AcceptError!?net.Stream {
+fn acceptAppServerStream(server: *net.Server, shutdown_handlers: *const AppServerShutdownSignalHandlers, timeout_ms: i32) net.Server.AcceptError!?net.Stream {
     while (true) {
-        if (!try waitForAppServerAccept(server, shutdown_handlers)) return null;
+        if (!try waitForAppServerAccept(server, shutdown_handlers, timeout_ms)) return null;
         const rc = std.posix.system.accept(server.socket.handle, null, null);
         switch (std.posix.errno(rc)) {
             .SUCCESS => {
@@ -248,7 +251,7 @@ fn acceptAppServerStream(server: *net.Server, shutdown_handlers: *const AppServe
     }
 }
 
-fn waitForAppServerAccept(server: *net.Server, shutdown_handlers: *const AppServerShutdownSignalHandlers) !bool {
+fn waitForAppServerAccept(server: *net.Server, shutdown_handlers: *const AppServerShutdownSignalHandlers, timeout_ms: i32) !bool {
     var fds = [_]std.posix.pollfd{
         .{
             .fd = server.socket.handle,
@@ -266,7 +269,8 @@ fn waitForAppServerAccept(server: *net.Server, shutdown_handlers: *const AppServ
         if (appServerShutdownRequested()) return false;
         fds[0].revents = 0;
         fds[1].revents = 0;
-        _ = try std.posix.poll(&fds, -1);
+        const ready = try std.posix.poll(&fds, timeout_ms);
+        if (ready == 0) return false;
         if (pollReventsInclude(fds[1].revents, relay_poll_read_events)) {
             drainAppServerShutdownWakeup(shutdown_handlers.wakeup_read_fd);
             return false;
@@ -398,14 +402,26 @@ pub const InvocationOptions = struct {
     remote_control_enabled: bool = false,
 };
 
+const PendingThreadUnload = struct {
+    thread_id: []const u8,
+    no_subscribers_since_ms: i64,
+    inactive_since_ms: ?i64,
+
+    fn deinit(self: *PendingThreadUnload, allocator: std.mem.Allocator) void {
+        allocator.free(self.thread_id);
+    }
+};
+
 const AppServerState = struct {
     deferred_command_exec_stdio: bool = false,
     experimental_api_enabled: bool = false,
     bypass_hook_trust: bool = false,
     remote_control_enabled: bool = false,
+    thread_unloading_delay_ms: i64 = THREAD_UNLOADING_DELAY_MS,
     cli_feature_overrides: features_cmd.FeatureOverrides = .{},
     runtime_feature_enablement: features_cmd.FeatureOverrides = .{},
     loaded_threads: std.ArrayList(LoadedThread) = .empty,
+    pending_thread_unloads: std.ArrayList(PendingThreadUnload) = .empty,
     fs_watches: std.ArrayList(FsWatchEntry) = .empty,
     fuzzy_search_sessions: std.ArrayList(FuzzySearchSessionEntry) = .empty,
     skill_watch_roots: std.ArrayList([]const u8) = .empty,
@@ -428,6 +444,8 @@ const AppServerState = struct {
         self.runtime_feature_enablement.deinit(allocator);
         for (self.loaded_threads.items) |*thread| thread.deinit(allocator);
         self.loaded_threads.deinit(allocator);
+        for (self.pending_thread_unloads.items) |*unload| unload.deinit(allocator);
+        self.pending_thread_unloads.deinit(allocator);
         self.fs_watches.deinit(allocator);
         self.fuzzy_search_sessions.deinit(allocator);
         self.skill_watch_roots.deinit(allocator);
@@ -456,10 +474,20 @@ fn initAppServerState(
         .deferred_command_exec_stdio = deferred_command_exec_stdio,
         .bypass_hook_trust = invocation_options.bypass_hook_trust,
         .remote_control_enabled = invocation_options.remote_control_enabled,
+        .thread_unloading_delay_ms = appServerThreadUnloadingDelayMs(allocator),
         .cli_feature_overrides = try invocation_options.feature_overrides.clone(allocator),
     };
     errdefer state.deinit(allocator);
     return state;
+}
+
+fn appServerThreadUnloadingDelayMs(allocator: std.mem.Allocator) i64 {
+    const override = env.getOwned(allocator, TEST_THREAD_UNLOAD_DELAY_ENV_VAR) catch return THREAD_UNLOADING_DELAY_MS;
+    const value = override orelse return THREAD_UNLOADING_DELAY_MS;
+    defer allocator.free(value);
+    const trimmed = std.mem.trim(u8, value, " \t\r\n");
+    const parsed = std.fmt.parseInt(i64, trimmed, 10) catch return THREAD_UNLOADING_DELAY_MS;
+    return if (parsed >= 0) parsed else THREAD_UNLOADING_DELAY_MS;
 }
 
 fn clearAppServerConnectionState(allocator: std.mem.Allocator, state: *AppServerState) void {
@@ -482,6 +510,11 @@ fn clearAppServerConnectionState(allocator: std.mem.Allocator, state: *AppServer
     state.pending_notifications.clearRetainingCapacity();
     for (state.pending_server_requests.items) |*request| request.deinit(allocator);
     state.pending_server_requests.clearRetainingCapacity();
+}
+
+fn clearAppServerConnectionStateAfterDisconnect(allocator: std.mem.Allocator, state: *AppServerState) void {
+    scheduleThreadUnloadsForConnectionClose(allocator, state) catch {};
+    clearAppServerConnectionState(allocator, state);
 }
 
 const ActiveAccountLogin = struct {
@@ -27646,10 +27679,30 @@ const StdioServer = struct {
             .read_payload_with_timeout = readJsonRpcTransportPayloadWithTimeout,
         };
 
+        var line_buffer = std.ArrayList(u8).empty;
+        defer line_buffer.deinit(self.allocator);
         while (true) {
-            const line_opt = try stdin_reader.interface.takeDelimiter('\n');
-            const line = line_opt orelse break;
-            const trimmed = std.mem.trim(u8, line, " \t\r\n");
+            if (!readerHasBufferedTransportBytes(&stdin_reader.interface) and
+                !try appServerConnectionReadable(std.Io.File.stdin().handle, appServerConnectionPollTimeoutMs(&state)))
+            {
+                try flushAppServerIdleWorkStdout(self.allocator, &state);
+                continue;
+            }
+            const byte_or_null: ?u8 = stdin_reader.interface.takeByte() catch |err| switch (err) {
+                error.EndOfStream => null,
+                else => return err,
+            };
+            if (byte_or_null) |byte| {
+                if (byte != '\n') {
+                    if (line_buffer.items.len >= 64 * 1024) return error.StreamTooLong;
+                    try line_buffer.append(self.allocator, byte);
+                    continue;
+                }
+            } else if (line_buffer.items.len == 0) {
+                break;
+            }
+            const trimmed = std.mem.trim(u8, line_buffer.items, " \t\r\n");
+            defer line_buffer.clearRetainingCapacity();
             if (trimmed.len == 0) continue;
             const response = handleJsonRpcLine(self.allocator, &state, trimmed) catch |err| {
                 const message = try std.fmt.allocPrint(self.allocator, "[app-server] failed to handle message: {s}\n", .{@errorName(err)});
@@ -27662,9 +27715,7 @@ const StdioServer = struct {
                 defer self.allocator.free(payload);
                 try writeStdoutLine(payload);
             }
-            try queueExternalFsWatchNotifications(self.allocator, &state);
-            try writePendingNotificationsStdout(self.allocator, &state);
-            cleanupFinishedCommandExecSessions(self.allocator, &state, false);
+            try flushAppServerIdleWorkStdout(self.allocator, &state);
         }
     }
 };
@@ -27695,7 +27746,13 @@ const UnixServer = struct {
         defer state.deinit(self.allocator);
 
         while (!appServerShutdownRequested()) {
-            var stream = (try acceptAppServerStream(&server, &shutdown_handlers)) orelse break;
+            const stream_or_null = try acceptAppServerStream(&server, &shutdown_handlers, appServerDaemonAcceptPollTimeoutMs(&state));
+            if (stream_or_null == null) {
+                if (appServerShutdownRequested()) break;
+                try reapExpiredThreadUnloads(self.allocator, &state, false);
+                continue;
+            }
+            var stream = stream_or_null.?;
             self.handleConnection(&state, io, &stream) catch |err| {
                 if (!appServerShutdownRequested()) {
                     const message = std.fmt.allocPrint(
@@ -27724,7 +27781,7 @@ const UnixServer = struct {
         app_server_shutdown_active_connection_fd.store(stream.socket.handle, .release);
         defer app_server_shutdown_active_connection_fd.store(-1, .release);
         if (appServerShutdownRequested()) return;
-        defer clearAppServerConnectionState(self.allocator, state);
+        defer clearAppServerConnectionStateAfterDisconnect(self.allocator, state);
 
         var input_buffer: [64 * 1024]u8 = undefined;
         var output_buffer: [64 * 1024]u8 = undefined;
@@ -27748,13 +27805,15 @@ const UnixServer = struct {
         defer state.server_request_transport = null;
         state.connection_output = output_state;
         defer state.connection_output = null;
+        try reapExpiredThreadUnloads(self.allocator, state, false);
 
         var line_buffer = std.ArrayList(u8).empty;
         defer line_buffer.deinit(self.allocator);
         while (!appServerShutdownRequested()) {
             if (!readerHasBufferedTransportBytes(&reader.interface) and
-                !try appServerConnectionReadable(stream.socket.handle, 100))
+                !try appServerConnectionReadable(stream.socket.handle, appServerConnectionPollTimeoutMs(state)))
             {
+                try flushAppServerIdleWorkStream(self.allocator, state, &writer.interface);
                 continue;
             }
             const byte_or_null: ?u8 = reader.interface.takeByte() catch |err| switch (err) {
@@ -27785,8 +27844,7 @@ const UnixServer = struct {
                 defer self.allocator.free(payload);
                 try writeStreamLineWithConnection(state.connection_output, &writer.interface, payload);
             }
-            try queueExternalFsWatchNotifications(self.allocator, state);
-            try writePendingNotificationsStream(self.allocator, state, &writer.interface);
+            try flushAppServerIdleWorkStream(self.allocator, state, &writer.interface);
         }
     }
 };
@@ -27816,7 +27874,13 @@ const WebSocketServer = struct {
         defer state.deinit(self.allocator);
 
         while (!appServerShutdownRequested()) {
-            var stream = (try acceptAppServerStream(&server, &shutdown_handlers)) orelse break;
+            const stream_or_null = try acceptAppServerStream(&server, &shutdown_handlers, appServerDaemonAcceptPollTimeoutMs(&state));
+            if (stream_or_null == null) {
+                if (appServerShutdownRequested()) break;
+                try reapExpiredThreadUnloads(self.allocator, &state, false);
+                continue;
+            }
+            var stream = stream_or_null.?;
             self.handleConnection(&state, io, &stream) catch |err| {
                 if (!appServerShutdownRequested()) {
                     const message = std.fmt.allocPrint(
@@ -27845,7 +27909,7 @@ const WebSocketServer = struct {
         app_server_shutdown_active_connection_fd.store(stream.socket.handle, .release);
         defer app_server_shutdown_active_connection_fd.store(-1, .release);
         if (appServerShutdownRequested()) return;
-        defer clearAppServerConnectionState(self.allocator, state);
+        defer clearAppServerConnectionStateAfterDisconnect(self.allocator, state);
 
         var input_buffer: [64 * 1024]u8 = undefined;
         var output_buffer: [64 * 1024]u8 = undefined;
@@ -27920,26 +27984,40 @@ const WebSocketServer = struct {
         defer state.server_request_transport = null;
         state.connection_output = output_state;
         defer state.connection_output = null;
+        try reapExpiredThreadUnloads(self.allocator, state, false);
 
         while (!appServerShutdownRequested()) {
-            const payload = try readWebSocketTextFrame(self.allocator, &reader.interface, &writer.interface, state.connection_output) orelse return;
-            defer self.allocator.free(payload);
-            const trimmed = std.mem.trim(u8, payload, " \t\r\n");
-            if (trimmed.len == 0) continue;
-
-            const response = handleJsonRpcLine(self.allocator, state, trimmed) catch |err| {
-                const message = try std.fmt.allocPrint(self.allocator, "[app-server] failed to handle websocket message: {s}\n", .{@errorName(err)});
-                defer self.allocator.free(message);
-                try cli_utils.writeStderr(message);
+            if (!readerHasBufferedTransportBytes(&reader.interface) and
+                !try appServerConnectionReadable(stream.socket.handle, appServerConnectionPollTimeoutMs(state)))
+            {
+                try flushAppServerIdleWorkWebSocket(self.allocator, state, &writer.interface);
                 continue;
-            };
-            try writePreResponseNotificationsWebSocket(self.allocator, state, &writer.interface);
-            if (response) |payload_response| {
-                defer self.allocator.free(payload_response);
-                try writeWebSocketTextFrameWithConnection(state.connection_output, &writer.interface, payload_response);
             }
-            try queueExternalFsWatchNotifications(self.allocator, state);
-            try writePendingNotificationsWebSocket(self.allocator, state, &writer.interface);
+            switch (try readWebSocketFrame(self.allocator, &reader.interface, &writer.interface, state.connection_output)) {
+                .text => |payload| {
+                    defer self.allocator.free(payload);
+                    const trimmed = std.mem.trim(u8, payload, " \t\r\n");
+                    if (trimmed.len == 0) continue;
+
+                    const response = handleJsonRpcLine(self.allocator, state, trimmed) catch |err| {
+                        const message = try std.fmt.allocPrint(self.allocator, "[app-server] failed to handle websocket message: {s}\n", .{@errorName(err)});
+                        defer self.allocator.free(message);
+                        try cli_utils.writeStderr(message);
+                        continue;
+                    };
+                    try writePreResponseNotificationsWebSocket(self.allocator, state, &writer.interface);
+                    if (response) |payload_response| {
+                        defer self.allocator.free(payload_response);
+                        try writeWebSocketTextFrameWithConnection(state.connection_output, &writer.interface, payload_response);
+                    }
+                    try flushAppServerIdleWorkWebSocket(self.allocator, state, &writer.interface);
+                },
+                .closed => return,
+                .control => {
+                    try flushAppServerIdleWorkWebSocket(self.allocator, state, &writer.interface);
+                    continue;
+                },
+            }
         }
     }
 };
@@ -28129,6 +28207,64 @@ fn websocketAcceptValue(allocator: std.mem.Allocator, key: []const u8) ![]const 
     return encoded;
 }
 
+const WebSocketReadResult = union(enum) {
+    text: []const u8,
+    closed,
+    control,
+};
+
+fn readWebSocketFrame(
+    allocator: std.mem.Allocator,
+    reader: *std.Io.Reader,
+    writer: *std.Io.Writer,
+    output: ?*AppServerConnectionOutputState,
+) !WebSocketReadResult {
+    const first = reader.takeByte() catch |err| switch (err) {
+        error.EndOfStream => return .closed,
+        else => return err,
+    };
+    const second = try reader.takeByte();
+    const fin = (first & 0x80) != 0;
+    const opcode = first & 0x0f;
+    const masked = (second & 0x80) != 0;
+    var payload_len: u64 = second & 0x7f;
+    if (payload_len == 126) {
+        payload_len = try reader.takeInt(u16, .big);
+    } else if (payload_len == 127) {
+        payload_len = try reader.takeInt(u64, .big);
+    }
+    if (!fin) return error.UnsupportedWebSocketFragment;
+    if (!masked) return error.UnmaskedWebSocketClientFrame;
+    if (payload_len > 16 * 1024 * 1024) return error.WebSocketFrameTooLarge;
+
+    const mask = try reader.takeArray(4);
+    const payload = try allocator.alloc(u8, @intCast(payload_len));
+    errdefer allocator.free(payload);
+    try reader.readSliceAll(payload);
+    for (payload, 0..) |*byte, index| {
+        byte.* ^= mask[index % 4];
+    }
+
+    switch (opcode) {
+        0x1 => return .{ .text = payload },
+        0x8 => {
+            try writeWebSocketFrameWithConnection(output, writer, 0x8, payload);
+            allocator.free(payload);
+            return .closed;
+        },
+        0x9 => {
+            try writeWebSocketFrameWithConnection(output, writer, 0xA, payload);
+            allocator.free(payload);
+            return .control;
+        },
+        0xA => {
+            allocator.free(payload);
+            return .control;
+        },
+        else => return error.UnsupportedWebSocketOpcode,
+    }
+}
+
 fn readWebSocketTextFrame(
     allocator: std.mem.Allocator,
     reader: *std.Io.Reader,
@@ -28136,52 +28272,10 @@ fn readWebSocketTextFrame(
     output: ?*AppServerConnectionOutputState,
 ) !?[]const u8 {
     while (true) {
-        const first = reader.takeByte() catch |err| switch (err) {
-            error.EndOfStream => return null,
-            else => return err,
-        };
-        const second = try reader.takeByte();
-        const fin = (first & 0x80) != 0;
-        const opcode = first & 0x0f;
-        const masked = (second & 0x80) != 0;
-        var payload_len: u64 = second & 0x7f;
-        if (payload_len == 126) {
-            payload_len = try reader.takeInt(u16, .big);
-        } else if (payload_len == 127) {
-            payload_len = try reader.takeInt(u64, .big);
-        }
-        if (!fin) return error.UnsupportedWebSocketFragment;
-        if (!masked) return error.UnmaskedWebSocketClientFrame;
-        if (payload_len > 16 * 1024 * 1024) return error.WebSocketFrameTooLarge;
-
-        const mask = try reader.takeArray(4);
-        const payload = try allocator.alloc(u8, @intCast(payload_len));
-        errdefer allocator.free(payload);
-        try reader.readSliceAll(payload);
-        for (payload, 0..) |*byte, index| {
-            byte.* ^= mask[index % 4];
-        }
-
-        switch (opcode) {
-            0x1 => return payload,
-            0x8 => {
-                try writeWebSocketFrameWithConnection(output, writer, 0x8, payload);
-                allocator.free(payload);
-                return null;
-            },
-            0x9 => {
-                try writeWebSocketFrameWithConnection(output, writer, 0xA, payload);
-                allocator.free(payload);
-                continue;
-            },
-            0xA => {
-                allocator.free(payload);
-                continue;
-            },
-            else => {
-                allocator.free(payload);
-                return error.UnsupportedWebSocketOpcode;
-            },
+        switch (try readWebSocketFrame(allocator, reader, writer, output)) {
+            .text => |payload| return payload,
+            .closed => return null,
+            .control => continue,
         }
     }
 }
@@ -37856,9 +37950,11 @@ fn handleThreadMethod(
         }
         if (findLoadedThreadIndex(state, thread_id) == null) {
             _ = removeThreadSubscription(allocator, state, thread_id);
+            _ = removePendingThreadUnload(allocator, state, thread_id);
             return renderJsonRpcResult(allocator, id_value, "{\"status\":\"notLoaded\"}");
         }
         if (removeThreadSubscription(allocator, state, thread_id)) {
+            try scheduleThreadUnloadIfUnsubscribed(allocator, state, thread_id);
             return renderJsonRpcResult(allocator, id_value, "{\"status\":\"unsubscribed\"}");
         }
         return renderJsonRpcResult(allocator, id_value, "{\"status\":\"notSubscribed\"}");
@@ -41360,6 +41456,8 @@ fn findLoadedThreadIndex(state: *const AppServerState, thread_id: []const u8) ?u
 }
 
 fn removeLoadedThread(allocator: std.mem.Allocator, state: *AppServerState, thread_id: []const u8) bool {
+    _ = removePendingThreadUnload(allocator, state, thread_id);
+    _ = removeThreadSubscription(allocator, state, thread_id);
     const index = findLoadedThreadIndex(state, thread_id) orelse return false;
     var removed = state.loaded_threads.orderedRemove(index);
     removed.deinit(allocator);
@@ -41377,6 +41475,7 @@ fn upsertLoadedThread(allocator: std.mem.Allocator, state: *AppServerState, thre
 }
 
 fn ensureThreadSubscribed(allocator: std.mem.Allocator, state: *AppServerState, thread_id: []const u8) !bool {
+    _ = removePendingThreadUnload(allocator, state, thread_id);
     for (state.subscribed_thread_ids.items) |subscribed_id| {
         if (std.mem.eql(u8, subscribed_id, thread_id)) return false;
     }
@@ -41395,6 +41494,132 @@ fn removeThreadSubscription(allocator: std.mem.Allocator, state: *AppServerState
         }
     }
     return false;
+}
+
+fn threadHasSubscription(state: *const AppServerState, thread_id: []const u8) bool {
+    for (state.subscribed_thread_ids.items) |subscribed_id| {
+        if (std.mem.eql(u8, subscribed_id, thread_id)) return true;
+    }
+    return false;
+}
+
+fn findPendingThreadUnloadIndex(state: *const AppServerState, thread_id: []const u8) ?usize {
+    for (state.pending_thread_unloads.items, 0..) |pending, index| {
+        if (std.mem.eql(u8, pending.thread_id, thread_id)) return index;
+    }
+    return null;
+}
+
+fn removePendingThreadUnload(allocator: std.mem.Allocator, state: *AppServerState, thread_id: []const u8) bool {
+    const index = findPendingThreadUnloadIndex(state, thread_id) orelse return false;
+    var removed = state.pending_thread_unloads.orderedRemove(index);
+    removed.deinit(allocator);
+    return true;
+}
+
+fn scheduleThreadUnloadIfUnsubscribed(allocator: std.mem.Allocator, state: *AppServerState, thread_id: []const u8) !void {
+    if (threadHasSubscription(state, thread_id)) return;
+    try scheduleThreadUnload(allocator, state, thread_id);
+}
+
+fn scheduleThreadUnload(allocator: std.mem.Allocator, state: *AppServerState, thread_id: []const u8) !void {
+    const thread_index = findLoadedThreadIndex(state, thread_id) orelse {
+        _ = removePendingThreadUnload(allocator, state, thread_id);
+        return;
+    };
+    const now_ms = currentAppServerAwakeMillis();
+    const inactive_since_ms: ?i64 = if (state.loaded_threads.items[thread_index].status == .active) null else now_ms;
+    if (findPendingThreadUnloadIndex(state, thread_id)) |pending_index| {
+        state.pending_thread_unloads.items[pending_index].no_subscribers_since_ms = now_ms;
+        state.pending_thread_unloads.items[pending_index].inactive_since_ms = inactive_since_ms;
+        return;
+    }
+    const owned_id = try allocator.dupe(u8, thread_id);
+    errdefer allocator.free(owned_id);
+    try state.pending_thread_unloads.append(allocator, .{
+        .thread_id = owned_id,
+        .no_subscribers_since_ms = now_ms,
+        .inactive_since_ms = inactive_since_ms,
+    });
+}
+
+fn scheduleThreadUnloadsForConnectionClose(allocator: std.mem.Allocator, state: *AppServerState) !void {
+    for (state.subscribed_thread_ids.items) |thread_id| {
+        try scheduleThreadUnload(allocator, state, thread_id);
+    }
+}
+
+fn notePendingThreadUnloadStatus(state: *AppServerState, thread_id: []const u8, status: ThreadRuntimeStatus) void {
+    const pending_index = findPendingThreadUnloadIndex(state, thread_id) orelse return;
+    const now_ms = currentAppServerAwakeMillis();
+    switch (status) {
+        .active => state.pending_thread_unloads.items[pending_index].inactive_since_ms = null,
+        .idle, .system_error, .not_loaded => state.pending_thread_unloads.items[pending_index].inactive_since_ms = now_ms,
+    }
+}
+
+fn pendingThreadUnloadTargetMs(state: *const AppServerState, pending: PendingThreadUnload) ?i64 {
+    const inactive_since_ms = pending.inactive_since_ms orelse return null;
+    const base_ms = @max(pending.no_subscribers_since_ms, inactive_since_ms);
+    if (state.thread_unloading_delay_ms > std.math.maxInt(i64) - base_ms) return std.math.maxInt(i64);
+    return base_ms + state.thread_unloading_delay_ms;
+}
+
+fn appServerConnectionPollTimeoutMs(state: *const AppServerState) i32 {
+    var timeout_ms: i64 = APP_SERVER_CONNECTION_POLL_MS;
+    const now_ms = currentAppServerAwakeMillis();
+    for (state.pending_thread_unloads.items) |pending| {
+        const target_ms = pendingThreadUnloadTargetMs(state, pending) orelse continue;
+        const remaining_ms: i64 = if (target_ms <= now_ms) 0 else target_ms - now_ms;
+        timeout_ms = @min(timeout_ms, remaining_ms);
+    }
+    return @intCast(@min(timeout_ms, @as(i64, std.math.maxInt(i32))));
+}
+
+fn appServerDaemonAcceptPollTimeoutMs(state: *const AppServerState) i32 {
+    var timeout_ms: ?i64 = null;
+    const now_ms = currentAppServerAwakeMillis();
+    for (state.pending_thread_unloads.items) |pending| {
+        const target_ms = pendingThreadUnloadTargetMs(state, pending) orelse continue;
+        const remaining_ms: i64 = if (target_ms <= now_ms) 0 else target_ms - now_ms;
+        timeout_ms = if (timeout_ms) |current| @min(current, remaining_ms) else remaining_ms;
+    }
+    const pending_timeout_ms = timeout_ms orelse return -1;
+    return @intCast(@min(pending_timeout_ms, @as(i64, std.math.maxInt(i32))));
+}
+
+fn reapExpiredThreadUnloads(allocator: std.mem.Allocator, state: *AppServerState, emit_notifications: bool) !void {
+    var index: usize = 0;
+    while (index < state.pending_thread_unloads.items.len) {
+        const pending = state.pending_thread_unloads.items[index];
+        const target_ms = pendingThreadUnloadTargetMs(state, pending) orelse {
+            index += 1;
+            continue;
+        };
+        if (target_ms > currentAppServerAwakeMillis()) {
+            index += 1;
+            continue;
+        }
+        const thread_index = findLoadedThreadIndex(state, pending.thread_id) orelse {
+            var removed = state.pending_thread_unloads.orderedRemove(index);
+            removed.deinit(allocator);
+            continue;
+        };
+        if (state.loaded_threads.items[thread_index].status == .active) {
+            state.pending_thread_unloads.items[index].inactive_since_ms = null;
+            index += 1;
+            continue;
+        }
+
+        const thread_id = try allocator.dupe(u8, pending.thread_id);
+        defer allocator.free(thread_id);
+        var removed_pending = state.pending_thread_unloads.orderedRemove(index);
+        removed_pending.deinit(allocator);
+        if (removeLoadedThread(allocator, state, thread_id) and emit_notifications) {
+            try queueThreadStatusChangedNotification(allocator, state, thread_id, .not_loaded);
+            try queueThreadIdNotification(allocator, state, "thread/closed", thread_id);
+        }
+    }
 }
 
 fn renderThreadLoadedListResult(
@@ -42953,6 +43178,7 @@ fn queueThreadStatusChangedNotification(
     thread_id: []const u8,
     status: ThreadRuntimeStatus,
 ) !void {
+    notePendingThreadUnloadStatus(state, thread_id, status);
     if (notificationMethodOptedOut(state, "thread/status/changed")) return;
 
     var notification = std.ArrayList(u8).empty;
@@ -65571,6 +65797,27 @@ fn writePendingNotificationsWebSocket(allocator: std.mem.Allocator, state: *AppS
     for (notifications.items) |payload| {
         try writeWebSocketTextFrameWithConnection(state.connection_output, writer, payload);
     }
+}
+
+fn flushAppServerIdleWorkStdout(allocator: std.mem.Allocator, state: *AppServerState) !void {
+    try queueExternalFsWatchNotifications(allocator, state);
+    try reapExpiredThreadUnloads(allocator, state, true);
+    try writePendingNotificationsStdout(allocator, state);
+    cleanupFinishedCommandExecSessions(allocator, state, false);
+}
+
+fn flushAppServerIdleWorkStream(allocator: std.mem.Allocator, state: *AppServerState, writer: *std.Io.Writer) !void {
+    try queueExternalFsWatchNotifications(allocator, state);
+    try reapExpiredThreadUnloads(allocator, state, true);
+    try writePendingNotificationsStream(allocator, state, writer);
+    cleanupFinishedCommandExecSessions(allocator, state, false);
+}
+
+fn flushAppServerIdleWorkWebSocket(allocator: std.mem.Allocator, state: *AppServerState, writer: *std.Io.Writer) !void {
+    try queueExternalFsWatchNotifications(allocator, state);
+    try reapExpiredThreadUnloads(allocator, state, true);
+    try writePendingNotificationsWebSocket(allocator, state, writer);
+    cleanupFinishedCommandExecSessions(allocator, state, false);
 }
 
 fn freePendingNotifications(allocator: std.mem.Allocator, notifications: *std.ArrayList([]const u8)) void {
