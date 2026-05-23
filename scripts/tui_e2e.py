@@ -740,7 +740,6 @@ class MockResponsesHandler(BaseHTTPRequestHandler):
                             {
                                 "message": "check this",
                                 "model": "gpt-5.4",
-                                "reasoning_effort": "high",
                                 "service_tier": "fast",
                             },
                             separators=(",", ":"),
@@ -7643,11 +7642,11 @@ def run_e2e(binary: Path) -> str:
                 body.get("model") == "gpt-5.4"
                 and body.get("service_tier") == "priority"
                 and isinstance(body.get("reasoning"), dict)
-                and body["reasoning"].get("effort") == "high"
+                and body["reasoning"].get("effort") == "medium"
                 for body in subagent_child_bodies
             ):
                 raise AssertionError(
-                    f"expected subagent child turn {child_prompt!r} to use model/reasoning/service_tier overrides"
+                    f"expected subagent child turn {child_prompt!r} to use model default reasoning and service_tier override"
                 )
         subagent_wait_bodies = [
             body
