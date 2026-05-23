@@ -31259,6 +31259,7 @@ const TurnStartInput = struct {
     image_urls: []const []const u8,
     local_image_paths: []const []const u8,
     skills: []const TurnNamedPathInput,
+    mentions: []const TurnNamedPathInput,
 
     fn deinit(self: *TurnStartInput, allocator: std.mem.Allocator) void {
         allocator.free(self.prompt);
@@ -31269,6 +31270,8 @@ const TurnStartInput = struct {
         allocator.free(self.local_image_paths);
         for (self.skills) |item| item.deinit(allocator);
         allocator.free(self.skills);
+        for (self.mentions) |item| item.deinit(allocator);
+        allocator.free(self.mentions);
     }
 };
 
@@ -32384,7 +32387,9 @@ fn handleTurnStart(
     defer if (request_input_images.len > 0) allocator.free(request_input_images);
     var skill_injections = try loadTurnSkillInjections(allocator, state, thread.cwd, input.skills);
     defer skill_injections.deinit(allocator);
-    const prompt_for_turn = try turnPromptWithContextBlocks(allocator, input.prompt, local_images.missing_placeholders, skill_injections.blocks);
+    var mention_markers = try renderTurnMentionMarkers(allocator, input.mentions);
+    defer mention_markers.deinit(allocator);
+    const prompt_for_turn = try turnPromptWithContextBlocks(allocator, input.prompt, local_images.missing_placeholders, skill_injections.blocks, mention_markers.markers);
     defer allocator.free(prompt_for_turn);
     const started_at_ms = currentUnixMilliseconds();
     const started_at = @divTrunc(started_at_ms, std.time.ms_per_s);
@@ -32959,6 +32964,12 @@ fn parseTurnStartInput(allocator: std.mem.Allocator, params: std.json.ObjectMap)
         for (skills.items) |item| item.deinit(allocator);
         skills.deinit(allocator);
     };
+    var mentions = std.ArrayList(TurnNamedPathInput).empty;
+    var mentions_moved = false;
+    errdefer if (!mentions_moved) {
+        for (mentions.items) |item| item.deinit(allocator);
+        mentions.deinit(allocator);
+    };
     var input_items: usize = 0;
     var text_items: usize = 0;
     for (input.array.items) |item| {
@@ -33012,6 +33023,11 @@ fn parseTurnStartInput(allocator: std.mem.Allocator, params: std.json.ObjectMap)
             const name = item.object.get("name") orelse return error.InvalidTurnInput;
             const path = item.object.get("path") orelse return error.InvalidTurnInput;
             if (name != .string or path != .string) return error.InvalidTurnInput;
+            const mention = try TurnNamedPathInput.init(allocator, name.string, path.string);
+            mentions.append(allocator, mention) catch |err| {
+                mention.deinit(allocator);
+                return err;
+            };
             if (input_items > 0) try user_content.append(allocator, ',');
             try appendTurnStartNamedPathInputJson(allocator, &user_content, "mention", name.string, path.string);
             input_items += 1;
@@ -33043,12 +33059,19 @@ fn parseTurnStartInput(allocator: std.mem.Allocator, params: std.json.ObjectMap)
         for (skills_owned) |item| item.deinit(allocator);
         allocator.free(skills_owned);
     }
+    const mentions_owned = try mentions.toOwnedSlice(allocator);
+    mentions_moved = true;
+    errdefer {
+        for (mentions_owned) |item| item.deinit(allocator);
+        allocator.free(mentions_owned);
+    }
     return .{
         .prompt = prompt_owned,
         .user_content_json = user_content_owned,
         .image_urls = image_urls_owned,
         .local_image_paths = local_image_paths_owned,
         .skills = skills_owned,
+        .mentions = mentions_owned,
     };
 }
 
@@ -33177,6 +33200,15 @@ const TurnSkillInjections = struct {
     }
 };
 
+const TurnMentionMarkers = struct {
+    markers: []const []const u8 = &.{},
+
+    fn deinit(self: *TurnMentionMarkers, allocator: std.mem.Allocator) void {
+        for (self.markers) |marker| allocator.free(marker);
+        if (self.markers.len > 0) allocator.free(self.markers);
+    }
+};
+
 fn loadTurnSkillInjections(
     allocator: std.mem.Allocator,
     state: *const AppServerState,
@@ -33206,6 +33238,29 @@ fn loadTurnSkillInjections(
     const blocks_owned = try blocks.toOwnedSlice(allocator);
     blocks_moved = true;
     return .{ .blocks = blocks_owned };
+}
+
+fn renderTurnMentionMarkers(allocator: std.mem.Allocator, mentions: []const TurnNamedPathInput) !TurnMentionMarkers {
+    if (mentions.len == 0) return .{};
+
+    var markers = std.ArrayList([]const u8).empty;
+    var markers_moved = false;
+    errdefer if (!markers_moved) {
+        for (markers.items) |marker| allocator.free(marker);
+        markers.deinit(allocator);
+    };
+
+    for (mentions) |mention| {
+        const marker = try input_context.renderNamedPathPreview(allocator, "mention", mention.name, mention.path);
+        markers.append(allocator, marker) catch |err| {
+            allocator.free(marker);
+            return err;
+        };
+    }
+
+    const markers_owned = try markers.toOwnedSlice(allocator);
+    markers_moved = true;
+    return .{ .markers = markers_owned };
 }
 
 fn cachedSkillPathsForCwd(state: *const AppServerState, base_cwd: ?[]const u8) []const []const u8 {
@@ -33264,8 +33319,9 @@ fn turnPromptWithContextBlocks(
     prompt: []const u8,
     placeholders: []const []const u8,
     skill_blocks: []const []const u8,
+    mention_markers: []const []const u8,
 ) ![]const u8 {
-    if (placeholders.len == 0 and skill_blocks.len == 0) return allocator.dupe(u8, prompt);
+    if (placeholders.len == 0 and skill_blocks.len == 0 and mention_markers.len == 0) return allocator.dupe(u8, prompt);
 
     var out = std.ArrayList(u8).empty;
     errdefer out.deinit(allocator);
@@ -33277,6 +33333,10 @@ fn turnPromptWithContextBlocks(
     for (skill_blocks) |skill_block| {
         if (out.items.len > 0) try out.append(allocator, '\n');
         try out.appendSlice(allocator, skill_block);
+    }
+    for (mention_markers) |mention_marker| {
+        if (out.items.len > 0) try out.append(allocator, '\n');
+        try out.appendSlice(allocator, mention_marker);
     }
     return out.toOwnedSlice(allocator);
 }

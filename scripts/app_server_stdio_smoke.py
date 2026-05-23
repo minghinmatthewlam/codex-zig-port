@@ -5982,6 +5982,7 @@ def run_turn_start_rpc_smoke(binary: Path) -> None:
                 assert "<skill>\n<name>plan-work</name>" in model_prompt
                 assert f"<path>{skill_path}</path>" in model_prompt
                 assert skill_body in model_prompt
+                assert "[mention:$Demo Plugin](plugin://demo@local)" in model_prompt
                 assert request_content[1] == {
                     "type": "input_image",
                     "image_url": "https://example.com/codex-zig-smoke.png",
@@ -6088,10 +6089,11 @@ def run_turn_start_rpc_smoke(binary: Path) -> None:
                 )
                 assert f"<path>{standalone_skill_path}</path>" in standalone_request_text
                 assert standalone_skill_body in standalone_request_text
-                assert standalone_request_text.endswith("</skill>")
+                assert "</skill>\n[mention:$Standalone Plugin](plugin://standalone@local)" in standalone_request_text
                 stored_after_standalone = rollout_path.read_text(encoding="utf-8")
                 assert "Standalone Skill" in stored_after_standalone
                 assert "Use this body without a text item." in stored_after_standalone
+                assert "plugin://standalone@local" in stored_after_standalone
 
                 write_json_line(
                     proc,
