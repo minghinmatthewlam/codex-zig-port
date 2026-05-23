@@ -26,7 +26,7 @@ pub fn pluginsFeatureEnabled(bytes: []const u8) bool {
 }
 
 pub fn pluginHooksFeatureEnabled(bytes: []const u8) bool {
-    return featureEnabled(bytes, "plugin_hooks", false);
+    return featureEnabled(bytes, "plugin_hooks", true);
 }
 
 pub fn remotePluginFeatureEnabled(bytes: []const u8) bool {
@@ -476,6 +476,16 @@ test "plugin config parses enabled plugin ids and feature flags" {
     const data_root = (try localPluginDataRoot(allocator, "/tmp/codex-home", "demo@test")).?;
     defer allocator.free(data_root);
     try std.testing.expectEqualStrings("/tmp/codex-home/plugins/data/demo-test", data_root);
+}
+
+test "plugin hooks feature defaults enabled" {
+    const bytes =
+        \\[features]
+        \\plugins = true
+        \\
+    ;
+
+    try std.testing.expect(pluginHooksFeatureEnabled(bytes));
 }
 
 test "plugin config resolves active versioned plugin roots" {
