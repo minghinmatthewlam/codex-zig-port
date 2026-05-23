@@ -16,6 +16,7 @@ import sys
 import tempfile
 import threading
 import time
+import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
@@ -192,6 +193,14 @@ def tool_output_json(items: list[object], call_id: str) -> object | None:
         except json.JSONDecodeError:
             return None
     return None
+
+
+def is_uuid_version(value: str, version: int) -> bool:
+    try:
+        parsed = uuid.UUID(value)
+    except ValueError:
+        return False
+    return str(parsed) == value.lower() and parsed.version == version
 
 
 def has_tool_search_output(items: list[object], call_id: str) -> bool:
@@ -659,7 +668,7 @@ class MockResponsesHandler(BaseHTTPRequestHandler):
             agent_id = (
                 spawn_output.get("agent_id")
                 if isinstance(spawn_output, dict) and isinstance(spawn_output.get("agent_id"), str)
-                else "agent-1"
+                else "missing-agent"
             )
             payload = sse(
                 {
@@ -7433,7 +7442,6 @@ def run_e2e(binary: Path) -> str:
             wait_for(master_fd, output, b"subagent completed", 8, mark)
             send_line(master_fd, "/agent")
             wait_for(master_fd, output, b"Agents:", 5, mark)
-            wait_for(master_fd, output, b"agent-1", 5, mark)
             wait_for(master_fd, output, b"completed", 5, mark)
             read_available(master_fd, output, 0.2)
 
@@ -7558,19 +7566,27 @@ def run_e2e(binary: Path) -> str:
         ]
         if not subagent_tool_output_bodies:
             raise AssertionError("expected tool_search output to include multi_agent_v1.spawn_agent")
-        subagent_spawn_bodies = [
-            body
-            for body in server.request_bodies
-            if any(
-                isinstance(item, dict)
-                and item.get("type") == "function_call_output"
-                and item.get("call_id") == "call-tui-e2e-spawn-agent"
-                and '"agent_id":"agent-1"' in str(item.get("output", "")).replace(" ", "")
-                for item in body.get("input", [])
-            )
-        ]
-        if not subagent_spawn_bodies:
-            raise AssertionError("expected multi_agent_v1.spawn_agent to return an agent id")
+        subagent_spawn_ids = []
+        for body in server.request_bodies:
+            for item in body.get("input", []):
+                if not (
+                    isinstance(item, dict)
+                    and item.get("type") == "function_call_output"
+                    and item.get("call_id") == "call-tui-e2e-spawn-agent"
+                ):
+                    continue
+                output_text = item.get("output")
+                if not isinstance(output_text, str):
+                    continue
+                try:
+                    parsed_output = json.loads(output_text)
+                except json.JSONDecodeError:
+                    continue
+                agent_id = parsed_output.get("agent_id") if isinstance(parsed_output, dict) else None
+                if isinstance(agent_id, str) and is_uuid_version(agent_id, 7):
+                    subagent_spawn_ids.append(agent_id)
+        if not subagent_spawn_ids:
+            raise AssertionError("expected multi_agent_v1.spawn_agent to return a UUID v7 agent id")
         subagent_wait_bodies = [
             body
             for body in server.request_bodies
