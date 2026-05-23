@@ -1260,11 +1260,14 @@ thread `systemError`, emit an `"error"` notification with the same turn failure
 message and `willRetry: false`, expose that status through loaded thread
 reads/lists, and successful follow-up turns restore `idle`, honoring
 `optOutNotificationMethods`.
+`thread/unsubscribe` and connection teardown now keep loaded threads alive
+through Rust's 30-minute no-subscriber/no-activity grace period, then unload
+them, emit `thread/status/changed` with `notLoaded`, and emit `thread/closed`.
 `ThreadStatus` and
 `ThreadStatus`, `ThreadStatusChangedNotification`, and
 `ThreadClosedNotification` are included in generated TypeScript and JSON
-schemas. Idle-timeout `thread/closed` unload transitions, richer error payload
-serialization, and true async active-turn status tracking remain planned.
+schemas. Richer error payload serialization and true async active-turn status
+tracking remain planned.
 
 Additional app-server thread-resume coverage: `thread/resume` now loads Zig-native session JSONL files by thread id or explicit path, loads basic Rust rollout JSONL files by UUID or explicit path, resolves readable local `state_5.sqlite` `threads.rollout_path` rows by thread id, or starts from non-empty in-memory `history` with Rust's history-over-path/threadId precedence. It creates or replaces the process-local loaded thread, returns a Rust-shaped `ThreadResumeResponse`, restores preview/title/path/source/thread-source/model-provider/cwd/CLI-version fields available in the loaded transcript, applies request-profile model-provider config ahead of saved transcript providers, applies state-DB model, model-provider, reasoning-effort, and Git metadata for resumed threads unless an explicit resume model/provider/reasoning override is present, rejects resume when a configured `required = true` MCP server fails to initialize, includes the experimental permission-profile response fields only for experimental clients, replays persisted Rust `token_count` usage through `thread/tokenUsage/updated` when turns are included, can include simple transcript-derived turns or honor `excludeTurns` while retaining turns for `thread/turns/list`, feeds the loaded ID into `thread/loaded/list`, and is included in TypeScript and JSON schema generation along with the token-usage notification shape. Full state-db runtime metadata, live reattachment, interrupted-turn usage attribution, and full persisted thread schema parity remain planned.
 

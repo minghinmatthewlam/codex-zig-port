@@ -120,8 +120,8 @@ Zig TUI help in `src/tui.zig`, and the broader narrative tracker in
   backend behind the reported connecting status.
 - Close app-server active-turn feature gaps needed by desktop clients:
   real async turns, active turn status, interruption, steering, server-request
-  dispatch, lifecycle notification completeness, and non-stdio deferred command
-  responses.
+  dispatch, remaining lifecycle notification depth, and non-stdio deferred
+  command responses.
 
 ### Plugin CLI and TUI User Flows
 
