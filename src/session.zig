@@ -3448,8 +3448,77 @@ test "runToolSearchCall returns multi_agent_v1 namespace tools" {
         try std.testing.expectEqual(true, tool.get("defer_loading").?.bool);
         try std.testing.expectEqualStrings("object", tool.get("parameters").?.object.get("type").?.string);
         try std.testing.expect(tool.get("output_schema") == null);
+        if (std.mem.eql(u8, tool_name, "spawn_agent")) {
+            const description = tool.get("description").?.string;
+            try std.testing.expect(std.mem.indexOf(u8, description, "Only use `spawn_agent` if and only if") != null);
+            try std.testing.expect(std.mem.indexOf(u8, description, "Spawned agents inherit your current model by default") != null);
+            try std.testing.expect(std.mem.indexOf(u8, description, "Available model overrides (optional; inherited parent model is preferred):") != null);
+            try std.testing.expect(std.mem.indexOf(u8, description, "- `gpt-5.4`: Strong model for everyday coding. Reasoning efforts: low, medium (default), high, xhigh. Service tiers: priority.") != null);
+            try std.testing.expect(std.mem.indexOf(u8, description, "codex-auto-review") == null);
+
+            const properties = tool.get("parameters").?.object.get("properties").?.object;
+            try std.testing.expectEqualStrings(
+                "Optional model override for the new agent. Leave unset to inherit the same model as the parent, which is the preferred default. Only set this when the user explicitly asks for a different model or the task clearly requires one.",
+                properties.get("model").?.object.get("description").?.string,
+            );
+            try std.testing.expectEqualStrings(
+                "Optional service tier override for the new agent. Leave unset unless the user explicitly asks for one.",
+                properties.get("service_tier").?.object.get("description").?.string,
+            );
+        }
     }
     for (seen) |was_seen| try std.testing.expect(was_seen);
+}
+
+test "runToolSearchCall indexes spawn_agent model override metadata" {
+    const allocator = std.testing.allocator;
+    const catalog = mcp_runtime.Catalog{ .tools = &.{} };
+    const scenarios = [_]struct {
+        query: []const u8,
+        arguments: []const u8,
+    }{
+        .{ .query = "gpt-5.4", .arguments = "{\"query\":\"gpt-5.4\"}" },
+        .{ .query = "priority", .arguments = "{\"query\":\"priority\"}" },
+        .{ .query = "xhigh", .arguments = "{\"query\":\"xhigh\"}" },
+    };
+
+    for (scenarios) |scenario| {
+        const call = api.FunctionCall{
+            .kind = .tool_search,
+            .call_id = scenario.query,
+            .name = "tool_search",
+            .arguments = scenario.arguments,
+        };
+
+        const result = try runToolSearchCall(allocator, catalog.tools, .{}, call);
+        defer result.deinit(allocator);
+
+        var parsed = try std.json.parseFromSlice(std.json.Value, allocator, result.output, .{});
+        defer parsed.deinit();
+        const namespaces = parsed.value.array;
+        try std.testing.expectEqual(@as(usize, 1), namespaces.items.len);
+        const namespace_tools = namespaces.items[0].object.get("tools").?.array;
+        try std.testing.expectEqual(@as(usize, 1), namespace_tools.items.len);
+        try std.testing.expectEqualStrings("spawn_agent", namespace_tools.items[0].object.get("name").?.string);
+    }
+}
+
+test "runToolSearchCall does not index spawn_agent model description prose" {
+    const allocator = std.testing.allocator;
+    const catalog = mcp_runtime.Catalog{ .tools = &.{} };
+    const call = api.FunctionCall{
+        .kind = .tool_search,
+        .call_id = "search-model-prose",
+        .name = "tool_search",
+        .arguments = "{\"query\":\"research\"}",
+    };
+
+    const result = try runToolSearchCall(allocator, catalog.tools, .{}, call);
+    defer result.deinit(allocator);
+
+    var parsed = try std.json.parseFromSlice(std.json.Value, allocator, result.output, .{});
+    defer parsed.deinit();
+    try std.testing.expectEqual(@as(usize, 0), parsed.value.array.items.len);
 }
 
 test "runToolSearchCall applies explicit limit to multi_agent_v1 leaf tools" {
