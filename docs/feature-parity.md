@@ -92,18 +92,25 @@ Zig TUI help in `src/tui.zig`, and the broader narrative tracker in
 ### App-Server Daemon and Remote Control
 
 - `codex app-server daemon` now exposes the Rust command family and covers
-  safe no-daemon behavior: `stop` reports `notRunning`, `version` reports the
-  missing default control socket, `bootstrap`/`start`/`restart` report the
-  missing managed standalone install, and `enable-remote-control` /
-  `disable-remote-control` write `app-server-daemon/settings.json` plus daemon
-  lock scaffolding. Remaining daemon parity is the live managed lifecycle:
-  starting, restarting, stopping, updating, and version-querying a running
-  managed daemon.
+  safe no-daemon behavior plus live PID-backed daemon lifecycle when the
+  managed standalone Codex path exists: `start`, `restart`, `stop`, and
+  `version` spawn, probe, report, and terminate a real Unix-socket app-server.
+  `bootstrap` still reports the missing managed standalone install when absent,
+  and `enable-remote-control` / `disable-remote-control` write
+  `app-server-daemon/settings.json`, report running managed daemon metadata,
+  and restart the managed daemon when the setting changes. Daemon command
+  `-c/--config` and `--enable`/`--disable` options are forwarded into newly
+  spawned managed app-server processes and preserved across setting-change
+  restarts of that managed process. Remaining daemon parity is managed
+  bootstrap/update-loop behavior.
 - Finish live success behavior for `codex remote-control start`. Zig now
   accepts the Rust `start` / `stop` command forms plus global `--json`;
-  `stop` reports Rust-shaped no-daemon JSON or human text, and `start` follows
-  the daemon managed-install error path. Remaining parity is the same live
-  managed daemon start/readiness path tracked above.
+  `stop` routes through the daemon stop lifecycle and reports Rust-shaped JSON
+  or human text, and `start` follows the daemon managed-install error path.
+  `app-server --remote-control` now reports `connecting` and enables the
+  `remote_control` feature in app-server feature APIs. Remaining parity is
+  enabling remote control on the started managed app-server and printing
+  Rust-shaped readiness output.
 - Close app-server active-turn feature gaps needed by desktop clients:
   real async turns, active turn status, interruption, steering, server-request
   dispatch, lifecycle notification completeness, and non-stdio deferred command

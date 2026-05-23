@@ -730,13 +730,25 @@ attachment collection remain planned.
 Additional app-server daemon coverage: `codex-zig app-server daemon` exposes
 the Rust-visible `bootstrap`, `start`, `restart`, `enable-remote-control`,
 `disable-remote-control`, `stop`, and `version` command family. Current
-behavior covers safe no-daemon and no-managed-install surfaces: `stop` returns
-Rust-shaped `notRunning` JSON, remote-control enable/disable writes
-`$CODEX_HOME/app-server-daemon/settings.json` plus daemon lock scaffolding,
-`version` reports the missing default control socket, and
-`bootstrap`/`start`/`restart` report the missing managed standalone Codex
-install. Live managed daemon spawn, restart, stop, update, and running-version
-queries remain planned.
+behavior covers safe no-daemon and no-managed-install surfaces plus live
+managed lifecycle when `$CODEX_HOME/packages/standalone/current/codex` exists:
+`start` spawns a detached PID-backed `app-server --listen unix://`, writes
+`app-server.pid`, waits for the control socket, and reports Rust-shaped
+`started` JSON with `backend`, `pid`, `managedCodexVersion`, and
+`appServerVersion`; repeated `start` reports `alreadyRunning`; `version`
+reports a running managed app-server with `backend: "pid"`; `restart` stops and
+starts the managed process; and `stop` terminates it before returning
+`stopped`. Daemon `-c/--config` and `--enable`/`--disable` command options are
+forwarded into newly spawned managed app-server processes and preserved across
+setting-change restarts of that managed process. Remote-control enable/disable
+writes `$CODEX_HOME/app-server-daemon/settings.json`, reports `backend: "pid"`
+and `appServerVersion` for a running managed daemon, and restarts that daemon
+when the setting changes. Managed stale PID detection validates process start time
+plus daemon command shape before signaling, and concurrent `start` calls are
+serialized by the daemon operation lock plus PID reservation lock. Top-level
+`remote-control stop` routes through the same stop lifecycle. Managed
+bootstrap/update-loop behavior and remote-control readiness output remain
+planned.
 
 The high-level `app/list` summary in the table above is expanded by the
 detailed app-list note below: authenticated ChatGPT connector directory page
@@ -873,10 +885,13 @@ global `--json`, parses `-c/--config`, `--enable`, and `--disable` options,
 reports that foreground headless app-server remote control is blocked while the
 SQLite state DB is unavailable, accepts `remote-control start` and follows the
 managed-standalone missing-install daemon error path, and accepts
-`remote-control stop` with Rust-shaped no-daemon JSON or human output. The
-command appends the `remote_control` feature enablement after user-provided
-feature toggles, matching Rust's headless invocation override ordering while
-live foreground and managed-daemon start/readiness remain planned.
+`remote-control stop` with Rust-shaped JSON or human output through the daemon
+stop lifecycle. The command appends the `remote_control` feature enablement
+after user-provided feature toggles, matching Rust's headless invocation
+override ordering. `app-server --remote-control` now reports
+`remoteControl/status/changed` as `connecting` and exposes `remote_control` as
+enabled through app-server feature APIs while live foreground and
+managed-daemon start/readiness remain planned.
 
 Additional Cloud Tasks command coverage: `codex-zig cloud` and the
 `cloud-tasks` alias now have Rust-shaped help for `exec`, `status`, `list`,
