@@ -43,7 +43,7 @@ Zig TUI help in `src/tui.zig`, and the broader narrative tracker in
   interruption, and accurate background-process cleanup.
 - Close major missing TUI slash commands that affect daily use:
   `/ide`, `/agent` / `/subagents`,
-  `/approve`, `/memories`, `/feedback`,
+  `/approve`, `/feedback`,
   `/pets` / `/pet`, `/realtime`, and `/settings`.
 - Basic local TUI `/experimental` coverage is implemented as a text-mode
   feature browser/toggler: it lists Rust menu-visible experimental features
@@ -63,6 +63,12 @@ Zig TUI help in `src/tui.zig`, and the broader narrative tracker in
   load errors. Rust's rich tabbed popup, search, install/uninstall, marketplace
   add/remove/upgrade, remote catalogs, details, app auth, and share management
   remain in the plugin TUI depth buckets.
+- Basic local TUI `/memories` coverage is implemented as a text-mode memory
+  settings surface: it reports feature enablement, current `use_memories` and
+  `generate_memories` settings, persists feature enable/disable and the two
+  memory toggles to `config.toml`, and can clear local memory files through the
+  existing reset implementation. Rust's rich popup and confirmation UI remain
+  planned TUI depth.
 - Basic local TUI `/skills` and `/hooks` list views are covered: `/skills`
   lists discovered repo/user/plugin skills with enabled state and load errors,
   and `/hooks` lists discovered lifecycle command hooks with event, source,
@@ -260,7 +266,7 @@ Zig TUI help in `src/tui.zig`, and the broader narrative tracker in
 2. Live app-server daemon lifecycle and remote-control command forms.
 3. Active-turn/TUI lifecycle: interruption, steering, queued input, process
    tracking, and lifecycle notifications.
-4. TUI slash-command feature gaps: `/ide`, `/approve`, and `/memories`.
+4. TUI slash-command feature gaps: `/ide` and `/approve`.
 5. Rich plugin/app TUI management plus remaining remote/cache depth.
 6. Session/thread store parity needed by resume/fork and desktop clients.
 7. MCP lifecycle depth.
