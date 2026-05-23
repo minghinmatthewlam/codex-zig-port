@@ -32374,7 +32374,7 @@ fn handleTurnStart(
     const turn_id = try allocateNextTurnIdForThread(allocator, thread);
     defer allocator.free(turn_id);
 
-    var local_images = try loadTurnLocalImages(allocator, input.local_image_paths);
+    var local_images = try loadTurnLocalImages(allocator, thread.cwd, input.local_image_paths);
     defer local_images.deinit(allocator);
     const request_input_images = try combineTurnInputImages(allocator, input.image_urls, local_images.data_urls);
     defer if (request_input_images.len > 0) allocator.free(request_input_images);
@@ -33118,7 +33118,7 @@ fn combineTurnInputImages(
     return combined;
 }
 
-fn loadTurnLocalImages(allocator: std.mem.Allocator, paths: []const []const u8) !TurnLocalImages {
+fn loadTurnLocalImages(allocator: std.mem.Allocator, base_cwd: ?[]const u8, paths: []const []const u8) !TurnLocalImages {
     if (paths.len == 0) return .{};
 
     var data_urls = std.ArrayList([]const u8).empty;
@@ -33136,8 +33136,8 @@ fn loadTurnLocalImages(allocator: std.mem.Allocator, paths: []const []const u8) 
     };
 
     for (paths) |path| {
-        const data_url = image_inputs.loadOne(allocator, path) catch |err| {
-            const placeholder = try renderLocalImageErrorPlaceholder(allocator, path, err);
+        const data_url = image_inputs.loadOneFromBase(allocator, base_cwd, path) catch |err| {
+            const placeholder = try image_inputs.renderLoadErrorPlaceholder(allocator, path, err);
             missing_placeholders.append(allocator, placeholder) catch |append_err| {
                 allocator.free(placeholder);
                 return append_err;
@@ -33162,14 +33162,6 @@ fn loadTurnLocalImages(allocator: std.mem.Allocator, paths: []const []const u8) 
         .data_urls = data_urls_owned,
         .missing_placeholders = missing_placeholders_owned,
     };
-}
-
-fn renderLocalImageErrorPlaceholder(
-    allocator: std.mem.Allocator,
-    path: []const u8,
-    err: anyerror,
-) ![]const u8 {
-    return std.fmt.allocPrint(allocator, "Codex could not read the local image at `{s}`: {s}", .{ path, @errorName(err) });
 }
 
 const TurnSkillInjections = struct {

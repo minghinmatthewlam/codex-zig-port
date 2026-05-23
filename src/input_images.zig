@@ -124,6 +124,22 @@ pub fn loadOne(allocator: std.mem.Allocator, path: []const u8) ![]const u8 {
     return std.fmt.allocPrint(allocator, "data:{s};base64,{s}", .{ mimeForImage(path, bytes), encoded });
 }
 
+pub fn loadOneFromBase(allocator: std.mem.Allocator, base_cwd: ?[]const u8, path: []const u8) ![]const u8 {
+    const base = base_cwd orelse return loadOne(allocator, path);
+    if (std.fs.path.isAbsolute(path)) return loadOne(allocator, path);
+    const resolved = try std.fs.path.join(allocator, &.{ base, path });
+    defer allocator.free(resolved);
+    return loadOne(allocator, resolved);
+}
+
+pub fn renderLoadErrorPlaceholder(
+    allocator: std.mem.Allocator,
+    path: []const u8,
+    err: anyerror,
+) ![]const u8 {
+    return std.fmt.allocPrint(allocator, "Codex could not read the local image at `{s}`: {s}", .{ path, @errorName(err) });
+}
+
 fn mimeForImage(path: []const u8, bytes: []const u8) []const u8 {
     if (bytes.len >= 8 and std.mem.eql(u8, bytes[0..8], "\x89PNG\r\n\x1a\n")) return "image/png";
     if (bytes.len >= 3 and bytes[0] == 0xff and bytes[1] == 0xd8 and bytes[2] == 0xff) return "image/jpeg";
@@ -188,4 +204,21 @@ test "variadic equals image accepts option-like first value" {
     try std.testing.expectEqual(@as(usize, 0), index);
     try std.testing.expectEqual(@as(usize, 1), image_files.items.len);
     try std.testing.expectEqualStrings("-odd.png", image_files.items[0]);
+}
+
+test "load one from base resolves relative paths" {
+    const allocator = std.testing.allocator;
+    var dir = std.testing.tmpDir(.{});
+    defer dir.cleanup();
+    try dir.dir.writeFile(std.Io.Threaded.global_single_threaded.io(), .{
+        .sub_path = "tiny.png",
+        .data = "\x89PNG\r\n\x1a\nsubagent-local-image\n",
+    });
+    const base = try dir.dir.realPathFileAlloc(std.Io.Threaded.global_single_threaded.io(), ".", allocator);
+    defer allocator.free(base);
+
+    const data_url = try loadOneFromBase(allocator, base, "tiny.png");
+    defer allocator.free(data_url);
+
+    try std.testing.expect(std.mem.startsWith(u8, data_url, "data:image/png;base64,"));
 }
