@@ -99,9 +99,11 @@ Zig TUI help in `src/tui.zig`, and the broader narrative tracker in
   lock scaffolding. Remaining daemon parity is the live managed lifecycle:
   starting, restarting, stopping, updating, and version-querying a running
   managed daemon.
-- Implement Rust-shaped `codex remote-control start|stop` plus `--json`.
-  Zig currently starts a headless app-server for bare `remote-control` but does
-  not accept the Rust start/stop command form.
+- Finish live success behavior for `codex remote-control start`. Zig now
+  accepts the Rust `start` / `stop` command forms plus global `--json`;
+  `stop` reports Rust-shaped no-daemon JSON or human text, and `start` follows
+  the daemon managed-install error path. Remaining parity is the same live
+  managed daemon start/readiness path tracked above.
 - Close app-server active-turn feature gaps needed by desktop clients:
   real async turns, active turn status, interruption, steering, server-request
   dispatch, lifecycle notification completeness, and non-stdio deferred command

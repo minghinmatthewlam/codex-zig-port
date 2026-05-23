@@ -868,12 +868,15 @@ listener. The PTY smoke keeps the event stream open while sending a controller
 prompt into the running TUI and compares the event snapshot with `/api/state`.
 
 Additional top-level remote-control command coverage: `codex-zig
-remote-control` now has Rust-shaped flag-only help, parses `-c/--config`,
-`--enable`, and `--disable` options, rejects positional arguments such as
-`stop`, and reports that headless app-server remote control is blocked while
-the SQLite state DB is unavailable. The command appends the `remote_control`
-feature enablement after user-provided feature toggles, matching Rust's
-headless invocation override ordering while the runtime remains planned.
+remote-control` now has Rust-shaped help for foreground, `start`, `stop`, and
+global `--json`, parses `-c/--config`, `--enable`, and `--disable` options,
+reports that foreground headless app-server remote control is blocked while the
+SQLite state DB is unavailable, accepts `remote-control start` and follows the
+managed-standalone missing-install daemon error path, and accepts
+`remote-control stop` with Rust-shaped no-daemon JSON or human output. The
+command appends the `remote_control` feature enablement after user-provided
+feature toggles, matching Rust's headless invocation override ordering while
+live foreground and managed-daemon start/readiness remain planned.
 
 Additional Cloud Tasks command coverage: `codex-zig cloud` and the
 `cloud-tasks` alias now have Rust-shaped help for `exec`, `status`, `list`,
