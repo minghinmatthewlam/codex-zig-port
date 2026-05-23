@@ -89,14 +89,16 @@ fn runPluginHelp(args: *std.process.Args.Iterator) !void {
         printHelp();
         return;
     };
-    if (args.next() != null) return error.UnexpectedPluginArgument;
     if (std.mem.eql(u8, target, "add")) {
+        if (args.next() != null) return error.UnexpectedPluginArgument;
         printPluginAddHelp();
     } else if (std.mem.eql(u8, target, "list")) {
+        if (args.next() != null) return error.UnexpectedPluginArgument;
         printPluginListHelp();
     } else if (std.mem.eql(u8, target, "marketplace")) {
-        printMarketplaceHelp();
+        try runMarketplaceHelp(args);
     } else if (std.mem.eql(u8, target, "remove")) {
+        if (args.next() != null) return error.UnexpectedPluginArgument;
         printPluginRemoveHelp();
     } else {
         return error.UnknownPluginSubcommand;
@@ -139,6 +141,10 @@ fn runPluginList(allocator: std.mem.Allocator, args: *std.process.Args.Iterator)
             const value = arg["--marketplace=".len..];
             if (value.len == 0) return error.MissingPluginMarketplaceName;
             marketplace_name = value;
+            continue;
+        }
+        if (std.mem.startsWith(u8, arg, "-m") and arg.len > "-m".len) {
+            marketplace_name = arg["-m".len..];
             continue;
         }
         if (std.mem.startsWith(u8, arg, "-")) return error.UnknownPluginListOption;
@@ -185,6 +191,10 @@ fn parseSelectorArgs(args: *std.process.Args.Iterator, command: SelectorCommand)
             const value = arg["--marketplace=".len..];
             if (value.len == 0) return error.MissingPluginMarketplaceName;
             parsed.marketplace_name = value;
+            continue;
+        }
+        if (std.mem.startsWith(u8, arg, "-m") and arg.len > "-m".len) {
+            parsed.marketplace_name = arg["-m".len..];
             continue;
         }
         if (std.mem.startsWith(u8, arg, "-")) {
@@ -289,7 +299,7 @@ fn listPluginsAndPrint(allocator: std.mem.Allocator, marketplace_filter: ?[]cons
     var context = try loadPluginCommandContext(allocator);
     defer context.deinit(allocator);
 
-    const response = try plugin_list.renderResponse(allocator, context.codex_home, context.config_bytes orelse "", &.{}, true);
+    const response = try plugin_list.renderConfiguredResponse(allocator, context.codex_home, context.config_bytes orelse "");
     defer allocator.free(response);
     var parsed = try std.json.parseFromSlice(std.json.Value, allocator, response, .{});
     defer parsed.deinit();
@@ -343,7 +353,7 @@ fn findMarketplacePathForPlugin(
     config_bytes: []const u8,
     selection: PluginSelection,
 ) ![]const u8 {
-    const response = try plugin_list.renderResponse(allocator, codex_home, config_bytes, &.{}, true);
+    const response = try plugin_list.renderConfiguredResponse(allocator, codex_home, config_bytes);
     defer allocator.free(response);
     var parsed = try std.json.parseFromSlice(std.json.Value, allocator, response, .{});
     defer parsed.deinit();
@@ -687,7 +697,28 @@ fn runMarketplace(allocator: std.mem.Allocator, args: *std.process.Args.Iterator
         try runMarketplaceRemove(allocator, args);
         return;
     }
+    if (std.mem.eql(u8, subcommand, "help")) {
+        try runMarketplaceHelp(args);
+        return;
+    }
     return error.UnknownPluginMarketplaceSubcommand;
+}
+
+fn runMarketplaceHelp(args: *std.process.Args.Iterator) !void {
+    const target = args.next() orelse {
+        printMarketplaceHelp();
+        return;
+    };
+    if (args.next() != null) return error.UnexpectedPluginMarketplaceArgument;
+    if (std.mem.eql(u8, target, "add")) {
+        printMarketplaceAddHelp();
+    } else if (std.mem.eql(u8, target, "upgrade")) {
+        printMarketplaceUpgradeHelp();
+    } else if (std.mem.eql(u8, target, "remove")) {
+        printMarketplaceRemoveHelp();
+    } else {
+        return error.UnknownPluginMarketplaceSubcommand;
+    }
 }
 
 fn runMarketplaceAdd(allocator: std.mem.Allocator, args: *std.process.Args.Iterator) !void {

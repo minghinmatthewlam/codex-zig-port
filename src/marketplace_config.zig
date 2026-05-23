@@ -101,6 +101,28 @@ pub const ConfiguredMarketplaceRoot = struct {
     }
 };
 
+pub const ConfiguredMarketplaceLoadIssue = struct {
+    marketplace_path: []const u8,
+    message: []const u8,
+
+    pub fn deinit(self: *ConfiguredMarketplaceLoadIssue, allocator: std.mem.Allocator) void {
+        allocator.free(self.marketplace_path);
+        allocator.free(self.message);
+    }
+};
+
+pub const ConfiguredMarketplaceRootsResult = struct {
+    roots: []ConfiguredMarketplaceRoot,
+    issues: []ConfiguredMarketplaceLoadIssue,
+
+    pub fn deinit(self: *ConfiguredMarketplaceRootsResult, allocator: std.mem.Allocator) void {
+        for (self.roots) |*root| root.deinit(allocator);
+        allocator.free(self.roots);
+        for (self.issues) |*issue| issue.deinit(allocator);
+        allocator.free(self.issues);
+    }
+};
+
 const MarketplaceEntry = struct {
     name: []const u8,
     last_revision: ?[]const u8 = null,
@@ -553,6 +575,17 @@ fn upgradeErrorMessage(allocator: std.mem.Allocator, err: anyerror) ![]const u8 
 }
 
 pub fn configuredMarketplaceRoots(allocator: std.mem.Allocator, codex_home: []const u8, config_bytes: []const u8) ![]ConfiguredMarketplaceRoot {
+    var result = try configuredMarketplaceRootsStrict(allocator, codex_home, config_bytes);
+    defer {
+        for (result.issues) |*issue| issue.deinit(allocator);
+        allocator.free(result.issues);
+    }
+    const roots = result.roots;
+    result.roots = &.{};
+    return roots;
+}
+
+pub fn configuredMarketplaceRootsStrict(allocator: std.mem.Allocator, codex_home: []const u8, config_bytes: []const u8) !ConfiguredMarketplaceRootsResult {
     const entries = try marketplaceEntries(allocator, config_bytes);
     defer {
         for (entries) |*entry| entry.deinit(allocator);
@@ -560,17 +593,44 @@ pub fn configuredMarketplaceRoots(allocator: std.mem.Allocator, codex_home: []co
     }
 
     var roots = std.ArrayList(ConfiguredMarketplaceRoot).empty;
+    var issues = std.ArrayList(ConfiguredMarketplaceLoadIssue).empty;
     errdefer {
         for (roots.items) |*root| root.deinit(allocator);
         roots.deinit(allocator);
+        for (issues.items) |*issue| issue.deinit(allocator);
+        issues.deinit(allocator);
     }
 
     for (entries) |entry| {
-        if (!plugin_config.isValidPluginSegment(entry.name)) continue;
+        if (!plugin_config.isValidPluginSegment(entry.name)) {
+            try appendConfiguredMarketplaceIssue(
+                allocator,
+                &issues,
+                "<invalid config>",
+                "invalid marketplace name: only ASCII letters, digits, `_`, and `-` are allowed",
+            );
+            continue;
+        }
         const source_type = entry.source_type orelse "";
         const root = if (std.mem.eql(u8, source_type, "local")) blk: {
-            const source = entry.source orelse continue;
-            if (source.len == 0) continue;
+            const source = entry.source orelse {
+                try appendConfiguredMarketplaceIssue(
+                    allocator,
+                    &issues,
+                    "<invalid config>",
+                    "marketplace source is missing",
+                );
+                continue;
+            };
+            if (source.len == 0) {
+                try appendConfiguredMarketplaceIssue(
+                    allocator,
+                    &issues,
+                    "<invalid config>",
+                    "marketplace source is missing",
+                );
+                continue;
+            }
             break :blk try allocator.dupe(u8, source);
         } else try installedMarketplaceRoot(allocator, codex_home, entry.name);
         errdefer allocator.free(root);
@@ -580,7 +640,31 @@ pub fn configuredMarketplaceRoots(allocator: std.mem.Allocator, codex_home: []co
         });
     }
 
-    return roots.toOwnedSlice(allocator);
+    const owned_roots = try roots.toOwnedSlice(allocator);
+    errdefer {
+        for (owned_roots) |*root| root.deinit(allocator);
+        allocator.free(owned_roots);
+    }
+    return .{
+        .roots = owned_roots,
+        .issues = try issues.toOwnedSlice(allocator),
+    };
+}
+
+fn appendConfiguredMarketplaceIssue(
+    allocator: std.mem.Allocator,
+    issues: *std.ArrayList(ConfiguredMarketplaceLoadIssue),
+    marketplace_path: []const u8,
+    message: []const u8,
+) !void {
+    const owned_path = try allocator.dupe(u8, marketplace_path);
+    errdefer allocator.free(owned_path);
+    const owned_message = try allocator.dupe(u8, message);
+    errdefer allocator.free(owned_message);
+    try issues.append(allocator, .{
+        .marketplace_path = owned_path,
+        .message = owned_message,
+    });
 }
 
 fn resolveLocalSourceRoot(allocator: std.mem.Allocator, source: []const u8) ![]const u8 {

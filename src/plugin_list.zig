@@ -382,6 +382,62 @@ pub fn renderResponseWithRemoteMarketplaces(
     return out.toOwnedSlice(allocator);
 }
 
+pub fn renderConfiguredResponse(
+    allocator: std.mem.Allocator,
+    codex_home: []const u8,
+    config_bytes: []const u8,
+) ![]const u8 {
+    if (!plugin_config.pluginsFeatureEnabled(config_bytes)) {
+        return allocator.dupe(u8, "{\"marketplaces\":[],\"marketplaceLoadErrors\":[],\"featuredPluginIds\":[]}");
+    }
+
+    const enabled_ids = try plugin_config.enabledPluginIds(allocator, config_bytes);
+    defer plugin_config.freeStringList(allocator, enabled_ids);
+
+    var configured = try marketplace_config.configuredMarketplaceRootsStrict(allocator, codex_home, config_bytes);
+    defer configured.deinit(allocator);
+
+    var seen_plugin_ids = std.ArrayList([]const u8).empty;
+    defer {
+        for (seen_plugin_ids.items) |plugin_id| allocator.free(plugin_id);
+        seen_plugin_ids.deinit(allocator);
+    }
+
+    var marketplaces = std.ArrayList(u8).empty;
+    defer marketplaces.deinit(allocator);
+    var marketplace_count: usize = 0;
+
+    var load_errors = std.ArrayList(u8).empty;
+    defer load_errors.deinit(allocator);
+    var load_error_count: usize = 0;
+
+    for (configured.issues) |issue| {
+        try appendMarketplaceLoadError(allocator, &load_errors, &load_error_count, issue.marketplace_path, issue.message);
+    }
+    for (configured.roots) |root| {
+        try appendConfiguredMarketplaceFromRoot(
+            allocator,
+            codex_home,
+            root.root,
+            enabled_ids,
+            &seen_plugin_ids,
+            &marketplaces,
+            &marketplace_count,
+            &load_errors,
+            &load_error_count,
+        );
+    }
+
+    var out = std.ArrayList(u8).empty;
+    errdefer out.deinit(allocator);
+    try out.appendSlice(allocator, "{\"marketplaces\":[");
+    try out.appendSlice(allocator, marketplaces.items);
+    try out.appendSlice(allocator, "],\"marketplaceLoadErrors\":[");
+    try out.appendSlice(allocator, load_errors.items);
+    try out.appendSlice(allocator, "],\"featuredPluginIds\":[]}");
+    return out.toOwnedSlice(allocator);
+}
+
 fn appendRemoteMarketplaceArrayItems(
     allocator: std.mem.Allocator,
     marketplaces: *std.ArrayList(u8),
@@ -584,6 +640,48 @@ fn appendMarketplacesForRoot(
     }
 }
 
+fn appendConfiguredMarketplaceFromRoot(
+    allocator: std.mem.Allocator,
+    codex_home: []const u8,
+    root: []const u8,
+    enabled_ids: []const []const u8,
+    seen_plugin_ids: *std.ArrayList([]const u8),
+    marketplaces: *std.ArrayList(u8),
+    marketplace_count: *usize,
+    load_errors: *std.ArrayList(u8),
+    load_error_count: *usize,
+) !void {
+    var found_manifest = false;
+    for (MARKETPLACE_MANIFEST_RELATIVE_PATHS) |relative_path| {
+        const marketplace_path = try std.fs.path.join(allocator, &.{ root, relative_path });
+        defer allocator.free(marketplace_path);
+        const bytes = try readFileOptional(allocator, marketplace_path, 1024 * 1024) orelse continue;
+        defer allocator.free(bytes);
+        found_manifest = true;
+        try appendMarketplaceFromBytes(
+            allocator,
+            codex_home,
+            marketplace_path,
+            bytes,
+            enabled_ids,
+            seen_plugin_ids,
+            marketplaces,
+            marketplace_count,
+            load_errors,
+            load_error_count,
+        );
+    }
+    if (!found_manifest) {
+        try appendMarketplaceLoadError(
+            allocator,
+            load_errors,
+            load_error_count,
+            root,
+            "marketplace root does not contain a supported manifest",
+        );
+    }
+}
+
 fn appendMarketplaceFromFile(
     allocator: std.mem.Allocator,
     codex_home: []const u8,
@@ -597,7 +695,32 @@ fn appendMarketplaceFromFile(
 ) !void {
     const bytes = try readFileOptional(allocator, marketplace_path, 1024 * 1024) orelse return;
     defer allocator.free(bytes);
+    try appendMarketplaceFromBytes(
+        allocator,
+        codex_home,
+        marketplace_path,
+        bytes,
+        enabled_ids,
+        seen_plugin_ids,
+        marketplaces,
+        marketplace_count,
+        load_errors,
+        load_error_count,
+    );
+}
 
+fn appendMarketplaceFromBytes(
+    allocator: std.mem.Allocator,
+    codex_home: []const u8,
+    marketplace_path: []const u8,
+    bytes: []const u8,
+    enabled_ids: []const []const u8,
+    seen_plugin_ids: *std.ArrayList([]const u8),
+    marketplaces: *std.ArrayList(u8),
+    marketplace_count: *usize,
+    load_errors: *std.ArrayList(u8),
+    load_error_count: *usize,
+) !void {
     var parsed = std.json.parseFromSlice(std.json.Value, allocator, bytes, .{}) catch {
         try appendMarketplaceLoadError(allocator, load_errors, load_error_count, marketplace_path, "invalid marketplace file");
         return;
