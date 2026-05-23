@@ -698,7 +698,19 @@ fn appendFirstMarketplaceForRoot(
     for (MARKETPLACE_MANIFEST_RELATIVE_PATHS) |relative_path| {
         const marketplace_path = try std.fs.path.join(allocator, &.{ root, relative_path });
         defer allocator.free(marketplace_path);
-        const bytes = try readFileOptional(allocator, marketplace_path, 1024 * 1024) orelse continue;
+        const bytes = readFileOptional(allocator, marketplace_path, 1024 * 1024) catch |err| {
+            const message = try marketplaceReadErrorMessage(allocator, err);
+            defer allocator.free(message);
+            try appendMarketplaceLoadErrorMaybeConfigured(
+                allocator,
+                load_errors,
+                load_error_count,
+                configured_marketplace_name,
+                marketplace_path,
+                message,
+            );
+            return true;
+        } orelse continue;
         defer allocator.free(bytes);
         try appendMarketplaceFromBytes(
             allocator,
@@ -2617,6 +2629,10 @@ fn appendMarketplaceLoadErrorMaybeConfigured(
         return appendConfiguredMarketplaceLoadError(allocator, out, count, marketplace_name, marketplace_path, message);
     }
     return appendMarketplaceLoadError(allocator, out, count, marketplace_path, message);
+}
+
+fn marketplaceReadErrorMessage(allocator: std.mem.Allocator, err: anyerror) ![]const u8 {
+    return std.fmt.allocPrint(allocator, "failed to read marketplace file: {s}", .{@errorName(err)});
 }
 
 fn appendCommaIfNeeded(allocator: std.mem.Allocator, out: *std.ArrayList(u8), count: *usize) !void {

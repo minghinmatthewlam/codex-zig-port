@@ -2389,6 +2389,63 @@ def run_plugin_marketplace_smoke(
             f"expected first HOME marketplace manifest to win:\n{precedence_plugins.stderr}"
         )
 
+    unreadable_home = workspace / "unreadable-home-marketplace-home"
+    unreadable_home.mkdir()
+    write_marketplace_fixture(unreadable_home, "unreadable-home", "unreadable-plugin")
+    unreadable_manifest = unreadable_home / ".agents" / "plugins" / "marketplace.json"
+    unreadable_manifest.chmod(0)
+    try:
+        unreadable_codex_home = workspace / "unreadable-home-codex-home"
+        unreadable_codex_home.mkdir()
+        unreadable_codex_home.joinpath("config.toml").write_text(
+            "[features]\nplugins = true\n"
+            + f'[marketplaces.debug]\nsource_type = "local"\nsource = "{source}"\n'
+        )
+        unreadable_env = env.copy()
+        unreadable_env["CODEX_HOME"] = str(unreadable_codex_home)
+        unreadable_env["HOME"] = str(unreadable_home)
+        unreadable_plugins = subprocess.run(
+            [str(binary), "plugin", "list", "--marketplace", "debug"],
+            cwd=workspace,
+            env=unreadable_env,
+            text=True,
+            capture_output=True,
+            check=True,
+        )
+        if "sample@debug" not in unreadable_plugins.stderr:
+            raise AssertionError(
+                f"expected configured plugin list despite unreadable HOME marketplace:\n{unreadable_plugins.stderr}"
+            )
+        unreadable_add = subprocess.run(
+            [str(binary), "plugin", "add", "sample@debug"],
+            cwd=workspace,
+            env=unreadable_env,
+            text=True,
+            capture_output=True,
+            check=True,
+        )
+        if "Added plugin `sample` from marketplace `debug`." not in unreadable_add.stderr:
+            raise AssertionError(
+                f"expected configured plugin add despite unreadable HOME marketplace:\n{unreadable_add.stderr}"
+            )
+        unreadable_marketplace_list = subprocess.run(
+            [str(binary), "plugin", "marketplace", "list"],
+            cwd=workspace,
+            env=unreadable_env,
+            text=True,
+            capture_output=True,
+        )
+        if (
+            unreadable_marketplace_list.returncode == 0
+            or "failed to load marketplace(s)" not in unreadable_marketplace_list.stderr
+            or "failed to read marketplace file" not in unreadable_marketplace_list.stderr
+        ):
+            raise AssertionError(
+                f"expected unreadable HOME marketplace list failure:\n{unreadable_marketplace_list.stderr}"
+            )
+    finally:
+        unreadable_manifest.chmod(0o600)
+
     empty_source = workspace / "empty-marketplace-source"
     empty_source.joinpath(".agents", "plugins").mkdir(parents=True)
     empty_source.joinpath(".agents", "plugins", "marketplace.json").write_text(

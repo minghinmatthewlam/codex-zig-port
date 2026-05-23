@@ -431,7 +431,13 @@ fn appendMarketplaceListRoot(
     for (plugin_list.MARKETPLACE_MANIFEST_RELATIVE_PATHS) |relative_path| {
         const marketplace_path = try std.fs.path.join(allocator, &.{ root, relative_path });
         defer allocator.free(marketplace_path);
-        const bytes = try readFileOptional(allocator, marketplace_path, 1024 * 1024) orelse continue;
+        const bytes = readFileOptional(allocator, marketplace_path, 1024 * 1024) catch |err| {
+            const name = configured_marketplace_name orelse marketplace_path;
+            const message = try std.fmt.allocPrint(allocator, "failed to read marketplace file: {s}", .{@errorName(err)});
+            defer allocator.free(message);
+            try appendMarketplaceListIssue(allocator, issues, name, marketplace_path, message);
+            return;
+        } orelse continue;
         defer allocator.free(bytes);
         try appendMarketplaceListRowFromBytes(allocator, rows, issues, configured_marketplace_name, marketplace_path, bytes);
         return;
