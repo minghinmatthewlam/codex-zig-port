@@ -4161,6 +4161,86 @@ def run_tui_skills_hooks_slash_smoke(
                 proc.wait(timeout=2)
 
 
+def run_tui_approve_slash_smoke(
+    binary: Path,
+    env: dict[str, str],
+    workspace: Path,
+) -> None:
+    smoke_root = workspace / "tui-approve-smoke"
+    if smoke_root.exists():
+        shutil.rmtree(smoke_root)
+    smoke_home = smoke_root / "codex-home"
+    smoke_workspace = smoke_root / "workspace"
+    smoke_home.mkdir(parents=True)
+    smoke_workspace.mkdir(parents=True)
+
+    smoke_env = env.copy()
+    smoke_env["CODEX_HOME"] = str(smoke_home)
+    smoke_env.setdefault("TERM", "xterm-256color")
+    output = bytearray()
+    master_fd = -1
+    slave_fd = -1
+    master_fd, slave_fd = pty.openpty()
+    proc = None
+    try:
+        proc = subprocess.Popen(
+            [
+                str(binary),
+                "--no-alt-screen",
+            ],
+            cwd=smoke_workspace,
+            env=smoke_env,
+            stdin=slave_fd,
+            stdout=slave_fd,
+            stderr=slave_fd,
+            close_fds=True,
+        )
+        os.close(slave_fd)
+        slave_fd = -1
+
+        wait_for(master_fd, output, b"Type /help for commands", 8)
+
+        mark = len(output)
+        send_line(master_fd, "/help")
+        wait_for(master_fd, output, b"/approve", 5, mark)
+
+        mark = len(output)
+        send_line(master_fd, "/approve")
+        wait_for(master_fd, output, b"No recent auto-review denials in this thread.", 5, mark)
+        wait_for(
+            master_fd,
+            output,
+            b"Denials are recorded after auto-review rejects an action.",
+            5,
+            mark,
+        )
+
+        mark = len(output)
+        send_line(master_fd, "/approve extra")
+        wait_for(master_fd, output, b"usage: /approve", 5, mark)
+
+        mark = len(output)
+        send_line(master_fd, "/quit")
+        wait_for(master_fd, output, b"bye", 5, mark)
+        read_available(master_fd, output)
+        exit_code = proc.wait(timeout=5)
+        if exit_code != 0:
+            rendered = output.decode(errors="replace")
+            raise AssertionError(f"approve slash TUI exited with {exit_code}\n\n{rendered}")
+    finally:
+        if slave_fd >= 0:
+            os.close(slave_fd)
+        if master_fd >= 0:
+            os.close(master_fd)
+        if proc is not None and proc.poll() is None:
+            proc.terminate()
+            try:
+                proc.wait(timeout=2)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                proc.wait(timeout=2)
+
+
 def run_tui_apps_slash_smoke(
     binary: Path,
     env: dict[str, str],
@@ -6289,6 +6369,7 @@ def run_e2e(binary: Path) -> str:
             run_remote_flag_smoke(binary, env, workspace)
             run_local_remote_control_smoke(binary, env, workspace, port, server)
             run_local_remote_control_slash_smoke(binary, env, workspace, port, server)
+            run_tui_approve_slash_smoke(binary, env, workspace)
             run_tui_skills_hooks_slash_smoke(binary, env, workspace)
             run_tui_apps_slash_smoke(binary, env, workspace)
             run_tui_plugins_slash_smoke(binary, env, workspace)

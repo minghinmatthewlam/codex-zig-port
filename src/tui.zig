@@ -942,6 +942,11 @@ fn handleRemoteSlashCommand(
         return .handled;
     }
 
+    if (std.ascii.eqlIgnoreCase(parts.name, "approve")) {
+        printNoAutoReviewDenials(parts.args);
+        return .handled;
+    }
+
     if (std.ascii.eqlIgnoreCase(parts.name, "sessions")) {
         const limit = try parseSessionListLimit(parts.args);
         try printRemoteSessions(allocator, transport, limit);
@@ -1001,6 +1006,7 @@ fn printRemoteSlashHelp() void {
         \\  /permissions [approval=<mode>] [sandbox=<mode>]
         \\  /approval [mode]
         \\  /sandbox [mode]
+        \\  /approve
         \\  /sessions [N]
         \\  /clear
         \\  /new
@@ -3093,8 +3099,25 @@ fn handleSlashCommand(
         return .handled;
     }
 
+    if (std.ascii.eqlIgnoreCase(parts.name, "approve")) {
+        printNoAutoReviewDenials(parts.args);
+        return .handled;
+    }
+
     std.debug.print("unknown slash command: /{s} (try /help)\n", .{parts.name});
     return .handled;
+}
+
+fn printNoAutoReviewDenials(args: []const u8) void {
+    const trimmed = std.mem.trim(u8, args, " \t\r\n");
+    if (trimmed.len != 0) {
+        std.debug.print("usage: /approve\n", .{});
+        return;
+    }
+    std.debug.print(
+        "No recent auto-review denials in this thread.\nDenials are recorded after auto-review rejects an action.\n",
+        .{},
+    );
 }
 
 fn handleLocalRemoteControlSlash(
@@ -3244,6 +3267,7 @@ fn printSlashHelp(goals_enabled: bool) void {
         \\  /permissions      show or set approval/sandbox modes
         \\  /approval [mode]  show or set approval policy
         \\  /sandbox [mode]   show or set sandbox mode
+        \\  /approve          approve one retry of a recent auto-review denial
         \\  /history [n]      show recent transcript items
         \\  /mention <path>   include a file in the next message
         \\  /side <prompt>    ask in an ephemeral fork

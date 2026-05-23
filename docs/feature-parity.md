@@ -42,7 +42,7 @@ Zig TUI help in `src/tui.zig`, and the broader narrative tracker in
   queued input while a turn is running, `/compact` interactions, active tool
   interruption, and accurate background-process cleanup.
 - Close major missing TUI slash commands that affect daily use:
-  `/agent` / `/subagents`, `/approve`, `/feedback`,
+  `/agent` / `/subagents`, `/feedback`,
   `/pets` / `/pet`, `/realtime`, and `/settings`.
 - Basic local TUI `/experimental` coverage is implemented as a text-mode
   feature browser/toggler: it lists Rust menu-visible experimental features
@@ -76,6 +76,11 @@ Zig TUI help in `src/tui.zig`, and the broader narrative tracker in
   `## My request for Codex:` delimiter. Rust's rich status indicator, Windows
   pipe transport, and deeper transcript replay/display trimming remain planned
   TUI depth.
+- Basic local and remote TUI `/approve` coverage is implemented for the empty
+  recent-denials state: the command is recognized, listed in help, rejects
+  inline args with usage, and prints Rust's no-denials guidance. Selecting and
+  approving stored auto-review denials remains under the broader guardian retry
+  and active-turn lifecycle buckets.
 - Basic local TUI `/skills` and `/hooks` list views are covered: `/skills`
   lists discovered repo/user/plugin skills with enabled state and load errors,
   and `/hooks` lists discovered lifecycle command hooks with event, source,
@@ -273,7 +278,7 @@ Zig TUI help in `src/tui.zig`, and the broader narrative tracker in
 2. Live app-server daemon lifecycle and remote-control command forms.
 3. Active-turn/TUI lifecycle: interruption, steering, queued input, process
    tracking, and lifecycle notifications.
-4. TUI slash-command feature gaps: `/approve` and remaining rich popup commands.
+4. TUI slash-command feature gaps: remaining rich popup commands.
 5. Rich plugin/app TUI management plus remaining remote/cache depth.
 6. Session/thread store parity needed by resume/fork and desktop clients.
 7. MCP lifecycle depth.
