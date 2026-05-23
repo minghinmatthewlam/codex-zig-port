@@ -782,7 +782,7 @@ pub fn buildRequestBodyWithOptions(
     const write_stdin_tool_enabled = shell_tools_enabled and (options.feature_overrides.get("write_stdin_tool") orelse true);
     const mcp_resource_tools_enabled = options.feature_overrides.get("mcp_resource_tools") orelse true;
     const configured_mcp_tools_enabled = options.feature_overrides.get("mcp_tools") orelse true;
-    const tool_search_enabled = options.feature_overrides.get("tool_search") orelse true;
+    const tool_search_enabled = features_cmd.effectiveEnabled(options.feature_overrides, "tool_search") orelse true;
     const defer_mcp_tools_behind_tool_search = configured_mcp_tools_enabled and
         tool_search_enabled and
         (options.feature_overrides.get("tool_search_always_defer_mcp_tools") orelse false) and
@@ -2519,6 +2519,72 @@ test "feature flag defers mcp tools behind tool_search" {
 
     try std.testing.expect(found_tool_search);
     try std.testing.expect(std.mem.indexOf(u8, body, "\"name\":\"mcp__demo__echo\"") == null);
+}
+
+test "tool_search registry default keeps mcp tools direct" {
+    const allocator = std.testing.allocator;
+    const cfg = config.Config{
+        .codex_home = ".",
+        .active_profile = null,
+        .model = "demo-model",
+        .openai_base_url = "https://example.invalid/v1",
+        .chatgpt_base_url = "https://example.invalid/backend-api/codex",
+        .oss_provider = null,
+        .installation_id = "install-test",
+        .approval_policy = .on_request,
+        .sandbox_mode = .workspace_write,
+        .web_search_mode = null,
+        .model_reasoning_effort = null,
+        .service_tier = null,
+        .syntax_theme = null,
+        .personality = null,
+        .tui_status_line = null,
+        .tui_terminal_title = null,
+        .tui_alternate_screen = .auto,
+    };
+    const history = [_]HistoryItem{.{
+        .kind = .message,
+        .role = "user",
+        .content_type = "input_text",
+        .text = "use mcp",
+    }};
+    const mcp_tools = [_]mcp_runtime.ToolSpec{.{
+        .server_name = "demo",
+        .raw_tool_name = "echo",
+        .callable_name = "mcp__demo__echo",
+        .description = "Echo through MCP",
+        .input_schema_json = "{\"type\":\"object\",\"properties\":{\"message\":{\"type\":\"string\"}}}",
+    }};
+    var feature_overrides = features_cmd.FeatureOverrides{};
+    defer feature_overrides.deinit(allocator);
+    try feature_overrides.put(allocator, "tool_search_always_defer_mcp_tools", true);
+
+    const body = try buildRequestBodyWithOptions(allocator, cfg, history[0..], .{
+        .mcp_tools = mcp_tools[0..],
+        .feature_overrides = feature_overrides,
+    });
+    defer allocator.free(body);
+
+    var parsed = try std.json.parseFromSlice(std.json.Value, allocator, body, .{});
+    defer parsed.deinit();
+    const tools = parsed.value.object.get("tools").?.array;
+
+    var found_tool_search = false;
+    var found_direct_mcp = false;
+    for (tools.items) |tool| {
+        const object = tool.object;
+        const tool_type = object.get("type") orelse continue;
+        if (tool_type == .string and std.mem.eql(u8, tool_type.string, "tool_search")) {
+            found_tool_search = true;
+        }
+        const name = object.get("name") orelse continue;
+        if (name == .string and std.mem.eql(u8, name.string, "mcp__demo__echo")) {
+            found_direct_mcp = true;
+        }
+    }
+
+    try std.testing.expect(!found_tool_search);
+    try std.testing.expect(found_direct_mcp);
 }
 
 test "serializes tool_search history items" {
