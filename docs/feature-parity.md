@@ -43,7 +43,7 @@ Zig TUI help in `src/tui.zig`, and the broader narrative tracker in
   interruption, and accurate background-process cleanup.
 - Close major missing TUI slash commands that affect daily use:
   `/ide`, `/agent` / `/subagents`,
-  `/approve`, `/memories`, `/plugins`, `/feedback`,
+  `/approve`, `/memories`, `/feedback`,
   `/pets` / `/pet`, `/realtime`, and `/settings`.
 - Basic local TUI `/experimental` coverage is implemented as a text-mode
   feature browser/toggler: it lists Rust menu-visible experimental features
@@ -56,6 +56,13 @@ Zig TUI help in `src/tui.zig`, and the broader narrative tracker in
   description, install URL, and contributing plugins. Rust's rich app popup,
   remote directory refresh, auth/link flows, and `$` insertion remain part of
   the plugin/app TUI depth buckets.
+- Basic local TUI `/plugins` coverage is implemented as a text-mode local
+  marketplace catalog for the current working directory: it lists marketplace
+  display names, paths, installed/available counts, plugin enabled/installed
+  state, id, short/long description, category, capabilities, keywords, and
+  load errors. Rust's rich tabbed popup, search, install/uninstall, marketplace
+  add/remove/upgrade, remote catalogs, details, app auth, and share management
+  remain in the plugin TUI depth buckets.
 - Basic local TUI `/skills` and `/hooks` list views are covered: `/skills`
   lists discovered repo/user/plugin skills with enabled state and load errors,
   and `/hooks` lists discovered lifecycle command hooks with event, source,
@@ -153,7 +160,7 @@ Zig TUI help in `src/tui.zig`, and the broader narrative tracker in
   out or empty. Remaining CLI plugin parity is exact config-override option
   depth, remote catalog/cache synchronization, and full remote/plugin cache
   behavior.
-- Implement TUI `/plugins` browsing/management and richer `/apps` flows,
+- Implement richer TUI `/plugins` management and richer `/apps` flows,
   reusing the existing app-server plugin/app runtime where possible.
 - Close user-visible app-server plugin gaps that remain after CLI/TUI routing:
   remote catalog cache synchronization, plugin cache update parity, app auth
@@ -253,9 +260,8 @@ Zig TUI help in `src/tui.zig`, and the broader narrative tracker in
 2. Live app-server daemon lifecycle and remote-control command forms.
 3. Active-turn/TUI lifecycle: interruption, steering, queued input, process
    tracking, and lifecycle notifications.
-4. TUI slash-command feature gaps: `/plugins`, `/ide`, and `/approve`.
-5. Plugin TUI `/plugins` plus richer `/apps` flows and remaining remote/cache
-   depth.
+4. TUI slash-command feature gaps: `/ide`, `/approve`, and `/memories`.
+5. Rich plugin/app TUI management plus remaining remote/cache depth.
 6. Session/thread store parity needed by resume/fork and desktop clients.
 7. MCP lifecycle depth.
 8. Cloud task feature completion.
