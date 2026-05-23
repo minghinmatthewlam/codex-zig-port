@@ -4036,6 +4036,124 @@ def run_local_remote_control_slash_smoke(
             os.close(master_fd)
 
 
+def run_tui_skills_hooks_slash_smoke(
+    binary: Path,
+    env: dict[str, str],
+    workspace: Path,
+) -> None:
+    smoke_root = workspace / "tui-skills-hooks-smoke"
+    if smoke_root.exists():
+        shutil.rmtree(smoke_root)
+    smoke_home = smoke_root / "codex-home"
+    smoke_workspace = smoke_root / "workspace"
+    skill_dir = smoke_workspace / ".agents" / "skills" / "tui-skill"
+    hooks_dir = smoke_workspace / ".codex"
+    skill_dir.mkdir(parents=True)
+    hooks_dir.mkdir(parents=True)
+    smoke_home.mkdir(parents=True)
+    (skill_dir / "SKILL.md").write_text(
+        "\n".join(
+            [
+                "---",
+                "name: tui-skill",
+                "description: TUI skill description.",
+                "short_description: TUI short skill.",
+                "---",
+                "",
+                "# TUI skill",
+                "",
+            ]
+        )
+    )
+    (hooks_dir / "hooks.json").write_text(
+        json.dumps(
+            {
+                "hooks": {
+                    "UserPromptSubmit": [
+                        {
+                            "matcher": "Prompt",
+                            "hooks": [
+                                {
+                                    "type": "command",
+                                    "command": "echo tui hook",
+                                    "statusMessage": "running tui hook",
+                                }
+                            ],
+                        }
+                    ]
+                }
+            }
+        )
+    )
+
+    smoke_env = env.copy()
+    smoke_env["CODEX_HOME"] = str(smoke_home)
+    smoke_env.setdefault("TERM", "xterm-256color")
+    output = bytearray()
+    master_fd = -1
+    slave_fd = -1
+    master_fd, slave_fd = pty.openpty()
+    proc = None
+    try:
+        proc = subprocess.Popen(
+            [
+                str(binary),
+                "--no-alt-screen",
+            ],
+            cwd=smoke_workspace,
+            env=smoke_env,
+            stdin=slave_fd,
+            stdout=slave_fd,
+            stderr=slave_fd,
+            close_fds=True,
+        )
+        os.close(slave_fd)
+        slave_fd = -1
+
+        wait_for(master_fd, output, b"Type /help for commands", 8)
+
+        mark = len(output)
+        send_line(master_fd, "/help")
+        wait_for(master_fd, output, b"/skills", 5, mark)
+        wait_for(master_fd, output, b"/hooks", 5, mark)
+
+        mark = len(output)
+        send_line(master_fd, "/skills")
+        wait_for(master_fd, output, b"skills:", 5, mark)
+        wait_for(master_fd, output, b"tui-skill [repo, enabled]", 5, mark)
+        wait_for(master_fd, output, b"TUI short skill.", 5, mark)
+        wait_for(master_fd, output, b"SKILL.md", 5, mark)
+
+        mark = len(output)
+        send_line(master_fd, "/hooks")
+        wait_for(master_fd, output, b"hooks:", 5, mark)
+        wait_for(master_fd, output, b"userPromptSubmit [project, enabled, untrusted]", 5, mark)
+        wait_for(master_fd, output, b"matcher: Prompt", 5, mark)
+        wait_for(master_fd, output, b"status: running tui hook", 5, mark)
+        wait_for(master_fd, output, b"command: echo tui hook", 5, mark)
+
+        mark = len(output)
+        send_line(master_fd, "/quit")
+        wait_for(master_fd, output, b"bye", 5, mark)
+        read_available(master_fd, output)
+        exit_code = proc.wait(timeout=5)
+        if exit_code != 0:
+            rendered = output.decode(errors="replace")
+            raise AssertionError(f"skills/hooks slash TUI exited with {exit_code}\n\n{rendered}")
+    finally:
+        if slave_fd >= 0:
+            os.close(slave_fd)
+        if master_fd >= 0:
+            os.close(master_fd)
+        if proc is not None and proc.poll() is None:
+            proc.terminate()
+            try:
+                proc.wait(timeout=2)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                proc.wait(timeout=2)
+
+
 def run_remote_unix_tui_smoke(
     binary: Path,
     env: dict[str, str],
@@ -5314,6 +5432,7 @@ def run_e2e(binary: Path) -> str:
             run_remote_flag_smoke(binary, env, workspace)
             run_local_remote_control_smoke(binary, env, workspace, port, server)
             run_local_remote_control_slash_smoke(binary, env, workspace, port, server)
+            run_tui_skills_hooks_slash_smoke(binary, env, workspace)
             run_remote_websocket_tui_smoke(binary, env, workspace, port, server)
             run_remote_wss_tui_smoke(binary, env, workspace)
             run_remote_unix_tui_smoke(binary, env, workspace, port, server)
