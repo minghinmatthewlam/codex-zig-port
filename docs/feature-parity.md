@@ -76,7 +76,10 @@ Zig TUI help in `src/tui.zig`, and the broader narrative tracker in
   nested MCP/provider fields. Remaining strict-config depth is command
   propagation to the other Rust-supported strict surfaces and full config-layer
   coverage.
-- Add root and exec support for `--profile-v2 <CONFIG_PROFILE_V2>`.
+- Root runtime surfaces now support `--profile-v2 <CONFIG_PROFILE_V2>` for
+  interactive runs, `exec`, `review`, `resume`, `fork`, and
+  `debug prompt-input`; `exec --profile-v2` also works locally. Unsupported
+  subcommands reject the flag with the Rust-shaped runtime-scope error.
 - Root and exec `--dangerously-bypass-hook-trust` parsing is implemented, and
   app-server plus non-interactive exec/review hook execution now runs enabled
   untrusted/modified hooks for that invocation while preserving disabled hook
@@ -143,8 +146,9 @@ Zig TUI help in `src/tui.zig`, and the broader narrative tracker in
   affect CLI, TUI, tools, MCP, plugins, app-server, hooks, and sandboxing.
 - Finish exact strict-config validation behavior across all config layers and
   command surfaces that Rust supports.
-- Implement profile-v2 layering and expose it consistently across root,
-  interactive, exec, review, app-server, and debug surfaces.
+- Finish exact profile-v2 edge-case depth beyond the current user-config
+  overlay on Rust runtime surfaces, especially where it intersects with the
+  broader unfinished config-manager layer stack.
 - Finish managed/cloud requirements enforcement for approval policy, reviewer,
   sandbox, network, hooks, apps, plugins, features, and residency where those
   requirements change user-visible behavior.
@@ -197,8 +201,8 @@ Zig TUI help in `src/tui.zig`, and the broader narrative tracker in
 
 ## Current Working Order
 
-1. Root CLI command/flag parity: finish doctor diagnostic depth, then add
-   `--profile-v2` and remaining exact strict-config command-surface depth.
+1. Root CLI command/flag parity: finish doctor diagnostic depth and remaining
+   exact strict-config/profile-v2 edge-case depth.
 2. App-server daemon and remote-control command forms.
 3. Active-turn/TUI lifecycle: interruption, steering, queued input, process
    tracking, and lifecycle notifications.
