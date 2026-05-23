@@ -70,7 +70,12 @@ Zig TUI help in `src/tui.zig`, and the broader narrative tracker in
   diagnostic depth: Rust's full installation, search, state DB, WebSocket,
   provider reachability, and background-daemon probes are deeper than the
   current bounded Zig checks.
-- Add root and exec support for `--strict-config`.
+- Root interactive/resume/fork, exec, and review support for
+  `--strict-config` is implemented for user `config.toml` unknown fields and
+  `-c/--config` unknown override fields, including unknown feature keys and
+  nested MCP/provider fields. Remaining strict-config depth is command
+  propagation to the other Rust-supported strict surfaces and full config-layer
+  coverage.
 - Add root and exec support for `--profile-v2 <CONFIG_PROFILE_V2>`.
 - Root and exec `--dangerously-bypass-hook-trust` parsing is implemented, and
   app-server plus non-interactive exec/review hook execution now runs enabled
@@ -136,8 +141,8 @@ Zig TUI help in `src/tui.zig`, and the broader narrative tracker in
 
 - Finish full user/project/system/managed config-layer behavior for fields that
   affect CLI, TUI, tools, MCP, plugins, app-server, hooks, and sandboxing.
-- Add strict-config validation behavior once the recognized config surface is
-  sufficiently modeled.
+- Finish exact strict-config validation behavior across all config layers and
+  command surfaces that Rust supports.
 - Implement profile-v2 layering and expose it consistently across root,
   interactive, exec, review, app-server, and debug surfaces.
 - Finish managed/cloud requirements enforcement for approval policy, reviewer,
@@ -193,7 +198,7 @@ Zig TUI help in `src/tui.zig`, and the broader narrative tracker in
 ## Current Working Order
 
 1. Root CLI command/flag parity: finish doctor diagnostic depth, then add
-   `--strict-config`, `--profile-v2`, and hook-trust bypass.
+   `--profile-v2` and remaining exact strict-config command-surface depth.
 2. App-server daemon and remote-control command forms.
 3. Active-turn/TUI lifecycle: interruption, steering, queued input, process
    tracking, and lifecycle notifications.
