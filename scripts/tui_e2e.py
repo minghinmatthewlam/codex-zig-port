@@ -1567,7 +1567,7 @@ def run_unimplemented_command_smoke(
         capture_output=True,
         check=True,
     )
-    if "Start a headless app-server with remote control enabled" not in remote_help.stderr:
+    if "Manage the app-server daemon with remote control enabled" not in remote_help.stderr:
         raise AssertionError(
             f"expected remote-control help output:\n{remote_help.stderr}"
         )
@@ -1593,19 +1593,21 @@ def run_unimplemented_command_smoke(
             f"expected remote-control state DB gap message:\n{remote_result.stderr}"
         )
 
-    remote_positional_result = subprocess.run(
+    remote_stop_result = subprocess.run(
         [str(binary), "remote-control", "stop"],
         cwd=workspace,
         env=env,
         text=True,
         capture_output=True,
-        check=False,
+        check=True,
     )
-    if remote_positional_result.returncode == 0:
-        raise AssertionError("remote-control positional arg unexpectedly succeeded")
-    if "UnexpectedRemoteControlArgument" not in remote_positional_result.stderr:
+    if remote_stop_result.stderr:
         raise AssertionError(
-            f"expected remote-control positional-arg rejection:\n{remote_positional_result.stderr}"
+            f"expected remote-control stop to avoid stderr:\n{remote_stop_result.stderr}"
+        )
+    if remote_stop_result.stdout != "Stopping remote control...\nRemote control is not running.\n":
+        raise AssertionError(
+            f"expected remote-control stop no-daemon message:\n{remote_stop_result.stdout}"
         )
 
     cloud_help = subprocess.run(

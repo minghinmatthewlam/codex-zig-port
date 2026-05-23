@@ -2252,11 +2252,39 @@ def run_remote_control_command_smoke(binary: Path) -> None:
     )
     assert help_result.stdout == ""
     assert "codex-zig remote-control [OPTIONS]" in help_result.stderr
+    assert "Manage the app-server daemon with remote control enabled" in help_result.stderr
+    assert "start" in help_result.stderr
+    assert "stop" in help_result.stderr
+    assert "--json" in help_result.stderr
+
+    start_help = subprocess.run(
+        [str(binary), "remote-control", "help", "start"],
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        timeout=5,
+        check=True,
+    )
+    assert start_help.stdout == ""
+    assert "codex-zig remote-control start [OPTIONS]" in start_help.stderr
+
+    stop_help = subprocess.run(
+        [str(binary), "remote-control", "stop", "--help"],
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        timeout=5,
+        check=True,
+    )
+    assert stop_help.stdout == ""
+    assert "codex-zig remote-control stop [OPTIONS]" in stop_help.stderr
 
     temp_root = Path(tempfile.mkdtemp(prefix="codex-zig-cli-remote-control-", dir="/tmp"))
     try:
         env = os.environ.copy()
-        env["CODEX_HOME"] = str(temp_root / "codex-home")
+        codex_home = temp_root / "codex-home"
+        codex_home.mkdir(parents=True)
+        env["CODEX_HOME"] = str(codex_home)
         result = subprocess.run(
             [
                 str(binary),
@@ -2280,6 +2308,76 @@ def run_remote_control_command_smoke(binary: Path) -> None:
             raise AssertionError(f"remote-control did not report state DB unavailability:\n{result.stderr}")
         if "parsed but not implemented yet" in result.stderr:
             raise AssertionError(f"remote-control still used generic placeholder:\n{result.stderr}")
+
+        stop_json = subprocess.run(
+            [str(binary), "remote-control", "stop", "--json"],
+            env=env,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=5,
+            check=True,
+        )
+        assert stop_json.stderr == ""
+        stop_payload = json.loads(stop_json.stdout)
+        expected_socket = codex_home.resolve() / "app-server-control" / "app-server-control.sock"
+        assert stop_payload["status"] == "notRunning"
+        assert stop_payload["socketPath"] == str(expected_socket)
+        assert stop_payload["cliVersion"] == "0.0.1"
+
+        stop_human = subprocess.run(
+            [str(binary), "remote-control", "stop"],
+            env=env,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=5,
+            check=True,
+        )
+        assert stop_human.stderr == ""
+        assert stop_human.stdout == "Stopping remote control...\nRemote control is not running.\n"
+
+        start_json = subprocess.run(
+            [str(binary), "remote-control", "--json", "start"],
+            env=env,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=5,
+            check=False,
+        )
+        assert start_json.returncode != 0
+        assert start_json.stdout == ""
+        assert "managed standalone Codex install not found" in start_json.stderr
+        assert (codex_home.resolve() / "app-server-daemon" / "app-server-updater.pid.lock").is_file()
+
+        start_human = subprocess.run(
+            [str(binary), "remote-control", "start"],
+            env=env,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=5,
+            check=False,
+        )
+        assert start_human.returncode != 0
+        assert start_human.stdout == "Starting app-server daemon with remote control enabled...\n"
+        assert "managed standalone Codex install not found" in start_human.stderr
+
+        settings_path = codex_home.resolve() / "app-server-daemon" / "settings.json"
+        settings_path.write_text("bad", encoding="utf-8")
+        malformed_start = subprocess.run(
+            [str(binary), "remote-control", "start"],
+            env=env,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=5,
+            check=False,
+        )
+        assert malformed_start.returncode != 0
+        assert malformed_start.stdout == "Starting app-server daemon with remote control enabled...\n"
+        assert f"failed to parse daemon settings {settings_path}" in malformed_start.stderr
     finally:
         shutil.rmtree(temp_root, ignore_errors=True)
 
