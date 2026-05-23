@@ -782,7 +782,7 @@ pub fn buildRequestBodyWithOptions(
     const write_stdin_tool_enabled = shell_tools_enabled and (options.feature_overrides.get("write_stdin_tool") orelse true);
     const mcp_resource_tools_enabled = options.feature_overrides.get("mcp_resource_tools") orelse true;
     const configured_mcp_tools_enabled = options.feature_overrides.get("mcp_tools") orelse true;
-    const tool_search_enabled = features_cmd.effectiveEnabled(options.feature_overrides, "tool_search") orelse true;
+    const tool_search_enabled = true;
     const defer_mcp_tools_behind_tool_search = configured_mcp_tools_enabled and
         tool_search_enabled and
         (options.feature_overrides.get("tool_search_always_defer_mcp_tools") orelse false) and
@@ -2490,7 +2490,6 @@ test "feature flag defers mcp tools behind tool_search" {
     }};
     var feature_overrides = features_cmd.FeatureOverrides{};
     defer feature_overrides.deinit(allocator);
-    try feature_overrides.put(allocator, "tool_search", true);
     try feature_overrides.put(allocator, "tool_search_always_defer_mcp_tools", true);
 
     const body = try buildRequestBodyWithOptions(allocator, cfg, history[0..], .{
@@ -2521,7 +2520,7 @@ test "feature flag defers mcp tools behind tool_search" {
     try std.testing.expect(std.mem.indexOf(u8, body, "\"name\":\"mcp__demo__echo\"") == null);
 }
 
-test "tool_search registry default keeps mcp tools direct" {
+test "removed tool_search flag does not disable mcp deferral" {
     const allocator = std.testing.allocator;
     const cfg = config.Config{
         .codex_home = ".",
@@ -2557,6 +2556,7 @@ test "tool_search registry default keeps mcp tools direct" {
     }};
     var feature_overrides = features_cmd.FeatureOverrides{};
     defer feature_overrides.deinit(allocator);
+    try feature_overrides.put(allocator, "tool_search", false);
     try feature_overrides.put(allocator, "tool_search_always_defer_mcp_tools", true);
 
     const body = try buildRequestBodyWithOptions(allocator, cfg, history[0..], .{
@@ -2583,8 +2583,8 @@ test "tool_search registry default keeps mcp tools direct" {
         }
     }
 
-    try std.testing.expect(!found_tool_search);
-    try std.testing.expect(found_direct_mcp);
+    try std.testing.expect(found_tool_search);
+    try std.testing.expect(!found_direct_mcp);
 }
 
 test "serializes tool_search history items" {
