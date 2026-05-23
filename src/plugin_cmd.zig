@@ -358,7 +358,7 @@ fn findMarketplacePathForPlugin(
     var parsed = try std.json.parseFromSlice(std.json.Value, allocator, response, .{});
     defer parsed.deinit();
 
-    try failOnMarketplaceLoadErrors(allocator, parsed.value);
+    try failOnMarketplaceLoadErrorsForMarketplace(allocator, parsed.value, selection.marketplace_name);
     const marketplaces = parsed.value.object.get("marketplaces") orelse return error.InvalidPluginListResponse;
     if (marketplaces != .array) return error.InvalidPluginListResponse;
 
@@ -388,20 +388,40 @@ fn marketplaceContainsPlugin(marketplace: std.json.ObjectMap, plugin_name: []con
 }
 
 fn failOnMarketplaceLoadErrors(allocator: std.mem.Allocator, value: std.json.Value) !void {
+    return failOnMarketplaceLoadErrorsFiltered(allocator, value, null);
+}
+
+fn failOnMarketplaceLoadErrorsForMarketplace(allocator: std.mem.Allocator, value: std.json.Value, marketplace_name: []const u8) !void {
+    return failOnMarketplaceLoadErrorsFiltered(allocator, value, marketplace_name);
+}
+
+fn failOnMarketplaceLoadErrorsFiltered(allocator: std.mem.Allocator, value: std.json.Value, marketplace_filter: ?[]const u8) !void {
     if (value != .object) return error.InvalidPluginListResponse;
     const errors = value.object.get("marketplaceLoadErrors") orelse return;
     if (errors != .array) return error.InvalidPluginListResponse;
     if (errors.array.items.len == 0) return;
 
-    std.debug.print("failed to load configured marketplace snapshot(s):\n", .{});
+    var printed_header = false;
     for (errors.array.items) |issue| {
         if (issue != .object) return error.InvalidPluginListResponse;
+        const marketplace_name = optionalStringFieldFromJson(issue.object, "marketplaceName");
+        if (marketplace_filter) |filter| {
+            if (marketplace_name == null or !std.mem.eql(u8, marketplace_name.?, filter)) continue;
+        }
+        if (!printed_header) {
+            std.debug.print("failed to load configured marketplace snapshot(s):\n", .{});
+            printed_header = true;
+        }
         const path = stringField(issue.object, "marketplacePath") orelse "<unknown>";
         const message = stringField(issue.object, "message") orelse "unknown error";
-        const line = try std.fmt.allocPrint(allocator, "- `{s}`: {s}\n", .{ path, message });
+        const line = if (marketplace_name) |name|
+            try std.fmt.allocPrint(allocator, "- `{s}` at {s}: {s}\n", .{ name, path, message })
+        else
+            try std.fmt.allocPrint(allocator, "- `{s}`: {s}\n", .{ path, message });
         defer allocator.free(line);
         std.debug.print("{s}", .{line});
     }
+    if (!printed_header) return;
     return error.PluginMarketplaceLoadFailed;
 }
 

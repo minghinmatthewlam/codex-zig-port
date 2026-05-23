@@ -102,10 +102,12 @@ pub const ConfiguredMarketplaceRoot = struct {
 };
 
 pub const ConfiguredMarketplaceLoadIssue = struct {
+    marketplace_name: []const u8,
     marketplace_path: []const u8,
     message: []const u8,
 
     pub fn deinit(self: *ConfiguredMarketplaceLoadIssue, allocator: std.mem.Allocator) void {
+        allocator.free(self.marketplace_name);
         allocator.free(self.marketplace_path);
         allocator.free(self.message);
     }
@@ -606,6 +608,7 @@ pub fn configuredMarketplaceRootsStrict(allocator: std.mem.Allocator, codex_home
             try appendConfiguredMarketplaceIssue(
                 allocator,
                 &issues,
+                entry.name,
                 "<invalid config>",
                 "invalid marketplace name: only ASCII letters, digits, `_`, and `-` are allowed",
             );
@@ -617,6 +620,7 @@ pub fn configuredMarketplaceRootsStrict(allocator: std.mem.Allocator, codex_home
                 try appendConfiguredMarketplaceIssue(
                     allocator,
                     &issues,
+                    entry.name,
                     "<invalid config>",
                     "marketplace source is missing",
                 );
@@ -626,6 +630,7 @@ pub fn configuredMarketplaceRootsStrict(allocator: std.mem.Allocator, codex_home
                 try appendConfiguredMarketplaceIssue(
                     allocator,
                     &issues,
+                    entry.name,
                     "<invalid config>",
                     "marketplace source is missing",
                 );
@@ -654,14 +659,18 @@ pub fn configuredMarketplaceRootsStrict(allocator: std.mem.Allocator, codex_home
 fn appendConfiguredMarketplaceIssue(
     allocator: std.mem.Allocator,
     issues: *std.ArrayList(ConfiguredMarketplaceLoadIssue),
+    marketplace_name: []const u8,
     marketplace_path: []const u8,
     message: []const u8,
 ) !void {
+    const owned_name = try allocator.dupe(u8, marketplace_name);
+    errdefer allocator.free(owned_name);
     const owned_path = try allocator.dupe(u8, marketplace_path);
     errdefer allocator.free(owned_path);
     const owned_message = try allocator.dupe(u8, message);
     errdefer allocator.free(owned_message);
     try issues.append(allocator, .{
+        .marketplace_name = owned_name,
         .marketplace_path = owned_path,
         .message = owned_message,
     });
