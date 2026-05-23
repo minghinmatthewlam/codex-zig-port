@@ -174,6 +174,7 @@ pub const StringMap = struct {
 
 pub const LoadOptions = struct {
     profile: ?[]const u8 = null,
+    profile_v2: ?[]const u8 = null,
     ignore_user_config: bool = false,
     strict_config: bool = false,
 };
@@ -980,13 +981,23 @@ pub fn loadWithOptions(allocator: std.mem.Allocator, options: LoadOptions) !Conf
     const codex_home = try resolveCodexHome(allocator);
     errdefer allocator.free(codex_home);
 
-    const config_bytes = if (options.ignore_user_config)
+    const base_config_bytes = if (options.ignore_user_config)
         null
     else
         try readConfigToml(allocator, codex_home);
-    defer if (config_bytes) |bytes| allocator.free(bytes);
+    defer if (base_config_bytes) |bytes| allocator.free(bytes);
 
-    const config_view = ConfigView{ .bytes = config_bytes orelse "" };
+    const profile_v2_config_bytes = if (options.ignore_user_config or options.profile_v2 == null)
+        null
+    else
+        try readProfileV2ConfigToml(allocator, codex_home, options.profile_v2.?);
+    defer if (profile_v2_config_bytes) |bytes| allocator.free(bytes);
+
+    const base_config_view = ConfigView{ .bytes = base_config_bytes orelse "" };
+    const config_view = if (profile_v2_config_bytes) |bytes|
+        ConfigView{ .bytes = bytes, .fallback = &base_config_view }
+    else
+        base_config_view;
 
     const active_profile = try resolveActiveProfile(allocator, config_view, options.profile);
     errdefer if (active_profile) |profile| allocator.free(profile);
@@ -1533,6 +1544,15 @@ fn readConfigToml(allocator: std.mem.Allocator, codex_home: []const u8) !?[]cons
     return readConfigTomlFile(allocator, path);
 }
 
+fn readProfileV2ConfigToml(allocator: std.mem.Allocator, codex_home: []const u8, profile_v2: []const u8) !?[]const u8 {
+    const file_name = try std.fmt.allocPrint(allocator, "{s}.config.toml", .{profile_v2});
+    defer allocator.free(file_name);
+    const path = try std.fs.path.join(allocator, &.{ codex_home, file_name });
+    defer allocator.free(path);
+
+    return readConfigTomlFile(allocator, path);
+}
+
 pub fn readConfigTomlFile(allocator: std.mem.Allocator, path: []const u8) !?[]const u8 {
     return std.Io.Dir.cwd().readFileAlloc(std.Io.Threaded.global_single_threaded.io(), path, allocator, .limited(1024 * 256)) catch |err| switch (err) {
         error.FileNotFound => return null,
@@ -2016,6 +2036,7 @@ const TomlMultilineScanState = struct {
 
 const ConfigView = struct {
     bytes: []const u8,
+    fallback: ?*const ConfigView = null,
 
     fn getScopedString(
         self: ConfigView,
@@ -2053,6 +2074,7 @@ const ConfigView = struct {
             }
             multiline.observeLine(line);
         }
+        if (self.fallback) |fallback| return fallback.getSectionString(allocator, section_name, key);
         return null;
     }
 
@@ -2078,6 +2100,7 @@ const ConfigView = struct {
             }
             multiline.observeLine(line);
         }
+        if (self.fallback) |fallback| return fallback.getSectionStringArray(allocator, section_name, key);
         return null;
     }
 
@@ -2102,6 +2125,7 @@ const ConfigView = struct {
             }
             multiline.observeLine(line);
         }
+        if (self.fallback) |fallback| return fallback.getSectionBool(section_name, key);
         return null;
     }
 
@@ -2126,6 +2150,7 @@ const ConfigView = struct {
             }
             multiline.observeLine(line);
         }
+        if (self.fallback) |fallback| return fallback.getSectionU64(section_name, key);
         return null;
     }
 
@@ -2142,6 +2167,7 @@ const ConfigView = struct {
             if (try stringValueForKeyAt(allocator, self.bytes, line_start, line_raw, key)) |value| return value;
             multiline.observeLine(line);
         }
+        if (self.fallback) |fallback| return fallback.getTopLevelString(allocator, key);
         return null;
     }
 
@@ -2156,6 +2182,7 @@ const ConfigView = struct {
             if (try stringArrayValueForKey(allocator, line, key)) |value| return value;
             multiline.observeLine(line);
         }
+        if (self.fallback) |fallback| return fallback.getTopLevelStringArray(allocator, key);
         return null;
     }
 
@@ -2170,6 +2197,7 @@ const ConfigView = struct {
             if (try u64ValueForKey(line, key)) |value| return value;
             multiline.observeLine(line);
         }
+        if (self.fallback) |fallback| return fallback.getTopLevelU64(key);
         return null;
     }
 
@@ -2184,6 +2212,7 @@ const ConfigView = struct {
             if (try i64ValueForKey(line, key)) |value| return value;
             multiline.observeLine(line);
         }
+        if (self.fallback) |fallback| return fallback.getTopLevelI64(key);
         return null;
     }
 
@@ -2211,6 +2240,7 @@ const ConfigView = struct {
             }
             multiline.observeLine(line);
         }
+        if (self.fallback) |fallback| return fallback.getProfileString(allocator, profile, key);
         return null;
     }
 
@@ -2307,6 +2337,8 @@ const ConfigView = struct {
         }
         if (entries.items.len == 0) {
             entries.deinit(allocator);
+            entries = .empty;
+            if (self.fallback) |fallback| return fallback.getSectionStringMap(allocator, section_name);
             return null;
         }
         return .{ .entries = try entries.toOwnedSlice(allocator) };
@@ -2334,6 +2366,7 @@ const ConfigView = struct {
             }
             multiline.observeLine(line);
         }
+        if (self.fallback) |fallback| return fallback.getModelProviderInlineTable(allocator, provider, key);
         return null;
     }
 
@@ -2360,6 +2393,7 @@ const ConfigView = struct {
             }
             multiline.observeLine(line);
         }
+        if (self.fallback) |fallback| return fallback.getNamedSectionString(allocator, section_prefix, section_name, key);
         return null;
     }
 
@@ -2384,6 +2418,7 @@ const ConfigView = struct {
             }
             multiline.observeLine(line);
         }
+        if (self.fallback) |fallback| return fallback.getModelProviderBool(provider, key);
         return null;
     }
 
@@ -2439,6 +2474,9 @@ const ConfigView = struct {
             multiline.observeLine(line);
         }
 
+        if (!saw_filesystem and !saw_network) {
+            if (self.fallback) |fallback| return fallback.resolveCustomSandboxPermissionProfileWithOptions(allocator, profile, options);
+        }
         if (!saw_filesystem or !saw_network or network_enabled == null or network_unsupported) {
             return error.SandboxPermissionProfileUnsupported;
         }
@@ -2473,6 +2511,7 @@ const ConfigView = struct {
             }
             multiline.observeLine(line);
         }
+        if (self.fallback) |fallback| return fallback.strictConfigUnknownField(allocator);
         return null;
     }
 
@@ -2486,6 +2525,7 @@ const ConfigView = struct {
             if (line[0] == '[' and isProfileOrNestedSection(line, profile)) return true;
             multiline.observeLine(line);
         }
+        if (self.fallback) |fallback| return fallback.hasProfile(profile);
         return false;
     }
 };
@@ -4977,6 +5017,49 @@ test "strict config scan reports unknown nested fields" {
     const nested_map_field = (try nested_map.strictConfigUnknownField(allocator)).?;
     defer allocator.free(nested_map_field);
     try std.testing.expectEqualStrings("mcp_servers.local.env.FOO.BAR", nested_map_field);
+}
+
+test "profile v2 config view falls back to base config" {
+    const allocator = std.testing.allocator;
+    const base = ConfigView{
+        .bytes =
+        \\model = "base-model"
+        \\review_model = "base-review"
+        \\sandbox_mode = "read-only"
+        \\
+        \\[profiles.work]
+        \\model = "base-profile-model"
+        \\
+        \\[model_providers.base]
+        \\base_url = "http://base.example/v1"
+        \\
+        ,
+    };
+    const overlay = ConfigView{
+        .bytes =
+        \\sandbox_mode = "danger-full-access"
+        \\
+        \\[profiles.work]
+        \\model = "overlay-profile-model"
+        \\
+        ,
+        .fallback = &base,
+    };
+
+    const model = (try overlay.getScopedString(allocator, "work", "model")).?;
+    defer allocator.free(model);
+    try std.testing.expectEqualStrings("overlay-profile-model", model);
+
+    const review_model = (try overlay.getTopLevelString(allocator, "review_model")).?;
+    defer allocator.free(review_model);
+    try std.testing.expectEqualStrings("base-review", review_model);
+
+    const sandbox_mode = try resolveSandboxMode(allocator, overlay, null);
+    try std.testing.expectEqual(SandboxMode.danger_full_access, sandbox_mode);
+
+    const base_url = (try overlay.getModelProviderString(allocator, "base", "base_url")).?;
+    defer allocator.free(base_url);
+    try std.testing.expectEqualStrings("http://base.example/v1", base_url);
 }
 
 test "runtime model_provider override refreshes provider settings" {
