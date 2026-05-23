@@ -2289,6 +2289,18 @@ def run_plugin_marketplace_smoke(
         f'[marketplaces.debug]\nsource_type = "local"\nsource = "{source}"\n'
         + f'\n[marketplaces.other]\nsource_type = "local"\nsource = "{filtered_missing}"\n'
     )
+    filtered_list = subprocess.run(
+        [str(binary), "plugin", "list", "--marketplace", "debug"],
+        cwd=workspace,
+        env=filtered_env,
+        text=True,
+        capture_output=True,
+        check=True,
+    )
+    if "sample@debug" not in filtered_list.stderr:
+        raise AssertionError(
+            f"expected plugin list to ignore unrelated marketplace load error:\n{filtered_list.stderr}"
+        )
     filtered_add = subprocess.run(
         [str(binary), "plugin", "add", "sample@debug"],
         cwd=workspace,

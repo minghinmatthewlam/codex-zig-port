@@ -304,7 +304,11 @@ fn listPluginsAndPrint(allocator: std.mem.Allocator, marketplace_filter: ?[]cons
     var parsed = try std.json.parseFromSlice(std.json.Value, allocator, response, .{});
     defer parsed.deinit();
 
-    try failOnMarketplaceLoadErrors(allocator, parsed.value);
+    if (marketplace_filter) |filter| {
+        try failOnMarketplaceLoadErrorsForMarketplace(allocator, parsed.value, filter);
+    } else {
+        try failOnMarketplaceLoadErrors(allocator, parsed.value);
+    }
 
     const marketplaces = parsed.value.object.get("marketplaces") orelse return error.InvalidPluginListResponse;
     if (marketplaces != .array) return error.InvalidPluginListResponse;
