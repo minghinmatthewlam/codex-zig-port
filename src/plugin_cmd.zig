@@ -46,8 +46,8 @@ pub fn printHelp() void {
         \\  codex-zig plugin <COMMAND>
         \\
         \\Commands:
-        \\  add          Install a plugin from a configured marketplace snapshot
-        \\  list         List plugins available from configured marketplace snapshots
+        \\  add          Install a plugin from a configured or personal marketplace snapshot
+        \\  list         List plugins available from configured or personal marketplace snapshots
         \\  marketplace  Add, list, upgrade, or remove configured plugin marketplaces
         \\  remove       Remove an installed plugin from local config and cache
         \\  help         Print this message or the help of the given subcommand(s)
@@ -537,13 +537,19 @@ fn readFileOptional(allocator: std.mem.Allocator, path: []const u8, limit: usize
 }
 
 fn resolveHomeMarketplaceRoot(allocator: std.mem.Allocator) !?[]const u8 {
-    const home = (try env.getOwned(allocator, "HOME")) orelse return null;
-    errdefer allocator.free(home);
-    if (home.len == 0 or !std.fs.path.isAbsolute(home)) {
-        allocator.free(home);
+    if (try resolveAbsoluteEnvPath(allocator, "HOME")) |home| return home;
+    if (try resolveAbsoluteEnvPath(allocator, "USERPROFILE")) |home| return home;
+    return null;
+}
+
+fn resolveAbsoluteEnvPath(allocator: std.mem.Allocator, comptime name: []const u8) !?[]const u8 {
+    const value = (try env.getOwned(allocator, name)) orelse return null;
+    errdefer allocator.free(value);
+    if (value.len == 0 or !std.fs.path.isAbsolute(value)) {
+        allocator.free(value);
         return null;
     }
-    return home;
+    return value;
 }
 
 fn removePluginAndPrint(allocator: std.mem.Allocator, selection: PluginSelection) !void {
@@ -873,7 +879,7 @@ fn printPluginAddHelp() void {
         \\
         \\Options:
         \\  -m, --marketplace MARKETPLACE
-        \\                      Configured marketplace name to use when PLUGIN does not include @MARKETPLACE
+        \\                      Marketplace name to use when PLUGIN does not include @MARKETPLACE
         \\
         \\Examples:
         \\  codex-zig plugin add sample@debug

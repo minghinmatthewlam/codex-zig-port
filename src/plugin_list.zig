@@ -431,7 +431,7 @@ pub fn renderCliResponse(
         var ignored_load_errors = std.ArrayList(u8).empty;
         defer ignored_load_errors.deinit(allocator);
         var ignored_load_error_count: usize = 0;
-        try appendMarketplacesForRoot(
+        _ = try appendFirstMarketplaceForRoot(
             allocator,
             codex_home,
             root,
@@ -442,6 +442,7 @@ pub fn renderCliResponse(
             &marketplace_count,
             &ignored_load_errors,
             &ignored_load_error_count,
+            null,
         );
     }
 
@@ -681,10 +682,9 @@ fn appendMarketplacesForRoot(
     }
 }
 
-fn appendConfiguredMarketplaceFromRoot(
+fn appendFirstMarketplaceForRoot(
     allocator: std.mem.Allocator,
     codex_home: []const u8,
-    configured_marketplace_name: []const u8,
     root: []const u8,
     configured_ids: []const []const u8,
     enabled_ids: []const []const u8,
@@ -693,7 +693,8 @@ fn appendConfiguredMarketplaceFromRoot(
     marketplace_count: *usize,
     load_errors: *std.ArrayList(u8),
     load_error_count: *usize,
-) !void {
+    configured_marketplace_name: ?[]const u8,
+) !bool {
     for (MARKETPLACE_MANIFEST_RELATIVE_PATHS) |relative_path| {
         const marketplace_path = try std.fs.path.join(allocator, &.{ root, relative_path });
         defer allocator.free(marketplace_path);
@@ -713,8 +714,37 @@ fn appendConfiguredMarketplaceFromRoot(
             load_error_count,
             configured_marketplace_name,
         );
-        return;
+        return true;
     }
+    return false;
+}
+
+fn appendConfiguredMarketplaceFromRoot(
+    allocator: std.mem.Allocator,
+    codex_home: []const u8,
+    configured_marketplace_name: []const u8,
+    root: []const u8,
+    configured_ids: []const []const u8,
+    enabled_ids: []const []const u8,
+    seen_plugin_ids: *std.ArrayList([]const u8),
+    marketplaces: *std.ArrayList(u8),
+    marketplace_count: *usize,
+    load_errors: *std.ArrayList(u8),
+    load_error_count: *usize,
+) !void {
+    if (try appendFirstMarketplaceForRoot(
+        allocator,
+        codex_home,
+        root,
+        configured_ids,
+        enabled_ids,
+        seen_plugin_ids,
+        marketplaces,
+        marketplace_count,
+        load_errors,
+        load_error_count,
+        configured_marketplace_name,
+    )) return;
     if (isImplicitSystemMarketplaceRoot(configured_marketplace_name, root)) return;
     try appendConfiguredMarketplaceLoadError(
         allocator,

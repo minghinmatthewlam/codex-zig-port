@@ -2298,6 +2298,97 @@ def run_plugin_marketplace_smoke(
             f"expected HOME marketplace plugin add output:\n{home_marketplace_add.stderr}"
         )
 
+    userprofile_marketplace_home = workspace / "userprofile-marketplace-home"
+    userprofile_marketplace_home.mkdir()
+    write_marketplace_fixture(
+        userprofile_marketplace_home,
+        "userprofile-debug",
+        "userprofile-plugin",
+    )
+    userprofile_codex_home = workspace / "userprofile-marketplace-codex-home"
+    userprofile_codex_home.mkdir()
+    userprofile_codex_home.joinpath("config.toml").write_text("[features]\nplugins = true\n")
+    userprofile_env = env.copy()
+    userprofile_env["CODEX_HOME"] = str(userprofile_codex_home)
+    userprofile_env.pop("HOME", None)
+    userprofile_env["USERPROFILE"] = str(userprofile_marketplace_home)
+    userprofile_marketplace_list = subprocess.run(
+        [str(binary), "plugin", "marketplace", "list"],
+        cwd=workspace,
+        env=userprofile_env,
+        text=True,
+        capture_output=True,
+        check=True,
+    )
+    if (
+        "userprofile-debug" not in userprofile_marketplace_list.stderr
+        or str(userprofile_marketplace_home) not in userprofile_marketplace_list.stderr
+    ):
+        raise AssertionError(
+            f"expected USERPROFILE marketplace list row:\n{userprofile_marketplace_list.stderr}"
+        )
+    userprofile_plugins = subprocess.run(
+        [str(binary), "plugin", "list", "--marketplace", "userprofile-debug"],
+        cwd=workspace,
+        env=userprofile_env,
+        text=True,
+        capture_output=True,
+        check=True,
+    )
+    if "userprofile-plugin@userprofile-debug" not in userprofile_plugins.stderr:
+        raise AssertionError(
+            f"expected USERPROFILE marketplace plugin row:\n{userprofile_plugins.stderr}"
+        )
+
+    precedence_home = workspace / "home-precedence-marketplace-home"
+    precedence_home.mkdir()
+    write_marketplace_fixture(precedence_home, "preferred-home", "preferred-plugin")
+    precedence_home.joinpath(".claude-plugin").mkdir(parents=True)
+    precedence_home.joinpath("plugins", "lower-plugin", ".codex-plugin").mkdir(parents=True)
+    precedence_home.joinpath(".claude-plugin", "marketplace.json").write_text(
+        json.dumps(
+            {
+                "name": "lower-home",
+                "plugins": [
+                    {
+                        "name": "lower-plugin",
+                        "source": {
+                            "source": "local",
+                            "path": "./plugins/lower-plugin",
+                        },
+                    }
+                ],
+            }
+        )
+    )
+    precedence_home.joinpath(
+        "plugins",
+        "lower-plugin",
+        ".codex-plugin",
+        "plugin.json",
+    ).write_text(json.dumps({"name": "lower-plugin"}))
+    precedence_codex_home = workspace / "home-precedence-codex-home"
+    precedence_codex_home.mkdir()
+    precedence_codex_home.joinpath("config.toml").write_text("[features]\nplugins = true\n")
+    precedence_env = env.copy()
+    precedence_env["CODEX_HOME"] = str(precedence_codex_home)
+    precedence_env["HOME"] = str(precedence_home)
+    precedence_plugins = subprocess.run(
+        [str(binary), "plugin", "list"],
+        cwd=workspace,
+        env=precedence_env,
+        text=True,
+        capture_output=True,
+        check=True,
+    )
+    if (
+        "preferred-plugin@preferred-home" not in precedence_plugins.stderr
+        or "lower-plugin@lower-home" in precedence_plugins.stderr
+    ):
+        raise AssertionError(
+            f"expected first HOME marketplace manifest to win:\n{precedence_plugins.stderr}"
+        )
+
     empty_source = workspace / "empty-marketplace-source"
     empty_source.joinpath(".agents", "plugins").mkdir(parents=True)
     empty_source.joinpath(".agents", "plugins", "marketplace.json").write_text(
