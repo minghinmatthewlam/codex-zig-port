@@ -111,10 +111,21 @@ Zig TUI help in `src/tui.zig`, and the broader narrative tracker in
   feature gate. The stable v1 multi-agent tool discovery surface is now
   exposed through capability-gated, client-executed `tool_search`, returning
   the Rust-shaped `multi_agent_v1` namespace with `spawn_agent`, `send_input`,
-  `resume_agent`, `wait_agent`, and `close_agent`; executing those namespaced
-  calls currently returns an explicit runtime-unavailable tool result. Real
-  subagent thread spawning, picker navigation, thread switching, lifecycle
-  status, and v2 runtime behavior remain part of the broader subagent runtime
+  `resume_agent`, `wait_agent`, and `close_agent`; the local TUI now carries a
+  basic in-process v1 runtime where `spawn_agent` runs a child turn, `wait_agent`
+  reports the completed child status, `send_input` can continue an existing
+  child, `close_agent` marks it shutdown, `resume_agent` reopens a shutdown
+  child for follow-up input, and `/agent` lists created agents. Local TUI,
+  app-server loaded threads, and `mcp-server` `codex-reply` sessions keep this
+  runtime in memory across turns; non-stateful turns without a runtime do not
+  advertise the subagent tools. Child turns strip parent-scoped callbacks before
+  running so child plan/goal/tool progress cannot mutate the parent thread. This
+  local runtime rejects role/model/reasoning/service-tier overrides and non-text
+  structured `items` until those Rust behaviors are implemented rather than
+  silently dropping them.
+  Rust's background concurrent execution, persisted subagent threads, picker
+  navigation, thread switching, lifecycle notifications/hooks, model/reasoning
+  overrides, and v2 runtime behavior remain part of the broader subagent runtime
   bucket.
 - Basic local TUI `/skills` and `/hooks` list views are covered: `/skills`
   lists discovered repo/user/plugin skills with enabled state and load errors,
