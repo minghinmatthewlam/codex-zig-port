@@ -2305,7 +2305,7 @@ def run_exec_server_stdio_smoke(binary: Path) -> None:
             check=True,
         )
         assert help_result.stdout == ""
-        assert "codex-zig exec-server [--listen URL]" in help_result.stderr
+        assert "codex-zig exec-server [--strict-config] [--listen URL]" in help_result.stderr
 
         shell_env = {"PATH": os.environ.get("PATH", "/usr/bin:/bin")}
 
@@ -6937,6 +6937,788 @@ def run_exec_equals_options_smoke(binary: Path) -> None:
         shutil.rmtree(temp_root, ignore_errors=True)
 
 
+def run_strict_config_smoke(binary: Path) -> None:
+    temp_root = Path(tempfile.mkdtemp(prefix="codex-zig-cli-strict-config-", dir="/tmp"))
+    server, base_url = start_exec_responses_server()
+    try:
+        env = make_exec_mock_env(temp_root, base_url)
+
+        valid_result = subprocess.run(
+            [
+                str(binary.resolve()),
+                "exec",
+                "--strict-config",
+                "--skip-git-repo-check",
+                "strict",
+                "valid",
+            ],
+            cwd=temp_root,
+            env=env,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=5,
+            check=True,
+        )
+        assert valid_result.stdout == "stored reply\n"
+        assert len(server.request_bodies) == 1
+        assert server.request_bodies[0]["input"][-1]["content"][0]["text"] == "strict valid"
+
+        valid_cli_fields = subprocess.run(
+            [
+                str(binary.resolve()),
+                "exec",
+                "--strict-config",
+                "-c",
+                "sandbox_workspace_write.network_access=true",
+                "-c",
+                'mcp_servers.remote.scopes=["read"]',
+                "-c",
+                'mcp_servers.remote.env_vars=["TOKEN"]',
+                "-c",
+                "tui_alternate_screen=never",
+                "-c",
+                "features={goals=true}",
+                "-c",
+                "features.multi_agent_v2.enabled=true",
+                "-c",
+                "features={multi_agent_v2={enabled=true}}",
+                "-c",
+                'features.network_proxy.domains."api.example.com"="allow"',
+                "--skip-git-repo-check",
+                "strict",
+                "allowed",
+                "fields",
+            ],
+            cwd=temp_root,
+            env=env,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=5,
+            check=True,
+        )
+        assert valid_cli_fields.stdout == "stored reply\n"
+        assert len(server.request_bodies) == 2
+        assert server.request_bodies[-1]["input"][-1]["content"][0]["text"] == "strict allowed fields"
+
+        config_path = Path(env["CODEX_HOME"]) / "config.toml"
+        config_path.write_text(
+            "\n".join(
+                [
+                    'model_provider = "mock.v1"',
+                    "",
+                    "[features]",
+                    "apps = true",
+                    "apply_patch_freeform = true",
+                    "",
+                    "[features.multi_agent_v2]",
+                    "enabled = true",
+                    'usage_hint_text = "Use focused workers."',
+                    "",
+                    "[features.apps_mcp_path_override]",
+                    'path = "/tmp/apps-mcp"',
+                    "",
+                    "[features.network_proxy]",
+                    "enabled = true",
+                    'mode = "limited"',
+                    "",
+                    "[features.network_proxy.domains]",
+                    '"api.example.com" = "allow"',
+                    "",
+                    "[features.network_proxy.unix_sockets]",
+                    '"/tmp/proxy.sock" = "allow"',
+                    "",
+                    '[profiles."team.a".features]',
+                    "goals = true",
+                    "",
+                    '[profiles."team.a".features.multi_agent_v2]',
+                    "enabled = true",
+                    "",
+                    "[mcp_servers.local]",
+                    'command = "echo"',
+                    "args = [",
+                    '  "--foo=bar",',
+                    "]",
+                    "",
+                    '[model_providers."mock.v1"]',
+                    f'base_url = "{base_url}"',
+                    'wire_api = "responses"',
+                    "requires_openai_auth = false",
+                    "",
+                    "[permissions.demo.filesystem]",
+                    '":root" = "read"',
+                    "",
+                    "[permissions.demo.network]",
+                    "enabled = true",
+                    "",
+                    "[sandbox_workspace_write]",
+                    'writable_roots = ["/tmp/codex-extra"]',
+                    "network_access = true",
+                    "exclude_tmpdir_env_var = false",
+                    "exclude_slash_tmp = false",
+                    "",
+                ]
+            ),
+            encoding="utf-8",
+        )
+        quoted_tables_result = subprocess.run(
+            [
+                str(binary.resolve()),
+                "exec",
+                "--strict-config",
+                "--skip-git-repo-check",
+                "strict",
+                "quoted",
+            ],
+            cwd=temp_root,
+            env=env,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=5,
+            check=True,
+        )
+        assert quoted_tables_result.stdout == "stored reply\n"
+        assert len(server.request_bodies) == 3
+        assert server.request_bodies[-1]["input"][-1]["content"][0]["text"] == "strict quoted"
+
+        config_path.write_text(
+            "\n".join(
+                [
+                    'model_provider = "mock"',
+                    "instructions = '''",
+                    'foo = "bar"',
+                    "[bad.section]",
+                    "'''",
+                    "",
+                    "[model_providers.mock]",
+                    f'base_url = "{base_url}"',
+                    'wire_api = "responses"',
+                    "requires_openai_auth = false",
+                    "",
+                ]
+            ),
+            encoding="utf-8",
+        )
+        literal_string_result = subprocess.run(
+            [
+                str(binary.resolve()),
+                "exec",
+                "--strict-config",
+                "--skip-git-repo-check",
+                "strict",
+                "literal",
+            ],
+            cwd=temp_root,
+            env=env,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=5,
+            check=True,
+        )
+        assert literal_string_result.stdout == "stored reply\n"
+        assert len(server.request_bodies) == 4
+        assert server.request_bodies[-1]["input"][-1]["content"][0]["text"] == "strict literal"
+
+        cli_unknown = subprocess.run(
+            [
+                str(binary.resolve()),
+                "exec",
+                "--strict-config",
+                "-c",
+                "foo=bar",
+                "--skip-git-repo-check",
+                "strict",
+                "unknown",
+            ],
+            cwd=temp_root,
+            env=env,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=5,
+        )
+        assert cli_unknown.returncode != 0
+        assert "unknown configuration field `foo` in -c/--config override" in cli_unknown.stderr
+
+        inline_cli_unknown = subprocess.run(
+            [
+                str(binary.resolve()),
+                "exec",
+                "--strict-config",
+                "-c",
+                "model_providers.mock.auth={bogus=true}",
+                "--skip-git-repo-check",
+                "strict",
+                "inline",
+                "override",
+            ],
+            cwd=temp_root,
+            env=env,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=5,
+        )
+        assert inline_cli_unknown.returncode != 0
+        assert (
+            "unknown configuration field `model_providers.mock.auth.bogus` in -c/--config override"
+            in inline_cli_unknown.stderr
+        )
+
+        root_order_unknown = subprocess.run(
+            [
+                str(binary.resolve()),
+                "-c",
+                "features.nope=true",
+                "--strict-config",
+                "exec",
+                "--skip-git-repo-check",
+                "strict",
+                "root",
+            ],
+            cwd=temp_root,
+            env=env,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=5,
+        )
+        assert root_order_unknown.returncode != 0
+        assert (
+            "unknown configuration field `features.nope` in -c/--config override"
+            in root_order_unknown.stderr
+        )
+
+        nested_feature_unknown = subprocess.run(
+            [
+                str(binary.resolve()),
+                "exec",
+                "--strict-config",
+                "-c",
+                "features.nope.goals=true",
+                "--skip-git-repo-check",
+                "strict",
+                "nested",
+                "feature",
+            ],
+            cwd=temp_root,
+            env=env,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=5,
+        )
+        assert nested_feature_unknown.returncode != 0
+        assert (
+            "unknown configuration field `features.nope.goals` in -c/--config override"
+            in nested_feature_unknown.stderr
+        )
+
+        root_subcommand_unknown = subprocess.run(
+            [
+                str(binary.resolve()),
+                "-c",
+                "foo=bar",
+                "exec",
+                "--strict-config",
+                "--skip-git-repo-check",
+                "strict",
+                "subcommand",
+            ],
+            cwd=temp_root,
+            env=env,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=5,
+        )
+        assert root_subcommand_unknown.returncode != 0
+        assert (
+            "unknown configuration field `foo` in -c/--config override"
+            in root_subcommand_unknown.stderr
+        )
+
+        resume_unknown = subprocess.run(
+            [
+                str(binary.resolve()),
+                "--strict-config",
+                "resume",
+                "-c",
+                "foo=bar",
+                "last",
+            ],
+            cwd=temp_root,
+            env=env,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=5,
+        )
+        assert resume_unknown.returncode != 0
+        assert "unknown configuration field `foo` in -c/--config override" in resume_unknown.stderr
+
+        resume_subcommand_unknown = subprocess.run(
+            [
+                str(binary.resolve()),
+                "resume",
+                "--strict-config",
+                "-c",
+                "foo=bar",
+                "last",
+            ],
+            cwd=temp_root,
+            env=env,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=5,
+        )
+        assert resume_subcommand_unknown.returncode != 0
+        assert (
+            "unknown configuration field `foo` in -c/--config override"
+            in resume_subcommand_unknown.stderr
+        )
+
+        fork_unknown = subprocess.run(
+            [
+                str(binary.resolve()),
+                "--strict-config",
+                "fork",
+                "--config=features.nope=true",
+                "last",
+            ],
+            cwd=temp_root,
+            env=env,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=5,
+        )
+        assert fork_unknown.returncode != 0
+        assert (
+            "unknown configuration field `features.nope` in -c/--config override"
+            in fork_unknown.stderr
+        )
+
+        fork_subcommand_unknown = subprocess.run(
+            [
+                str(binary.resolve()),
+                "fork",
+                "--strict-config",
+                "--config=features.nope=true",
+                "last",
+            ],
+            cwd=temp_root,
+            env=env,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=5,
+        )
+        assert fork_subcommand_unknown.returncode != 0
+        assert (
+            "unknown configuration field `features.nope` in -c/--config override"
+            in fork_subcommand_unknown.stderr
+        )
+
+        config_path.write_text(
+            f'openai_base_url = "{base_url}"\nunknown_key = true\n',
+            encoding="utf-8",
+        )
+
+        config_unknown = subprocess.run(
+            [
+                str(binary.resolve()),
+                "exec",
+                "--strict-config",
+                "--skip-git-repo-check",
+                "strict",
+                "file",
+            ],
+            cwd=temp_root,
+            env=env,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=5,
+        )
+        assert config_unknown.returncode != 0
+        assert "unknown configuration field `unknown_key`" in config_unknown.stderr
+
+        config_path.write_text(
+            "\n".join(
+                [
+                    'model_provider = "mock"',
+                    'model_context_window = "wide"',
+                    "unknown_key = true",
+                    "",
+                    "[model_providers.mock]",
+                    f'base_url = "{base_url}"',
+                    "requires_openai_auth = false",
+                    "",
+                ]
+            ),
+            encoding="utf-8",
+        )
+        type_error_precedence = subprocess.run(
+            [
+                str(binary.resolve()),
+                "exec",
+                "--strict-config",
+                "--skip-git-repo-check",
+                "strict",
+                "type",
+                "precedence",
+            ],
+            cwd=temp_root,
+            env=env,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=5,
+        )
+        assert type_error_precedence.returncode != 0
+        assert "InvalidTomlInteger" in type_error_precedence.stderr
+        assert "unknown configuration field `unknown_key`" not in type_error_precedence.stderr
+
+        config_path.write_text(
+            "\n".join(
+                [
+                    'model_provider = "mock"',
+                    f'model_providers.mock.base_url = "{base_url}"',
+                    "model_providers.mock.requires_openai_auth = false",
+                    'model_providers.mock.typo.base_url = "http://bad.example/v1"',
+                    "",
+                ]
+            ),
+            encoding="utf-8",
+        )
+        dotted_provider_unknown = subprocess.run(
+            [
+                str(binary.resolve()),
+                "exec",
+                "--strict-config",
+                "--skip-git-repo-check",
+                "strict",
+                "dotted",
+            ],
+            cwd=temp_root,
+            env=env,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=5,
+        )
+        assert dotted_provider_unknown.returncode != 0
+        assert (
+            "unknown configuration field `model_providers.mock.typo.base_url`"
+            in dotted_provider_unknown.stderr
+        )
+
+        config_path.write_text(
+            "\n".join(
+                [
+                    'model_provider = "mock"',
+                    "",
+                    "[model_providers.mock]",
+                    f'base_url = "{base_url}"',
+                    "requires_openai_auth = false",
+                    'auth = { command = "echo", bogus = true }',
+                    "",
+                ]
+            ),
+            encoding="utf-8",
+        )
+        inline_provider_unknown = subprocess.run(
+            [
+                str(binary.resolve()),
+                "exec",
+                "--strict-config",
+                "--skip-git-repo-check",
+                "strict",
+                "inline",
+            ],
+            cwd=temp_root,
+            env=env,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=5,
+        )
+        assert inline_provider_unknown.returncode != 0
+        assert (
+            "unknown configuration field `model_providers.mock.auth.bogus`"
+            in inline_provider_unknown.stderr
+        )
+
+        config_path.write_text(
+            "\n".join(
+                [
+                    'model_provider = "mock"',
+                    "",
+                    "[features.multi_agent_v2]",
+                    "nope = true",
+                    "",
+                    "[model_providers.mock]",
+                    f'base_url = "{base_url}"',
+                    "requires_openai_auth = false",
+                    "",
+                ]
+            ),
+            encoding="utf-8",
+        )
+        structured_feature_unknown = subprocess.run(
+            [
+                str(binary.resolve()),
+                "exec",
+                "--strict-config",
+                "--skip-git-repo-check",
+                "strict",
+                "feature",
+                "config",
+            ],
+            cwd=temp_root,
+            env=env,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=5,
+        )
+        assert structured_feature_unknown.returncode != 0
+        assert (
+            "unknown configuration field `features.multi_agent_v2.nope`"
+            in structured_feature_unknown.stderr
+        )
+
+        config_path.write_text(
+            f'openai_base_url = "{base_url}"\nunknown_key = true\n',
+            encoding="utf-8",
+        )
+
+        unsupported_features_strict = subprocess.run(
+            [
+                str(binary.resolve()),
+                "--strict-config",
+                "features",
+                "list",
+            ],
+            cwd=temp_root,
+            env=env,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=5,
+        )
+        assert unsupported_features_strict.returncode != 0
+        assert (
+            "`--strict-config` is not supported for `codex-zig features`"
+            in unsupported_features_strict.stderr
+        )
+        assert "unknown configuration field" not in unsupported_features_strict.stderr
+
+        app_server_root_strict_unknown = subprocess.run(
+            [
+                str(binary.resolve()),
+                "--strict-config",
+                "app-server",
+                "--listen",
+                "off",
+            ],
+            cwd=temp_root,
+            env=env,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=5,
+        )
+        assert app_server_root_strict_unknown.returncode != 0
+        assert "unknown configuration field `unknown_key`" in app_server_root_strict_unknown.stderr
+
+        app_server_subcommand_strict_unknown = subprocess.run(
+            [
+                str(binary.resolve()),
+                "app-server",
+                "--strict-config",
+                "--listen",
+                "off",
+            ],
+            cwd=temp_root,
+            env=env,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=5,
+        )
+        assert app_server_subcommand_strict_unknown.returncode != 0
+        assert (
+            "unknown configuration field `unknown_key`"
+            in app_server_subcommand_strict_unknown.stderr
+        )
+
+        app_server_proxy_strict_unsupported = subprocess.run(
+            [
+                str(binary.resolve()),
+                "--strict-config",
+                "app-server",
+                "proxy",
+            ],
+            cwd=temp_root,
+            env=env,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=5,
+        )
+        assert app_server_proxy_strict_unsupported.returncode != 0
+        assert (
+            "`--strict-config` is not supported for `codex-zig app-server proxy`"
+            in app_server_proxy_strict_unsupported.stderr
+        )
+
+        exec_server_strict_unknown = subprocess.run(
+            [
+                str(binary.resolve()),
+                "--strict-config",
+                "exec-server",
+                "--listen",
+                "ws://127.0.0.1:0",
+            ],
+            cwd=temp_root,
+            env=env,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=5,
+        )
+        assert exec_server_strict_unknown.returncode != 0
+        assert "unknown configuration field `unknown_key`" in exec_server_strict_unknown.stderr
+
+        tui_unknown = subprocess.run(
+            [
+                str(binary.resolve()),
+                "--strict-config",
+                "--no-alt-screen",
+                "strict",
+                "tui",
+            ],
+            cwd=temp_root,
+            env=env,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=5,
+        )
+        assert tui_unknown.returncode != 0
+        assert "unknown configuration field `unknown_key`" in tui_unknown.stderr
+
+        remote_tui_unknown = subprocess.run(
+            [
+                str(binary.resolve()),
+                "--strict-config",
+                "--remote",
+                "ws://127.0.0.1:1",
+                "--no-alt-screen",
+                "strict",
+                "remote",
+                "tui",
+            ],
+            cwd=temp_root,
+            env=env,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=5,
+        )
+        assert remote_tui_unknown.returncode != 0
+        assert "unknown configuration field `unknown_key`" in remote_tui_unknown.stderr
+        assert "ConnectionRefused" not in remote_tui_unknown.stderr
+
+        repo = temp_root / "repo"
+        repo.mkdir()
+        subprocess.run(
+            ["git", "init"],
+            cwd=repo,
+            check=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        review_root_subcommand_unknown = subprocess.run(
+            [
+                str(binary.resolve()),
+                "-c",
+                "foo=bar",
+                "review",
+                "--strict-config",
+                "--uncommitted",
+            ],
+            cwd=repo,
+            env=env,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=5,
+        )
+        assert review_root_subcommand_unknown.returncode != 0
+        assert (
+            "unknown configuration field `foo` in -c/--config override"
+            in review_root_subcommand_unknown.stderr
+        )
+
+        exec_review_subcommand_unknown = subprocess.run(
+            [
+                str(binary.resolve()),
+                "exec",
+                "-c",
+                "foo=bar",
+                "review",
+                "--strict-config",
+                "--skip-git-repo-check",
+                "--uncommitted",
+            ],
+            cwd=repo,
+            env=env,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=5,
+        )
+        assert exec_review_subcommand_unknown.returncode != 0
+        assert (
+            "unknown configuration field `foo` in -c/--config override"
+            in exec_review_subcommand_unknown.stderr
+        )
+
+        review_unknown = subprocess.run(
+            [
+                str(binary.resolve()),
+                "review",
+                "--strict-config",
+                "-c",
+                "features.nope=true",
+                "--uncommitted",
+            ],
+            cwd=repo,
+            env=env,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=5,
+        )
+        assert review_unknown.returncode != 0
+        assert (
+            "unknown configuration field `features.nope` in -c/--config override"
+            in review_unknown.stderr
+        )
+    finally:
+        server.shutdown()
+        server.server_close()
+        shutil.rmtree(temp_root, ignore_errors=True)
+
+
 def run_exec_hook_trust_bypass_smoke(binary: Path) -> None:
     temp_root = Path(tempfile.mkdtemp(prefix="codex-zig-cli-exec-hook-bypass-", dir="/tmp"))
     server, base_url = start_exec_responses_server()
@@ -10920,6 +11702,7 @@ def main() -> None:
     run_exec_review_smoke(binary)
     run_review_stdin_smoke(binary)
     run_exec_equals_options_smoke(binary)
+    run_strict_config_smoke(binary)
     run_exec_hook_trust_bypass_smoke(binary)
     run_exec_resume_option_smoke(binary)
     run_exec_stdin_smoke(binary)
@@ -10962,6 +11745,7 @@ def main() -> None:
     print("cli-exec-review-e2e: ok")
     print("cli-review-stdin-e2e: ok")
     print("cli-exec-options-e2e: ok")
+    print("cli-strict-config-e2e: ok")
     print("cli-exec-hook-trust-bypass-e2e: ok")
     print("cli-exec-resume-options-e2e: ok")
     print("cli-exec-stdin-e2e: ok")
