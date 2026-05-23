@@ -310,7 +310,9 @@ fn listPluginsAndPrint(allocator: std.mem.Allocator, marketplace_filter: ?[]cons
     var context = try loadPluginCommandContext(allocator);
     defer context.deinit(allocator);
 
-    const response = try plugin_list.renderConfiguredResponse(allocator, context.codex_home, context.config_bytes orelse "");
+    const home_root = try resolveHomeMarketplaceRoot(allocator);
+    defer if (home_root) |root| allocator.free(root);
+    const response = try plugin_list.renderCliResponse(allocator, context.codex_home, context.config_bytes orelse "", home_root);
     defer allocator.free(response);
     var parsed = try std.json.parseFromSlice(std.json.Value, allocator, response, .{});
     defer parsed.deinit();
@@ -384,7 +386,7 @@ fn listMarketplacesAndPrint(allocator: std.mem.Allocator) !void {
 
     const config_bytes = context.config_bytes orelse "";
     if (plugin_config.pluginsFeatureEnabled(config_bytes)) {
-        if (try env.getOwned(allocator, "HOME")) |home| {
+        if (try resolveHomeMarketplaceRoot(allocator)) |home| {
             defer allocator.free(home);
             try appendMarketplaceListRoot(allocator, &rows, &issues, null, home, false);
         }
@@ -534,6 +536,16 @@ fn readFileOptional(allocator: std.mem.Allocator, path: []const u8, limit: usize
     };
 }
 
+fn resolveHomeMarketplaceRoot(allocator: std.mem.Allocator) !?[]const u8 {
+    const home = (try env.getOwned(allocator, "HOME")) orelse return null;
+    errdefer allocator.free(home);
+    if (home.len == 0 or !std.fs.path.isAbsolute(home)) {
+        allocator.free(home);
+        return null;
+    }
+    return home;
+}
+
 fn removePluginAndPrint(allocator: std.mem.Allocator, selection: PluginSelection) !void {
     var context = try loadPluginCommandContext(allocator);
     defer context.deinit(allocator);
@@ -557,7 +569,9 @@ fn findMarketplacePathForPlugin(
     config_bytes: []const u8,
     selection: PluginSelection,
 ) ![]const u8 {
-    const response = try plugin_list.renderConfiguredResponse(allocator, codex_home, config_bytes);
+    const home_root = try resolveHomeMarketplaceRoot(allocator);
+    defer if (home_root) |root| allocator.free(root);
+    const response = try plugin_list.renderCliResponse(allocator, codex_home, config_bytes, home_root);
     defer allocator.free(response);
     var parsed = try std.json.parseFromSlice(std.json.Value, allocator, response, .{});
     defer parsed.deinit();

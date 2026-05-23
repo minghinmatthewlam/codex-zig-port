@@ -126,7 +126,8 @@ Zig TUI help in `src/tui.zig`, and the broader narrative tracker in
 ### Plugin CLI and TUI User Flows
 
 - CLI `codex plugin add`, `codex plugin list`, and `codex plugin remove` are
-  implemented for configured local and git-backed marketplace snapshots,
+  implemented for configured local/git-backed marketplace snapshots and
+  Rust-compatible personal HOME marketplace roots,
   including `PLUGIN@MARKETPLACE` and `--marketplace` selectors, Rust-shaped
   listing tables, local plugin cache install, config enablement, and local
   cache/config removal. CLI `codex plugin marketplace list` lists configured

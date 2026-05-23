@@ -392,6 +392,15 @@ pub fn renderConfiguredResponse(
     codex_home: []const u8,
     config_bytes: []const u8,
 ) ![]const u8 {
+    return renderCliResponse(allocator, codex_home, config_bytes, null);
+}
+
+pub fn renderCliResponse(
+    allocator: std.mem.Allocator,
+    codex_home: []const u8,
+    config_bytes: []const u8,
+    home_root: ?[]const u8,
+) ![]const u8 {
     if (!plugin_config.pluginsFeatureEnabled(config_bytes)) {
         return allocator.dupe(u8, "{\"marketplaces\":[],\"marketplaceLoadErrors\":[],\"featuredPluginIds\":[]}");
     }
@@ -417,6 +426,24 @@ pub fn renderConfiguredResponse(
     var load_errors = std.ArrayList(u8).empty;
     defer load_errors.deinit(allocator);
     var load_error_count: usize = 0;
+
+    if (home_root) |root| {
+        var ignored_load_errors = std.ArrayList(u8).empty;
+        defer ignored_load_errors.deinit(allocator);
+        var ignored_load_error_count: usize = 0;
+        try appendMarketplacesForRoot(
+            allocator,
+            codex_home,
+            root,
+            configured_ids,
+            enabled_ids,
+            &seen_plugin_ids,
+            &marketplaces,
+            &marketplace_count,
+            &ignored_load_errors,
+            &ignored_load_error_count,
+        );
+    }
 
     for (configured.issues) |issue| {
         try appendConfiguredMarketplaceLoadError(allocator, &load_errors, &load_error_count, issue.marketplace_name, issue.marketplace_path, issue.message);

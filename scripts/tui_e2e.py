@@ -2273,6 +2273,30 @@ def run_plugin_marketplace_smoke(
         raise AssertionError(
             f"expected HOME marketplace list row:\n{home_marketplace_list.stderr}"
         )
+    home_marketplace_plugins = subprocess.run(
+        [str(binary), "plugin", "list", "--marketplace", "home-debug"],
+        cwd=workspace,
+        env=home_list_env,
+        text=True,
+        capture_output=True,
+        check=True,
+    )
+    if "home-plugin@home-debug" not in home_marketplace_plugins.stderr:
+        raise AssertionError(
+            f"expected HOME marketplace plugin list row:\n{home_marketplace_plugins.stderr}"
+        )
+    home_marketplace_add = subprocess.run(
+        [str(binary), "plugin", "add", "home-plugin@home-debug"],
+        cwd=workspace,
+        env=home_list_env,
+        text=True,
+        capture_output=True,
+        check=True,
+    )
+    if "Added plugin `home-plugin` from marketplace `home-debug`." not in home_marketplace_add.stderr:
+        raise AssertionError(
+            f"expected HOME marketplace plugin add output:\n{home_marketplace_add.stderr}"
+        )
 
     empty_source = workspace / "empty-marketplace-source"
     empty_source.joinpath(".agents", "plugins").mkdir(parents=True)
