@@ -2819,6 +2819,11 @@ fn handleSlashCommand(
         return .handled;
     }
 
+    if (std.ascii.eqlIgnoreCase(parts.name, "experimental")) {
+        try handleExperimentalFeatures(allocator, cfg.*, parts.args);
+        return .handled;
+    }
+
     if (std.ascii.eqlIgnoreCase(parts.name, "rename")) {
         if (try renameThread(allocator, transcript, session_path.*, parts.args)) {
             try refreshTerminalTitle(allocator, cfg.*, cwd, transcript, session_path.*, state);
@@ -3096,6 +3101,8 @@ fn printSlashHelp(goals_enabled: bool) void {
         \\                    choose a syntax highlighting theme
         \\  /personality [status|list|none|friendly|pragmatic]
         \\                    choose a communication style
+        \\  /experimental [enable|disable FEATURE]
+        \\                    list or toggle experimental features
         \\  /rename <title>   set this session's persisted title
         \\  /model [name]     show or set the in-memory model for this session
         \\  /fast [on|off|status]
@@ -3681,6 +3688,92 @@ fn printPersonalityUsage() void {
 
 fn personalityLabel(personality: ?config.Personality) []const u8 {
     return if (personality) |value| value.label() else "unset";
+}
+
+fn handleExperimentalFeatures(allocator: std.mem.Allocator, cfg: config.Config, args: []const u8) !void {
+    const trimmed = std.mem.trim(u8, args, " \t\r\n");
+    if (trimmed.len == 0 or std.ascii.eqlIgnoreCase(trimmed, "list") or std.ascii.eqlIgnoreCase(trimmed, "status")) {
+        try printExperimentalFeatures(allocator, cfg.codex_home, cfg.active_profile);
+        return;
+    }
+    if (std.ascii.eqlIgnoreCase(trimmed, "help")) {
+        printExperimentalUsage();
+        return;
+    }
+
+    var tokens = std.mem.tokenizeAny(u8, trimmed, " \t\r\n");
+    const action = tokens.next() orelse {
+        printExperimentalUsage();
+        return;
+    };
+    const feature_arg = tokens.next() orelse {
+        printExperimentalUsage();
+        return;
+    };
+    if (tokens.next() != null) {
+        printExperimentalUsage();
+        return;
+    }
+
+    const enabled = if (std.ascii.eqlIgnoreCase(action, "enable") or std.ascii.eqlIgnoreCase(action, "on"))
+        true
+    else if (std.ascii.eqlIgnoreCase(action, "disable") or std.ascii.eqlIgnoreCase(action, "off"))
+        false
+    else {
+        printExperimentalUsage();
+        return;
+    };
+
+    const spec = experimentalFeatureSpec(feature_arg) orelse {
+        if (features_cmd.specForKey(feature_arg) == null) {
+            std.debug.print("unknown feature: {s}\n", .{feature_arg});
+        } else {
+            std.debug.print("not an experimental feature: {s}\n", .{feature_arg});
+        }
+        printExperimentalUsage();
+        return;
+    };
+
+    _ = try features_cmd.persistFeatureOverride(allocator, cfg.codex_home, cfg.active_profile, spec.key, enabled);
+    std.debug.print("experimental feature `{s}`: {s}\n", .{ spec.key, if (enabled) "enabled" else "disabled" });
+    try printExperimentalFeatures(allocator, cfg.codex_home, cfg.active_profile);
+}
+
+fn printExperimentalFeatures(allocator: std.mem.Allocator, codex_home: []const u8, profile: ?[]const u8) !void {
+    var overrides = try features_cmd.loadFeatureOverridesForProfile(allocator, codex_home, profile);
+    defer overrides.deinit(allocator);
+
+    std.debug.print("experimental features:\n", .{});
+    var count: usize = 0;
+    for (features_cmd.FeatureSpec.all) |feature| {
+        const name = feature.experimental_menu_name orelse continue;
+        const description = feature.experimental_menu_description orelse "";
+        count += 1;
+        const enabled = features_cmd.effectiveEnabled(overrides, feature.key) orelse feature.default_enabled;
+        std.debug.print("  [{s}] {s} ({s})\n", .{
+            if (enabled) "x" else " ",
+            name,
+            if (enabled) "enabled" else "disabled",
+        });
+        if (description.len > 0) {
+            std.debug.print("      {s}\n", .{description});
+        }
+        std.debug.print("      key: {s}\n", .{feature.key});
+    }
+    if (count == 0) {
+        std.debug.print("  none\n", .{});
+    }
+    printExperimentalUsage();
+}
+
+fn experimentalFeatureSpec(key: []const u8) ?features_cmd.FeatureSpec {
+    const feature = features_cmd.specForKey(key) orelse return null;
+    if (feature.experimental_menu_name == null) return null;
+    return feature;
+}
+
+fn printExperimentalUsage() void {
+    std.debug.print("usage: /experimental [enable|disable FEATURE]\n", .{});
 }
 
 fn sanitizeTerminalTitle(allocator: std.mem.Allocator, title: []const u8) ![]const u8 {
@@ -4408,6 +4501,10 @@ test "parse slash command names and args" {
     const status = parseSlash("/status").?;
     try std.testing.expectEqualStrings("status", status.name);
     try std.testing.expectEqualStrings("", status.args);
+
+    const experimental = parseSlash("/experimental enable network_proxy").?;
+    try std.testing.expectEqualStrings("experimental", experimental.name);
+    try std.testing.expectEqualStrings("enable network_proxy", experimental.args);
 
     const remote_control = parseSlash("/remote-control stop").?;
     try std.testing.expectEqualStrings("remote-control", remote_control.name);
