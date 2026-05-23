@@ -813,27 +813,27 @@ test "feature list renderer includes config overrides" {
     const allocator = std.testing.allocator;
     var overrides = FeatureOverrides{};
     defer overrides.deinit(allocator);
-    try overrides.put(allocator, "goals", true);
+    try overrides.put(allocator, "network_proxy", true);
 
-    const rendered = try renderFeaturesList(allocator, overrides, .{}, "goals".len, "experimental".len);
+    const rendered = try renderFeaturesList(allocator, overrides, .{}, "network_proxy".len, "experimental".len);
     defer allocator.free(rendered);
 
-    try std.testing.expect(std.mem.indexOf(u8, rendered, "goals  experimental  true\n") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rendered, "network_proxy  experimental  true\n") != null);
 }
 
 test "feature list renderer lets runtime overrides win" {
     const allocator = std.testing.allocator;
     var config_overrides = FeatureOverrides{};
     defer config_overrides.deinit(allocator);
-    try config_overrides.put(allocator, "goals", false);
+    try config_overrides.put(allocator, "network_proxy", false);
     var runtime_overrides = FeatureOverrides{};
     defer runtime_overrides.deinit(allocator);
-    try runtime_overrides.put(allocator, "goals", true);
+    try runtime_overrides.put(allocator, "network_proxy", true);
 
-    const rendered = try renderFeaturesList(allocator, config_overrides, runtime_overrides, "goals".len, "experimental".len);
+    const rendered = try renderFeaturesList(allocator, config_overrides, runtime_overrides, "network_proxy".len, "experimental".len);
     defer allocator.free(rendered);
 
-    try std.testing.expect(std.mem.indexOf(u8, rendered, "goals  experimental  true\n") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rendered, "network_proxy  experimental  true\n") != null);
 }
 
 test "runtime feature toggles reject unknown keys" {
@@ -920,17 +920,17 @@ test "feature config update clears root default false feature" {
     const allocator = std.testing.allocator;
     const updated = try updateFeatureConfig(allocator,
         \\[features]
-        \\goals = true
+        \\memories = true
         \\shell_tool = false
         \\[profiles.work.features]
-        \\goals = true
+        \\memories = true
         \\
-    , null, "goals", .clear);
+    , null, "memories", .clear);
     defer allocator.free(updated);
 
     try std.testing.expect(std.mem.indexOf(u8, updated, "[features]\nshell_tool = false\n") != null);
-    try std.testing.expect(std.mem.indexOf(u8, updated, "[features]\ngoals =") == null);
-    try std.testing.expect(std.mem.indexOf(u8, updated, "[profiles.work.features]\ngoals = true\n") != null);
+    try std.testing.expect(std.mem.indexOf(u8, updated, "[features]\nmemories =") == null);
+    try std.testing.expect(std.mem.indexOf(u8, updated, "[profiles.work.features]\nmemories = true\n") != null);
 }
 
 test "runtime feature toggles accept legacy aliases" {
@@ -952,12 +952,12 @@ test "unstable feature warning message lists effective under-development feature
         \\goals = true
         \\shell_zsh_fork = false
         \\[profiles.work.features]
-        \\remote_control = true
+        \\multi_agent_v2 = true
         \\
     , "work") orelse return error.TestExpectedWarning;
     defer allocator.free(message);
 
-    try std.testing.expect(std.mem.indexOf(u8, message, "Under-development features enabled: code_mode, remote_control.") != null);
+    try std.testing.expect(std.mem.indexOf(u8, message, "Under-development features enabled: code_mode, multi_agent_v2.") != null);
     try std.testing.expect(std.mem.indexOf(u8, message, "suppress_unstable_features_warning = true") != null);
     try std.testing.expect(std.mem.indexOf(u8, message, "/tmp/codex-home/config.toml") != null);
 }
