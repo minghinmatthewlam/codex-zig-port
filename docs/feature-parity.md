@@ -108,9 +108,14 @@ Zig TUI help in `src/tui.zig`, and the broader narrative tracker in
 - Basic local TUI `/agent` and `/subagents` coverage is implemented as a
   text-mode entry point for Rust's subagent picker surface: the commands are
   listed in `/help`, report the no-agent state, and respect the `multi_agent`
-  feature gate. Real subagent thread spawning, picker navigation, thread
-  switching, lifecycle status, and model-visible multi-agent tools remain part
-  of the broader subagent runtime bucket.
+  feature gate. The stable v1 multi-agent tool discovery surface is now
+  exposed through capability-gated, client-executed `tool_search`, returning
+  the Rust-shaped `multi_agent_v1` namespace with `spawn_agent`, `send_input`,
+  `resume_agent`, `wait_agent`, and `close_agent`; executing those namespaced
+  calls currently returns an explicit runtime-unavailable tool result. Real
+  subagent thread spawning, picker navigation, thread switching, lifecycle
+  status, and v2 runtime behavior remain part of the broader subagent runtime
+  bucket.
 - Basic local TUI `/skills` and `/hooks` list views are covered: `/skills`
   lists discovered repo/user/plugin skills with enabled state and load errors,
   and `/hooks` lists discovered lifecycle command hooks with event, source,
