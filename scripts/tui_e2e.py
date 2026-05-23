@@ -4573,8 +4573,17 @@ def run_tui_settings_slash_smoke(
 
         mark = len(output)
         send_line(master_fd, "/help")
+        wait_for(master_fd, output, b"/agent, /subagents", 5, mark)
         wait_for(master_fd, output, b"/realtime [start|stop|status]", 5, mark)
         wait_for(master_fd, output, b"/settings [microphone|speaker]", 5, mark)
+
+        mark = len(output)
+        send_line(master_fd, "/agent")
+        wait_for(master_fd, output, b"No agents available yet.", 5, mark)
+
+        mark = len(output)
+        send_line(master_fd, "/subagents")
+        wait_for(master_fd, output, b"No agents available yet.", 5, mark)
 
         mark = len(output)
         send_line(master_fd, "/realtime status")
@@ -4645,6 +4654,74 @@ def run_tui_settings_slash_smoke(
             except subprocess.TimeoutExpired:
                 proc.kill()
                 proc.wait(timeout=2)
+
+    disabled_root = workspace / "tui-agent-disabled-smoke"
+    if disabled_root.exists():
+        shutil.rmtree(disabled_root)
+    disabled_home = disabled_root / "codex-home"
+    disabled_workspace = disabled_root / "workspace"
+    disabled_home.mkdir(parents=True)
+    disabled_workspace.mkdir(parents=True)
+
+    disabled_env = env.copy()
+    disabled_env["CODEX_HOME"] = str(disabled_home)
+    disabled_env.setdefault("TERM", "xterm-256color")
+    disabled_output = bytearray()
+    disabled_master_fd = -1
+    disabled_slave_fd = -1
+    disabled_master_fd, disabled_slave_fd = pty.openpty()
+    disabled_proc = None
+    try:
+        disabled_proc = subprocess.Popen(
+            [
+                str(binary),
+                "--no-alt-screen",
+                "--disable",
+                "multi_agent",
+            ],
+            cwd=disabled_workspace,
+            env=disabled_env,
+            stdin=disabled_slave_fd,
+            stdout=disabled_slave_fd,
+            stderr=disabled_slave_fd,
+            close_fds=True,
+        )
+        os.close(disabled_slave_fd)
+        disabled_slave_fd = -1
+
+        wait_for(disabled_master_fd, disabled_output, b"Type /help for commands", 8)
+
+        mark = len(disabled_output)
+        send_line(disabled_master_fd, "/agent")
+        wait_for(
+            disabled_master_fd,
+            disabled_output,
+            b"subagents are disabled by the `multi_agent` feature flag",
+            5,
+            mark,
+        )
+        wait_for(disabled_master_fd, disabled_output, b"--enable multi_agent", 5, mark)
+
+        mark = len(disabled_output)
+        send_line(disabled_master_fd, "/quit")
+        wait_for(disabled_master_fd, disabled_output, b"bye", 5, mark)
+        read_available(disabled_master_fd, disabled_output)
+        exit_code = disabled_proc.wait(timeout=5)
+        if exit_code != 0:
+            rendered = disabled_output.decode(errors="replace")
+            raise AssertionError(f"agent disabled TUI exited with {exit_code}\n\n{rendered}")
+    finally:
+        if disabled_slave_fd >= 0:
+            os.close(disabled_slave_fd)
+        if disabled_master_fd >= 0:
+            os.close(disabled_master_fd)
+        if disabled_proc is not None and disabled_proc.poll() is None:
+            disabled_proc.terminate()
+            try:
+                disabled_proc.wait(timeout=2)
+            except subprocess.TimeoutExpired:
+                disabled_proc.kill()
+                disabled_proc.wait(timeout=2)
 
 
 def run_tui_apps_slash_smoke(

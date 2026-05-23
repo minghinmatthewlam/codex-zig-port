@@ -41,8 +41,6 @@ Zig TUI help in `src/tui.zig`, and the broader narrative tracker in
 - Add robust user interruption and steering behavior in the TUI, including
   queued input while a turn is running, `/compact` interactions, active tool
   interruption, and accurate background-process cleanup.
-- Close major missing TUI slash commands that affect daily use:
-  `/agent` / `/subagents`.
 - Basic local TUI `/experimental` coverage is implemented as a text-mode
   feature browser/toggler: it lists Rust menu-visible experimental features
   with effective enabled state, menu label, description, and config key, and
@@ -107,6 +105,12 @@ Zig TUI help in `src/tui.zig`, and the broader narrative tracker in
   microphone capture, speaker playback, websocket/WebRTC session startup,
   realtime transcript mirroring, and active-turn integration remain planned
   realtime backend depth.
+- Basic local TUI `/agent` and `/subagents` coverage is implemented as a
+  text-mode entry point for Rust's subagent picker surface: the commands are
+  listed in `/help`, report the no-agent state, and respect the `multi_agent`
+  feature gate. Real subagent thread spawning, picker navigation, thread
+  switching, lifecycle status, and model-visible multi-agent tools remain part
+  of the broader subagent runtime bucket.
 - Basic local TUI `/skills` and `/hooks` list views are covered: `/skills`
   lists discovered repo/user/plugin skills with enabled state and load errors,
   and `/hooks` lists discovered lifecycle command hooks with event, source,

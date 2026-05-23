@@ -2855,6 +2855,11 @@ fn handleSlashCommand(
         return .handled;
     }
 
+    if (std.ascii.eqlIgnoreCase(parts.name, "agent") or std.ascii.eqlIgnoreCase(parts.name, "subagents")) {
+        handleAgentSlash(feature_overrides.*, parts.args);
+        return .handled;
+    }
+
     if (std.ascii.eqlIgnoreCase(parts.name, "title")) {
         try handleTerminalTitle(allocator, cfg.*, cwd, transcript, session_path.*, state, parts.args);
         return .handled;
@@ -3464,6 +3469,27 @@ fn realtimeConversationEnabled(feature_overrides: features_cmd.FeatureOverrides)
     return features_cmd.effectiveEnabled(feature_overrides, "realtime_conversation") orelse false;
 }
 
+fn multiAgentEnabled(feature_overrides: features_cmd.FeatureOverrides) bool {
+    return features_cmd.effectiveEnabled(feature_overrides, "multi_agent") orelse true;
+}
+
+fn handleAgentSlash(feature_overrides: features_cmd.FeatureOverrides, args: []const u8) void {
+    const trimmed = std.mem.trim(u8, args, " \t\r\n");
+    if (trimmed.len != 0 and
+        !std.ascii.eqlIgnoreCase(trimmed, "status") and
+        !std.ascii.eqlIgnoreCase(trimmed, "list") and
+        !std.ascii.eqlIgnoreCase(trimmed, "help"))
+    {
+        std.debug.print("usage: /agent\n", .{});
+        return;
+    }
+    if (!multiAgentEnabled(feature_overrides)) {
+        std.debug.print("subagents are disabled by the `multi_agent` feature flag. Start Codex with `--enable multi_agent` or set `[features].multi_agent = true` in config.toml.\n", .{});
+        return;
+    }
+    std.debug.print("No agents available yet.\n", .{});
+}
+
 fn handleRealtimeSlash(
     state: *TuiState,
     cfg: config.Config,
@@ -3859,6 +3885,8 @@ fn printSlashHelp(goals_enabled: bool, realtime_enabled: bool) void {
         \\  /keymap [debug]   show current key bindings
         \\  /plan [on|off|status]
         \\                    toggle plan-only mode for normal prompts
+        \\  /agent, /subagents
+        \\                    switch the active agent thread
         \\  /title [status|off|default|ITEM...]
         \\                    manage the terminal window title
         \\  /statusline [status|off|default|ITEM...]
@@ -5923,9 +5951,17 @@ test "pets slash helper aliases" {
 }
 
 test "settings slash helper aliases" {
+    const allocator = std.testing.allocator;
+
     try std.testing.expect(!RealtimeConversationPhase.inactive.isLive());
     try std.testing.expect(RealtimeConversationPhase.active.isLive());
     try std.testing.expectEqualStrings("active", RealtimeConversationPhase.active.label());
+
+    var overrides = features_cmd.FeatureOverrides{};
+    defer overrides.deinit(allocator);
+    try std.testing.expect(multiAgentEnabled(overrides));
+    try overrides.put(allocator, "multi_agent", false);
+    try std.testing.expect(!multiAgentEnabled(overrides));
 
     try std.testing.expectEqual(RealtimeAudioDeviceKind.microphone, parseRealtimeAudioDeviceKind("microphone").?);
     try std.testing.expectEqual(RealtimeAudioDeviceKind.microphone, parseRealtimeAudioDeviceKind("mic").?);
@@ -5936,9 +5972,6 @@ test "settings slash helper aliases" {
     try std.testing.expect(isDefaultRealtimeAudioSelection("system-default"));
     try std.testing.expect(!isDefaultRealtimeAudioSelection("USB Mic"));
 
-    const allocator = std.testing.allocator;
-    var overrides = features_cmd.FeatureOverrides{};
-    defer overrides.deinit(allocator);
     try std.testing.expect(!realtimeConversationEnabled(overrides));
     try overrides.put(allocator, "realtime_conversation", true);
     try std.testing.expectEqual(builtin.os.tag != .linux, realtimeConversationEnabled(overrides));
