@@ -187,6 +187,8 @@ fn mainInner(init: std.process.Init) !void {
         for (initial_image_files.items) |path| allocator.free(path);
         initial_image_files.deinit(allocator);
     }
+    var root_config_child_args = std.ArrayList([]const u8).empty;
+    defer root_config_child_args.deinit(allocator);
     var runtime_feature_overrides = features_cmd.FeatureOverrides{};
     defer runtime_feature_overrides.deinit(allocator);
 
@@ -243,6 +245,8 @@ fn mainInner(init: std.process.Init) !void {
                 &overrides.profile,
                 raw,
             );
+            try root_config_child_args.append(allocator, arg);
+            try root_config_child_args.append(allocator, raw);
             continue;
         }
         if (std.mem.startsWith(u8, arg, "--config=")) {
@@ -253,6 +257,7 @@ fn mainInner(init: std.process.Init) !void {
                 &overrides.profile,
                 raw,
             );
+            try root_config_child_args.append(allocator, arg);
             continue;
         }
         if (std.mem.eql(u8, arg, "--model") or std.mem.eql(u8, arg, "-m")) {
@@ -581,6 +586,7 @@ fn mainInner(init: std.process.Init) !void {
         if (std.mem.eql(u8, cmd, "app-server")) {
             try app_server_cmd.runWithOptions(allocator, &args, .{
                 .feature_overrides = runtime_feature_overrides,
+                .child_global_args = root_config_child_args.items,
                 .bypass_hook_trust = overrides.runtime.bypass_hook_trust orelse false,
                 .strict_config = overrides.strict_config,
             });
@@ -612,7 +618,10 @@ fn mainInner(init: std.process.Init) !void {
             return;
         }
         if (std.mem.eql(u8, cmd, "remote-control")) {
-            try remote_control_cmd.run(allocator, &args);
+            try remote_control_cmd.runWithOptions(allocator, &args, .{
+                .feature_overrides = runtime_feature_overrides,
+                .child_global_args = root_config_child_args.items,
+            });
             return;
         }
         if (std.mem.eql(u8, cmd, "stdio-to-uds")) {

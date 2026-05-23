@@ -16,18 +16,29 @@ pub const ParsedOptions = struct {
     json: bool = false,
     runtime_overrides: config.RuntimeOverrides = .{},
     feature_overrides: features_cmd.FeatureOverrides = .{},
+    child_global_args: std.ArrayList([]const u8) = .empty,
 
     pub fn deinit(self: *ParsedOptions, allocator: std.mem.Allocator) void {
         self.feature_overrides.deinit(allocator);
+        self.child_global_args.deinit(allocator);
     }
 };
 
+pub const RunOptions = struct {
+    feature_overrides: features_cmd.FeatureOverrides = .{},
+    child_global_args: []const []const u8 = &.{},
+};
+
 pub fn run(allocator: std.mem.Allocator, args: *std.process.Args.Iterator) !void {
+    try runWithOptions(allocator, args, .{});
+}
+
+pub fn runWithOptions(allocator: std.mem.Allocator, args: *std.process.Args.Iterator, options: RunOptions) !void {
     var raw_args = std.ArrayList([]const u8).empty;
     defer raw_args.deinit(allocator);
     while (args.next()) |arg| try raw_args.append(allocator, arg);
 
-    var parsed = try parseArgSlice(allocator, raw_args.items);
+    var parsed = try parseArgSliceWithOptions(allocator, raw_args.items, options);
     defer parsed.deinit(allocator);
 
     switch (parsed.command) {
@@ -36,7 +47,7 @@ pub fn run(allocator: std.mem.Allocator, args: *std.process.Args.Iterator) !void
             if (!parsed.json) {
                 try cli_utils.writeStdout("Starting app-server daemon with remote control enabled...\n");
             }
-            try app_server_cmd.runRemoteControlDaemonStart(allocator);
+            try app_server_cmd.runRemoteControlDaemonStart(allocator, parsed.json, parsed.child_global_args.items, options.feature_overrides);
         },
         .stop => {
             if (!parsed.json) {
@@ -48,8 +59,15 @@ pub fn run(allocator: std.mem.Allocator, args: *std.process.Args.Iterator) !void
 }
 
 fn parseArgSlice(allocator: std.mem.Allocator, args: []const []const u8) !ParsedOptions {
-    var parsed = ParsedOptions{};
+    return parseArgSliceWithOptions(allocator, args, .{});
+}
+
+fn parseArgSliceWithOptions(allocator: std.mem.Allocator, args: []const []const u8, options: RunOptions) !ParsedOptions {
+    var parsed = ParsedOptions{
+        .feature_overrides = try options.feature_overrides.clone(allocator),
+    };
     errdefer parsed.deinit(allocator);
+    try parsed.child_global_args.appendSlice(allocator, options.child_global_args);
 
     var profile: ?[]const u8 = null;
     var index: usize = 0;
@@ -77,6 +95,8 @@ fn parseArgSlice(allocator: std.mem.Allocator, args: []const []const u8) !Parsed
         if (std.mem.eql(u8, arg, "--config") or std.mem.eql(u8, arg, "-c")) {
             index += 1;
             if (index >= args.len) return error.MissingConfigOptionValue;
+            try parsed.child_global_args.append(allocator, arg);
+            try parsed.child_global_args.append(allocator, args[index]);
             try config.applyRawConfigOverride(
                 &parsed.runtime_overrides,
                 &profile,
@@ -85,6 +105,7 @@ fn parseArgSlice(allocator: std.mem.Allocator, args: []const []const u8) !Parsed
             continue;
         }
         if (std.mem.startsWith(u8, arg, "--config=")) {
+            try parsed.child_global_args.append(allocator, arg);
             try config.applyRawConfigOverride(
                 &parsed.runtime_overrides,
                 &profile,
@@ -95,20 +116,26 @@ fn parseArgSlice(allocator: std.mem.Allocator, args: []const []const u8) !Parsed
         if (std.mem.eql(u8, arg, "--enable")) {
             index += 1;
             if (index >= args.len) return error.MissingFeatureName;
+            try parsed.child_global_args.append(allocator, arg);
+            try parsed.child_global_args.append(allocator, args[index]);
             try features_cmd.putRuntimeToggle(allocator, &parsed.feature_overrides, args[index], true);
             continue;
         }
         if (std.mem.startsWith(u8, arg, "--enable=")) {
+            try parsed.child_global_args.append(allocator, arg);
             try features_cmd.putRuntimeToggle(allocator, &parsed.feature_overrides, arg["--enable=".len..], true);
             continue;
         }
         if (std.mem.eql(u8, arg, "--disable")) {
             index += 1;
             if (index >= args.len) return error.MissingFeatureName;
+            try parsed.child_global_args.append(allocator, arg);
+            try parsed.child_global_args.append(allocator, args[index]);
             try features_cmd.putRuntimeToggle(allocator, &parsed.feature_overrides, args[index], false);
             continue;
         }
         if (std.mem.startsWith(u8, arg, "--disable=")) {
+            try parsed.child_global_args.append(allocator, arg);
             try features_cmd.putRuntimeToggle(allocator, &parsed.feature_overrides, arg["--disable=".len..], false);
             continue;
         }
@@ -238,6 +265,7 @@ test "remote-control command appends feature override after user toggles" {
     try std.testing.expectEqual(Command.foreground, parsed.command);
     try std.testing.expect(!parsed.json);
     try std.testing.expectEqual(@as(usize, 2), parsed.feature_overrides.items.items.len);
+    try std.testing.expectEqual(@as(usize, 4), parsed.child_global_args.items.len);
     try std.testing.expectEqualStrings("remote_control", parsed.feature_overrides.items.items[0].key);
     try std.testing.expectEqual(true, parsed.feature_overrides.items.items[0].enabled);
     try std.testing.expectEqualStrings("goals", parsed.feature_overrides.items.items[1].key);
@@ -253,6 +281,7 @@ test "remote-control command parses daemon subcommands and json" {
     try std.testing.expectEqual(Command.start, start.command);
     try std.testing.expect(start.json);
     try std.testing.expectEqual(true, start.feature_overrides.get("remote_control").?);
+    try std.testing.expectEqual(@as(usize, 0), start.child_global_args.items.len);
 
     const stop_args = [_][]const u8{ "stop", "--json" };
     var stop = try parseArgSlice(allocator, stop_args[0..]);
@@ -261,6 +290,7 @@ test "remote-control command parses daemon subcommands and json" {
     try std.testing.expectEqual(Command.stop, stop.command);
     try std.testing.expect(stop.json);
     try std.testing.expectEqual(true, stop.feature_overrides.get("remote_control").?);
+    try std.testing.expectEqual(@as(usize, 0), stop.child_global_args.items.len);
 }
 
 test "remote-control command rejects unexpected positional arguments" {
@@ -287,4 +317,25 @@ test "remote-control command parses config overrides" {
     try std.testing.expectEqualStrings("o3", parsed.runtime_overrides.model.?);
     try std.testing.expectEqualStrings("http://127.0.0.1:9", parsed.runtime_overrides.chatgpt_base_url.?);
     try std.testing.expectEqual(true, parsed.feature_overrides.get("remote_control").?);
+    try std.testing.expectEqual(@as(usize, 3), parsed.child_global_args.items.len);
+    try std.testing.expectEqualStrings("-c", parsed.child_global_args.items[0]);
+    try std.testing.expectEqualStrings("model=\"o3\"", parsed.child_global_args.items[1]);
+    try std.testing.expectEqualStrings("--config=chatgpt_base_url=http://127.0.0.1:9", parsed.child_global_args.items[2]);
+}
+
+test "remote-control command preserves root child global args before command-local args" {
+    const allocator = std.testing.allocator;
+    const root_args = [_][]const u8{ "-c", "model=\"o3\"" };
+    const raw_args = [_][]const u8{ "--enable", "goals", "start" };
+    var parsed = try parseArgSliceWithOptions(allocator, raw_args[0..], .{
+        .child_global_args = root_args[0..],
+    });
+    defer parsed.deinit(allocator);
+
+    try std.testing.expectEqual(Command.start, parsed.command);
+    try std.testing.expectEqual(@as(usize, 4), parsed.child_global_args.items.len);
+    try std.testing.expectEqualStrings("-c", parsed.child_global_args.items[0]);
+    try std.testing.expectEqualStrings("model=\"o3\"", parsed.child_global_args.items[1]);
+    try std.testing.expectEqualStrings("--enable", parsed.child_global_args.items[2]);
+    try std.testing.expectEqualStrings("goals", parsed.child_global_args.items[3]);
 }

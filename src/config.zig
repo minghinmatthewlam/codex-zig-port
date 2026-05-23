@@ -6,6 +6,10 @@ const model_catalog = @import("model_catalog.zig");
 
 pub const MIN_BACKGROUND_TERMINAL_EMPTY_POLL_TIMEOUT_MS: u64 = 5_000;
 pub const DEFAULT_BACKGROUND_TERMINAL_MAX_TIMEOUT_MS: u64 = 300_000;
+pub const INSTALLATION_ID_FILENAME = "installation_id";
+
+const INSTALLATION_ID_MAX_BYTES = 4096;
+const INSTALLATION_ID_PERMISSIONS: std.Io.File.Permissions = @enumFromInt(0o644);
 
 pub const Config = struct {
     codex_home: []const u8,
@@ -1031,7 +1035,7 @@ pub fn loadWithOptions(allocator: std.mem.Allocator, options: LoadOptions) !Conf
     const oss_provider = try resolveOssProvider(allocator, config_view, active_profile);
     errdefer if (oss_provider) |provider| allocator.free(provider);
 
-    const installation_id = try readOptionalFileTrimmed(allocator, codex_home, "installation_id", "unknown-zig-port");
+    const installation_id = try resolveInstallationId(allocator, codex_home);
     errdefer allocator.free(installation_id);
 
     const approval_policy = try resolveApprovalPolicy(allocator, config_view, active_profile);
@@ -1123,6 +1127,48 @@ pub fn resolveCodexHome(allocator: std.mem.Allocator) ![]const u8 {
     const home = (try env.getOwned(allocator, "HOME")) orelse return error.MissingHome;
     defer allocator.free(home);
     return std.fs.path.join(allocator, &.{ home, ".codex" });
+}
+
+pub fn resolveInstallationId(allocator: std.mem.Allocator, codex_home: []const u8) ![]const u8 {
+    const io = std.Io.Threaded.global_single_threaded.io();
+    try std.Io.Dir.cwd().createDirPath(io, codex_home);
+
+    const path = try std.fs.path.join(allocator, &.{ codex_home, INSTALLATION_ID_FILENAME });
+    defer allocator.free(path);
+
+    var file = try std.Io.Dir.cwd().createFile(
+        io,
+        path,
+        .{
+            .read = true,
+            .truncate = false,
+            .lock = .exclusive,
+            .lock_nonblocking = false,
+            .permissions = INSTALLATION_ID_PERMISSIONS,
+        },
+    );
+    defer file.close(io);
+    try file.setPermissions(io, INSTALLATION_ID_PERMISSIONS);
+
+    const file_len = try file.length(io);
+    const read_len: usize = @intCast(@min(file_len, INSTALLATION_ID_MAX_BYTES));
+    const bytes = try allocator.alloc(u8, read_len);
+    defer allocator.free(bytes);
+    const bytes_read = try file.readPositionalAll(io, bytes, 0);
+    const trimmed = std.mem.trim(u8, bytes[0..bytes_read], " \t\r\n");
+    if (trimmed.len != 0) {
+        if (canonicalUuidString(allocator, trimmed)) |existing| return existing else |err| switch (err) {
+            error.InvalidUuidString => {},
+            else => return err,
+        }
+    }
+
+    const generated = try generateUuidString(allocator);
+    errdefer allocator.free(generated);
+    try file.setLength(io, 0);
+    try file.writePositionalAll(io, generated, 0);
+    try file.sync(io);
+    return generated;
 }
 
 fn resolveActiveProfile(allocator: std.mem.Allocator, config_view: ConfigView, override_profile: ?[]const u8) !?[]const u8 {
@@ -3878,23 +3924,151 @@ fn modelProviderAuthSectionName(allocator: std.mem.Allocator, provider: []const 
     return std.fmt.allocPrint(allocator, "model_providers.{s}.auth", .{provider});
 }
 
-fn readOptionalFileTrimmed(
-    allocator: std.mem.Allocator,
-    root: []const u8,
-    name: []const u8,
-    fallback: []const u8,
-) ![]const u8 {
-    const path = try std.fs.path.join(allocator, &.{ root, name });
-    defer allocator.free(path);
+fn generateUuidString(allocator: std.mem.Allocator) ![]const u8 {
+    var bytes: [16]u8 = undefined;
+    std.Io.Threaded.global_single_threaded.io().random(&bytes);
+    bytes[6] = (bytes[6] & 0x0f) | 0x40;
+    bytes[8] = (bytes[8] & 0x3f) | 0x80;
 
-    const bytes = std.Io.Dir.cwd().readFileAlloc(std.Io.Threaded.global_single_threaded.io(), path, allocator, .limited(4096)) catch |err| switch (err) {
-        error.FileNotFound => return allocator.dupe(u8, fallback),
-        else => return err,
+    const hex = "0123456789abcdef";
+    var out = try allocator.alloc(u8, 36);
+    var out_index: usize = 0;
+    for (bytes, 0..) |byte, byte_index| {
+        if (byte_index == 4 or byte_index == 6 or byte_index == 8 or byte_index == 10) {
+            out[out_index] = '-';
+            out_index += 1;
+        }
+        out[out_index] = hex[byte >> 4];
+        out[out_index + 1] = hex[byte & 0x0f];
+        out_index += 2;
+    }
+    return out;
+}
+
+fn isUuidString(value: []const u8) bool {
+    return switch (value.len) {
+        32 => isSimpleUuidString(value),
+        36 => isHyphenatedUuidString(value),
+        38 => value[0] == '{' and value[37] == '}' and isHyphenatedUuidString(value[1..37]),
+        45 => std.mem.startsWith(u8, value, "urn:uuid:") and isHyphenatedUuidString(value[9..]),
+        else => false,
     };
-    defer allocator.free(bytes);
-    const trimmed = std.mem.trim(u8, bytes, " \t\r\n");
-    if (trimmed.len == 0) return allocator.dupe(u8, fallback);
-    return allocator.dupe(u8, trimmed);
+}
+
+fn canonicalUuidString(allocator: std.mem.Allocator, value: []const u8) ![]const u8 {
+    if (!isUuidString(value)) return error.InvalidUuidString;
+
+    const raw = switch (value.len) {
+        38 => value[1..37],
+        45 => value[9..],
+        else => value,
+    };
+
+    var hex: [32]u8 = undefined;
+    var hex_index: usize = 0;
+    for (raw) |byte| {
+        if (byte == '-') continue;
+        if (hex_index >= hex.len) return error.InvalidUuidString;
+        hex[hex_index] = std.ascii.toLower(byte);
+        hex_index += 1;
+    }
+    if (hex_index != hex.len) return error.InvalidUuidString;
+
+    var canonical: [36]u8 = undefined;
+    var input_index: usize = 0;
+    for (&canonical, 0..) |*byte, index| {
+        switch (index) {
+            8, 13, 18, 23 => byte.* = '-',
+            else => {
+                byte.* = hex[input_index];
+                input_index += 1;
+            },
+        }
+    }
+    return allocator.dupe(u8, canonical[0..]);
+}
+
+fn isSimpleUuidString(value: []const u8) bool {
+    if (value.len != 32) return false;
+    for (value) |byte| {
+        if (!std.ascii.isHex(byte)) return false;
+    }
+    return true;
+}
+
+fn isHyphenatedUuidString(value: []const u8) bool {
+    if (value.len != 36) return false;
+    for (value, 0..) |byte, index| {
+        switch (index) {
+            8, 13, 18, 23 => {
+                if (byte != '-') return false;
+            },
+            else => if (!std.ascii.isHex(byte)) return false,
+        }
+    }
+    return true;
+}
+
+test "installation id generates and persists uuid" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var dir = std.testing.tmpDir(.{});
+    defer dir.cleanup();
+
+    const codex_home = try dir.dir.realPathFileAlloc(io, ".", allocator);
+    defer allocator.free(codex_home);
+
+    const installation_id = try resolveInstallationId(allocator, codex_home);
+    defer allocator.free(installation_id);
+    try std.testing.expect(isUuidString(installation_id));
+
+    const persisted = try dir.dir.readFileAlloc(io, INSTALLATION_ID_FILENAME, allocator, .limited(1024));
+    defer allocator.free(persisted);
+    try std.testing.expectEqualStrings(installation_id, persisted);
+
+    const reused = try resolveInstallationId(allocator, codex_home);
+    defer allocator.free(reused);
+    try std.testing.expectEqualStrings(installation_id, reused);
+}
+
+test "installation id canonicalizes existing uuid" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var dir = std.testing.tmpDir(.{});
+    defer dir.cleanup();
+
+    try dir.dir.writeFile(io, .{
+        .sub_path = INSTALLATION_ID_FILENAME,
+        .data = "AAAAAAAA-BBBB-4CCC-8DDD-EEEEEEEEEEEE\n",
+    });
+
+    const codex_home = try dir.dir.realPathFileAlloc(io, ".", allocator);
+    defer allocator.free(codex_home);
+    const installation_id = try resolveInstallationId(allocator, codex_home);
+    defer allocator.free(installation_id);
+    try std.testing.expectEqualStrings("aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee", installation_id);
+}
+
+test "installation id rewrites invalid contents" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var dir = std.testing.tmpDir(.{});
+    defer dir.cleanup();
+
+    try dir.dir.writeFile(io, .{
+        .sub_path = INSTALLATION_ID_FILENAME,
+        .data = "not-a-uuid",
+    });
+
+    const codex_home = try dir.dir.realPathFileAlloc(io, ".", allocator);
+    defer allocator.free(codex_home);
+    const installation_id = try resolveInstallationId(allocator, codex_home);
+    defer allocator.free(installation_id);
+    try std.testing.expect(isUuidString(installation_id));
+
+    const persisted = try dir.dir.readFileAlloc(io, INSTALLATION_ID_FILENAME, allocator, .limited(1024));
+    defer allocator.free(persisted);
+    try std.testing.expectEqualStrings(installation_id, persisted);
 }
 
 test "top-level model is read from config" {

@@ -392,6 +392,7 @@ const AppServerOptions = struct {
 
 pub const InvocationOptions = struct {
     feature_overrides: features_cmd.FeatureOverrides = .{},
+    child_global_args: []const []const u8 = &.{},
     bypass_hook_trust: bool = false,
     strict_config: bool = false,
     remote_control_enabled: bool = false,
@@ -938,7 +939,7 @@ pub fn runWithOptions(
             return;
         }
         if (std.mem.eql(u8, name, "daemon")) {
-            try runDaemon(allocator, subcommand_args.items, invocation_options.feature_overrides);
+            try runDaemon(allocator, subcommand_args.items, invocation_options.feature_overrides, invocation_options.child_global_args);
             return;
         }
         if (std.mem.eql(u8, name, "generate-ts")) {
@@ -1059,6 +1060,31 @@ const DaemonStartOutput = struct {
     started: bool,
 };
 
+const RemoteControlReadyStatus = struct {
+    status: []const u8,
+    server_name: []const u8,
+    environment_id: ?[]const u8,
+    timed_out: bool = false,
+
+    fn deinit(self: *RemoteControlReadyStatus, allocator: std.mem.Allocator) void {
+        allocator.free(self.status);
+        allocator.free(self.server_name);
+        if (self.environment_id) |value| allocator.free(value);
+    }
+};
+
+const RemoteControlIdentity = struct {
+    server_name: []const u8,
+    installation_id: []const u8,
+
+    fn deinit(self: *RemoteControlIdentity, allocator: std.mem.Allocator) void {
+        allocator.free(self.server_name);
+        allocator.free(self.installation_id);
+    }
+};
+
+const REMOTE_CONTROL_READY_TIMEOUT_MS = 10 * std.time.ms_per_s;
+
 const ManagedPidRecord = struct {
     pid: i64,
     process_start_time: []const u8,
@@ -1088,15 +1114,31 @@ const DaemonUnixSockaddr = extern union {
     un: std.posix.sockaddr.un,
 };
 
-pub fn runRemoteControlDaemonStart(allocator: std.mem.Allocator) !void {
+pub fn runRemoteControlDaemonStart(
+    allocator: std.mem.Allocator,
+    json: bool,
+    child_global_args: []const []const u8,
+    root_feature_overrides: features_cmd.FeatureOverrides,
+) !void {
     const codex_home = try resolveDaemonCodexHome(allocator);
     defer allocator.free(codex_home);
-    try validateDaemonSettings(allocator, codex_home);
+
+    var daemon_child_args = std.ArrayList([]const u8).empty;
+    defer daemon_child_args.deinit(allocator);
+    try appendDaemonFeatureOverrideArgsExcluding(allocator, &daemon_child_args, root_feature_overrides, "remote_control");
+    try daemon_child_args.appendSlice(allocator, child_global_args);
+
+    try ensureDaemonScaffolding(allocator, codex_home, true);
     try ensureDaemonUpdaterPidLock(allocator, codex_home);
-    const managed_path = try ensureManagedCodexPath(allocator, codex_home);
-    defer allocator.free(managed_path);
-    try cli_utils.writeStderr("Error: remote-control daemon readiness is not implemented in codex-zig yet\n");
-    return error.AppServerDaemonCommandFailed;
+    var operation_lock = try acquireDaemonOperationLock(allocator, codex_home);
+    defer operation_lock.release();
+
+    const daemon_output = try ensureRemoteControlDaemonStartedLocked(allocator, codex_home, daemon_child_args.items);
+    defer allocator.free(daemon_output);
+    var ready = try enableDaemonRemoteControl(allocator, codex_home);
+    defer ready.deinit(allocator);
+
+    try writeRemoteControlStartOutput(allocator, ready, daemon_output, json);
 }
 
 pub fn runRemoteControlDaemonStop(allocator: std.mem.Allocator, json: bool) !void {
@@ -1116,11 +1158,17 @@ pub fn runRemoteControlDaemonStop(allocator: std.mem.Allocator, json: bool) !voi
     }
 }
 
-fn runDaemon(allocator: std.mem.Allocator, raw_args: []const []const u8, root_feature_overrides: features_cmd.FeatureOverrides) !void {
+fn runDaemon(
+    allocator: std.mem.Allocator,
+    raw_args: []const []const u8,
+    root_feature_overrides: features_cmd.FeatureOverrides,
+    root_child_global_args: []const []const u8,
+) !void {
     var command: ?DaemonCommand = null;
     var options = DaemonRunOptions{};
     defer options.deinit(allocator);
     try appendDaemonFeatureOverrideArgs(allocator, &options.child_global_args, root_feature_overrides);
+    try options.child_global_args.appendSlice(allocator, root_child_global_args);
 
     var index: usize = 0;
     while (index < raw_args.len) : (index += 1) {
@@ -1205,7 +1253,19 @@ fn appendDaemonFeatureOverrideArgs(
     child_global_args: *std.ArrayList([]const u8),
     overrides: features_cmd.FeatureOverrides,
 ) !void {
+    try appendDaemonFeatureOverrideArgsExcluding(allocator, child_global_args, overrides, null);
+}
+
+fn appendDaemonFeatureOverrideArgsExcluding(
+    allocator: std.mem.Allocator,
+    child_global_args: *std.ArrayList([]const u8),
+    overrides: features_cmd.FeatureOverrides,
+    excluded_key: ?[]const u8,
+) !void {
     for (overrides.items.items) |item| {
+        if (excluded_key) |key| {
+            if (std.mem.eql(u8, item.key, key)) continue;
+        }
         try child_global_args.append(allocator, if (item.enabled) "--enable" else "--disable");
         try child_global_args.append(allocator, item.key);
     }
@@ -1332,6 +1392,17 @@ fn writeDaemonLifecycleOutput(
     status: []const u8,
     options: DaemonLifecycleOutputOptions,
 ) !void {
+    const output = try renderDaemonLifecycleOutput(allocator, codex_home, status, options);
+    defer allocator.free(output);
+    try writeStdoutLine(output);
+}
+
+fn renderDaemonLifecycleOutput(
+    allocator: std.mem.Allocator,
+    codex_home: []const u8,
+    status: []const u8,
+    options: DaemonLifecycleOutputOptions,
+) ![]const u8 {
     const managed_path = try managedCodexPath(allocator, codex_home);
     defer allocator.free(managed_path);
     const managed_version = try managedCodexVersionBestEffort(allocator, managed_path);
@@ -1340,7 +1411,7 @@ fn writeDaemonLifecycleOutput(
     defer allocator.free(socket_path);
 
     var out = std.ArrayList(u8).empty;
-    defer out.deinit(allocator);
+    errdefer out.deinit(allocator);
     try out.appendSlice(allocator, "{\"status\":");
     try appendJsonString(allocator, &out, status);
     if (options.backend) |backend| {
@@ -1370,7 +1441,7 @@ fn writeDaemonLifecycleOutput(
         try appendJsonString(allocator, &out, version);
     }
     try out.appendSlice(allocator, "}");
-    try writeStdoutLine(out.items);
+    return try out.toOwnedSlice(allocator);
 }
 
 fn runDaemonSetRemoteControl(allocator: std.mem.Allocator, codex_home: []const u8, enabled: bool, child_global_args: []const []const u8) !void {
@@ -1386,7 +1457,9 @@ fn runDaemonSetRemoteControl(allocator: std.mem.Allocator, codex_home: []const u
     defer probe.deinit(allocator);
     switch (probe) {
         .running => {
-            if (!managed_running) return failDaemonUnmanagedRunning();
+            if (!managed_running) {
+                return failDaemonUnmanagedRunning();
+            }
         },
         .unavailable => {},
     }
@@ -1464,6 +1537,295 @@ fn writeDaemonRemoteControlOutput(
     }
     try out.appendSlice(allocator, "}");
     try writeStdoutLine(out.items);
+}
+
+fn ensureRemoteControlDaemonStartedLocked(
+    allocator: std.mem.Allocator,
+    codex_home: []const u8,
+    child_global_args: []const []const u8,
+) ![]const u8 {
+    try validateDaemonSettings(allocator, codex_home);
+    const managed_path = try ensureManagedCodexPath(allocator, codex_home);
+    defer allocator.free(managed_path);
+
+    const settings_path = try daemonSettingsPath(allocator, codex_home);
+    defer allocator.free(settings_path);
+    const previous_remote_control_enabled = try readDaemonRemoteControlEnabled(allocator, settings_path);
+    const managed_running = try managedDaemonBackend(allocator, codex_home) != null;
+    const probe = try probeDaemonSocket(allocator, codex_home);
+    defer probe.deinit(allocator);
+    switch (probe) {
+        .running => {
+            if (!managed_running) return failDaemonUnmanagedRunning();
+        },
+        .unavailable => {},
+    }
+
+    var preserved_child_global_args: ?[][]const u8 = null;
+    defer if (preserved_child_global_args) |args| freeStringSlice(allocator, args);
+    const restart_child_global_args = if (managed_running and child_global_args.len == 0) args: {
+        preserved_child_global_args = try activeManagedDaemonChildGlobalArgs(allocator, codex_home);
+        break :args preserved_child_global_args orelse child_global_args;
+    } else child_global_args;
+
+    if (!previous_remote_control_enabled) {
+        try writeDaemonRemoteControlSettings(settings_path, true);
+        if (managed_running) {
+            _ = try stopManagedDaemonIfRunning(allocator, codex_home);
+            const started = try startManagedDaemon(allocator, codex_home, restart_child_global_args);
+            defer allocator.free(started.app_server_version);
+            return try renderDaemonLifecycleOutput(allocator, codex_home, "alreadyRunning", .{
+                .backend = "pid",
+                .app_server_version = started.app_server_version,
+            });
+        }
+    }
+
+    const started = try startManagedDaemon(allocator, codex_home, restart_child_global_args);
+    defer allocator.free(started.app_server_version);
+    return try renderDaemonLifecycleOutput(allocator, codex_home, if (started.started) "started" else "alreadyRunning", .{
+        .backend = "pid",
+        .pid = if (started.started) started.pid else null,
+        .app_server_version = started.app_server_version,
+    });
+}
+
+fn enableDaemonRemoteControl(allocator: std.mem.Allocator, codex_home: []const u8) !RemoteControlReadyStatus {
+    const socket_path = try daemonSocketPath(allocator, codex_home);
+    defer allocator.free(socket_path);
+
+    const io = std.Io.Threaded.global_single_threaded.io();
+    const connected = try connectDaemonUnixStream(allocator, socket_path);
+    var stream = switch (connected) {
+        .unavailable => |cause| {
+            defer allocator.free(cause);
+            try failDaemonSocketUnavailable(allocator, codex_home, cause);
+            unreachable;
+        },
+        .stream => |value| value,
+    };
+    defer stream.close(io);
+
+    var input_buffer: [16 * 1024]u8 = undefined;
+    var output_buffer: [4096]u8 = undefined;
+    var reader = stream.reader(io, &input_buffer);
+    var writer = stream.writer(io, &output_buffer);
+    try writer.interface.writeAll(
+        "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"clientInfo\":{\"name\":\"codex_remote_control_daemon\",\"title\":\"Codex Remote Control Daemon\",\"version\":\"0.0.1\"},\"capabilities\":{\"experimentalApi\":true}}}\n",
+    );
+    try writer.interface.flush();
+
+    var deadline_ms = appServerAwakeDeadlineMs(2 * std.time.ms_per_s);
+    while (true) {
+        const line = try readDaemonProbeLine(allocator, &reader.interface, stream.socket.handle, deadline_ms) orelse return error.AppServerDaemonCommandFailed;
+        defer allocator.free(line);
+        if (try jsonRpcResponseMatchesId(allocator, line, 1)) break;
+    }
+
+    try writer.interface.writeAll("{\"jsonrpc\":\"2.0\",\"method\":\"initialized\"}\n");
+    try writer.interface.writeAll("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"remoteControl/enable\",\"params\":null}\n");
+    try writer.interface.flush();
+
+    deadline_ms = appServerAwakeDeadlineMs(2 * std.time.ms_per_s);
+    while (true) {
+        const line = try readDaemonProbeLine(allocator, &reader.interface, stream.socket.handle, deadline_ms) orelse return error.AppServerDaemonCommandFailed;
+        defer allocator.free(line);
+        if (try remoteControlReadyStatusFromResponse(allocator, line, 2)) |ready| {
+            return try waitForRemoteControlReadyStatus(allocator, &reader.interface, stream.socket.handle, ready);
+        }
+    }
+}
+
+fn jsonRpcResponseMatchesId(allocator: std.mem.Allocator, line: []const u8, id: i64) !bool {
+    var parsed = std.json.parseFromSlice(std.json.Value, allocator, line, .{}) catch return false;
+    defer parsed.deinit();
+    if (parsed.value != .object) return false;
+    const object = parsed.value.object;
+    const id_value = object.get("id") orelse return false;
+    if (!jsonIdMatchesInteger(id_value, id)) return false;
+    return object.get("result") != null or object.get("error") != null;
+}
+
+fn remoteControlReadyStatusFromResponse(allocator: std.mem.Allocator, line: []const u8, id: i64) !?RemoteControlReadyStatus {
+    var parsed = std.json.parseFromSlice(std.json.Value, allocator, line, .{}) catch return null;
+    defer parsed.deinit();
+    if (parsed.value != .object) return null;
+    const object = parsed.value.object;
+    const id_value = object.get("id") orelse return null;
+    if (!jsonIdMatchesInteger(id_value, id)) return null;
+    if (object.get("error")) |error_value| {
+        const message = if (error_value == .object)
+            requiredJsonStringField(error_value.object, "message") orelse "remoteControl/enable failed"
+        else
+            "remoteControl/enable failed";
+        const rendered = try std.fmt.allocPrint(allocator, "Error: remoteControl/enable failed: {s}\n", .{message});
+        defer allocator.free(rendered);
+        try cli_utils.writeStderr(rendered);
+        return error.AppServerDaemonCommandFailed;
+    }
+    const result = object.get("result") orelse return null;
+    if (result != .object) return error.InvalidRemoteControlStatus;
+    return try parseRemoteControlReadyStatus(allocator, result.object, false);
+}
+
+fn waitForRemoteControlReadyStatus(
+    allocator: std.mem.Allocator,
+    reader: *std.Io.Reader,
+    fd: std.posix.fd_t,
+    initial: RemoteControlReadyStatus,
+) !RemoteControlReadyStatus {
+    var latest = initial;
+    errdefer latest.deinit(allocator);
+    if (!std.mem.eql(u8, latest.status, "connecting")) return latest;
+
+    const deadline_ms = appServerAwakeDeadlineMs(REMOTE_CONTROL_READY_TIMEOUT_MS);
+    while (true) {
+        const line = readDaemonProbeLine(allocator, reader, fd, deadline_ms) catch |err| switch (err) {
+            error.AppServerDaemonProbeTimedOut => {
+                latest.timed_out = true;
+                return latest;
+            },
+            else => return err,
+        } orelse return error.AppServerDaemonCommandFailed;
+        defer allocator.free(line);
+        if (try remoteControlReadyStatusFromNotification(allocator, line)) |ready| {
+            latest.deinit(allocator);
+            latest = ready;
+            if (!std.mem.eql(u8, latest.status, "connecting")) return latest;
+        }
+    }
+}
+
+fn remoteControlReadyStatusFromNotification(allocator: std.mem.Allocator, line: []const u8) !?RemoteControlReadyStatus {
+    var parsed = std.json.parseFromSlice(std.json.Value, allocator, line, .{}) catch return null;
+    defer parsed.deinit();
+    if (parsed.value != .object) return null;
+    const object = parsed.value.object;
+    const method = requiredJsonStringField(object, "method") orelse return null;
+    if (!std.mem.eql(u8, method, "remoteControl/status/changed")) return null;
+    const params = object.get("params") orelse return null;
+    if (params != .object) return null;
+    return parseRemoteControlReadyStatus(allocator, params.object, false) catch null;
+}
+
+fn parseRemoteControlReadyStatus(
+    allocator: std.mem.Allocator,
+    object: std.json.ObjectMap,
+    timed_out: bool,
+) !RemoteControlReadyStatus {
+    const status = requiredJsonStringField(object, "status") orelse return error.InvalidRemoteControlStatus;
+    const server_name = requiredJsonStringField(object, "serverName") orelse return error.InvalidRemoteControlStatus;
+    const environment_id_value = object.get("environmentId");
+    const environment_id = if (environment_id_value) |value| switch (value) {
+        .null => null,
+        .string => |string| try allocator.dupe(u8, string),
+        else => return error.InvalidRemoteControlStatus,
+    } else null;
+    errdefer if (environment_id) |value| allocator.free(value);
+    const owned_status = try allocator.dupe(u8, status);
+    errdefer allocator.free(owned_status);
+    const owned_server_name = try allocator.dupe(u8, server_name);
+    errdefer allocator.free(owned_server_name);
+
+    return .{
+        .status = owned_status,
+        .server_name = owned_server_name,
+        .environment_id = environment_id,
+        .timed_out = timed_out,
+    };
+}
+
+fn jsonIdMatchesInteger(value: std.json.Value, id: i64) bool {
+    return switch (value) {
+        .integer => |integer| integer == id,
+        .number_string => |number| (std.fmt.parseInt(i64, number, 10) catch return false) == id,
+        .string => |string| (std.fmt.parseInt(i64, string, 10) catch return false) == id,
+        else => false,
+    };
+}
+
+fn writeRemoteControlStartOutput(
+    allocator: std.mem.Allocator,
+    ready: RemoteControlReadyStatus,
+    daemon_output_json: []const u8,
+    json: bool,
+) !void {
+    try ensureRemoteControlStartable(allocator, ready);
+    if (json) {
+        const payload = try renderRemoteControlStartJson(allocator, ready, daemon_output_json);
+        defer allocator.free(payload);
+        try writeStdoutLine(payload);
+        return;
+    }
+
+    const message = try remoteControlStartHumanMessage(allocator, ready);
+    defer allocator.free(message);
+    try cli_utils.writeStdout(message);
+    try cli_utils.writeStdout("\n");
+    try writeDaemonAppServerHumanLines(allocator, daemon_output_json);
+}
+
+fn ensureRemoteControlStartable(allocator: std.mem.Allocator, ready: RemoteControlReadyStatus) !void {
+    if (std.mem.eql(u8, ready.status, "connected") or std.mem.eql(u8, ready.status, "connecting")) return;
+    const message = if (std.mem.eql(u8, ready.status, "errored"))
+        try std.fmt.allocPrint(allocator, "Error: Remote control is enabled on {s} but the connection is errored.\n", .{ready.server_name})
+    else if (std.mem.eql(u8, ready.status, "disabled"))
+        try std.fmt.allocPrint(allocator, "Error: Remote control is disabled on {s}.\n", .{ready.server_name})
+    else
+        try std.fmt.allocPrint(allocator, "Error: Remote control reported unsupported status {s} on {s}.\n", .{ ready.status, ready.server_name });
+    defer allocator.free(message);
+    try cli_utils.writeStderr(message);
+    return error.AppServerDaemonCommandFailed;
+}
+
+fn remoteControlStartHumanMessage(allocator: std.mem.Allocator, ready: RemoteControlReadyStatus) ![]const u8 {
+    if (std.mem.eql(u8, ready.status, "connected")) {
+        return std.fmt.allocPrint(allocator, "This machine is available for remote control as {s}.", .{ready.server_name});
+    }
+    return std.fmt.allocPrint(allocator, "Remote control is enabled on {s} and still connecting.", .{ready.server_name});
+}
+
+fn renderRemoteControlStartJson(
+    allocator: std.mem.Allocator,
+    ready: RemoteControlReadyStatus,
+    daemon_output_json: []const u8,
+) ![]const u8 {
+    var out = std.ArrayList(u8).empty;
+    errdefer out.deinit(allocator);
+    try out.appendSlice(allocator, "{\"mode\":\"daemon\",\"status\":");
+    try appendJsonString(allocator, &out, ready.status);
+    try out.appendSlice(allocator, ",\"serverName\":");
+    try appendJsonString(allocator, &out, ready.server_name);
+    try out.appendSlice(allocator, ",\"environmentId\":");
+    try appendOptionalJsonString(allocator, &out, ready.environment_id);
+    try out.appendSlice(allocator, ",\"timedOut\":");
+    try out.appendSlice(allocator, if (ready.timed_out) "true" else "false");
+    try out.appendSlice(allocator, ",\"daemon\":");
+    try out.appendSlice(allocator, daemon_output_json);
+    try out.appendSlice(allocator, "}");
+    return try out.toOwnedSlice(allocator);
+}
+
+fn writeDaemonAppServerHumanLines(allocator: std.mem.Allocator, daemon_output_json: []const u8) !void {
+    var parsed = try std.json.parseFromSlice(std.json.Value, allocator, daemon_output_json, .{});
+    defer parsed.deinit();
+    if (parsed.value != .object) return error.InvalidRemoteControlStatus;
+    const object = parsed.value.object;
+    const path = requiredJsonStringField(object, "managedCodexPath") orelse return error.InvalidRemoteControlStatus;
+    const version_value = object.get("managedCodexVersion");
+    const version = if (version_value) |value| switch (value) {
+        .string => |string| string,
+        .null => "unknown",
+        else => return error.InvalidRemoteControlStatus,
+    } else "unknown";
+
+    const message = try std.fmt.allocPrint(
+        allocator,
+        "Daemon used app-server:\n  path: {s}\n  version: {s}\n",
+        .{ path, version },
+    );
+    defer allocator.free(message);
+    try cli_utils.writeStdout(message);
 }
 
 fn failManagedStandaloneMissingIfNeeded(
@@ -4260,10 +4622,51 @@ const REMOTE_CONTROL_STATUS_CHANGED_NOTIFICATION_TS =
     \\import type { RemoteControlConnectionStatus } from "./RemoteControlConnectionStatus";
     \\
     \\/**
-    \\ * Current remote-control connection status and environment id exposed to clients.
+    \\ * Current remote-control connection status and remote identity exposed to clients.
     \\ */
     \\export interface RemoteControlStatusChangedNotification {
     \\  status: RemoteControlConnectionStatus;
+    \\  serverName: string;
+    \\  installationId: string;
+    \\  environmentId: string | null;
+    \\}
+    \\
+    ;
+
+const REMOTE_CONTROL_ENABLE_RESPONSE_TS =
+    GENERATED_TS_HEADER ++
+    \\import type { RemoteControlConnectionStatus } from "./RemoteControlConnectionStatus";
+    \\
+    \\export interface RemoteControlEnableResponse {
+    \\  status: RemoteControlConnectionStatus;
+    \\  serverName: string;
+    \\  installationId: string;
+    \\  environmentId: string | null;
+    \\}
+    \\
+    ;
+
+const REMOTE_CONTROL_DISABLE_RESPONSE_TS =
+    GENERATED_TS_HEADER ++
+    \\import type { RemoteControlConnectionStatus } from "./RemoteControlConnectionStatus";
+    \\
+    \\export interface RemoteControlDisableResponse {
+    \\  status: RemoteControlConnectionStatus;
+    \\  serverName: string;
+    \\  installationId: string;
+    \\  environmentId: string | null;
+    \\}
+    \\
+    ;
+
+const REMOTE_CONTROL_STATUS_READ_RESPONSE_TS =
+    GENERATED_TS_HEADER ++
+    \\import type { RemoteControlConnectionStatus } from "./RemoteControlConnectionStatus";
+    \\
+    \\export interface RemoteControlStatusReadResponse {
+    \\  status: RemoteControlConnectionStatus;
+    \\  serverName: string;
+    \\  installationId: string;
     \\  environmentId: string | null;
     \\}
     \\
@@ -9632,6 +10035,15 @@ const CLIENT_REQUEST_TS =
     \\      params: ExperimentalFeatureEnablementSetParams;
     \\    }
     \\  | {
+    \\      method: "remoteControl/enable";
+    \\    }
+    \\  | {
+    \\      method: "remoteControl/disable";
+    \\    }
+    \\  | {
+    \\      method: "remoteControl/status/read";
+    \\    }
+    \\  | {
     \\      method: "command/exec";
     \\      params: CommandExecParams;
     \\    }
@@ -9883,6 +10295,9 @@ const CLIENT_RESPONSE_TS =
     \\import type { PluginShareUpdateTargetsResponse } from "./v2/PluginShareUpdateTargetsResponse";
     \\import type { PluginSkillReadResponse } from "./v2/PluginSkillReadResponse";
     \\import type { PluginUninstallResponse } from "./v2/PluginUninstallResponse";
+    \\import type { RemoteControlDisableResponse } from "./v2/RemoteControlDisableResponse";
+    \\import type { RemoteControlEnableResponse } from "./v2/RemoteControlEnableResponse";
+    \\import type { RemoteControlStatusReadResponse } from "./v2/RemoteControlStatusReadResponse";
     \\import type { SendAddCreditsNudgeEmailResponse } from "./v2/SendAddCreditsNudgeEmailResponse";
     \\import type { SkillsConfigWriteResponse } from "./v2/SkillsConfigWriteResponse";
     \\import type { SkillsListResponse } from "./v2/SkillsListResponse";
@@ -10183,6 +10598,21 @@ const CLIENT_RESPONSE_TS =
     \\      id: RequestId;
     \\      method: "experimentalFeature/enablement/set";
     \\      result: ExperimentalFeatureEnablementSetResponse;
+    \\    }
+    \\  | {
+    \\      id: RequestId;
+    \\      method: "remoteControl/enable";
+    \\      result: RemoteControlEnableResponse;
+    \\    }
+    \\  | {
+    \\      id: RequestId;
+    \\      method: "remoteControl/disable";
+    \\      result: RemoteControlDisableResponse;
+    \\    }
+    \\  | {
+    \\      id: RequestId;
+    \\      method: "remoteControl/status/read";
+    \\      result: RemoteControlStatusReadResponse;
     \\    }
     \\  | {
     \\      id: RequestId;
@@ -10905,6 +11335,9 @@ const V2_INDEX_TS =
     \\export type { ApprovalsReviewer } from "./ApprovalsReviewer";
     \\export type { AskForApproval } from "./AskForApproval";
     \\export type { RemoteControlConnectionStatus } from "./RemoteControlConnectionStatus";
+    \\export type { RemoteControlDisableResponse } from "./RemoteControlDisableResponse";
+    \\export type { RemoteControlEnableResponse } from "./RemoteControlEnableResponse";
+    \\export type { RemoteControlStatusReadResponse } from "./RemoteControlStatusReadResponse";
     \\export type { RemoteControlStatusChangedNotification } from "./RemoteControlStatusChangedNotification";
     \\export type { ByteRange } from "./ByteRange";
     \\export type { CancelLoginAccountParams } from "./CancelLoginAccountParams";
@@ -11494,6 +11927,33 @@ const CLIENT_REQUEST_JSON_SCHEMA =
     \\      "properties": {
     \\        "method": { "const": "command/exec" },
     \\        "params": { "$ref": "v2/CommandExecParams.json" }
+    \\      },
+    \\      "additionalProperties": true
+    \\    },
+    \\    {
+    \\      "type": "object",
+    \\      "required": ["method"],
+    \\      "properties": {
+    \\        "method": { "const": "remoteControl/enable" },
+    \\        "params": { "type": "null" }
+    \\      },
+    \\      "additionalProperties": true
+    \\    },
+    \\    {
+    \\      "type": "object",
+    \\      "required": ["method"],
+    \\      "properties": {
+    \\        "method": { "const": "remoteControl/disable" },
+    \\        "params": { "type": "null" }
+    \\      },
+    \\      "additionalProperties": true
+    \\    },
+    \\    {
+    \\      "type": "object",
+    \\      "required": ["method"],
+    \\      "properties": {
+    \\        "method": { "const": "remoteControl/status/read" },
+    \\        "params": { "type": "null" }
     \\      },
     \\      "additionalProperties": true
     \\    },
@@ -14178,11 +14638,82 @@ const REMOTE_CONTROL_STATUS_CHANGED_NOTIFICATION_JSON_SCHEMA =
     \\{
     \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
     \\  "title": "RemoteControlStatusChangedNotification",
-    \\  "description": "Current remote-control connection status and environment id exposed to clients.",
+    \\  "description": "Current remote-control connection status and remote identity exposed to clients.",
     \\  "type": "object",
-    \\  "required": ["status"],
+    \\  "required": ["status", "serverName", "installationId"],
     \\  "properties": {
     \\    "status": { "$ref": "#/$defs/RemoteControlConnectionStatus" },
+    \\    "serverName": { "type": "string" },
+    \\    "installationId": { "type": "string" },
+    \\    "environmentId": { "type": ["string", "null"] }
+    \\  },
+    \\  "$defs": {
+    \\    "RemoteControlConnectionStatus": {
+    \\      "type": "string",
+    \\      "enum": ["disabled", "connecting", "connected", "errored"]
+    \\    }
+    \\  },
+    \\  "additionalProperties": true
+    \\}
+    \\
+;
+
+const REMOTE_CONTROL_ENABLE_RESPONSE_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "RemoteControlEnableResponse",
+    \\  "type": "object",
+    \\  "required": ["status", "serverName", "installationId"],
+    \\  "properties": {
+    \\    "status": { "$ref": "#/$defs/RemoteControlConnectionStatus" },
+    \\    "serverName": { "type": "string" },
+    \\    "installationId": { "type": "string" },
+    \\    "environmentId": { "type": ["string", "null"] }
+    \\  },
+    \\  "$defs": {
+    \\    "RemoteControlConnectionStatus": {
+    \\      "type": "string",
+    \\      "enum": ["disabled", "connecting", "connected", "errored"]
+    \\    }
+    \\  },
+    \\  "additionalProperties": true
+    \\}
+    \\
+;
+
+const REMOTE_CONTROL_DISABLE_RESPONSE_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "RemoteControlDisableResponse",
+    \\  "type": "object",
+    \\  "required": ["status", "serverName", "installationId"],
+    \\  "properties": {
+    \\    "status": { "$ref": "#/$defs/RemoteControlConnectionStatus" },
+    \\    "serverName": { "type": "string" },
+    \\    "installationId": { "type": "string" },
+    \\    "environmentId": { "type": ["string", "null"] }
+    \\  },
+    \\  "$defs": {
+    \\    "RemoteControlConnectionStatus": {
+    \\      "type": "string",
+    \\      "enum": ["disabled", "connecting", "connected", "errored"]
+    \\    }
+    \\  },
+    \\  "additionalProperties": true
+    \\}
+    \\
+;
+
+const REMOTE_CONTROL_STATUS_READ_RESPONSE_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "RemoteControlStatusReadResponse",
+    \\  "type": "object",
+    \\  "required": ["status", "serverName", "installationId"],
+    \\  "properties": {
+    \\    "status": { "$ref": "#/$defs/RemoteControlConnectionStatus" },
+    \\    "serverName": { "type": "string" },
+    \\    "installationId": { "type": "string" },
     \\    "environmentId": { "type": ["string", "null"] }
     \\  },
     \\  "$defs": {
@@ -23316,11 +23847,46 @@ const APP_SERVER_PROTOCOL_SCHEMA_BUNDLE =
     \\      "enum": ["disabled", "connecting", "connected", "errored"]
     \\    },
     \\    "RemoteControlStatusChangedNotification": {
-    \\      "description": "Current remote-control connection status and environment id exposed to clients.",
+    \\      "description": "Current remote-control connection status and remote identity exposed to clients.",
     \\      "type": "object",
-    \\      "required": ["status"],
+    \\      "required": ["status", "serverName", "installationId"],
     \\      "properties": {
     \\        "status": { "$ref": "#/$defs/RemoteControlConnectionStatus" },
+    \\        "serverName": { "type": "string" },
+    \\        "installationId": { "type": "string" },
+    \\        "environmentId": { "type": ["string", "null"] }
+    \\      },
+    \\      "additionalProperties": true
+    \\    },
+    \\    "RemoteControlEnableResponse": {
+    \\      "type": "object",
+    \\      "required": ["status", "serverName", "installationId"],
+    \\      "properties": {
+    \\        "status": { "$ref": "#/$defs/RemoteControlConnectionStatus" },
+    \\        "serverName": { "type": "string" },
+    \\        "installationId": { "type": "string" },
+    \\        "environmentId": { "type": ["string", "null"] }
+    \\      },
+    \\      "additionalProperties": true
+    \\    },
+    \\    "RemoteControlDisableResponse": {
+    \\      "type": "object",
+    \\      "required": ["status", "serverName", "installationId"],
+    \\      "properties": {
+    \\        "status": { "$ref": "#/$defs/RemoteControlConnectionStatus" },
+    \\        "serverName": { "type": "string" },
+    \\        "installationId": { "type": "string" },
+    \\        "environmentId": { "type": ["string", "null"] }
+    \\      },
+    \\      "additionalProperties": true
+    \\    },
+    \\    "RemoteControlStatusReadResponse": {
+    \\      "type": "object",
+    \\      "required": ["status", "serverName", "installationId"],
+    \\      "properties": {
+    \\        "status": { "$ref": "#/$defs/RemoteControlConnectionStatus" },
+    \\        "serverName": { "type": "string" },
+    \\        "installationId": { "type": "string" },
     \\        "environmentId": { "type": ["string", "null"] }
     \\      },
     \\      "additionalProperties": true
@@ -25753,6 +26319,9 @@ const APP_SERVER_JSON_SCHEMA_FILES = [_]SchemaFile{
     .{ .name = "v2/PluginUninstallResponse.json", .contents = PLUGIN_UNINSTALL_RESPONSE_JSON_SCHEMA },
     .{ .name = "RemoteControlConnectionStatus.json", .contents = REMOTE_CONTROL_CONNECTION_STATUS_JSON_SCHEMA },
     .{ .name = "RemoteControlStatusChangedNotification.json", .contents = REMOTE_CONTROL_STATUS_CHANGED_NOTIFICATION_JSON_SCHEMA },
+    .{ .name = "RemoteControlEnableResponse.json", .contents = REMOTE_CONTROL_ENABLE_RESPONSE_JSON_SCHEMA },
+    .{ .name = "RemoteControlDisableResponse.json", .contents = REMOTE_CONTROL_DISABLE_RESPONSE_JSON_SCHEMA },
+    .{ .name = "RemoteControlStatusReadResponse.json", .contents = REMOTE_CONTROL_STATUS_READ_RESPONSE_JSON_SCHEMA },
     .{ .name = "AddCreditsNudgeCreditType.json", .contents = ADD_CREDITS_NUDGE_CREDIT_TYPE_JSON_SCHEMA },
     .{ .name = "SendAddCreditsNudgeEmailParams.json", .contents = SEND_ADD_CREDITS_NUDGE_EMAIL_PARAMS_JSON_SCHEMA },
     .{ .name = "AddCreditsNudgeEmailStatus.json", .contents = ADD_CREDITS_NUDGE_EMAIL_STATUS_JSON_SCHEMA },
@@ -26167,6 +26736,9 @@ const APP_SERVER_JSON_SCHEMA_VERSIONED_ALIASES = [_][]const u8{
     "v2/ReasoningSummaryPartAddedNotification.json",
     "v2/ReasoningSummaryTextDeltaNotification.json",
     "v2/ReasoningTextDeltaNotification.json",
+    "v2/RemoteControlDisableResponse.json",
+    "v2/RemoteControlEnableResponse.json",
+    "v2/RemoteControlStatusReadResponse.json",
     "v2/RemoteControlStatusChangedNotification.json",
     "v2/SendAddCreditsNudgeEmailParams.json",
     "v2/SendAddCreditsNudgeEmailResponse.json",
@@ -26410,6 +26982,9 @@ const APP_SERVER_TS_FILES = [_]SchemaFile{
     .{ .name = "v2/AppListUpdatedNotification.ts", .contents = APP_LIST_UPDATED_NOTIFICATION_TS },
     .{ .name = "v2/RemoteControlConnectionStatus.ts", .contents = REMOTE_CONTROL_CONNECTION_STATUS_TS },
     .{ .name = "v2/RemoteControlStatusChangedNotification.ts", .contents = REMOTE_CONTROL_STATUS_CHANGED_NOTIFICATION_TS },
+    .{ .name = "v2/RemoteControlEnableResponse.ts", .contents = REMOTE_CONTROL_ENABLE_RESPONSE_TS },
+    .{ .name = "v2/RemoteControlDisableResponse.ts", .contents = REMOTE_CONTROL_DISABLE_RESPONSE_TS },
+    .{ .name = "v2/RemoteControlStatusReadResponse.ts", .contents = REMOTE_CONTROL_STATUS_READ_RESPONSE_TS },
     .{ .name = "v2/AddCreditsNudgeCreditType.ts", .contents = ADD_CREDITS_NUDGE_CREDIT_TYPE_TS },
     .{ .name = "v2/SendAddCreditsNudgeEmailParams.ts", .contents = SEND_ADD_CREDITS_NUDGE_EMAIL_PARAMS_TS },
     .{ .name = "v2/AddCreditsNudgeEmailStatus.ts", .contents = ADD_CREDITS_NUDGE_EMAIL_STATUS_TS },
@@ -27915,6 +28490,9 @@ fn handleJsonRpcLine(allocator: std.mem.Allocator, state: *AppServerState, line:
         if (!state.experimental_api_enabled) {
             return try renderExperimentalApiRequiredError(allocator, id_value, reason);
         }
+    }
+    if (isRemoteControlMethod(method)) {
+        return try handleRemoteControlMethod(allocator, state, id_value.?, method, object.get("params"));
     }
     if (std.mem.eql(u8, method, "memory/reset")) {
         return try handleMemoryReset(allocator, id_value.?);
@@ -36718,27 +37296,149 @@ fn renderMcpServerStatusUpdatedNotification(
 }
 
 fn queueInitialRemoteControlStatusNotification(allocator: std.mem.Allocator, state: *AppServerState) !void {
+    const method = "remoteControl/status/changed";
+    if (serverNotificationShouldBeDropped(state, method)) return;
+
     const status = if (state.remote_control_enabled) "connecting" else "disabled";
-    const notification = try renderRemoteControlStatusChangedNotification(allocator, status, null);
+    var identity = try resolveRemoteControlIdentity(allocator);
+    defer identity.deinit(allocator);
+    const notification = try renderRemoteControlStatusChangedNotification(allocator, status, identity, null);
     var notification_moved = false;
     errdefer if (!notification_moved) allocator.free(notification);
-    try queuePendingServerNotification(allocator, state, "remoteControl/status/changed", notification);
+    try queuePendingServerNotification(allocator, state, method, notification);
     notification_moved = true;
 }
 
 fn renderRemoteControlStatusChangedNotification(
     allocator: std.mem.Allocator,
     status: []const u8,
+    identity: RemoteControlIdentity,
     environment_id: ?[]const u8,
 ) ![]const u8 {
     var notification = std.ArrayList(u8).empty;
     errdefer notification.deinit(allocator);
     try notification.appendSlice(allocator, "{\"jsonrpc\":\"2.0\",\"method\":\"remoteControl/status/changed\",\"params\":{\"status\":");
     try appendJsonString(allocator, &notification, status);
+    try notification.appendSlice(allocator, ",\"serverName\":");
+    try appendJsonString(allocator, &notification, identity.server_name);
+    try notification.appendSlice(allocator, ",\"installationId\":");
+    try appendJsonString(allocator, &notification, identity.installation_id);
     try notification.appendSlice(allocator, ",\"environmentId\":");
     try appendOptionalJsonString(allocator, &notification, environment_id);
     try notification.appendSlice(allocator, "}}");
     return notification.toOwnedSlice(allocator);
+}
+
+fn isRemoteControlMethod(method: []const u8) bool {
+    return std.mem.eql(u8, method, "remoteControl/enable") or
+        std.mem.eql(u8, method, "remoteControl/disable") or
+        std.mem.eql(u8, method, "remoteControl/status/read");
+}
+
+fn handleRemoteControlMethod(
+    allocator: std.mem.Allocator,
+    state: *AppServerState,
+    id_value: std.json.Value,
+    method: []const u8,
+    params_value: ?std.json.Value,
+) ![]const u8 {
+    if (params_value) |params| {
+        if (params != .null) {
+            const message = try std.fmt.allocPrint(allocator, "{s} params must be null or omitted", .{method});
+            defer allocator.free(message);
+            return renderJsonRpcError(allocator, id_value, -32602, message);
+        }
+    }
+    if (std.mem.eql(u8, method, "remoteControl/enable")) {
+        const changed = !state.remote_control_enabled;
+        state.remote_control_enabled = true;
+        return handleRemoteControlStatusMutation(allocator, state, id_value, "connecting", changed);
+    }
+    if (std.mem.eql(u8, method, "remoteControl/disable")) {
+        const changed = state.remote_control_enabled;
+        state.remote_control_enabled = false;
+        return handleRemoteControlStatusMutation(allocator, state, id_value, "disabled", changed);
+    }
+    const status = if (state.remote_control_enabled) "connecting" else "disabled";
+    const result = try renderRemoteControlStatusObject(allocator, status, null);
+    defer allocator.free(result);
+    return try renderJsonRpcResult(allocator, id_value, result);
+}
+
+fn handleRemoteControlStatusMutation(
+    allocator: std.mem.Allocator,
+    state: *AppServerState,
+    id_value: std.json.Value,
+    status: []const u8,
+    changed: bool,
+) ![]const u8 {
+    var identity = try resolveRemoteControlIdentity(allocator);
+    defer identity.deinit(allocator);
+    if (changed) {
+        const notification = try renderRemoteControlStatusChangedNotification(allocator, status, identity, null);
+        var notification_moved = false;
+        errdefer if (!notification_moved) allocator.free(notification);
+        try queuePendingServerNotification(allocator, state, "remoteControl/status/changed", notification);
+        notification_moved = true;
+    }
+
+    const result = try renderRemoteControlStatusObjectWithIdentity(allocator, status, identity, null);
+    defer allocator.free(result);
+    return try renderJsonRpcResult(allocator, id_value, result);
+}
+
+fn renderRemoteControlStatusObject(
+    allocator: std.mem.Allocator,
+    status: []const u8,
+    environment_id: ?[]const u8,
+) ![]const u8 {
+    var identity = try resolveRemoteControlIdentity(allocator);
+    defer identity.deinit(allocator);
+    return renderRemoteControlStatusObjectWithIdentity(allocator, status, identity, environment_id);
+}
+
+fn renderRemoteControlStatusObjectWithIdentity(
+    allocator: std.mem.Allocator,
+    status: []const u8,
+    identity: RemoteControlIdentity,
+    environment_id: ?[]const u8,
+) ![]const u8 {
+    var out = std.ArrayList(u8).empty;
+    errdefer out.deinit(allocator);
+    try out.appendSlice(allocator, "{\"status\":");
+    try appendJsonString(allocator, &out, status);
+    try out.appendSlice(allocator, ",\"serverName\":");
+    try appendJsonString(allocator, &out, identity.server_name);
+    try out.appendSlice(allocator, ",\"installationId\":");
+    try appendJsonString(allocator, &out, identity.installation_id);
+    try out.appendSlice(allocator, ",\"environmentId\":");
+    try appendOptionalJsonString(allocator, &out, environment_id);
+    try out.appendSlice(allocator, "}");
+    return try out.toOwnedSlice(allocator);
+}
+
+fn resolveRemoteControlIdentity(allocator: std.mem.Allocator) !RemoteControlIdentity {
+    const server_name = try remoteControlServerName(allocator);
+    errdefer allocator.free(server_name);
+    const installation_id = try remoteControlInstallationId(allocator);
+    return .{
+        .server_name = server_name,
+        .installation_id = installation_id,
+    };
+}
+
+fn remoteControlServerName(allocator: std.mem.Allocator) ![]const u8 {
+    var hostname_buffer: [std.posix.HOST_NAME_MAX]u8 = undefined;
+    const hostname = std.posix.gethostname(&hostname_buffer) catch return allocator.dupe(u8, "unknown");
+    const trimmed = std.mem.trim(u8, hostname, " \t\r\n");
+    if (trimmed.len == 0) return allocator.dupe(u8, "unknown");
+    return allocator.dupe(u8, trimmed);
+}
+
+fn remoteControlInstallationId(allocator: std.mem.Allocator) ![]const u8 {
+    const codex_home = try resolveCodexHome(allocator);
+    defer allocator.free(codex_home);
+    return config.resolveInstallationId(allocator, codex_home);
 }
 
 fn renderMcpToolCallProgressNotification(
@@ -42982,6 +43682,9 @@ fn experimentalReasonForRequestMethod(method: []const u8) ?[]const u8 {
         "thread/realtime/appendText",
         "thread/realtime/stop",
         "thread/realtime/listVoices",
+        "remoteControl/enable",
+        "remoteControl/disable",
+        "remoteControl/status/read",
     }) |experimental_method| {
         if (std.mem.eql(u8, method, experimental_method)) return experimental_method;
     }
