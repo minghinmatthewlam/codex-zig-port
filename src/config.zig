@@ -42,6 +42,8 @@ pub const Config = struct {
     service_tier: ?[]const u8,
     syntax_theme: ?[]const u8,
     personality: ?Personality,
+    realtime_audio_microphone: ?[]const u8 = null,
+    realtime_audio_speaker: ?[]const u8 = null,
     base_instructions: ?[]const u8 = null,
     developer_instructions: ?[]const u8 = null,
     compact_prompt: ?[]const u8 = null,
@@ -72,6 +74,8 @@ pub const Config = struct {
         allocator.free(self.installation_id);
         if (self.service_tier) |value| allocator.free(value);
         if (self.syntax_theme) |value| allocator.free(value);
+        if (self.realtime_audio_microphone) |value| allocator.free(value);
+        if (self.realtime_audio_speaker) |value| allocator.free(value);
         if (self.base_instructions) |value| allocator.free(value);
         if (self.developer_instructions) |value| allocator.free(value);
         if (self.compact_prompt) |value| allocator.free(value);
@@ -1050,6 +1054,10 @@ pub fn loadWithOptions(allocator: std.mem.Allocator, options: LoadOptions) !Conf
     const syntax_theme = try resolveSyntaxTheme(allocator, config_view, active_profile);
     errdefer if (syntax_theme) |value| allocator.free(value);
     const personality = try resolvePersonality(allocator, config_view, active_profile);
+    const realtime_audio_microphone = try resolveRealtimeAudioDevice(allocator, config_view, "microphone");
+    errdefer if (realtime_audio_microphone) |value| allocator.free(value);
+    const realtime_audio_speaker = try resolveRealtimeAudioDevice(allocator, config_view, "speaker");
+    errdefer if (realtime_audio_speaker) |value| allocator.free(value);
     const base_instructions = try resolveBaseInstructions(allocator, config_view, active_profile);
     errdefer if (base_instructions) |value| allocator.free(value);
     const developer_instructions = try resolveDeveloperInstructions(allocator, config_view, active_profile);
@@ -1105,6 +1113,8 @@ pub fn loadWithOptions(allocator: std.mem.Allocator, options: LoadOptions) !Conf
         .service_tier = service_tier,
         .syntax_theme = syntax_theme,
         .personality = personality,
+        .realtime_audio_microphone = realtime_audio_microphone,
+        .realtime_audio_speaker = realtime_audio_speaker,
         .base_instructions = base_instructions,
         .developer_instructions = developer_instructions,
         .compact_prompt = compact_prompt,
@@ -1509,6 +1519,10 @@ fn resolveSyntaxTheme(allocator: std.mem.Allocator, config_view: ConfigView, act
     return config_view.getScopedString(allocator, active_profile, "syntax_theme");
 }
 
+fn resolveRealtimeAudioDevice(allocator: std.mem.Allocator, config_view: ConfigView, key: []const u8) !?[]const u8 {
+    return config_view.getSectionString(allocator, "audio", key);
+}
+
 fn resolvePersonality(allocator: std.mem.Allocator, config_view: ConfigView, active_profile: ?[]const u8) !?Personality {
     if (try env.getOwned(allocator, "CODEX_ZIG_PERSONALITY")) |value| {
         defer allocator.free(value);
@@ -1665,6 +1679,26 @@ pub fn persistTuiPet(allocator: std.mem.Allocator, codex_home: []const u8, name:
     defer if (bytes) |value| allocator.free(value);
 
     const updated = try updateTomlStringValue(allocator, bytes orelse "", .{ .section = "tui" }, "pet", name);
+    defer allocator.free(updated);
+    try writeConfigToml(allocator, codex_home, updated);
+}
+
+pub fn persistRealtimeAudioDevice(
+    allocator: std.mem.Allocator,
+    codex_home: []const u8,
+    key: []const u8,
+    name: ?[]const u8,
+) !void {
+    const bytes = try readConfigToml(allocator, codex_home);
+    defer if (bytes) |value| allocator.free(value);
+
+    const updated = if (name) |value|
+        try updateTomlStringValue(allocator, bytes orelse "", .{ .section = "audio" }, key, value)
+    else blk: {
+        const key_path = try std.fmt.allocPrint(allocator, "audio.{s}", .{key});
+        defer allocator.free(key_path);
+        break :blk try removeTomlValueForKeyPath(allocator, bytes orelse "", key_path);
+    };
     defer allocator.free(updated);
     try writeConfigToml(allocator, codex_home, updated);
 }
@@ -2657,6 +2691,7 @@ fn strictConfigPathAllowed(path: []const u8) bool {
     if (tomlSegmentMatches(first.raw, "tui")) return strictConfigTuiPathAllowed(first.rest);
     if (tomlSegmentMatches(first.raw, "sandbox_workspace_write")) return strictConfigSandboxWorkspaceWritePathAllowed(first.rest);
     if (tomlSegmentMatches(first.raw, "history")) return strictConfigLeafPathAllowed(first.rest, &[_][]const u8{ "persistence", "max_bytes" });
+    if (tomlSegmentMatches(first.raw, "audio")) return strictConfigLeafPathAllowed(first.rest, &[_][]const u8{ "microphone", "speaker" });
     if (tomlSegmentMatches(first.raw, "analytics")) return strictConfigLeafPathAllowed(first.rest, &[_][]const u8{"enabled"});
     if (tomlSegmentMatches(first.raw, "feedback")) return strictConfigLeafPathAllowed(first.rest, &[_][]const u8{"enabled"});
     if (tomlSegmentMatches(first.raw, "notice")) return strictConfigNoticePathAllowed(first.rest);
@@ -4301,6 +4336,10 @@ test "profile values override top-level config values" {
         \\cli_auth_credentials_store = "keyring"
         \\chatgpt_base_url = "https://base.example/codex"
         \\
+        \\[audio]
+        \\microphone = "USB Mic"
+        \\speaker = "Desk Speakers"
+        \\
         \\[profiles.work]
         \\model = "profile-model"
         \\oss_provider = "lmstudio"
@@ -4351,6 +4390,12 @@ test "profile values override top-level config values" {
     defer allocator.free(syntax_theme.?);
     try std.testing.expectEqualStrings("dracula", syntax_theme.?);
     try std.testing.expectEqual(Personality.pragmatic, (try resolvePersonality(allocator, view, active_profile.?)).?);
+    const microphone = try resolveRealtimeAudioDevice(allocator, view, "microphone");
+    defer allocator.free(microphone.?);
+    try std.testing.expectEqualStrings("USB Mic", microphone.?);
+    const speaker = try resolveRealtimeAudioDevice(allocator, view, "speaker");
+    defer allocator.free(speaker.?);
+    try std.testing.expectEqualStrings("Desk Speakers", speaker.?);
     try std.testing.expectEqual(ForcedLoginMethod.chatgpt, (try resolveForcedLoginMethod(allocator, view, active_profile.?)).?);
     const forced_workspace = try resolveForcedChatGptWorkspaceId(allocator, view, active_profile.?);
     defer allocator.free(forced_workspace.?);
@@ -4496,6 +4541,21 @@ test "toml string update writes top-level section and profile values" {
     );
     defer allocator.free(with_pet);
     try std.testing.expect(std.mem.indexOf(u8, with_pet, "pet = \"dewey\"") != null);
+
+    const with_audio = try updateTomlStringValue(
+        allocator,
+        "[audio]\nspeaker = \"Desk Speakers\"\n",
+        .{ .section = "audio" },
+        "microphone",
+        "USB Mic",
+    );
+    defer allocator.free(with_audio);
+    try std.testing.expect(std.mem.indexOf(u8, with_audio, "microphone = \"USB Mic\"") != null);
+
+    const without_audio_microphone = try removeTomlValueForKeyPath(allocator, with_audio, "audio.microphone");
+    defer allocator.free(without_audio_microphone);
+    try std.testing.expect(std.mem.indexOf(u8, without_audio_microphone, "microphone =") == null);
+    try std.testing.expect(std.mem.indexOf(u8, without_audio_microphone, "speaker = \"Desk Speakers\"") != null);
 }
 
 test "toml table removal clears target and nested sections" {

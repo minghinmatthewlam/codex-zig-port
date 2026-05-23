@@ -4530,6 +4530,103 @@ def run_tui_pets_slash_smoke(
                 proc.wait(timeout=2)
 
 
+def run_tui_settings_slash_smoke(
+    binary: Path,
+    env: dict[str, str],
+    workspace: Path,
+) -> None:
+    smoke_root = workspace / "tui-settings-smoke"
+    if smoke_root.exists():
+        shutil.rmtree(smoke_root)
+    smoke_home = smoke_root / "codex-home"
+    smoke_workspace = smoke_root / "workspace"
+    smoke_home.mkdir(parents=True)
+    smoke_workspace.mkdir(parents=True)
+
+    smoke_env = env.copy()
+    smoke_env["CODEX_HOME"] = str(smoke_home)
+    smoke_env.setdefault("TERM", "xterm-256color")
+    output = bytearray()
+    master_fd = -1
+    slave_fd = -1
+    master_fd, slave_fd = pty.openpty()
+    proc = None
+    try:
+        proc = subprocess.Popen(
+            [
+                str(binary),
+                "--no-alt-screen",
+                "--enable",
+                "realtime_conversation",
+            ],
+            cwd=smoke_workspace,
+            env=smoke_env,
+            stdin=slave_fd,
+            stdout=slave_fd,
+            stderr=slave_fd,
+            close_fds=True,
+        )
+        os.close(slave_fd)
+        slave_fd = -1
+
+        wait_for(master_fd, output, b"Type /help for commands", 8)
+
+        mark = len(output)
+        send_line(master_fd, "/help")
+        wait_for(master_fd, output, b"/settings [microphone|speaker]", 5, mark)
+
+        mark = len(output)
+        send_line(master_fd, "/settings")
+        wait_for(master_fd, output, b"settings:", 5, mark)
+        wait_for(master_fd, output, b"realtime microphone: System default", 5, mark)
+        wait_for(master_fd, output, b"realtime speaker: System default", 5, mark)
+        wait_for(master_fd, output, b"usage: /settings", 5, mark)
+
+        mark = len(output)
+        send_line(master_fd, "/settings microphone USB Mic")
+        wait_for(master_fd, output, b"realtime microphone: USB Mic", 5, mark)
+        config_text = (smoke_home / "config.toml").read_text(encoding="utf-8")
+        if 'microphone = "USB Mic"' not in config_text:
+            raise AssertionError(f"/settings microphone did not persist [audio].microphone:\n{config_text}")
+
+        mark = len(output)
+        send_line(master_fd, "/settings speaker Desk Speakers")
+        wait_for(master_fd, output, b"realtime speaker: Desk Speakers", 5, mark)
+        config_text = (smoke_home / "config.toml").read_text(encoding="utf-8")
+        if 'speaker = "Desk Speakers"' not in config_text:
+            raise AssertionError(f"/settings speaker did not persist [audio].speaker:\n{config_text}")
+
+        mark = len(output)
+        send_line(master_fd, "/settings mic default")
+        wait_for(master_fd, output, b"realtime microphone: System default", 5, mark)
+        config_text = (smoke_home / "config.toml").read_text(encoding="utf-8")
+        if "microphone =" in config_text:
+            raise AssertionError(f"/settings mic default did not clear [audio].microphone:\n{config_text}")
+        if 'speaker = "Desk Speakers"' not in config_text:
+            raise AssertionError(f"/settings mic default removed [audio].speaker:\n{config_text}")
+
+        mark = len(output)
+        send_line(master_fd, "/quit")
+        wait_for(master_fd, output, b"bye", 5, mark)
+        read_available(master_fd, output)
+        exit_code = proc.wait(timeout=5)
+        if exit_code != 0:
+            rendered = output.decode(errors="replace")
+            raise AssertionError(f"settings slash TUI exited with {exit_code}\n\n{rendered}")
+    finally:
+        if slave_fd >= 0:
+            os.close(slave_fd)
+        if master_fd >= 0:
+            os.close(master_fd)
+        if proc is not None and proc.poll() is None:
+            proc.terminate()
+            try:
+                proc.wait(timeout=2)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                proc.wait(timeout=2)
+
+
 def run_tui_apps_slash_smoke(
     binary: Path,
     env: dict[str, str],
@@ -6661,6 +6758,7 @@ def run_e2e(binary: Path) -> str:
             run_tui_approve_slash_smoke(binary, env, workspace)
             run_tui_feedback_slash_smoke(binary, env, workspace)
             run_tui_pets_slash_smoke(binary, env, workspace)
+            run_tui_settings_slash_smoke(binary, env, workspace)
             run_tui_skills_hooks_slash_smoke(binary, env, workspace)
             run_tui_apps_slash_smoke(binary, env, workspace)
             run_tui_plugins_slash_smoke(binary, env, workspace)

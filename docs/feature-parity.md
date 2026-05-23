@@ -42,7 +42,7 @@ Zig TUI help in `src/tui.zig`, and the broader narrative tracker in
   queued input while a turn is running, `/compact` interactions, active tool
   interruption, and accurate background-process cleanup.
 - Close major missing TUI slash commands that affect daily use:
-  `/agent` / `/subagents`, `/realtime`, and `/settings`.
+  `/agent` / `/subagents` and `/realtime`.
 - Basic local TUI `/experimental` coverage is implemented as a text-mode
   feature browser/toggler: it lists Rust menu-visible experimental features
   with effective enabled state, menu label, description, and config key, and
@@ -93,6 +93,12 @@ Zig TUI help in `src/tui.zig`, and the broader narrative tracker in
   state. Rust's graphics capability detection, rich picker, preview image, asset
   download/cache, custom-pet rendering, and ambient terminal image lifecycle
   remain planned depth.
+- Basic local TUI `/settings` coverage is implemented for the Rust realtime
+  audio settings surface when `realtime_conversation` is enabled: it shows the
+  current microphone/speaker selection and persists `[audio].microphone` /
+  `[audio].speaker`, including clearing back to the system default. Rust's rich
+  device picker, live device enumeration, and restart-active-audio prompt remain
+  planned depth.
 - Basic local TUI `/skills` and `/hooks` list views are covered: `/skills`
   lists discovered repo/user/plugin skills with enabled state and load errors,
   and `/hooks` lists discovered lifecycle command hooks with event, source,

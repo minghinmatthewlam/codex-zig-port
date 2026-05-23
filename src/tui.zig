@@ -2801,6 +2801,7 @@ fn handleSlashCommand(
     feature_overrides: *features_cmd.FeatureOverrides,
 ) !?SlashAction {
     const parts = parseSlash(prompt) orelse return null;
+    const realtime_enabled = realtimeConversationEnabled(feature_overrides.*);
 
     if (std.ascii.eqlIgnoreCase(parts.name, "quit") or
         std.ascii.eqlIgnoreCase(parts.name, "exit") or
@@ -2810,7 +2811,7 @@ fn handleSlashCommand(
     }
 
     if (std.ascii.eqlIgnoreCase(parts.name, "help")) {
-        printSlashHelp(goals_enabled);
+        printSlashHelp(goals_enabled, realtime_enabled);
         return .handled;
     }
 
@@ -2865,6 +2866,13 @@ fn handleSlashCommand(
 
     if (std.ascii.eqlIgnoreCase(parts.name, "theme")) {
         try handleTheme(allocator, cfg, state, parts.args);
+        return .handled;
+    }
+
+    if (std.ascii.eqlIgnoreCase(parts.name, "settings")) {
+        // Rust hides /settings unless realtime conversation support is enabled.
+        if (!realtime_enabled) return .handled;
+        try handleSettingsSlash(allocator, cfg, parts.args);
         return .handled;
     }
 
@@ -3388,6 +3396,25 @@ const disabled_pet_id = "disabled";
 const default_pet_id = "codex";
 const custom_pet_prefix = "custom:";
 
+const RealtimeAudioDeviceKind = enum {
+    microphone,
+    speaker,
+
+    fn key(self: RealtimeAudioDeviceKind) []const u8 {
+        return switch (self) {
+            .microphone => "microphone",
+            .speaker => "speaker",
+        };
+    }
+
+    fn noun(self: RealtimeAudioDeviceKind) []const u8 {
+        return switch (self) {
+            .microphone => "microphone",
+            .speaker => "speaker",
+        };
+    }
+};
+
 const PetCatalogEntry = struct {
     id: []const u8,
     name: []const u8,
@@ -3403,6 +3430,105 @@ const builtin_pets = [_]PetCatalogEntry{
     .{ .id = "bsod", .name = "BSOD" },
     .{ .id = "null-signal", .name = "Null Signal" },
 };
+
+fn realtimeConversationEnabled(feature_overrides: features_cmd.FeatureOverrides) bool {
+    if (builtin.os.tag == .linux) return false;
+    return features_cmd.effectiveEnabled(feature_overrides, "realtime_conversation") orelse false;
+}
+
+fn handleSettingsSlash(
+    allocator: std.mem.Allocator,
+    cfg: *config.Config,
+    args: []const u8,
+) !void {
+    const trimmed = std.mem.trim(u8, args, " \t\r\n");
+    if (trimmed.len == 0 or std.ascii.eqlIgnoreCase(trimmed, "status") or
+        std.ascii.eqlIgnoreCase(trimmed, "list") or std.ascii.eqlIgnoreCase(trimmed, "help"))
+    {
+        printSettingsStatus(cfg.*);
+        return;
+    }
+
+    const first = nextTokenRange(trimmed, 0) orelse {
+        printSettingsUsage();
+        return;
+    };
+    const token = trimmed[first.start..first.end];
+    const kind = parseRealtimeAudioDeviceKind(token) orelse {
+        std.debug.print("unknown settings item: {s}\n", .{token});
+        printSettingsUsage();
+        return;
+    };
+    const value = std.mem.trim(u8, trimmed[first.end..], " \t\r\n");
+    if (value.len == 0) {
+        printRealtimeAudioDeviceStatus(cfg.*, kind);
+        printSettingsUsage();
+        return;
+    }
+
+    const next_value: ?[]const u8 = if (isDefaultRealtimeAudioSelection(value)) null else value;
+    try config.persistRealtimeAudioDevice(allocator, cfg.codex_home, kind.key(), next_value);
+    try setRuntimeRealtimeAudioDevice(allocator, cfg, kind, next_value);
+    printRealtimeAudioDeviceStatus(cfg.*, kind);
+}
+
+fn parseRealtimeAudioDeviceKind(value: []const u8) ?RealtimeAudioDeviceKind {
+    if (std.ascii.eqlIgnoreCase(value, "microphone") or
+        std.ascii.eqlIgnoreCase(value, "mic") or
+        std.ascii.eqlIgnoreCase(value, "input"))
+    {
+        return .microphone;
+    }
+    if (std.ascii.eqlIgnoreCase(value, "speaker") or
+        std.ascii.eqlIgnoreCase(value, "output"))
+    {
+        return .speaker;
+    }
+    return null;
+}
+
+fn isDefaultRealtimeAudioSelection(value: []const u8) bool {
+    return std.ascii.eqlIgnoreCase(value, "default") or
+        std.ascii.eqlIgnoreCase(value, "system") or
+        std.ascii.eqlIgnoreCase(value, "system-default") or
+        std.ascii.eqlIgnoreCase(value, "clear") or
+        std.ascii.eqlIgnoreCase(value, "none");
+}
+
+fn setRuntimeRealtimeAudioDevice(
+    allocator: std.mem.Allocator,
+    cfg: *config.Config,
+    kind: RealtimeAudioDeviceKind,
+    value: ?[]const u8,
+) !void {
+    const next = if (value) |name| try allocator.dupe(u8, name) else null;
+    errdefer if (next) |name| allocator.free(name);
+    const slot = switch (kind) {
+        .microphone => &cfg.realtime_audio_microphone,
+        .speaker => &cfg.realtime_audio_speaker,
+    };
+    if (slot.*) |existing| allocator.free(existing);
+    slot.* = next;
+}
+
+fn printSettingsStatus(cfg: config.Config) void {
+    std.debug.print("settings:\n", .{});
+    printRealtimeAudioDeviceStatus(cfg, .microphone);
+    printRealtimeAudioDeviceStatus(cfg, .speaker);
+    printSettingsUsage();
+}
+
+fn printRealtimeAudioDeviceStatus(cfg: config.Config, kind: RealtimeAudioDeviceKind) void {
+    const current = switch (kind) {
+        .microphone => cfg.realtime_audio_microphone,
+        .speaker => cfg.realtime_audio_speaker,
+    } orelse "System default";
+    std.debug.print("realtime {s}: {s}\n", .{ kind.noun(), current });
+}
+
+fn printSettingsUsage() void {
+    std.debug.print("usage: /settings [microphone|speaker] [NAME|default]\n", .{});
+}
 
 fn handlePetsSlash(
     allocator: std.mem.Allocator,
@@ -3645,7 +3771,7 @@ fn parseSlash(prompt: []const u8) ?SlashParts {
     return .{ .name = name, .args = args };
 }
 
-fn printSlashHelp(goals_enabled: bool) void {
+fn printSlashHelp(goals_enabled: bool, realtime_enabled: bool) void {
     std.debug.print(
         \\commands:
         \\  /help             show this help
@@ -3666,6 +3792,15 @@ fn printSlashHelp(goals_enabled: bool) void {
         \\                    choose a syntax highlighting theme
         \\  /pets, /pet [id|disable|list|status]
         \\                    choose or hide the terminal pet
+        \\
+    , .{});
+    if (realtime_enabled) {
+        std.debug.print(
+            \\  /settings [microphone|speaker]
+            \\                    configure realtime microphone/speaker
+        , .{});
+    }
+    std.debug.print(
         \\  /personality [status|list|none|friendly|pragmatic]
         \\                    choose a communication style
         \\  /experimental [enable|disable FEATURE]
@@ -5706,6 +5841,24 @@ test "pets slash helper aliases" {
     try std.testing.expect(isPetPathLike("."));
     try std.testing.expect(isPetPathLike("./pet.json"));
     try std.testing.expect(!isPetPathLike("chefito"));
+}
+
+test "settings slash helper aliases" {
+    try std.testing.expectEqual(RealtimeAudioDeviceKind.microphone, parseRealtimeAudioDeviceKind("microphone").?);
+    try std.testing.expectEqual(RealtimeAudioDeviceKind.microphone, parseRealtimeAudioDeviceKind("mic").?);
+    try std.testing.expectEqual(RealtimeAudioDeviceKind.speaker, parseRealtimeAudioDeviceKind("speaker").?);
+    try std.testing.expectEqual(RealtimeAudioDeviceKind.speaker, parseRealtimeAudioDeviceKind("output").?);
+    try std.testing.expect(parseRealtimeAudioDeviceKind("camera") == null);
+    try std.testing.expect(isDefaultRealtimeAudioSelection("default"));
+    try std.testing.expect(isDefaultRealtimeAudioSelection("system-default"));
+    try std.testing.expect(!isDefaultRealtimeAudioSelection("USB Mic"));
+
+    const allocator = std.testing.allocator;
+    var overrides = features_cmd.FeatureOverrides{};
+    defer overrides.deinit(allocator);
+    try std.testing.expect(!realtimeConversationEnabled(overrides));
+    try overrides.put(allocator, "realtime_conversation", true);
+    try std.testing.expectEqual(builtin.os.tag != .linux, realtimeConversationEnabled(overrides));
 }
 
 test "pet path validation requires manifest file" {
