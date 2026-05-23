@@ -4154,6 +4154,183 @@ def run_tui_skills_hooks_slash_smoke(
                 proc.wait(timeout=2)
 
 
+def run_tui_apps_slash_smoke(
+    binary: Path,
+    env: dict[str, str],
+    workspace: Path,
+) -> None:
+    smoke_root = workspace / "tui-apps-smoke"
+    if smoke_root.exists():
+        shutil.rmtree(smoke_root)
+    smoke_home = smoke_root / "codex-home"
+    smoke_workspace = smoke_root / "workspace"
+    marketplace_dir = smoke_workspace / ".agents" / "plugins"
+    plugin_dir = smoke_workspace / "plugins" / "demo-apps"
+    plugin_manifest_dir = plugin_dir / ".codex-plugin"
+    marketplace_dir.mkdir(parents=True)
+    plugin_manifest_dir.mkdir(parents=True)
+    smoke_home.mkdir(parents=True)
+    (smoke_home / "auth.json").write_text(
+        json.dumps(
+            {
+                "tokens": {
+                    "access_token": "tui-apps-token",
+                    "account_id": "acct_tui_apps",
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    (smoke_home / "config.toml").write_text(
+        "\n".join(
+            [
+                "[features]",
+                "apps = true",
+                "plugins = true",
+                "",
+                '[plugins."demo-apps@local"]',
+                "enabled = true",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    (marketplace_dir / "marketplace.json").write_text(
+        json.dumps(
+            {
+                "name": "local",
+                "plugins": [
+                    {
+                        "name": "demo-apps",
+                        "source": {
+                            "source": "local",
+                            "path": "./plugins/demo-apps",
+                        },
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    (plugin_manifest_dir / "plugin.json").write_text(
+        json.dumps(
+            {
+                "name": "demo-apps",
+                "version": "1.0.0",
+                "interface": {"displayName": "Demo Apps"},
+            }
+        ),
+        encoding="utf-8",
+    )
+    (plugin_dir / ".app.json").write_text(
+        json.dumps(
+            {
+                "apps": {
+                    "calendar": {
+                        "id": "calendar",
+                        "name": "Calendar",
+                        "description": "Manage calendars.",
+                        "installUrl": "https://example.test/apps/calendar",
+                    }
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    def run_apps_tui(
+        extra_args: list[str],
+        checks: list[bytes],
+        check_help: bool = False,
+        check_invalid: bool = False,
+    ) -> None:
+        smoke_env = env.copy()
+        smoke_env["CODEX_HOME"] = str(smoke_home)
+        smoke_env.setdefault("TERM", "xterm-256color")
+        output = bytearray()
+        master_fd = -1
+        slave_fd = -1
+        master_fd, slave_fd = pty.openpty()
+        proc = None
+        try:
+            proc = subprocess.Popen(
+                [
+                    str(binary),
+                    *extra_args,
+                    "--no-alt-screen",
+                ],
+                cwd=smoke_workspace,
+                env=smoke_env,
+                stdin=slave_fd,
+                stdout=slave_fd,
+                stderr=slave_fd,
+                close_fds=True,
+            )
+            os.close(slave_fd)
+            slave_fd = -1
+
+            wait_for(master_fd, output, b"Type /help for commands", 8)
+
+            if check_help:
+                mark = len(output)
+                send_line(master_fd, "/help")
+                wait_for(master_fd, output, b"/apps", 5, mark)
+
+            mark = len(output)
+            send_line(master_fd, "/apps")
+            for check in checks:
+                wait_for(master_fd, output, check, 5, mark)
+
+            if check_invalid:
+                mark = len(output)
+                send_line(master_fd, "/apps bogus")
+                wait_for(master_fd, output, b"usage: /apps [list|status]", 5, mark)
+
+            mark = len(output)
+            send_line(master_fd, "/quit")
+            wait_for(master_fd, output, b"bye", 5, mark)
+            read_available(master_fd, output)
+            exit_code = proc.wait(timeout=5)
+            if exit_code != 0:
+                rendered = output.decode(errors="replace")
+                raise AssertionError(f"apps slash TUI exited with {exit_code}\n\n{rendered}")
+        finally:
+            if slave_fd >= 0:
+                os.close(slave_fd)
+            if master_fd >= 0:
+                os.close(master_fd)
+            if proc is not None and proc.poll() is None:
+                proc.terminate()
+                try:
+                    proc.wait(timeout=2)
+                except subprocess.TimeoutExpired:
+                    proc.kill()
+                    proc.wait(timeout=2)
+
+    run_apps_tui(
+        [],
+        [
+            b"apps:",
+            b"installed 0 of 1 available apps",
+            b"Calendar (enabled, not installed)",
+            b"Manage calendars.",
+            b"id: calendar",
+            b"install: https://example.test/apps/calendar",
+            b"plugins: Demo Apps",
+        ],
+        check_help=True,
+        check_invalid=True,
+    )
+    run_apps_tui(
+        ["--disable=plugins"],
+        [
+            b"apps:",
+            b"installed 0 of 0 available apps",
+            b"none",
+        ],
+    )
+
+
 def run_tui_experimental_slash_smoke(
     binary: Path,
     env: dict[str, str],
@@ -5533,6 +5710,7 @@ def run_e2e(binary: Path) -> str:
             run_local_remote_control_smoke(binary, env, workspace, port, server)
             run_local_remote_control_slash_smoke(binary, env, workspace, port, server)
             run_tui_skills_hooks_slash_smoke(binary, env, workspace)
+            run_tui_apps_slash_smoke(binary, env, workspace)
             run_tui_experimental_slash_smoke(binary, env, workspace)
             run_remote_websocket_tui_smoke(binary, env, workspace, port, server)
             run_remote_wss_tui_smoke(binary, env, workspace)
