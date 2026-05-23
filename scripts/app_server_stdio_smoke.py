@@ -19946,6 +19946,16 @@ def run_thread_resume_rpc_smoke(binary: Path) -> None:
 def run_goal_feature_gate_smoke(binary: Path) -> None:
     codex_home = Path(tempfile.mkdtemp(prefix="codex-zig-app-server-goals-", dir="/tmp"))
     try:
+        (codex_home / "config.toml").write_text(
+            "\n".join(
+                [
+                    "[features]",
+                    "goals = false",
+                    "",
+                ]
+            ),
+            encoding="utf-8",
+        )
         env = os.environ.copy()
         env["CODEX_HOME"] = str(codex_home)
         proc = subprocess.Popen(

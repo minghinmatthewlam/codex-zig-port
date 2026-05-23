@@ -6329,7 +6329,7 @@ def run_features_profile_smoke(binary: Path) -> None:
             check=True,
         )
         contents = (codex_home / "config.toml").read_text(encoding="utf-8")
-        assert "goals = false" not in contents
+        assert "goals = false" in contents
 
         subprocess.run(
             [str(binary), "features", "enable", "memory_tool"],
@@ -6352,7 +6352,7 @@ def run_features_profile_smoke(binary: Path) -> None:
         lines = listed.stdout.splitlines()
         assert any(line.startswith("memories ") and line.endswith(" true") for line in lines)
         contents = (codex_home / "config.toml").read_text(encoding="utf-8")
-        assert "memory_tool = true" in contents
+        assert "memories = true" in contents
 
         listed = subprocess.run(
             [str(binary), "--disable", "collab", "features", "list"],
