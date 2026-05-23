@@ -63,6 +63,9 @@ const gpt_5_2_reasoning_levels = [_]ReasoningLevel{
 
 const text_image_modalities = [_][]const u8{ "text", "image" };
 const fast_speed_tiers = [_][]const u8{"fast"};
+const priority_service_tiers = [_]ServiceTier{
+    .{ .id = "priority", .name = "Fast", .description = "1.5x speed, increased usage" },
+};
 
 const gpt_5_5_nux =
     "GPT-5.5 is now available in Codex. It's our strongest agentic coding model yet, built to reason through large codebases, check assumptions with tools, and keep going until the work is done.\n\n" ++
@@ -87,18 +90,20 @@ pub const bundled_models = [_]Entry{
         .support_verbosity = true,
         .default_verbosity = "low",
         .additional_speed_tiers = fast_speed_tiers[0..],
+        .service_tiers = priority_service_tiers[0..],
     },
     .{
         .slug = "gpt-5.4",
         .display_name = "gpt-5.4",
         .description = "Strong model for everyday coding.",
-        .default_reasoning_level = "xhigh",
+        .default_reasoning_level = "medium",
         .supported_reasoning_levels = standard_reasoning_levels[0..],
         .input_modalities = text_image_modalities[0..],
         .priority = 2,
         .support_verbosity = true,
         .default_verbosity = "low",
         .additional_speed_tiers = fast_speed_tiers[0..],
+        .service_tiers = priority_service_tiers[0..],
     },
     .{
         .slug = "gpt-5.4-mini",
