@@ -2522,6 +2522,7 @@ def run_plugin_marketplace_smoke(
         "MARKETPLACE  ROOT" not in marketplace_list.stderr
         or "debug" not in marketplace_list.stderr
         or str(source) not in marketplace_list.stderr
+        or "home-only" in marketplace_list.stderr
         or "\t" in marketplace_list.stderr
     ):
         raise AssertionError(f"expected marketplace list output:\n{marketplace_list.stderr}")

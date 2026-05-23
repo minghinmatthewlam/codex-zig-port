@@ -388,7 +388,6 @@ fn listMarketplacesAndPrint(allocator: std.mem.Allocator) !void {
             defer allocator.free(home);
             try appendMarketplaceListRoot(allocator, &rows, &issues, null, home, false);
         }
-        try appendMarketplaceListRoot(allocator, &rows, &issues, null, context.codex_home, false);
 
         var configured = try marketplace_config.configuredMarketplaceRootsStrict(allocator, context.codex_home, config_bytes);
         defer configured.deinit(allocator);
