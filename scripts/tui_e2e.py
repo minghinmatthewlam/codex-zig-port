@@ -4154,6 +4154,103 @@ def run_tui_skills_hooks_slash_smoke(
                 proc.wait(timeout=2)
 
 
+def run_tui_experimental_slash_smoke(
+    binary: Path,
+    env: dict[str, str],
+    workspace: Path,
+) -> None:
+    smoke_root = workspace / "tui-experimental-smoke"
+    if smoke_root.exists():
+        shutil.rmtree(smoke_root)
+    smoke_home = smoke_root / "codex-home"
+    smoke_workspace = smoke_root / "workspace"
+    smoke_home.mkdir(parents=True)
+    smoke_workspace.mkdir(parents=True)
+    config_path = smoke_home / "config.toml"
+
+    smoke_env = env.copy()
+    smoke_env["CODEX_HOME"] = str(smoke_home)
+    smoke_env.setdefault("TERM", "xterm-256color")
+    output = bytearray()
+    master_fd = -1
+    slave_fd = -1
+    master_fd, slave_fd = pty.openpty()
+    proc = None
+    try:
+        proc = subprocess.Popen(
+            [
+                str(binary),
+                "--no-alt-screen",
+            ],
+            cwd=smoke_workspace,
+            env=smoke_env,
+            stdin=slave_fd,
+            stdout=slave_fd,
+            stderr=slave_fd,
+            close_fds=True,
+        )
+        os.close(slave_fd)
+        slave_fd = -1
+
+        wait_for(master_fd, output, b"Type /help for commands", 8)
+
+        mark = len(output)
+        send_line(master_fd, "/help")
+        wait_for(master_fd, output, b"/experimental", 5, mark)
+
+        mark = len(output)
+        send_line(master_fd, "/experimental")
+        wait_for(master_fd, output, b"experimental features:", 5, mark)
+        wait_for(master_fd, output, b"Network proxy (disabled)", 5, mark)
+        wait_for(master_fd, output, b"key: network_proxy", 5, mark)
+        wait_for(master_fd, output, b"Terminal resize reflow (enabled)", 5, mark)
+
+        mark = len(output)
+        send_line(master_fd, "/experimental enable network_proxy")
+        wait_for(master_fd, output, b"experimental feature `network_proxy`: enabled", 5, mark)
+        wait_for(master_fd, output, b"Network proxy (enabled)", 5, mark)
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline:
+            if config_path.exists() and "network_proxy = true" in config_path.read_text():
+                break
+            time.sleep(0.05)
+        else:
+            rendered = output.decode(errors="replace")
+            raise AssertionError(f"network_proxy enable was not persisted\n\n{rendered}")
+
+        mark = len(output)
+        send_line(master_fd, "/experimental disable network_proxy")
+        wait_for(master_fd, output, b"experimental feature `network_proxy`: disabled", 5, mark)
+        wait_for(master_fd, output, b"Network proxy (disabled)", 5, mark)
+
+        mark = len(output)
+        send_line(master_fd, "/experimental enable shell_tool")
+        wait_for(master_fd, output, b"not an experimental feature: shell_tool", 5, mark)
+
+        mark = len(output)
+        send_line(master_fd, "/quit")
+        wait_for(master_fd, output, b"bye", 5, mark)
+        read_available(master_fd, output)
+        exit_code = proc.wait(timeout=5)
+        if exit_code != 0:
+            rendered = output.decode(errors="replace")
+            raise AssertionError(f"experimental slash TUI exited with {exit_code}\n\n{rendered}")
+        if config_path.exists() and "network_proxy = true" in config_path.read_text():
+            raise AssertionError("network_proxy disable did not clear the root default-false feature")
+    finally:
+        if slave_fd >= 0:
+            os.close(slave_fd)
+        if master_fd >= 0:
+            os.close(master_fd)
+        if proc is not None and proc.poll() is None:
+            proc.terminate()
+            try:
+                proc.wait(timeout=2)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                proc.wait(timeout=2)
+
+
 def run_remote_unix_tui_smoke(
     binary: Path,
     env: dict[str, str],
@@ -5433,6 +5530,7 @@ def run_e2e(binary: Path) -> str:
             run_local_remote_control_smoke(binary, env, workspace, port, server)
             run_local_remote_control_slash_smoke(binary, env, workspace, port, server)
             run_tui_skills_hooks_slash_smoke(binary, env, workspace)
+            run_tui_experimental_slash_smoke(binary, env, workspace)
             run_remote_websocket_tui_smoke(binary, env, workspace, port, server)
             run_remote_wss_tui_smoke(binary, env, workspace)
             run_remote_unix_tui_smoke(binary, env, workspace, port, server)
