@@ -660,18 +660,34 @@ fn appServerCheck(allocator: std.mem.Allocator, cfg_load: ConfigLoad) !Check {
     const home = if (cfg_load.cfg) |cfg| cfg.codex_home else cfg_load.codex_home orelse ".";
     const control_socket = try std.fs.path.join(allocator, &.{ home, "app-server-control", "app-server-control.sock" });
     const daemon_dir = try std.fs.path.join(allocator, &.{ home, "app-server-daemon" });
+    const pid_file = try std.fs.path.join(allocator, &.{ daemon_dir, "app-server.pid" });
+    const settings_file = try std.fs.path.join(allocator, &.{ daemon_dir, "settings.json" });
+    const updater_pid_file = try std.fs.path.join(allocator, &.{ daemon_dir, "app-server-updater.pid" });
+
     var check = Check.init("app_server.status", "app-server", .ok, "background server status is locally inspectable");
     const control_socket_inspection = try inspectPath(allocator, control_socket);
     const daemon_dir_inspection = try inspectPath(allocator, daemon_dir);
+    const pid_file_inspection = try inspectPath(allocator, pid_file);
+    const settings_file_inspection = try inspectPath(allocator, settings_file);
+    const updater_pid_file_inspection = try inspectPath(allocator, updater_pid_file);
     try recordAppServerPathInspection(allocator, &check, "control socket", control_socket_inspection);
     try recordAppServerPathInspection(allocator, &check, "daemon state dir", daemon_dir_inspection);
+    try check.addDetail(allocator, "mode", "ephemeral");
+    try recordAppServerPathInspection(allocator, &check, "pid file", pid_file_inspection);
+    try recordAppServerPathInspection(allocator, &check, "settings", settings_file_inspection);
     const status = if (control_socket_inspection.health == .inaccessible)
         "unknown (control socket inaccessible)"
     else if (control_socket_inspection.health == .ok)
         "control socket present"
+    else if (pid_file_inspection.health == .ok)
+        "pid file present"
     else
         "not running";
+    if (std.mem.eql(u8, status, "not running")) {
+        check.summary = "background server is not running";
+    }
     try check.addDetail(allocator, "status", status);
+    try recordAppServerPathInspection(allocator, &check, "update-loop pid file", updater_pid_file_inspection);
     return check;
 }
 
@@ -1217,6 +1233,42 @@ test "doctor app-server access errors fail the app-server check" {
     try std.testing.expectEqualStrings("background server paths are not inspectable", check.summary);
     try std.testing.expect(check.issues.items.len == 1);
     try std.testing.expectEqualStrings("Fix CODEX_HOME permissions or repair the affected app-server path.", check.remediation.?);
+}
+
+test "doctor app-server status includes daemon metadata" {
+    const allocator = std.testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    const scratch = arena.allocator();
+
+    var dir = std.testing.tmpDir(.{});
+    defer dir.cleanup();
+    const io = std.Io.Threaded.global_single_threaded.io();
+    const root = try dir.dir.realPathFileAlloc(io, ".", allocator);
+    defer allocator.free(root);
+
+    const check = try appServerCheck(scratch, .{
+        .codex_home = root,
+        .cwd = root,
+    });
+
+    try std.testing.expectEqual(Status.ok, check.status);
+    try std.testing.expectEqualStrings("background server is not running", check.summary);
+
+    var found_mode = false;
+    var found_pid_file = false;
+    var found_settings = false;
+    var found_updater_pid = false;
+    for (check.details.items) |detail| {
+        if (std.mem.eql(u8, detail.key, "mode") and std.mem.eql(u8, detail.value, "ephemeral")) found_mode = true;
+        if (std.mem.eql(u8, detail.key, "pid file") and std.mem.indexOf(u8, detail.value, "app-server.pid") != null) found_pid_file = true;
+        if (std.mem.eql(u8, detail.key, "settings") and std.mem.indexOf(u8, detail.value, "settings.json") != null) found_settings = true;
+        if (std.mem.eql(u8, detail.key, "update-loop pid file") and std.mem.indexOf(u8, detail.value, "app-server-updater.pid") != null) found_updater_pid = true;
+    }
+    try std.testing.expect(found_mode);
+    try std.testing.expect(found_pid_file);
+    try std.testing.expect(found_settings);
+    try std.testing.expect(found_updater_pid);
 }
 
 test "doctor auth check uses active ephemeral credentials" {

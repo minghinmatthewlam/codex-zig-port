@@ -66,9 +66,10 @@ Zig TUI help in `src/tui.zig`, and the broader narrative tracker in
 - Basic `codex doctor` command routing is implemented in Zig with Rust-shaped
   help, human output, JSON top-level fields, grouped check rows, and
   `--json`, `--summary`, `--all`, `--no-color`, `--ascii`, `-c/--config`,
-  `--enable`, and `--disable` parsing. Remaining doctor parity is exact
+  `--enable`, and `--disable` parsing, plus app-server daemon mode, pid,
+  settings, and update-loop path reporting. Remaining doctor parity is exact
   diagnostic depth: Rust's full installation, search, state DB, WebSocket,
-  provider reachability, and background-daemon probes are deeper than the
+  provider reachability, and live background-daemon probes are deeper than the
   current bounded Zig checks.
 - Root interactive/resume/fork, exec, and review support for
   `--strict-config` is implemented for user `config.toml` unknown fields and
