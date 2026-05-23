@@ -103,14 +103,21 @@ Zig TUI help in `src/tui.zig`, and the broader narrative tracker in
   spawned managed app-server processes and preserved across setting-change
   restarts of that managed process. Remaining daemon parity is managed
   bootstrap/update-loop behavior.
-- Finish live success behavior for `codex remote-control start`. Zig now
-  accepts the Rust `start` / `stop` command forms plus global `--json`;
-  `stop` routes through the daemon stop lifecycle and reports Rust-shaped JSON
-  or human text, and `start` follows the daemon managed-install error path.
-  `app-server --remote-control` now reports `connecting` and enables the
-  `remote_control` feature in app-server feature APIs. Remaining parity is
-  enabling remote control on the started managed app-server and printing
-  Rust-shaped readiness output.
+- `codex remote-control start` now drives the managed daemon path when the
+  standalone managed install exists: it enables the daemon remote-control
+  setting, starts or reuses the PID-backed app-server, sends
+  `remoteControl/enable` over the control socket, and prints Rust-shaped JSON
+  or human readiness output with daemon app-server path/version details.
+  `remote-control stop` routes through the daemon stop lifecycle and reports
+  Rust-shaped JSON or human text. `app-server --remote-control` now reports
+  `connecting`, includes remote-control identity fields backed by the persisted
+  `CODEX_HOME/installation_id` UUID in status notifications, handles
+  `remoteControl/enable|disable|status/read`, and
+  exposes `remote_control` as enabled through app-server feature APIs.
+  Normal config loading also creates/reuses the same persisted installation UUID
+  instead of falling back to the old Zig placeholder.
+  Remaining remote-control parity is the full Rust websocket/cloud connection
+  backend behind the reported connecting status.
 - Close app-server active-turn feature gaps needed by desktop clients:
   real async turns, active turn status, interruption, steering, server-request
   dispatch, lifecycle notification completeness, and non-stdio deferred command

@@ -746,9 +746,12 @@ and `appServerVersion` for a running managed daemon, and restarts that daemon
 when the setting changes. Managed stale PID detection validates process start time
 plus daemon command shape before signaling, and concurrent `start` calls are
 serialized by the daemon operation lock plus PID reservation lock. Top-level
-`remote-control stop` routes through the same stop lifecycle. Managed
-bootstrap/update-loop behavior and remote-control readiness output remain
-planned.
+`remote-control stop` routes through the same stop lifecycle. Top-level
+`remote-control start` enables the daemon remote-control setting, starts or
+reuses the PID-backed managed app-server, sends `remoteControl/enable` over the
+control socket, and prints Rust-shaped JSON or human readiness output with
+daemon app-server path/version details. Managed bootstrap/update-loop behavior
+and the full Rust websocket/cloud remote-control backend remain planned.
 
 The high-level `app/list` summary in the table above is expanded by the
 detailed app-list note below: authenticated ChatGPT connector directory page
@@ -884,14 +887,25 @@ remote-control` now has Rust-shaped help for foreground, `start`, `stop`, and
 global `--json`, parses `-c/--config`, `--enable`, and `--disable` options,
 reports that foreground headless app-server remote control is blocked while the
 SQLite state DB is unavailable, accepts `remote-control start` and follows the
-managed-standalone missing-install daemon error path, and accepts
-`remote-control stop` with Rust-shaped JSON or human output through the daemon
-stop lifecycle. The command appends the `remote_control` feature enablement
-after user-provided feature toggles, matching Rust's headless invocation
-override ordering. `app-server --remote-control` now reports
-`remoteControl/status/changed` as `connecting` and exposes `remote_control` as
-enabled through app-server feature APIs while live foreground and
-managed-daemon start/readiness remain planned.
+managed-standalone missing-install daemon error path, starts or reuses a
+PID-backed managed daemon when the standalone path exists, probes
+`remoteControl/enable`, and prints Rust-shaped daemon-mode readiness JSON or
+human output; and accepts `remote-control stop` with Rust-shaped JSON or human
+output through the daemon stop lifecycle. The command appends the
+`remote_control` feature enablement after user-provided feature toggles,
+matching Rust's headless invocation override ordering, while forwarding root
+feature/config overrides and command-local feature/config child args into the
+managed daemon.
+`app-server --remote-control` now reports `remoteControl/status/changed` as
+`connecting`, includes `serverName` and a persisted `CODEX_HOME/installation_id`
+UUID as `installationId`, handles
+`remoteControl/enable`, `remoteControl/disable`, and
+`remoteControl/status/read`, and exposes `remote_control` as enabled through
+app-server feature APIs while the full Rust websocket/cloud remote-control
+backend remains planned.
+Config loading now creates, canonicalizes, and reuses the same persisted
+`CODEX_HOME/installation_id` UUID that Rust uses for client metadata instead of
+falling back to the old Zig placeholder when the file is missing.
 
 Additional Cloud Tasks command coverage: `codex-zig cloud` and the
 `cloud-tasks` alias now have Rust-shaped help for `exec`, `status`, `list`,
