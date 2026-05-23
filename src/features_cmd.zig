@@ -2,19 +2,9 @@ const std = @import("std");
 
 const cli_utils = @import("cli_utils.zig");
 const config = @import("config.zig");
+const feature_registry = @import("feature_registry.zig");
 
-pub const FeatureSpec = struct {
-    pub const all = features[0..];
-
-    key: []const u8,
-    stage: []const u8,
-    default_enabled: bool,
-};
-
-const FeatureAlias = struct {
-    alias: []const u8,
-    canonical: []const u8,
-};
+pub const FeatureSpec = feature_registry.FeatureSpec;
 
 pub const FeatureOverride = struct {
     key: []const u8,
@@ -179,7 +169,7 @@ pub fn putRuntimeToggle(
     feature: []const u8,
     enabled: bool,
 ) !void {
-    const canonical = resolveFeatureKey(feature) orelse return error.UnknownFeature;
+    const canonical = feature_registry.canonicalFeatureKey(feature) orelse return error.UnknownFeature;
     try overrides.put(allocator, canonical, enabled);
 }
 
@@ -195,7 +185,7 @@ fn listFeatures(allocator: std.mem.Allocator, options: Options) !void {
 
     var name_width: usize = 0;
     var stage_width: usize = 0;
-    for (features) |feature| {
+    for (FeatureSpec.all) |feature| {
         name_width = @max(name_width, feature.key.len);
         stage_width = @max(stage_width, feature.stage.len);
     }
@@ -260,7 +250,7 @@ pub fn unstableFeaturesWarningMessage(
 
     var keys = std.ArrayList(u8).empty;
     defer keys.deinit(allocator);
-    for (features) |feature| {
+    for (FeatureSpec.all) |feature| {
         if (!std.mem.eql(u8, feature.stage, "under development")) continue;
         if (overrides.get(feature.key) orelse false) {
             if (keys.items.len > 0) try keys.appendSlice(allocator, ", ");
@@ -366,7 +356,7 @@ fn featureDeprecationNotice(allocator: std.mem.Allocator, key: []const u8) !?Fea
         };
     }
 
-    for (feature_aliases) |alias| {
+    for (feature_registry.FeatureAlias.all) |alias| {
         if (std.mem.eql(u8, alias.alias, key)) {
             const summary = try std.fmt.allocPrint(allocator, "`[features].{s}` is deprecated. Use `[features].{s}` instead.", .{ alias.alias, alias.canonical });
             errdefer allocator.free(summary);
@@ -455,7 +445,7 @@ fn parseFeatureOverridesForProfile(
             false
         else
             continue;
-        const canonical_key = resolveFeatureKey(key) orelse continue;
+        const canonical_key = feature_registry.canonicalFeatureKey(key) orelse continue;
         switch (section) {
             .none => {},
             .top_level => try base_overrides.put(allocator, canonical_key, enabled),
@@ -618,35 +608,19 @@ fn appendFeatureLine(
 }
 
 pub fn isKnownFeature(key: []const u8) bool {
-    return resolveFeatureKey(key) != null;
+    return feature_registry.isKnownFeature(key);
 }
 
 pub fn canonicalFeatureKey(key: []const u8) ?[]const u8 {
-    return resolveFeatureKey(key);
+    return feature_registry.canonicalFeatureKey(key);
 }
 
 pub fn isCanonicalFeatureKey(key: []const u8) bool {
-    for (features) |feature| {
-        if (std.mem.eql(u8, feature.key, key)) return true;
-    }
-    return false;
-}
-
-fn resolveFeatureKey(key: []const u8) ?[]const u8 {
-    for (features) |feature| {
-        if (std.mem.eql(u8, feature.key, key)) return feature.key;
-    }
-    for (feature_aliases) |alias| {
-        if (std.mem.eql(u8, alias.alias, key)) return alias.canonical;
-    }
-    return null;
+    return feature_registry.isCanonicalFeatureKey(key);
 }
 
 fn directFeatureSpec(key: []const u8) ?FeatureSpec {
-    for (features) |feature| {
-        if (std.mem.eql(u8, feature.key, key)) return feature;
-    }
-    return null;
+    return feature_registry.featureSpec(key);
 }
 
 fn isDirectDefaultFalseFeature(key: []const u8) bool {
@@ -669,7 +643,7 @@ fn renderFeaturesList(
     var output = std.ArrayList(u8).empty;
     errdefer output.deinit(allocator);
 
-    for (features) |feature| {
+    for (FeatureSpec.all) |feature| {
         const enabled = runtime_overrides.get(feature.key) orelse
             config_overrides.get(feature.key) orelse
             feature.default_enabled;
@@ -729,97 +703,6 @@ fn printSetHelp(action: []const u8) void {
         \\
     , .{action});
 }
-
-const features = [_]FeatureSpec{
-    .{ .key = "apply_patch_freeform", .stage = "under development", .default_enabled = false },
-    .{ .key = "apply_patch_streaming_events", .stage = "under development", .default_enabled = false },
-    .{ .key = "apps", .stage = "stable", .default_enabled = true },
-    .{ .key = "apps_mcp_path_override", .stage = "under development", .default_enabled = false },
-    .{ .key = "artifact", .stage = "under development", .default_enabled = false },
-    .{ .key = "auth_elicitation", .stage = "under development", .default_enabled = false },
-    .{ .key = "browser_use", .stage = "stable", .default_enabled = true },
-    .{ .key = "browser_use_external", .stage = "stable", .default_enabled = true },
-    .{ .key = "builtin_mcp", .stage = "under development", .default_enabled = false },
-    .{ .key = "child_agents_md", .stage = "under development", .default_enabled = false },
-    .{ .key = "chronicle", .stage = "under development", .default_enabled = false },
-    .{ .key = "code_mode", .stage = "under development", .default_enabled = false },
-    .{ .key = "code_mode_only", .stage = "under development", .default_enabled = false },
-    .{ .key = "codex_git_commit", .stage = "under development", .default_enabled = false },
-    .{ .key = "collaboration_modes", .stage = "removed", .default_enabled = true },
-    .{ .key = "computer_use", .stage = "stable", .default_enabled = true },
-    .{ .key = "default_mode_request_user_input", .stage = "under development", .default_enabled = false },
-    .{ .key = "elevated_windows_sandbox", .stage = "removed", .default_enabled = false },
-    .{ .key = "enable_fanout", .stage = "under development", .default_enabled = false },
-    .{ .key = "enable_mcp_apps", .stage = "under development", .default_enabled = false },
-    .{ .key = "enable_request_compression", .stage = "stable", .default_enabled = true },
-    .{ .key = "exec_permission_approvals", .stage = "under development", .default_enabled = false },
-    .{ .key = "experimental_windows_sandbox", .stage = "removed", .default_enabled = false },
-    .{ .key = "external_migration", .stage = "experimental", .default_enabled = false },
-    .{ .key = "fast_mode", .stage = "stable", .default_enabled = true },
-    .{ .key = "goals", .stage = "experimental", .default_enabled = false },
-    .{ .key = "guardian_approval", .stage = "stable", .default_enabled = true },
-    .{ .key = "hooks", .stage = "stable", .default_enabled = true },
-    .{ .key = "image_detail_original", .stage = "removed", .default_enabled = false },
-    .{ .key = "image_generation", .stage = "stable", .default_enabled = true },
-    .{ .key = "in_app_browser", .stage = "stable", .default_enabled = true },
-    .{ .key = "js_repl", .stage = "removed", .default_enabled = false },
-    .{ .key = "js_repl_tools_only", .stage = "removed", .default_enabled = false },
-    .{ .key = "memories", .stage = "experimental", .default_enabled = false },
-    .{ .key = "multi_agent", .stage = "stable", .default_enabled = true },
-    .{ .key = "multi_agent_v2", .stage = "under development", .default_enabled = false },
-    .{ .key = "personality", .stage = "stable", .default_enabled = true },
-    .{ .key = "plugin_hooks", .stage = "under development", .default_enabled = false },
-    .{ .key = "plugins", .stage = "stable", .default_enabled = true },
-    .{ .key = "prevent_idle_sleep", .stage = "experimental", .default_enabled = false },
-    .{ .key = "realtime_conversation", .stage = "under development", .default_enabled = false },
-    .{ .key = "remote_compaction_v2", .stage = "under development", .default_enabled = false },
-    .{ .key = "remote_control", .stage = "under development", .default_enabled = false },
-    .{ .key = "remote_models", .stage = "removed", .default_enabled = false },
-    .{ .key = "remote_plugin", .stage = "under development", .default_enabled = false },
-    .{ .key = "request_permissions_tool", .stage = "under development", .default_enabled = false },
-    .{ .key = "request_rule", .stage = "removed", .default_enabled = false },
-    .{ .key = "responses_websocket_response_processed", .stage = "under development", .default_enabled = false },
-    .{ .key = "responses_websockets", .stage = "removed", .default_enabled = false },
-    .{ .key = "responses_websockets_v2", .stage = "removed", .default_enabled = false },
-    .{ .key = "runtime_metrics", .stage = "under development", .default_enabled = false },
-    .{ .key = "search_tool", .stage = "removed", .default_enabled = false },
-    .{ .key = "shell_snapshot", .stage = "stable", .default_enabled = true },
-    .{ .key = "shell_tool", .stage = "stable", .default_enabled = true },
-    .{ .key = "shell_zsh_fork", .stage = "under development", .default_enabled = false },
-    .{ .key = "skill_env_var_dependency_prompt", .stage = "under development", .default_enabled = false },
-    .{ .key = "skill_mcp_dependency_install", .stage = "stable", .default_enabled = true },
-    .{ .key = "sqlite", .stage = "removed", .default_enabled = true },
-    .{ .key = "steer", .stage = "removed", .default_enabled = true },
-    .{ .key = "terminal_resize_reflow", .stage = "experimental", .default_enabled = true },
-    .{ .key = "tool_call_mcp_elicitation", .stage = "stable", .default_enabled = true },
-    .{ .key = "tool_search", .stage = "stable", .default_enabled = true },
-    .{ .key = "tool_search_always_defer_mcp_tools", .stage = "under development", .default_enabled = false },
-    .{ .key = "tool_suggest", .stage = "stable", .default_enabled = true },
-    .{ .key = "tui_app_server", .stage = "removed", .default_enabled = true },
-    .{ .key = "unavailable_dummy_tools", .stage = "stable", .default_enabled = true },
-    .{ .key = "undo", .stage = "removed", .default_enabled = false },
-    .{ .key = "unified_exec", .stage = "stable", .default_enabled = true },
-    .{ .key = "use_legacy_landlock", .stage = "deprecated", .default_enabled = false },
-    .{ .key = "use_linux_sandbox_bwrap", .stage = "removed", .default_enabled = false },
-    .{ .key = "web_search_cached", .stage = "deprecated", .default_enabled = false },
-    .{ .key = "web_search_request", .stage = "deprecated", .default_enabled = false },
-    .{ .key = "workspace_dependencies", .stage = "stable", .default_enabled = true },
-    .{ .key = "workspace_owner_usage_nudge", .stage = "under development", .default_enabled = false },
-};
-
-const feature_aliases = [_]FeatureAlias{
-    .{ .alias = "codex_hooks", .canonical = "hooks" },
-    .{ .alias = "collab", .canonical = "multi_agent" },
-    .{ .alias = "connectors", .canonical = "apps" },
-    .{ .alias = "enable_experimental_windows_sandbox", .canonical = "experimental_windows_sandbox" },
-    .{ .alias = "experimental_use_freeform_apply_patch", .canonical = "apply_patch_freeform" },
-    .{ .alias = "experimental_use_unified_exec_tool", .canonical = "unified_exec" },
-    .{ .alias = "include_apply_patch_tool", .canonical = "apply_patch_freeform" },
-    .{ .alias = "memory_tool", .canonical = "memories" },
-    .{ .alias = "request_permissions", .canonical = "exec_permission_approvals" },
-    .{ .alias = "telepathy", .canonical = "chronicle" },
-    .{ .alias = "web_search", .canonical = "web_search_request" },
-};
 
 test "feature overrides parse booleans from features table" {
     const allocator = std.testing.allocator;
@@ -921,8 +804,8 @@ test "feature overrides parse quoted profile feature sections" {
 
 test "features table is sorted by key" {
     var index: usize = 1;
-    while (index < features.len) : (index += 1) {
-        try std.testing.expect(std.mem.order(u8, features[index - 1].key, features[index].key) == .lt);
+    while (index < FeatureSpec.all.len) : (index += 1) {
+        try std.testing.expect(std.mem.order(u8, FeatureSpec.all[index - 1].key, FeatureSpec.all[index].key) == .lt);
     }
 }
 
