@@ -2309,6 +2309,52 @@ def run_remote_control_command_smoke(binary: Path) -> None:
         if "parsed but not implemented yet" in result.stderr:
             raise AssertionError(f"remote-control still used generic placeholder:\n{result.stderr}")
 
+        app_server_remote = subprocess.Popen(
+            [str(binary), "app-server", "--remote-control"],
+            env=env,
+            text=True,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+        try:
+            assert app_server_remote.stdin is not None
+            assert app_server_remote.stdout is not None
+            app_server_remote.stdin.write(
+                '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"clientInfo":{"name":"smoke","version":"0"}}}\n'
+            )
+            app_server_remote.stdin.flush()
+            initialize_response = app_server_remote.stdout.readline().strip()
+            remote_status_notification = app_server_remote.stdout.readline().strip()
+            assert '"id":1' in initialize_response
+            assert '"method":"remoteControl/status/changed"' in remote_status_notification
+            assert '"status":"connecting"' in remote_status_notification
+            app_server_remote.stdin.write(
+                '{"jsonrpc":"2.0","id":2,"method":"experimentalFeature/list","params":{}}\n'
+            )
+            app_server_remote.stdin.flush()
+            feature_response = None
+            for _ in range(10):
+                line = app_server_remote.stdout.readline().strip()
+                payload = json.loads(line)
+                if payload.get("id") == 2:
+                    feature_response = payload
+                    break
+            assert feature_response is not None
+            remote_control_feature = next(
+                feature
+                for feature in feature_response["result"]["data"]
+                if feature["name"] == "remote_control"
+            )
+            assert remote_control_feature["enabled"] is True
+        finally:
+            app_server_remote.terminate()
+            try:
+                app_server_remote.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                app_server_remote.kill()
+                app_server_remote.wait(timeout=5)
+
         stop_json = subprocess.run(
             [str(binary), "remote-control", "stop", "--json"],
             env=env,
@@ -7910,6 +7956,75 @@ def run_app_server_daemon_smoke(binary: Path) -> None:
         expected_socket = expected_home / "app-server-control" / "app-server-control.sock"
         expected_managed = expected_home / "packages" / "standalone" / "current" / "codex"
 
+        def managed_process_lines() -> list[str]:
+            pgrep = subprocess.run(
+                ["pgrep", "-fl", str(expected_managed)],
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                timeout=5,
+            )
+            assert pgrep.returncode in (0, 1), pgrep.stderr
+            return [
+                line
+                for line in pgrep.stdout.splitlines()
+                if str(expected_managed) in line and " app-server " in line
+            ]
+
+        def terminate_managed_processes() -> None:
+            pids: list[int] = []
+            for line in managed_process_lines():
+                try:
+                    pids.append(int(line.split(None, 1)[0]))
+                except (IndexError, ValueError):
+                    raise AssertionError(f"failed to parse managed daemon process line: {line!r}")
+            for pid in pids:
+                try:
+                    os.kill(pid, signal.SIGTERM)
+                except ProcessLookupError:
+                    pass
+            deadline = time.monotonic() + 5
+            while time.monotonic() < deadline:
+                if all(not process_exists(pid) for pid in pids):
+                    return
+                time.sleep(0.05)
+            for pid in pids:
+                if process_exists(pid):
+                    try:
+                        os.kill(pid, signal.SIGKILL)
+                    except ProcessLookupError:
+                        pass
+
+        def managed_app_server_request(method: str, params: dict, request_id: int) -> dict:
+            def read_response(reader, expected_id: int) -> dict:
+                deadline = time.monotonic() + 5
+                while time.monotonic() < deadline:
+                    raw_line = reader.readline()
+                    if not raw_line:
+                        raise AssertionError("managed app-server closed the connection")
+                    payload = json.loads(raw_line.decode("utf-8"))
+                    if payload.get("id") == expected_id:
+                        return payload
+                raise AssertionError(f"managed app-server did not return response id {expected_id}")
+
+            with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
+                client.settimeout(5)
+                client.connect(str(expected_socket))
+                reader = client.makefile("rb")
+                writer = client.makefile("wb")
+                writer.write(
+                    b'{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"clientInfo":{"name":"smoke","version":"0"}}}\n'
+                )
+                writer.flush()
+                read_response(reader, 1)
+                writer.write(
+                    (json.dumps({"jsonrpc": "2.0", "id": request_id, "method": method, "params": params}) + "\n").encode(
+                        "utf-8"
+                    )
+                )
+                writer.flush()
+                return read_response(reader, request_id)
+
         daemon_help = subprocess.run(
             [str(binary.resolve()), "app-server", "daemon", "--help"],
             cwd=temp_root,
@@ -8073,6 +8188,399 @@ def run_app_server_daemon_smoke(binary: Path) -> None:
         assert start.stdout == ""
         assert f"managed standalone Codex install not found at {expected_managed}" in start.stderr
         assert "Install it with:" in start.stderr
+
+        expected_managed.parent.mkdir(parents=True)
+        expected_managed.symlink_to(binary.resolve())
+        try:
+            unrelated_socket = temp_root / "unrelated-app-server.sock"
+            unrelated_server = subprocess.Popen(
+                [str(expected_managed), "app-server", "--listen", f"unix://{unrelated_socket}"],
+                cwd=temp_root,
+                env=env,
+                text=True,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+            )
+            try:
+                wait_for_exec_server_file(unrelated_socket, unrelated_server, 5)
+                unrelated_start_time = subprocess.check_output(
+                    ["ps", "-p", str(unrelated_server.pid), "-o", "lstart="],
+                    text=True,
+                ).strip()
+                pid_path = expected_home / "app-server-daemon" / "app-server.pid"
+                pid_path.write_text(
+                    json.dumps(
+                        {
+                            "pid": unrelated_server.pid,
+                            "processStartTime": unrelated_start_time,
+                        }
+                    ),
+                    encoding="utf-8",
+                )
+                stale_stop = subprocess.run(
+                    [str(binary.resolve()), "app-server", "daemon", "stop"],
+                    cwd=temp_root,
+                    env=env,
+                    text=True,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    timeout=15,
+                    check=True,
+                )
+                assert json.loads(stale_stop.stdout)["status"] == "notRunning"
+                assert unrelated_server.poll() is None
+            finally:
+                unrelated_server.terminate()
+                try:
+                    unrelated_server.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    unrelated_server.kill()
+                    unrelated_server.wait(timeout=5)
+
+            race_procs = [
+                subprocess.Popen(
+                    [str(binary.resolve()), "app-server", "daemon", "start"],
+                    cwd=temp_root,
+                    env=env,
+                    text=True,
+                    stdin=subprocess.DEVNULL,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                )
+                for _ in range(5)
+            ]
+            try:
+                race_payloads: list[dict] = []
+                for proc in race_procs:
+                    out, err = proc.communicate(timeout=20)
+                    assert proc.returncode == 0, err
+                    assert err == ""
+                    payload = json.loads(out)
+                    assert payload["status"] in {"started", "alreadyRunning"}
+                    assert payload["backend"] == "pid"
+                    race_payloads.append(payload)
+                started_payloads = [payload for payload in race_payloads if payload["status"] == "started"]
+                assert len(started_payloads) == 1
+                race_pid = started_payloads[0]["pid"]
+                lines = managed_process_lines()
+                assert len(lines) == 1, lines
+                assert str(race_pid) in lines[0]
+            finally:
+                for proc in race_procs:
+                    if proc.poll() is None:
+                        proc.kill()
+                        proc.wait(timeout=5)
+                subprocess.run(
+                    [str(binary.resolve()), "app-server", "daemon", "stop"],
+                    cwd=temp_root,
+                    env=env,
+                    text=True,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    timeout=15,
+                )
+                terminate_managed_processes()
+
+            root_feature_start = subprocess.run(
+                [str(binary.resolve()), "--enable", "goals", "app-server", "daemon", "start"],
+                cwd=temp_root,
+                env=env,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                timeout=15,
+                check=True,
+            )
+            root_feature_start_payload = json.loads(root_feature_start.stdout)
+            assert root_feature_start_payload["status"] == "started"
+            root_pid_record = json.loads(
+                (expected_home / "app-server-daemon" / "app-server.pid").read_text(encoding="utf-8")
+            )
+            assert root_pid_record["childGlobalArgs"] == ["--enable", "goals"]
+            root_feature_response = managed_app_server_request("experimentalFeature/list", {}, 2)
+            root_goals_feature = next(
+                feature for feature in root_feature_response["result"]["data"] if feature["name"] == "goals"
+            )
+            assert root_goals_feature["enabled"] is True
+            root_feature_stop = subprocess.run(
+                [str(binary.resolve()), "app-server", "daemon", "stop"],
+                cwd=temp_root,
+                env=env,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                timeout=15,
+                check=True,
+            )
+            assert json.loads(root_feature_stop.stdout)["status"] == "stopped"
+
+            managed_start = subprocess.run(
+                [str(binary.resolve()), "app-server", "daemon", "start", "--enable", "goals"],
+                cwd=temp_root,
+                env=env,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                timeout=15,
+                check=True,
+            )
+            assert managed_start.stderr == ""
+            managed_start_payload = json.loads(managed_start.stdout)
+            assert managed_start_payload["status"] == "started"
+            assert managed_start_payload["backend"] == "pid"
+            assert isinstance(managed_start_payload["pid"], int)
+            assert managed_start_payload["pid"] > 0
+            assert managed_start_payload["managedCodexPath"] == str(expected_managed)
+            assert managed_start_payload["managedCodexVersion"] == "0.0.1"
+            assert managed_start_payload["socketPath"] == str(expected_socket)
+            assert managed_start_payload["appServerVersion"] == "0.0.1"
+            pid_record = json.loads((expected_home / "app-server-daemon" / "app-server.pid").read_text(encoding="utf-8"))
+            assert pid_record["pid"] == managed_start_payload["pid"]
+            assert isinstance(pid_record["processStartTime"], str)
+            assert pid_record["processStartTime"]
+            feature_response = managed_app_server_request("experimentalFeature/list", {}, 2)
+            goals_feature = next(
+                feature for feature in feature_response["result"]["data"] if feature["name"] == "goals"
+            )
+            assert goals_feature["enabled"] is True
+            pid_record_args = json.loads((expected_home / "app-server-daemon" / "app-server.pid").read_text(encoding="utf-8"))
+            assert pid_record_args["childGlobalArgs"] == ["--enable", "goals"]
+
+            managed_enable_running = subprocess.run(
+                [str(binary.resolve()), "app-server", "daemon", "enable-remote-control"],
+                cwd=temp_root,
+                env=env,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                timeout=15,
+                check=True,
+            )
+            managed_enable_running_payload = json.loads(managed_enable_running.stdout)
+            assert managed_enable_running_payload["status"] == "enabled"
+            assert managed_enable_running_payload["backend"] == "pid"
+            assert managed_enable_running_payload["remoteControlEnabled"] is True
+            assert managed_enable_running_payload["appServerVersion"] == "0.0.1"
+            feature_response_after_remote_toggle = managed_app_server_request("experimentalFeature/list", {}, 3)
+            goals_feature_after_remote_toggle = next(
+                feature
+                for feature in feature_response_after_remote_toggle["result"]["data"]
+                if feature["name"] == "goals"
+            )
+            assert goals_feature_after_remote_toggle["enabled"] is True
+
+            managed_start_again = subprocess.run(
+                [str(binary.resolve()), "app-server", "daemon", "start"],
+                cwd=temp_root,
+                env=env,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                timeout=15,
+                check=True,
+            )
+            managed_start_again_payload = json.loads(managed_start_again.stdout)
+            assert managed_start_again_payload["status"] == "alreadyRunning"
+            assert managed_start_again_payload["backend"] == "pid"
+            assert managed_start_again_payload["managedCodexVersion"] == "0.0.1"
+            assert managed_start_again_payload["appServerVersion"] == "0.0.1"
+
+            managed_enable_again = subprocess.run(
+                [str(binary.resolve()), "app-server", "daemon", "enable-remote-control"],
+                cwd=temp_root,
+                env=env,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                timeout=15,
+                check=True,
+            )
+            managed_enable_again_payload = json.loads(managed_enable_again.stdout)
+            assert managed_enable_again_payload["status"] == "alreadyEnabled"
+            assert managed_enable_again_payload["backend"] == "pid"
+            assert managed_enable_again_payload["remoteControlEnabled"] is True
+            assert managed_enable_again_payload["appServerVersion"] == "0.0.1"
+
+            expected_managed.unlink()
+            managed_disable_missing_install = subprocess.run(
+                [str(binary.resolve()), "app-server", "daemon", "disable-remote-control"],
+                cwd=temp_root,
+                env=env,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                timeout=15,
+            )
+            assert managed_disable_missing_install.returncode != 0
+            assert managed_disable_missing_install.stdout == ""
+            assert f"managed standalone Codex install not found at {expected_managed}" in managed_disable_missing_install.stderr
+            assert json.loads(settings_path.read_text(encoding="utf-8")) == {
+                "remoteControlEnabled": True
+            }
+            managed_version_after_failed_toggle = subprocess.run(
+                [str(binary.resolve()), "app-server", "daemon", "version"],
+                cwd=temp_root,
+                env=env,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                timeout=15,
+                check=True,
+            )
+            managed_version_after_failed_toggle_payload = json.loads(managed_version_after_failed_toggle.stdout)
+            assert managed_version_after_failed_toggle_payload["status"] == "running"
+            assert managed_version_after_failed_toggle_payload["backend"] == "pid"
+            assert managed_version_after_failed_toggle_payload["appServerVersion"] == "0.0.1"
+            expected_managed.symlink_to(binary.resolve())
+
+            managed_disable_running = subprocess.run(
+                [str(binary.resolve()), "app-server", "daemon", "disable-remote-control"],
+                cwd=temp_root,
+                env=env,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                timeout=15,
+                check=True,
+            )
+            managed_disable_running_payload = json.loads(managed_disable_running.stdout)
+            assert managed_disable_running_payload["status"] == "disabled"
+            assert managed_disable_running_payload["backend"] == "pid"
+            assert managed_disable_running_payload["remoteControlEnabled"] is False
+            assert managed_disable_running_payload["appServerVersion"] == "0.0.1"
+
+            remote_control_stop_json = subprocess.run(
+                [str(binary.resolve()), "remote-control", "stop", "--json"],
+                cwd=temp_root,
+                env=env,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                timeout=15,
+                check=True,
+            )
+            assert remote_control_stop_json.stderr == ""
+            remote_control_stop_payload = json.loads(remote_control_stop_json.stdout)
+            assert remote_control_stop_payload["status"] == "stopped"
+            assert remote_control_stop_payload["backend"] == "pid"
+            assert remote_control_stop_payload["managedCodexVersion"] == "0.0.1"
+
+            managed_start_after_remote_stop = subprocess.run(
+                [str(binary.resolve()), "app-server", "daemon", "start"],
+                cwd=temp_root,
+                env=env,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                timeout=15,
+                check=True,
+            )
+            managed_start_after_remote_stop_payload = json.loads(managed_start_after_remote_stop.stdout)
+            assert managed_start_after_remote_stop_payload["status"] == "started"
+            assert managed_start_after_remote_stop_payload["backend"] == "pid"
+            assert managed_start_after_remote_stop_payload["appServerVersion"] == "0.0.1"
+
+            managed_version = subprocess.run(
+                [str(binary.resolve()), "app-server", "daemon", "version"],
+                cwd=temp_root,
+                env=env,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                timeout=15,
+                check=True,
+            )
+            managed_version_payload = json.loads(managed_version.stdout)
+            assert managed_version_payload["status"] == "running"
+            assert managed_version_payload["backend"] == "pid"
+            assert managed_version_payload["managedCodexVersion"] == "0.0.1"
+            assert managed_version_payload["appServerVersion"] == "0.0.1"
+
+            expected_managed.unlink()
+            managed_restart_missing_install = subprocess.run(
+                [str(binary.resolve()), "app-server", "daemon", "restart"],
+                cwd=temp_root,
+                env=env,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                timeout=15,
+            )
+            assert managed_restart_missing_install.returncode != 0
+            assert managed_restart_missing_install.stdout == ""
+            assert f"managed standalone Codex install not found at {expected_managed}" in managed_restart_missing_install.stderr
+            managed_version_after_failed_restart = subprocess.run(
+                [str(binary.resolve()), "app-server", "daemon", "version"],
+                cwd=temp_root,
+                env=env,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                timeout=15,
+                check=True,
+            )
+            managed_version_after_failed_restart_payload = json.loads(managed_version_after_failed_restart.stdout)
+            assert managed_version_after_failed_restart_payload["status"] == "running"
+            assert managed_version_after_failed_restart_payload["backend"] == "pid"
+            assert managed_version_after_failed_restart_payload["appServerVersion"] == "0.0.1"
+            expected_managed.symlink_to(binary.resolve())
+
+            managed_restart = subprocess.run(
+                [str(binary.resolve()), "app-server", "daemon", "restart"],
+                cwd=temp_root,
+                env=env,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                timeout=15,
+                check=True,
+            )
+            managed_restart_payload = json.loads(managed_restart.stdout)
+            assert managed_restart_payload["status"] == "restarted"
+            assert managed_restart_payload["backend"] == "pid"
+            assert managed_restart_payload["pid"] > 0
+            assert managed_restart_payload["managedCodexVersion"] == "0.0.1"
+            assert managed_restart_payload["appServerVersion"] == "0.0.1"
+
+            settings_path.write_text("bad", encoding="utf-8")
+            managed_stop = subprocess.run(
+                [str(binary.resolve()), "app-server", "daemon", "stop"],
+                cwd=temp_root,
+                env=env,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                timeout=15,
+                check=True,
+            )
+            managed_stop_payload = json.loads(managed_stop.stdout)
+            assert managed_stop_payload["status"] == "stopped"
+            assert managed_stop_payload["backend"] == "pid"
+            assert managed_stop_payload["managedCodexVersion"] == "0.0.1"
+            settings_path.write_text('{\n  "remoteControlEnabled": false\n}', encoding="utf-8")
+
+            managed_stop_again = subprocess.run(
+                [str(binary.resolve()), "app-server", "daemon", "stop"],
+                cwd=temp_root,
+                env=env,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                timeout=5,
+                check=True,
+            )
+            assert json.loads(managed_stop_again.stdout)["status"] == "notRunning"
+        finally:
+            subprocess.run(
+                [str(binary.resolve()), "app-server", "daemon", "stop"],
+                cwd=temp_root,
+                env=env,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                timeout=15,
+            )
 
         live_server = subprocess.Popen(
             [str(binary.resolve()), "app-server", "--listen", "unix://"],
