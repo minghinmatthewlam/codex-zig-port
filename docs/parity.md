@@ -16,6 +16,16 @@ Feature-only parity priorities are tracked separately in
 `docs/feature-parity.md`. This file remains the detailed runtime, protocol,
 schema, and edge-case parity ledger.
 
+Current local TUI `/skills` and `/hooks` coverage: `/skills` lists discovered
+repo/user/plugin skills for the current working directory with scope, enabled
+state, first-line description, source path, and load errors. `/hooks` lists
+discovered lifecycle command hooks for the current working directory with
+event, source, enabled/trust state, matcher, status text, command, source path,
+warnings, and load errors. Rust's richer bottom-pane popups, `$`/`@` skill
+mention insertion flow, skills enable/disable management, hook trust toggles,
+hook event drill-downs, startup hook review flow, and active-turn hook
+rendering remain planned TUI depth.
+
 Current `codex doctor` coverage: Zig routes `doctor` as a real top-level
 subcommand instead of treating it as an interactive prompt, supports
 command-specific help plus Rust-visible `--json`, `--summary`, `--all`,

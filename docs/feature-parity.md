@@ -9,7 +9,7 @@ purely internal generator parity. The current reference is:
 - Rust checkout: `/Users/matthewlam/dev/codex` at
   `5381240f57fe326b13bc81325f3c61596592fc7a`
 - Installed Rust CLI: `codex-cli 0.133.0`
-- Zig checkout: `7f1d8df927450937f13fd05a7e2ce303376d36e3`
+- Zig checkout: `7d8f5109d7e7948278b3f14dafdc87587137fc7a`
 - Zig CLI: `codex-zig 0.0.1`
 
 The source evidence for this pass was the Rust and Zig root help output,
@@ -42,9 +42,16 @@ Zig TUI help in `src/tui.zig`, and the broader narrative tracker in
   queued input while a turn is running, `/compact` interactions, active tool
   interruption, and accurate background-process cleanup.
 - Close major missing TUI slash commands that affect daily use:
-  `/ide`, `/hooks`, `/skills`, `/agent` / `/subagents`,
+  `/ide`, `/agent` / `/subagents`,
   `/experimental`, `/approve`, `/memories`, `/apps`, `/plugins`, `/feedback`,
   `/pets` / `/pet`, `/realtime`, and `/settings`.
+- Basic local TUI `/skills` and `/hooks` list views are covered: `/skills`
+  lists discovered repo/user/plugin skills with enabled state and load errors,
+  and `/hooks` lists discovered lifecycle command hooks with event, source,
+  enabled/trust state, matcher/status details, warnings, and load errors.
+  Richer Rust popup UI, `$`/`@` insertion flow, skills enable/disable
+  management, hook trust toggles, hook event drill-downs, startup hook review,
+  and active-turn hook rendering remain in the TUI lifecycle/depth buckets.
 - Local `/goal` basic set/view/edit-hint/clear/pause/resume handling is covered
   in the Zig TUI when the `goals` feature is enabled, and non-empty
   `/btw <prompt>` is covered as a side-conversation alias. Richer goal
@@ -235,8 +242,8 @@ Zig TUI help in `src/tui.zig`, and the broader narrative tracker in
 2. Live app-server daemon lifecycle and remote-control command forms.
 3. Active-turn/TUI lifecycle: interruption, steering, queued input, process
    tracking, and lifecycle notifications.
-4. TUI slash-command feature gaps: `/skills`, `/hooks`, `/apps`, `/plugins`,
-   `/ide`, `/experimental`, and `/approve`.
+4. TUI slash-command feature gaps: `/apps`, `/plugins`, `/ide`,
+   `/experimental`, and `/approve`.
 5. Plugin TUI `/plugins` and `/apps` flows plus remaining remote/cache depth.
 6. Session/thread store parity needed by resume/fork and desktop clients.
 7. MCP lifecycle depth.
