@@ -4862,6 +4862,110 @@ def run_thread_started_opt_out_smoke(binary: Path) -> None:
         shutil.rmtree(codex_home, ignore_errors=True)
 
 
+def run_thread_idle_unload_smoke(binary: Path) -> None:
+    codex_home = Path(tempfile.mkdtemp(prefix="codex-zig-thread-idle-unload-", dir="/tmp"))
+    env = os.environ.copy()
+    env["CODEX_HOME"] = str(codex_home)
+    env["CODEX_TEST_APP_SERVER_THREAD_UNLOAD_DELAY_MS"] = "200"
+    proc = subprocess.Popen(
+        [str(binary), "app-server"],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        env=env,
+    )
+    try:
+        write_json_line(
+            proc,
+            {
+                "jsonrpc": "2.0",
+                "id": "initialize",
+                "method": "initialize",
+                "params": {
+                    "clientInfo": {"name": "app-server-smoke", "version": "0"},
+                    "capabilities": {
+                        "optOutNotificationMethods": [
+                            "thread/started",
+                            "configWarning",
+                            "remoteControl/status/changed",
+                        ],
+                    },
+                },
+            },
+        )
+        initialized = read_json_line(proc, 5)
+        assert initialized["id"] == "initialize"
+
+        write_json_line(
+            proc,
+            {
+                "jsonrpc": "2.0",
+                "id": "thread-start-idle-unload",
+                "method": "thread/start",
+                "params": {"ephemeral": True},
+            },
+        )
+        started = read_json_line(proc, 5)
+        assert started["id"] == "thread-start-idle-unload"
+        thread_id = started["result"]["thread"]["id"]
+
+        write_json_line(
+            proc,
+            {
+                "jsonrpc": "2.0",
+                "id": "thread-unsubscribe-idle-unload",
+                "method": "thread/unsubscribe",
+                "params": {"threadId": thread_id},
+            },
+        )
+        unsubscribed = read_json_line(proc, 5)
+        assert unsubscribed["id"] == "thread-unsubscribe-idle-unload"
+        assert unsubscribed["result"] == {"status": "unsubscribed"}
+
+        write_json_line(
+            proc,
+            {
+                "jsonrpc": "2.0",
+                "id": "loaded-before-idle-unload",
+                "method": "thread/loaded/list",
+            },
+        )
+        loaded_before = read_json_line(proc, 5)
+        assert loaded_before["id"] == "loaded-before-idle-unload"
+        assert loaded_before["result"] == {"data": [thread_id], "nextCursor": None}
+
+        status = read_json_line(proc, 5)
+        assert_thread_status_notification(status, thread_id, "notLoaded")
+        closed = read_json_line(proc, 5)
+        assert closed["jsonrpc"] == "2.0"
+        assert closed["method"] == "thread/closed"
+        assert closed["params"] == {"threadId": thread_id}
+
+        write_json_line(
+            proc,
+            {
+                "jsonrpc": "2.0",
+                "id": "loaded-after-idle-unload",
+                "method": "thread/loaded/list",
+            },
+        )
+        loaded_after = read_json_line(proc, 5)
+        assert loaded_after["id"] == "loaded-after-idle-unload"
+        assert loaded_after["result"] == {"data": [], "nextCursor": None}
+
+        assert proc.stdin is not None
+        proc.stdin.close()
+        proc.wait(timeout=5)
+        if proc.returncode != 0:
+            raise AssertionError(f"app-server exited {proc.returncode}: {proc.stderr.read()}")
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+            proc.wait(timeout=5)
+        shutil.rmtree(codex_home, ignore_errors=True)
+
+
 def run_thread_realtime_lifecycle_smoke(binary: Path) -> None:
     codex_home = Path(tempfile.mkdtemp(prefix="codex-zig-thread-realtime-", dir="/tmp"))
     (codex_home / "config.toml").write_text(
@@ -44369,6 +44473,84 @@ def exercise_unix_socket_connection_state_reset(socket_path: Path) -> None:
                 )
 
 
+def exercise_unix_socket_idle_unload_after_disconnect(socket_path: Path) -> None:
+    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
+        client.settimeout(5)
+        client.connect(str(socket_path))
+        with client.makefile("r", encoding="utf-8", newline="\n") as reader:
+            with client.makefile("w", encoding="utf-8", newline="\n") as writer:
+                write_json_line_to_socket(
+                    writer,
+                    {
+                        "jsonrpc": "2.0",
+                        "id": "unix-idle-unload-initialize-first",
+                        "method": "initialize",
+                        "params": {
+                            "clientInfo": {
+                                "name": "app-server-smoke",
+                                "version": "0",
+                            },
+                            "capabilities": {
+                                "optOutNotificationMethods": [
+                                    "thread/started",
+                                    "configWarning",
+                                    "remoteControl/status/changed",
+                                ],
+                            },
+                        },
+                    },
+                )
+                initialize = read_json_line_from_socket(reader)
+                assert initialize["id"] == "unix-idle-unload-initialize-first"
+                write_json_line_to_socket(
+                    writer,
+                    {
+                        "jsonrpc": "2.0",
+                        "id": "unix-idle-unload-thread-start",
+                        "method": "thread/start",
+                        "params": {"ephemeral": True},
+                    },
+                )
+                thread_start = read_json_line_from_socket(reader)
+                assert thread_start["id"] == "unix-idle-unload-thread-start"
+                thread_id = thread_start["result"]["thread"]["id"]
+
+    time.sleep(0.35)
+    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
+        client.settimeout(5)
+        client.connect(str(socket_path))
+        with client.makefile("r", encoding="utf-8", newline="\n") as reader:
+            with client.makefile("w", encoding="utf-8", newline="\n") as writer:
+                write_json_line_to_socket(
+                    writer,
+                    {
+                        "jsonrpc": "2.0",
+                        "id": "unix-idle-unload-initialize-second",
+                        "method": "initialize",
+                        "params": {
+                            "clientInfo": {
+                                "name": "app-server-smoke",
+                                "version": "0",
+                            },
+                            "capabilities": EXPERIMENTAL_API_CAPABILITIES,
+                        },
+                    },
+                )
+                initialize = read_json_line_from_socket(reader)
+                assert initialize["id"] == "unix-idle-unload-initialize-second"
+                write_json_line_to_socket(
+                    writer,
+                    {
+                        "jsonrpc": "2.0",
+                        "id": "unix-idle-unload-loaded-list",
+                        "method": "thread/loaded/list",
+                    },
+                )
+                loaded = read_json_line_from_socket(reader)
+                assert loaded["id"] == "unix-idle-unload-loaded-list"
+                assert loaded["result"] == {"data": [], "nextCursor": None}, thread_id
+
+
 def exercise_unix_socket(binary: Path, listen_url: str, socket_path: Path, env: dict[str, str] | None = None) -> None:
     proc = subprocess.Popen(
         [str(binary), "app-server", "--listen", listen_url],
@@ -44398,6 +44580,37 @@ def exercise_unix_socket(binary: Path, listen_url: str, socket_path: Path, env: 
         if proc.poll() is None:
             proc.kill()
             proc.wait(timeout=5)
+
+
+def run_unix_idle_unload_after_disconnect_smoke(binary: Path) -> None:
+    socket_dir = Path(tempfile.mkdtemp(prefix="codex-zig-app-server-idle-unload-", dir="/tmp"))
+    codex_home = Path(tempfile.mkdtemp(prefix="codex-zig-home-idle-unload-", dir="/tmp"))
+    proc = None
+    try:
+        env = os.environ.copy()
+        env["CODEX_HOME"] = str(codex_home)
+        env["CODEX_TEST_APP_SERVER_THREAD_UNLOAD_DELAY_MS"] = "200"
+        socket_path = socket_dir / "app-server.sock"
+        proc = subprocess.Popen(
+            [str(binary), "app-server", "--listen", f"unix://{socket_path}"],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            env=env,
+        )
+        wait_for_socket(socket_path, proc, 5)
+        exercise_unix_socket_idle_unload_after_disconnect(socket_path)
+        if proc.poll() is not None:
+            raise AssertionError(f"app-server exited after Unix idle-unload smoke: {proc.stderr.read()}")
+        proc.terminate()
+        proc.wait(timeout=5)
+    finally:
+        if proc is not None and proc.poll() is None:
+            proc.kill()
+            proc.wait(timeout=5)
+        shutil.rmtree(socket_dir, ignore_errors=True)
+        shutil.rmtree(codex_home, ignore_errors=True)
 
 
 def assert_clean_signal_exit(proc: subprocess.Popen[str], sig: signal.Signals, name: str) -> None:
@@ -44748,6 +44961,9 @@ class SmokeWebSocket:
     def write_json(self, payload: dict) -> None:
         self._send_frame(0x1, json.dumps(payload, separators=(",", ":")).encode("utf-8"))
 
+    def ping(self, payload: bytes = b"") -> None:
+        self._send_frame(0x9, payload)
+
     def read_json(
         self,
         include_remote_control_status: bool = False,
@@ -44800,23 +45016,26 @@ class SmokeWebSocket:
         self.sock.sendall(bytes(header) + mask + masked)
 
     def _read_frame(self) -> bytes | None:
-        first, second = self._recv_exact(2)
-        opcode = first & 0x0F
-        length = second & 0x7F
-        if length == 126:
-            length = int.from_bytes(self._recv_exact(2), "big")
-        elif length == 127:
-            length = int.from_bytes(self._recv_exact(8), "big")
-        masked = (second & 0x80) != 0
-        mask = self._recv_exact(4) if masked else b""
-        payload = self._recv_exact(length)
-        if masked:
-            payload = bytes(byte ^ mask[index % 4] for index, byte in enumerate(payload))
-        if opcode == 0x8:
-            return None
-        if opcode != 0x1:
-            raise AssertionError(f"unexpected websocket opcode {opcode}")
-        return payload
+        while True:
+            first, second = self._recv_exact(2)
+            opcode = first & 0x0F
+            length = second & 0x7F
+            if length == 126:
+                length = int.from_bytes(self._recv_exact(2), "big")
+            elif length == 127:
+                length = int.from_bytes(self._recv_exact(8), "big")
+            masked = (second & 0x80) != 0
+            mask = self._recv_exact(4) if masked else b""
+            payload = self._recv_exact(length)
+            if masked:
+                payload = bytes(byte ^ mask[index % 4] for index, byte in enumerate(payload))
+            if opcode == 0x8:
+                return None
+            if opcode in (0x9, 0xA):
+                continue
+            if opcode != 0x1:
+                raise AssertionError(f"unexpected websocket opcode {opcode}")
+            return payload
 
 
 def exercise_websocket_initialize(host: str, port: int, bearer_token: str | None = None) -> None:
@@ -44982,6 +45201,98 @@ def run_websocket_smoke(binary: Path) -> None:
         exercise_websocket_connection_state_reset(host, port)
         if proc.poll() is not None:
             raise AssertionError(f"app-server exited after websocket connection-state reset smoke: {proc.stderr.read()}")
+    finally:
+        if websocket is not None:
+            websocket.close()
+        if proc.poll() is None:
+            proc.kill()
+            proc.wait(timeout=5)
+        shutil.rmtree(codex_home, ignore_errors=True)
+
+
+def run_websocket_control_idle_unload_smoke(binary: Path) -> None:
+    codex_home = Path(tempfile.mkdtemp(prefix="codex-zig-ws-idle-unload-home-", dir="/tmp"))
+    env = os.environ.copy()
+    env["CODEX_HOME"] = str(codex_home)
+    env["CODEX_TEST_APP_SERVER_THREAD_UNLOAD_DELAY_MS"] = "200"
+    proc = subprocess.Popen(
+        [str(binary), "app-server", "--listen", "ws://127.0.0.1:0"],
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        env=env,
+    )
+    websocket = None
+    try:
+        host, port = wait_for_websocket_bind(proc, 5)
+        websocket = SmokeWebSocket(host, port)
+        websocket.write_json(
+            {
+                "jsonrpc": "2.0",
+                "id": "websocket-idle-unload-initialize",
+                "method": "initialize",
+                "params": {
+                    "clientInfo": {
+                        "name": "app-server-smoke",
+                        "version": "0",
+                    },
+                    "capabilities": {
+                        "optOutNotificationMethods": [
+                            "thread/started",
+                            "configWarning",
+                            "remoteControl/status/changed",
+                        ],
+                    },
+                },
+            }
+        )
+        initialize = websocket.read_json()
+        assert initialize["id"] == "websocket-idle-unload-initialize"
+        websocket.write_json(
+            {
+                "jsonrpc": "2.0",
+                "id": "websocket-idle-unload-thread-start",
+                "method": "thread/start",
+                "params": {"ephemeral": True},
+            }
+        )
+        thread_start = websocket.read_json()
+        assert thread_start["id"] == "websocket-idle-unload-thread-start"
+        thread_id = thread_start["result"]["thread"]["id"]
+        websocket.write_json(
+            {
+                "jsonrpc": "2.0",
+                "id": "websocket-idle-unload-unsubscribe",
+                "method": "thread/unsubscribe",
+                "params": {"threadId": thread_id},
+            }
+        )
+        unsubscribe = websocket.read_json()
+        assert unsubscribe["id"] == "websocket-idle-unload-unsubscribe"
+        assert unsubscribe["result"] == {"status": "unsubscribed"}
+        websocket.ping(b"idle-unload")
+
+        status = websocket.read_json()
+        assert_thread_status_notification(status, thread_id, "notLoaded")
+        closed = websocket.read_json()
+        assert closed["jsonrpc"] == "2.0"
+        assert closed["method"] == "thread/closed"
+        assert closed["params"] == {"threadId": thread_id}
+        websocket.write_json(
+            {
+                "jsonrpc": "2.0",
+                "id": "websocket-idle-unload-loaded-list",
+                "method": "thread/loaded/list",
+            }
+        )
+        loaded = websocket.read_json()
+        assert loaded["id"] == "websocket-idle-unload-loaded-list"
+        assert loaded["result"] == {"data": [], "nextCursor": None}
+        websocket.close()
+        websocket = None
+        if proc.poll() is not None:
+            raise AssertionError(f"app-server exited after websocket idle-unload smoke: {proc.stderr.read()}")
     finally:
         if websocket is not None:
             websocket.close()
@@ -54539,6 +54850,10 @@ def main() -> None:
     print("app-server-stdio-e2e: ok")
     run_thread_started_opt_out_smoke(binary)
     print("app-server-thread-started-opt-out-e2e: ok")
+    run_thread_idle_unload_smoke(binary)
+    print("app-server-thread-idle-unload-e2e: ok")
+    run_unix_idle_unload_after_disconnect_smoke(binary)
+    print("app-server-thread-idle-unload-daemon-e2e: ok")
     run_thread_realtime_lifecycle_smoke(binary)
     print("app-server-thread-realtime-lifecycle-e2e: ok")
     run_thread_start_project_trust_rpc_smoke(binary)
@@ -54748,6 +55063,8 @@ def main() -> None:
     print("app-server-unix-default-e2e: ok")
     run_websocket_smoke(binary)
     print("app-server-websocket-e2e: ok")
+    run_websocket_control_idle_unload_smoke(binary)
+    print("app-server-websocket-control-idle-unload-e2e: ok")
     run_websocket_capability_auth_smoke(binary)
     print("app-server-websocket-capability-auth-e2e: ok")
     run_websocket_signed_bearer_auth_smoke(binary)
