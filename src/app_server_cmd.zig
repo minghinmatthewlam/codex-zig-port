@@ -42,8 +42,13 @@ const thread_state = @import("thread_state.zig");
 const tool_runner = @import("tools.zig");
 
 pub const DEFAULT_LISTEN_URL = "stdio://";
+const CLI_VERSION = "0.0.1";
 const DEFAULT_SOCKET_DIR_NAME = "app-server-control";
 const DEFAULT_SOCKET_FILE_NAME = "app-server-control.sock";
+const DAEMON_DIR_NAME = "app-server-daemon";
+const DAEMON_SETTINGS_FILE_NAME = "settings.json";
+const DAEMON_LOCK_FILE_NAME = "daemon.lock";
+const DAEMON_APP_SERVER_PID_LOCK_FILE_NAME = "app-server.pid.lock";
 const THREAD_LIST_DEFAULT_LIMIT = 25;
 const THREAD_LIST_MAX_LIMIT = 100;
 const THREAD_TURNS_DEFAULT_LIMIT = 25;
@@ -921,6 +926,10 @@ pub fn runWithOptions(
             try runProxy(allocator, subcommand_args.items);
             return;
         }
+        if (std.mem.eql(u8, name, "daemon")) {
+            try runDaemon(allocator, subcommand_args.items);
+            return;
+        }
         if (std.mem.eql(u8, name, "generate-ts")) {
             try runGenerateTs(allocator, subcommand_args.items);
             return;
@@ -977,6 +986,730 @@ pub fn runWithOptions(
             try server.run();
         },
     }
+}
+
+const DaemonCommand = enum {
+    bootstrap,
+    start,
+    restart,
+    enable_remote_control,
+    disable_remote_control,
+    stop,
+    version,
+};
+
+const DaemonRemoteControlSettings = struct {
+    remoteControlEnabled: bool,
+};
+
+const DaemonSocketProbe = union(enum) {
+    unavailable: []const u8,
+    running: []const u8,
+
+    fn deinit(self: DaemonSocketProbe, allocator: std.mem.Allocator) void {
+        switch (self) {
+            .unavailable => |cause| allocator.free(cause),
+            .running => |version| allocator.free(version),
+        }
+    }
+};
+
+const DaemonUnixConnect = union(enum) {
+    unavailable: []const u8,
+    stream: net.Stream,
+};
+
+const DaemonUnixSockaddr = extern union {
+    any: std.posix.sockaddr,
+    un: std.posix.sockaddr.un,
+};
+
+fn runDaemon(allocator: std.mem.Allocator, raw_args: []const []const u8) !void {
+    var command: ?DaemonCommand = null;
+
+    var index: usize = 0;
+    while (index < raw_args.len) : (index += 1) {
+        const arg = raw_args[index];
+        if (isHelpFlag(arg)) {
+            if (command) |cmd| {
+                printDaemonCommandHelp(cmd);
+            } else {
+                printDaemonHelp();
+            }
+            return;
+        }
+        if (std.mem.eql(u8, arg, "help")) {
+            if (index + 1 < raw_args.len) {
+                if (daemonCommandFromName(raw_args[index + 1])) |cmd| {
+                    printDaemonCommandHelp(cmd);
+                    return;
+                }
+            }
+            printDaemonHelp();
+            return;
+        }
+        if (std.mem.eql(u8, arg, "-c") or std.mem.eql(u8, arg, "--config")) {
+            if (index + 1 >= raw_args.len) return failMissingDaemonOptionValue(arg);
+            index += 1;
+            continue;
+        }
+        if (std.mem.startsWith(u8, arg, "--config=")) {
+            continue;
+        }
+        if (std.mem.eql(u8, arg, "--enable") or std.mem.eql(u8, arg, "--disable")) {
+            if (index + 1 >= raw_args.len) return failMissingDaemonOptionValue(arg);
+            index += 1;
+            continue;
+        }
+        if (std.mem.startsWith(u8, arg, "--enable=") or std.mem.startsWith(u8, arg, "--disable=")) {
+            continue;
+        }
+        if (std.mem.eql(u8, arg, "--remote-control")) {
+            if (command) |cmd| {
+                if (cmd != .bootstrap) return failUnknownDaemonOptionForCommand(cmd, arg);
+            } else {
+                return failUnknownDaemonOption(arg);
+            }
+            continue;
+        }
+        if (std.mem.startsWith(u8, arg, "-")) {
+            if (command) |cmd| return failUnknownDaemonOptionForCommand(cmd, arg);
+            return failUnknownDaemonOption(arg);
+        }
+        if (command) |cmd| return failUnexpectedDaemonArgument(cmd, arg);
+        command = daemonCommandFromName(arg) orelse return failUnknownDaemonSubcommand(arg);
+    }
+
+    const cmd = command orelse {
+        printDaemonHelp();
+        return error.AppServerDaemonCommandFailed;
+    };
+
+    const codex_home = try resolveDaemonCodexHome(allocator);
+    defer allocator.free(codex_home);
+
+    switch (cmd) {
+        .stop => try runDaemonStop(allocator, codex_home),
+        .enable_remote_control => try runDaemonSetRemoteControl(allocator, codex_home, true),
+        .disable_remote_control => try runDaemonSetRemoteControl(allocator, codex_home, false),
+        .version => try runDaemonVersion(allocator, codex_home),
+        .bootstrap => try failManagedStandaloneMissingIfNeeded(allocator, codex_home, false),
+        .start => try runDaemonStart(allocator, codex_home),
+        .restart => try runDaemonRestart(allocator, codex_home),
+    }
+}
+
+fn daemonCommandFromName(name: []const u8) ?DaemonCommand {
+    if (std.mem.eql(u8, name, "bootstrap")) return .bootstrap;
+    if (std.mem.eql(u8, name, "start")) return .start;
+    if (std.mem.eql(u8, name, "restart")) return .restart;
+    if (std.mem.eql(u8, name, "enable-remote-control")) return .enable_remote_control;
+    if (std.mem.eql(u8, name, "disable-remote-control")) return .disable_remote_control;
+    if (std.mem.eql(u8, name, "stop")) return .stop;
+    if (std.mem.eql(u8, name, "version")) return .version;
+    return null;
+}
+
+fn runDaemonStop(allocator: std.mem.Allocator, codex_home: []const u8) !void {
+    try validateDaemonSettings(allocator, codex_home);
+    const probe = try probeDaemonSocket(allocator, codex_home);
+    defer probe.deinit(allocator);
+    switch (probe) {
+        .running => return failDaemonUnmanagedRunning(),
+        .unavailable => {},
+    }
+    try writeDaemonLifecycleOutput(allocator, codex_home, "notRunning", null);
+}
+
+fn runDaemonVersion(allocator: std.mem.Allocator, codex_home: []const u8) !void {
+    try validateDaemonSettings(allocator, codex_home);
+    const probe = try probeDaemonSocket(allocator, codex_home);
+    defer probe.deinit(allocator);
+    switch (probe) {
+        .running => |app_server_version| {
+            try writeDaemonLifecycleOutput(allocator, codex_home, "running", app_server_version);
+            return;
+        },
+        .unavailable => |cause| try failDaemonSocketUnavailable(allocator, codex_home, cause),
+    }
+}
+
+fn runDaemonStart(allocator: std.mem.Allocator, codex_home: []const u8) !void {
+    try validateDaemonSettings(allocator, codex_home);
+    const probe = try probeDaemonSocket(allocator, codex_home);
+    defer probe.deinit(allocator);
+    switch (probe) {
+        .running => |app_server_version| {
+            try writeDaemonLifecycleOutput(allocator, codex_home, "alreadyRunning", app_server_version);
+            return;
+        },
+        .unavailable => {},
+    }
+    try failManagedStandaloneMissingIfNeeded(allocator, codex_home, true);
+}
+
+fn runDaemonRestart(allocator: std.mem.Allocator, codex_home: []const u8) !void {
+    try validateDaemonSettings(allocator, codex_home);
+    const probe = try probeDaemonSocket(allocator, codex_home);
+    defer probe.deinit(allocator);
+    switch (probe) {
+        .running => return failDaemonUnmanagedRunning(),
+        .unavailable => {},
+    }
+    try failManagedStandaloneMissingIfNeeded(allocator, codex_home, false);
+}
+
+fn writeDaemonLifecycleOutput(
+    allocator: std.mem.Allocator,
+    codex_home: []const u8,
+    status: []const u8,
+    app_server_version: ?[]const u8,
+) !void {
+    const managed_path = try managedCodexPath(allocator, codex_home);
+    defer allocator.free(managed_path);
+    const socket_path = try daemonSocketPath(allocator, codex_home);
+    defer allocator.free(socket_path);
+
+    var out = std.ArrayList(u8).empty;
+    defer out.deinit(allocator);
+    try out.appendSlice(allocator, "{\"status\":");
+    try appendJsonString(allocator, &out, status);
+    try out.appendSlice(allocator, ",\"managedCodexPath\":");
+    try appendJsonString(allocator, &out, managed_path);
+    try out.appendSlice(allocator, ",\"managedCodexVersion\":null,\"socketPath\":");
+    try appendJsonString(allocator, &out, socket_path);
+    try out.appendSlice(allocator, ",\"cliVersion\":");
+    try appendJsonString(allocator, &out, CLI_VERSION);
+    if (app_server_version) |version| {
+        try out.appendSlice(allocator, ",\"appServerVersion\":");
+        try appendJsonString(allocator, &out, version);
+    }
+    try out.appendSlice(allocator, "}");
+    try writeStdoutLine(out.items);
+}
+
+fn runDaemonSetRemoteControl(allocator: std.mem.Allocator, codex_home: []const u8, enabled: bool) !void {
+    const settings_path = try daemonSettingsPath(allocator, codex_home);
+    defer allocator.free(settings_path);
+    const previous = try readDaemonRemoteControlEnabled(allocator, settings_path);
+    const probe = try probeDaemonSocket(allocator, codex_home);
+    defer probe.deinit(allocator);
+    switch (probe) {
+        .running => return failDaemonUnmanagedRunning(),
+        .unavailable => {},
+    }
+
+    try ensureDaemonScaffolding(allocator, codex_home, true);
+    try writeDaemonRemoteControlSettings(settings_path, enabled);
+
+    const socket_path = try daemonSocketPath(allocator, codex_home);
+    defer allocator.free(socket_path);
+    const status = if (enabled)
+        if (previous) "alreadyEnabled" else "enabled"
+    else if (previous) "disabled" else "alreadyDisabled";
+
+    var out = std.ArrayList(u8).empty;
+    defer out.deinit(allocator);
+    try out.appendSlice(allocator, "{\"status\":");
+    try appendJsonString(allocator, &out, status);
+    try out.appendSlice(allocator, ",\"remoteControlEnabled\":");
+    try out.appendSlice(allocator, if (enabled) "true" else "false");
+    try out.appendSlice(allocator, ",\"socketPath\":");
+    try appendJsonString(allocator, &out, socket_path);
+    try out.appendSlice(allocator, ",\"cliVersion\":");
+    try appendJsonString(allocator, &out, CLI_VERSION);
+    try out.appendSlice(allocator, "}");
+    try writeStdoutLine(out.items);
+}
+
+fn failManagedStandaloneMissingIfNeeded(
+    allocator: std.mem.Allocator,
+    codex_home: []const u8,
+    create_pid_lock: bool,
+) !void {
+    try ensureDaemonScaffolding(allocator, codex_home, create_pid_lock);
+
+    const managed_path = try managedCodexPath(allocator, codex_home);
+    defer allocator.free(managed_path);
+    if ((try statPathFollow(allocator, managed_path)) != null) {
+        try cli_utils.writeStderr("Error: managed app-server daemon lifecycle is not implemented in codex-zig yet\n");
+        return error.AppServerDaemonCommandFailed;
+    }
+
+    const message = try std.fmt.allocPrint(
+        allocator,
+        \\Error: managed standalone Codex install not found at {s}
+        \\
+        \\This command requires the standalone install managed by the Codex installer, because the daemon starts and updates app-server from that fixed path.
+        \\
+        \\Install it with:
+        \\  curl -fsSL https://chatgpt.com/codex/install.sh | sh
+        \\
+        \\Then rerun the command you just tried.
+        \\
+    ,
+        .{managed_path},
+    );
+    defer allocator.free(message);
+    try cli_utils.writeStderr(message);
+    return error.AppServerDaemonCommandFailed;
+}
+
+fn failDaemonUnmanagedRunning() error{AppServerDaemonCommandFailed} {
+    std.debug.print(
+        \\Error: app server is running but is not managed by codex app-server daemon
+        \\
+    , .{});
+    return error.AppServerDaemonCommandFailed;
+}
+
+fn failDaemonSocketUnavailable(allocator: std.mem.Allocator, codex_home: []const u8, cause: []const u8) !void {
+    const socket_path = try daemonSocketPath(allocator, codex_home);
+    defer allocator.free(socket_path);
+    const message = try std.fmt.allocPrint(
+        allocator,
+        \\Error: failed to connect to {s}
+        \\
+        \\Caused by:
+        \\    {s}
+        \\
+    ,
+        .{ socket_path, cause },
+    );
+    defer allocator.free(message);
+    try cli_utils.writeStderr(message);
+    return error.AppServerDaemonCommandFailed;
+}
+
+fn resolveDaemonCodexHome(allocator: std.mem.Allocator) ![]const u8 {
+    if (try env.getOwned(allocator, "CODEX_HOME")) |raw| {
+        defer allocator.free(raw);
+        if (raw.len == 0) return defaultDaemonCodexHome(allocator);
+
+        const stat = statPathFollow(allocator, raw) catch |err| switch (err) {
+            error.NotDir => return failDaemonCodexHomeResolve(
+                allocator,
+                "failed to read CODEX_HOME \"{s}\": Not a directory",
+                .{raw},
+            ),
+            else => return err,
+        };
+        const resolved_stat = stat orelse return failDaemonCodexHomeResolve(
+            allocator,
+            "CODEX_HOME points to \"{s}\", but that path does not exist",
+            .{raw},
+        );
+        if (!std.c.S.ISDIR(@intCast(resolved_stat.mode))) {
+            return failDaemonCodexHomeResolve(
+                allocator,
+                "CODEX_HOME points to \"{s}\", but that path is not a directory",
+                .{raw},
+            );
+        }
+
+        return realPathFileAllocPlain(allocator, raw) catch |err| switch (err) {
+            else => return err,
+        };
+    }
+
+    return defaultDaemonCodexHome(allocator);
+}
+
+fn defaultDaemonCodexHome(allocator: std.mem.Allocator) ![]const u8 {
+    const home = (try env.getOwned(allocator, "HOME")) orelse return error.MissingHome;
+    defer allocator.free(home);
+    return std.fs.path.join(allocator, &.{ home, ".codex" });
+}
+
+fn failDaemonCodexHomeResolve(
+    allocator: std.mem.Allocator,
+    comptime reason_fmt: []const u8,
+    args: anytype,
+) ![]const u8 {
+    const reason = try std.fmt.allocPrint(allocator, reason_fmt, args);
+    defer allocator.free(reason);
+
+    const message = try std.fmt.allocPrint(
+        allocator,
+        \\Error: failed to resolve CODEX_HOME
+        \\
+        \\Caused by:
+        \\    {s}
+        \\
+    ,
+        .{reason},
+    );
+    defer allocator.free(message);
+    try cli_utils.writeStderr(message);
+    return error.AppServerDaemonCommandFailed;
+}
+
+fn failDaemonSettingsParse(
+    allocator: std.mem.Allocator,
+    settings_path: []const u8,
+    cause: []const u8,
+) !bool {
+    const message = try std.fmt.allocPrint(
+        allocator,
+        \\Error: failed to parse daemon settings {s}
+        \\
+        \\Caused by:
+        \\    {s}
+        \\
+    ,
+        .{ settings_path, cause },
+    );
+    defer allocator.free(message);
+    try cli_utils.writeStderr(message);
+    return error.AppServerDaemonCommandFailed;
+}
+
+fn validateDaemonSettings(allocator: std.mem.Allocator, codex_home: []const u8) !void {
+    const settings_path = try daemonSettingsPath(allocator, codex_home);
+    defer allocator.free(settings_path);
+    _ = try readDaemonRemoteControlEnabled(allocator, settings_path);
+}
+
+fn daemonSettingsParseCause(allocator: std.mem.Allocator, err: anyerror, diagnostics: std.json.Diagnostics) ![]const u8 {
+    return switch (err) {
+        error.MissingField => std.fmt.allocPrint(
+            allocator,
+            "missing field `remoteControlEnabled` at line {d} column {d}",
+            .{ diagnostics.getLine(), diagnostics.getColumn() },
+        ),
+        error.SyntaxError => std.fmt.allocPrint(
+            allocator,
+            "syntax error at line {d} column {d}",
+            .{ diagnostics.getLine(), diagnostics.getColumn() },
+        ),
+        error.UnexpectedEndOfInput => std.fmt.allocPrint(
+            allocator,
+            "unexpected end of input at line {d} column {d}",
+            .{ diagnostics.getLine(), diagnostics.getColumn() },
+        ),
+        else => std.fmt.allocPrint(
+            allocator,
+            "{s} at line {d} column {d}",
+            .{ @errorName(err), diagnostics.getLine(), diagnostics.getColumn() },
+        ),
+    };
+}
+
+fn readDaemonRemoteControlEnabled(allocator: std.mem.Allocator, settings_path: []const u8) !bool {
+    const bytes = std.Io.Dir.cwd().readFileAlloc(
+        std.Io.Threaded.global_single_threaded.io(),
+        settings_path,
+        allocator,
+        .limited(4096),
+    ) catch |err| switch (err) {
+        error.FileNotFound => {
+            return false;
+        },
+        else => return err,
+    };
+    defer allocator.free(bytes);
+
+    var scanner = std.json.Scanner.initCompleteInput(allocator, bytes);
+    defer scanner.deinit();
+    var diagnostics = std.json.Diagnostics{};
+    scanner.enableDiagnostics(&diagnostics);
+
+    var parsed = std.json.parseFromTokenSource(
+        DaemonRemoteControlSettings,
+        allocator,
+        &scanner,
+        .{ .ignore_unknown_fields = true },
+    ) catch |err| {
+        const cause = try daemonSettingsParseCause(allocator, err, diagnostics);
+        defer allocator.free(cause);
+        return failDaemonSettingsParse(allocator, settings_path, cause);
+    };
+    defer parsed.deinit();
+    return parsed.value.remoteControlEnabled;
+}
+
+fn probeDaemonSocket(allocator: std.mem.Allocator, codex_home: []const u8) !DaemonSocketProbe {
+    const socket_path = try daemonSocketPath(allocator, codex_home);
+    defer allocator.free(socket_path);
+
+    const io = std.Io.Threaded.global_single_threaded.io();
+    const connected = try connectDaemonUnixStream(allocator, socket_path);
+    var stream = switch (connected) {
+        .unavailable => |cause| return .{ .unavailable = cause },
+        .stream => |value| value,
+    };
+    defer stream.close(io);
+
+    var input_buffer: [16 * 1024]u8 = undefined;
+    var output_buffer: [4096]u8 = undefined;
+    var reader = stream.reader(io, &input_buffer);
+    var writer = stream.writer(io, &output_buffer);
+    writer.interface.writeAll(
+        "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"clientInfo\":{\"name\":\"codex_app_server_daemon\",\"title\":\"Codex App Server Daemon\",\"version\":\"0.0.1\"}}}\n",
+    ) catch |err| return .{ .unavailable = try daemonProbeErrorCause(allocator, "failed to send initialize request", err) };
+    writer.interface.flush() catch |err| return .{ .unavailable = try daemonProbeErrorCause(allocator, "failed to send initialize request", err) };
+
+    const deadline_ms = appServerAwakeDeadlineMs(2 * std.time.ms_per_s);
+    while (true) {
+        const line = readDaemonProbeLine(allocator, &reader.interface, stream.socket.handle, deadline_ms) catch |err| switch (err) {
+            error.AppServerDaemonProbeTimedOut => return .{ .unavailable = try std.fmt.allocPrint(allocator, "timed out probing app-server control socket {s}", .{socket_path}) },
+            error.StreamTooLong => return .{ .unavailable = try allocator.dupe(u8, "app-server probe response exceeded 65536 bytes") },
+            else => return err,
+        } orelse return .{ .unavailable = try allocator.dupe(u8, "app-server closed the control socket") };
+        defer allocator.free(line);
+        if (try daemonProbeVersionFromLine(allocator, line)) |version| {
+            writer.interface.writeAll("{\"jsonrpc\":\"2.0\",\"method\":\"initialized\"}\n") catch {};
+            writer.interface.flush() catch {};
+            return .{ .running = version };
+        }
+    }
+}
+
+fn connectDaemonUnixStream(allocator: std.mem.Allocator, socket_path: []const u8) !DaemonUnixConnect {
+    const fd = try createDaemonUnixSocketFd();
+    var keep_fd = false;
+    defer if (!keep_fd) closeFd(fd);
+
+    var storage = std.mem.zeroes(DaemonUnixSockaddr);
+    if (socket_path.len >= storage.un.path.len) return error.NameTooLong;
+    storage.un.family = std.posix.AF.UNIX;
+    @memcpy(storage.un.path[0..socket_path.len], socket_path);
+    storage.un.path[socket_path.len] = 0;
+    const address_len: std.posix.socklen_t = @intCast(@offsetOf(std.posix.sockaddr.un, "path") + socket_path.len + 1);
+
+    while (true) {
+        switch (std.posix.errno(std.posix.system.connect(fd, &storage.any, address_len))) {
+            .SUCCESS => {
+                keep_fd = true;
+                return .{ .stream = .{ .socket = .{ .handle = fd, .address = .{ .ip4 = .loopback(0) } } } };
+            },
+            .INTR => continue,
+            .NOENT => return .{ .unavailable = try allocator.dupe(u8, "No such file or directory (os error 2)") },
+            .NOTDIR => return .{ .unavailable = try allocator.dupe(u8, "Not a directory (os error 20)") },
+            .CONNREFUSED => return .{ .unavailable = try allocator.dupe(u8, "Connection refused (os error 61)") },
+            .ACCES => return error.AccessDenied,
+            .PERM => return error.PermissionDenied,
+            .LOOP => return error.SymLinkLoop,
+            else => |err| return .{ .unavailable = try std.fmt.allocPrint(allocator, "unexpected socket error: {s}", .{@tagName(err)}) },
+        }
+    }
+}
+
+fn createDaemonUnixSocketFd() !std.posix.fd_t {
+    while (true) {
+        const rc = std.posix.system.socket(std.posix.AF.UNIX, std.posix.SOCK.STREAM, 0);
+        switch (std.posix.errno(rc)) {
+            .SUCCESS => return @intCast(rc),
+            .INTR => continue,
+            .AFNOSUPPORT => return error.AddressFamilyUnsupported,
+            .INVAL => return error.ProtocolUnsupportedBySystem,
+            .MFILE => return error.ProcessFdQuotaExceeded,
+            .NFILE => return error.SystemFdQuotaExceeded,
+            .NOBUFS, .NOMEM => return error.SystemResources,
+            .PROTONOSUPPORT => return error.ProtocolUnsupportedBySystem,
+            else => return error.Unexpected,
+        }
+    }
+}
+
+fn daemonProbeErrorCause(allocator: std.mem.Allocator, context: []const u8, err: anyerror) ![]const u8 {
+    return std.fmt.allocPrint(allocator, "{s}: {s}", .{ context, @errorName(err) });
+}
+
+fn readDaemonProbeLine(
+    allocator: std.mem.Allocator,
+    reader: *std.Io.Reader,
+    fd: std.posix.fd_t,
+    deadline_ms: i64,
+) !?[]const u8 {
+    var line = std.ArrayList(u8).empty;
+    errdefer line.deinit(allocator);
+
+    while (true) {
+        if (!readerHasBufferedTransportBytes(reader)) {
+            const remaining_ms = remainingAppServerAwakeMillis(deadline_ms) orelse return error.AppServerDaemonProbeTimedOut;
+            const max_poll_timeout_ms: u64 = @intCast(std.math.maxInt(i32));
+            const poll_timeout: i32 = if (remaining_ms > max_poll_timeout_ms) std.math.maxInt(i32) else @intCast(remaining_ms);
+            if (!try appServerConnectionReadable(fd, poll_timeout)) return error.AppServerDaemonProbeTimedOut;
+        }
+        const byte = reader.takeByte() catch |err| switch (err) {
+            error.EndOfStream => {
+                if (line.items.len == 0) return null;
+                return try trimOwnedTransportPayload(allocator, try line.toOwnedSlice(allocator));
+            },
+            else => return err,
+        };
+        if (byte == '\n') return try trimOwnedTransportPayload(allocator, try line.toOwnedSlice(allocator));
+        if (line.items.len >= 64 * 1024) return error.StreamTooLong;
+        try line.append(allocator, byte);
+    }
+}
+
+fn daemonProbeVersionFromLine(allocator: std.mem.Allocator, line: []const u8) !?[]const u8 {
+    var parsed = std.json.parseFromSlice(std.json.Value, allocator, line, .{}) catch return null;
+    defer parsed.deinit();
+    if (parsed.value != .object) return null;
+    const object = parsed.value.object;
+    const id = object.get("id") orelse return null;
+    if (!jsonIdIsOne(id)) return null;
+    const result = object.get("result") orelse return null;
+    if (result != .object) return null;
+    if (result.object.get("serverInfo")) |server_info| {
+        if (server_info == .object) {
+            if (server_info.object.get("version")) |version| {
+                if (version == .string and version.string.len > 0) return try allocator.dupe(u8, version.string);
+            }
+        }
+    }
+    if (result.object.get("userAgent")) |user_agent| {
+        if (user_agent == .string) return try daemonVersionFromUserAgent(allocator, user_agent.string);
+    }
+    return try allocator.dupe(u8, "unknown");
+}
+
+fn jsonIdIsOne(value: std.json.Value) bool {
+    return switch (value) {
+        .integer => |integer| integer == 1,
+        .number_string => |number| std.mem.eql(u8, number, "1"),
+        .string => |string| std.mem.eql(u8, string, "1"),
+        else => false,
+    };
+}
+
+fn daemonVersionFromUserAgent(allocator: std.mem.Allocator, user_agent: []const u8) ![]const u8 {
+    const slash = std.mem.indexOfScalar(u8, user_agent, '/') orelse return allocator.dupe(u8, "unknown");
+    const rest = user_agent[slash + 1 ..];
+    const end = std.mem.indexOfAny(u8, rest, " \t\r\n") orelse rest.len;
+    if (end == 0) return allocator.dupe(u8, "unknown");
+    return allocator.dupe(u8, rest[0..end]);
+}
+
+fn writeDaemonRemoteControlSettings(settings_path: []const u8, enabled: bool) !void {
+    const io = std.Io.Threaded.global_single_threaded.io();
+    try std.Io.Dir.cwd().writeFile(io, .{
+        .sub_path = settings_path,
+        .data = if (enabled)
+            "{\n  \"remoteControlEnabled\": true\n}"
+        else
+            "{\n  \"remoteControlEnabled\": false\n}",
+    });
+}
+
+fn daemonSocketPath(allocator: std.mem.Allocator, codex_home: []const u8) ![]const u8 {
+    return std.fs.path.join(allocator, &.{ codex_home, DEFAULT_SOCKET_DIR_NAME, DEFAULT_SOCKET_FILE_NAME });
+}
+
+fn daemonSettingsPath(allocator: std.mem.Allocator, codex_home: []const u8) ![]const u8 {
+    return std.fs.path.join(allocator, &.{ codex_home, DAEMON_DIR_NAME, DAEMON_SETTINGS_FILE_NAME });
+}
+
+fn managedCodexPath(allocator: std.mem.Allocator, codex_home: []const u8) ![]const u8 {
+    return std.fs.path.join(allocator, &.{ codex_home, "packages", "standalone", "current", "codex" });
+}
+
+fn ensureDaemonScaffolding(allocator: std.mem.Allocator, codex_home: []const u8, create_pid_lock: bool) !void {
+    const io = std.Io.Threaded.global_single_threaded.io();
+    const tmp_arg0 = try std.fs.path.join(allocator, &.{ codex_home, "tmp", "arg0" });
+    defer allocator.free(tmp_arg0);
+    try std.Io.Dir.cwd().createDirPath(io, tmp_arg0);
+
+    const daemon_dir = try std.fs.path.join(allocator, &.{ codex_home, DAEMON_DIR_NAME });
+    defer allocator.free(daemon_dir);
+    try std.Io.Dir.cwd().createDirPath(io, daemon_dir);
+
+    const daemon_lock = try std.fs.path.join(allocator, &.{ daemon_dir, DAEMON_LOCK_FILE_NAME });
+    defer allocator.free(daemon_lock);
+    try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = daemon_lock, .data = "" });
+
+    if (create_pid_lock) {
+        const pid_lock = try std.fs.path.join(allocator, &.{ daemon_dir, DAEMON_APP_SERVER_PID_LOCK_FILE_NAME });
+        defer allocator.free(pid_lock);
+        try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = pid_lock, .data = "" });
+    }
+}
+
+fn failUnknownDaemonSubcommand(arg: []const u8) error{AppServerDaemonCommandFailed} {
+    if (std.mem.eql(u8, arg, "status")) {
+        std.debug.print(
+            \\error: unrecognized subcommand 'status'
+            \\
+            \\  tip: a similar subcommand exists: 'start'
+            \\
+            \\Usage: codex-zig app-server daemon [OPTIONS] <COMMAND>
+            \\
+            \\For more information, try '--help'.
+            \\
+        , .{});
+    } else {
+        std.debug.print(
+            \\error: unrecognized subcommand '{s}'
+            \\
+            \\Usage: codex-zig app-server daemon [OPTIONS] <COMMAND>
+            \\
+            \\For more information, try '--help'.
+            \\
+        , .{arg});
+    }
+    return error.AppServerDaemonCommandFailed;
+}
+
+fn failUnknownDaemonOption(arg: []const u8) error{AppServerDaemonCommandFailed} {
+    std.debug.print(
+        \\error: unexpected argument '{s}' found
+        \\
+        \\Usage: codex-zig app-server daemon [OPTIONS] <COMMAND>
+        \\
+        \\For more information, try '--help'.
+        \\
+    , .{arg});
+    return error.AppServerDaemonCommandFailed;
+}
+
+fn failUnknownDaemonOptionForCommand(command: DaemonCommand, arg: []const u8) error{AppServerDaemonCommandFailed} {
+    std.debug.print(
+        \\error: unexpected argument '{s}' found
+        \\
+        \\Usage: {s}
+        \\
+        \\For more information, try '--help'.
+        \\
+    , .{ arg, daemonCommandUsage(command) });
+    return error.AppServerDaemonCommandFailed;
+}
+
+fn failUnexpectedDaemonArgument(command: DaemonCommand, arg: []const u8) error{AppServerDaemonCommandFailed} {
+    std.debug.print(
+        \\error: unexpected argument '{s}' found
+        \\
+        \\Usage: {s}
+        \\
+        \\For more information, try '--help'.
+        \\
+    , .{ arg, daemonCommandUsage(command) });
+    return error.AppServerDaemonCommandFailed;
+}
+
+fn failMissingDaemonOptionValue(arg: []const u8) error{AppServerDaemonCommandFailed} {
+    const value_name = if (std.mem.eql(u8, arg, "--enable") or std.mem.eql(u8, arg, "--disable")) "FEATURE" else "key=value";
+    std.debug.print(
+        \\error: a value is required for '{s} <{s}>' but none was supplied
+        \\
+        \\For more information, try '--help'.
+        \\
+    , .{ arg, value_name });
+    return error.AppServerDaemonCommandFailed;
+}
+
+fn daemonCommandUsage(command: DaemonCommand) []const u8 {
+    return switch (command) {
+        .bootstrap => "codex-zig app-server daemon bootstrap [OPTIONS]",
+        .start => "codex-zig app-server daemon start [OPTIONS]",
+        .restart => "codex-zig app-server daemon restart [OPTIONS]",
+        .enable_remote_control => "codex-zig app-server daemon enable-remote-control [OPTIONS]",
+        .disable_remote_control => "codex-zig app-server daemon disable-remote-control [OPTIONS]",
+        .stop => "codex-zig app-server daemon stop [OPTIONS]",
+        .version => "codex-zig app-server daemon version [OPTIONS]",
+    };
 }
 
 fn parseWebsocketAuthMode(value: []const u8) !WebsocketAuthMode {
@@ -63527,6 +64260,7 @@ pub fn remoteRejectionLabel(args: []const []const u8) []const u8 {
             continue;
         }
         if (std.mem.startsWith(u8, arg, "-")) return "app-server";
+        if (std.mem.eql(u8, arg, "daemon")) return daemonSubcommandLabel(args[index + 1 ..]);
         if (subcommandLabel(arg)) |label| return label;
         return "app-server";
     }
@@ -63557,21 +64291,64 @@ fn optionHasInlineValue(arg: []const u8) bool {
 
 fn subcommandLabel(arg: []const u8) ?[]const u8 {
     if (std.mem.eql(u8, arg, "proxy")) return "app-server proxy";
+    if (std.mem.eql(u8, arg, "daemon")) return "app-server daemon";
     if (std.mem.eql(u8, arg, "generate-ts")) return "app-server generate-ts";
     if (std.mem.eql(u8, arg, "generate-json-schema")) return "app-server generate-json-schema";
     if (std.mem.eql(u8, arg, "generate-internal-json-schema")) return "app-server generate-internal-json-schema";
     return null;
 }
 
+fn daemonSubcommandLabel(args: []const []const u8) []const u8 {
+    var index: usize = 0;
+    while (index < args.len) : (index += 1) {
+        const arg = args[index];
+        if (isHelpFlag(arg)) return "app-server daemon";
+        if (std.mem.eql(u8, arg, "-c") or
+            std.mem.eql(u8, arg, "--config") or
+            std.mem.eql(u8, arg, "--enable") or
+            std.mem.eql(u8, arg, "--disable"))
+        {
+            if (index + 1 >= args.len) return "app-server daemon";
+            index += 1;
+            continue;
+        }
+        if (std.mem.startsWith(u8, arg, "--config=") or
+            std.mem.startsWith(u8, arg, "--enable=") or
+            std.mem.startsWith(u8, arg, "--disable=") or
+            std.mem.eql(u8, arg, "--remote-control"))
+        {
+            continue;
+        }
+        if (std.mem.startsWith(u8, arg, "-")) return "app-server daemon";
+        if (daemonCommandFromName(arg)) |cmd| return daemonCommandLabel(cmd);
+        return "app-server daemon";
+    }
+    return "app-server daemon";
+}
+
+fn daemonCommandLabel(command: DaemonCommand) []const u8 {
+    return switch (command) {
+        .bootstrap => "app-server daemon bootstrap",
+        .start => "app-server daemon start",
+        .restart => "app-server daemon restart",
+        .enable_remote_control => "app-server daemon enable-remote-control",
+        .disable_remote_control => "app-server daemon disable-remote-control",
+        .stop => "app-server daemon stop",
+        .version => "app-server daemon version",
+    };
+}
+
 pub fn printHelp() void {
     std.debug.print(
         \\Usage:
         \\  codex-zig app-server [--strict-config] [--listen URL]
+        \\  codex-zig app-server daemon [OPTIONS] <COMMAND>
         \\  codex-zig app-server proxy [--sock SOCKET_PATH]
         \\
         \\Runs the app-server JSON-RPC transport.
         \\
         \\Subcommands:
+        \\  daemon                 Manage the local app-server daemon
         \\  proxy                  Proxy stdio to the app-server Unix socket
         \\
         \\Options:
@@ -63613,9 +64390,128 @@ fn printProxyHelp() void {
     , .{});
 }
 
+fn printDaemonHelp() void {
+    std.debug.print(
+        \\Manage the local app-server daemon
+        \\
+        \\Usage: codex-zig app-server daemon [OPTIONS] <COMMAND>
+        \\
+        \\Commands:
+        \\  bootstrap               Install durable local app-server management for SSH-driven use
+        \\  start                   Start the local app server daemon if it is not already running
+        \\  restart                 Restart the local app server daemon
+        \\  enable-remote-control   Enable remote control for future starts and a currently running managed daemon
+        \\  disable-remote-control  Disable remote control for future starts and a currently running managed daemon
+        \\  stop                    Stop the local app server daemon
+        \\  version                 Print local CLI and running app-server versions as JSON
+        \\  help                    Print this message or the help of the given subcommand(s)
+        \\
+        \\Options:
+        \\  -c, --config <key=value>  Override a configuration value loaded from config.toml
+        \\      --enable <FEATURE>    Enable a feature (repeatable)
+        \\      --disable <FEATURE>   Disable a feature (repeatable)
+        \\  -h, --help                Print help
+        \\
+    , .{});
+}
+
+fn printDaemonCommandHelp(command: DaemonCommand) void {
+    switch (command) {
+        .bootstrap => std.debug.print(
+            \\Install durable local app-server management for SSH-driven use
+            \\
+            \\Usage: codex-zig app-server daemon bootstrap [OPTIONS]
+            \\
+            \\Options:
+            \\  -c, --config <key=value>  Override a configuration value loaded from config.toml
+            \\      --remote-control      Launch the managed app-server with remote control enabled
+            \\      --enable <FEATURE>    Enable a feature (repeatable)
+            \\      --disable <FEATURE>   Disable a feature (repeatable)
+            \\  -h, --help                Print help
+            \\
+        , .{}),
+        .start => std.debug.print(
+            \\Start the local app server daemon if it is not already running
+            \\
+            \\Usage: codex-zig app-server daemon start [OPTIONS]
+            \\
+            \\Options:
+            \\  -c, --config <key=value>  Override a configuration value loaded from config.toml
+            \\      --enable <FEATURE>    Enable a feature (repeatable)
+            \\      --disable <FEATURE>   Disable a feature (repeatable)
+            \\  -h, --help                Print help
+            \\
+        , .{}),
+        .restart => std.debug.print(
+            \\Restart the local app server daemon
+            \\
+            \\Usage: codex-zig app-server daemon restart [OPTIONS]
+            \\
+            \\Options:
+            \\  -c, --config <key=value>  Override a configuration value loaded from config.toml
+            \\      --enable <FEATURE>    Enable a feature (repeatable)
+            \\      --disable <FEATURE>   Disable a feature (repeatable)
+            \\  -h, --help                Print help
+            \\
+        , .{}),
+        .enable_remote_control => std.debug.print(
+            \\Enable remote control for future starts and a currently running managed daemon
+            \\
+            \\Usage: codex-zig app-server daemon enable-remote-control [OPTIONS]
+            \\
+            \\Options:
+            \\  -c, --config <key=value>  Override a configuration value loaded from config.toml
+            \\      --enable <FEATURE>    Enable a feature (repeatable)
+            \\      --disable <FEATURE>   Disable a feature (repeatable)
+            \\  -h, --help                Print help
+            \\
+        , .{}),
+        .disable_remote_control => std.debug.print(
+            \\Disable remote control for future starts and a currently running managed daemon
+            \\
+            \\Usage: codex-zig app-server daemon disable-remote-control [OPTIONS]
+            \\
+            \\Options:
+            \\  -c, --config <key=value>  Override a configuration value loaded from config.toml
+            \\      --enable <FEATURE>    Enable a feature (repeatable)
+            \\      --disable <FEATURE>   Disable a feature (repeatable)
+            \\  -h, --help                Print help
+            \\
+        , .{}),
+        .stop => std.debug.print(
+            \\Stop the local app server daemon
+            \\
+            \\Usage: codex-zig app-server daemon stop [OPTIONS]
+            \\
+            \\Options:
+            \\  -c, --config <key=value>  Override a configuration value loaded from config.toml
+            \\      --enable <FEATURE>    Enable a feature (repeatable)
+            \\      --disable <FEATURE>   Disable a feature (repeatable)
+            \\  -h, --help                Print help
+            \\
+        , .{}),
+        .version => std.debug.print(
+            \\Print local CLI and running app-server versions as JSON
+            \\
+            \\Usage: codex-zig app-server daemon version [OPTIONS]
+            \\
+            \\Options:
+            \\  -c, --config <key=value>  Override a configuration value loaded from config.toml
+            \\      --enable <FEATURE>    Enable a feature (repeatable)
+            \\      --disable <FEATURE>   Disable a feature (repeatable)
+            \\  -h, --help                Print help
+            \\
+        , .{}),
+    }
+}
+
 test "app-server remote rejection labels known subcommands" {
     try std.testing.expectEqualStrings("app-server", remoteRejectionLabel(&.{}));
     try std.testing.expectEqualStrings("app-server proxy", remoteRejectionLabel(&.{"proxy"}));
+    try std.testing.expectEqualStrings("app-server daemon", remoteRejectionLabel(&.{"daemon"}));
+    try std.testing.expectEqualStrings("app-server daemon version", remoteRejectionLabel(&.{ "daemon", "version" }));
+    try std.testing.expectEqualStrings("app-server daemon bootstrap", remoteRejectionLabel(&.{ "daemon", "bootstrap", "--remote-control" }));
+    try std.testing.expectEqualStrings("app-server daemon stop", remoteRejectionLabel(&.{ "daemon", "--config", "model=\"x\"", "stop" }));
     try std.testing.expectEqualStrings(
         "app-server proxy",
         remoteRejectionLabel(&.{ "--listen", "off", "proxy" }),

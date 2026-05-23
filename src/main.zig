@@ -110,6 +110,7 @@ pub fn main(init: std.process.Init) !void {
                 "error: no transport configured; remote control disabled because sqlite state db is unavailable\n",
                 .{},
             ),
+            error.AppServerDaemonCommandFailed => {},
             error.ExecServerCommandFailed => {},
             error.HookStoppedTurn => {},
             error.StrictConfigUnknownField => {},
