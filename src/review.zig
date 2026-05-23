@@ -31,6 +31,8 @@ const ReviewArgs = struct {
     dangerously_bypass_approvals_and_sandbox: bool = false,
     prompt: ?[]const u8 = null,
     read_stdin: bool = false,
+    strict_config: bool = false,
+    unknown_config_override: ?[]const u8 = null,
 
     fn deinit(self: ReviewArgs, allocator: std.mem.Allocator) void {
         var feature_overrides = self.feature_overrides;
@@ -41,6 +43,7 @@ const ReviewArgs = struct {
         if (self.model) |model| allocator.free(model);
         if (self.last_message_file) |path| allocator.free(path);
         if (self.prompt) |prompt| allocator.free(prompt);
+        if (self.unknown_config_override) |field| allocator.free(field);
     }
 };
 
@@ -57,6 +60,8 @@ pub const Options = struct {
     ephemeral: bool = false,
     allow_exec_options: bool = false,
     explicit_approval_policy: bool = false,
+    strict_config: bool = false,
+    unknown_config_override: ?[]const u8 = null,
 };
 
 const ParseOptions = struct {
@@ -88,9 +93,15 @@ pub fn runRawArgsWithOptions(allocator: std.mem.Allocator, raw_args: []const []c
     try workdir.enforceTrustedGitRepository(allocator, effective_skip_git_repo_check);
 
     const effective_ignore_user_config = options.ignore_user_config or parsed.ignore_user_config;
+    const effective_strict_config = options.strict_config or parsed.strict_config;
+    if (effective_strict_config) {
+        if (options.unknown_config_override) |field| return config.failStrictConfigUnknownCliOverride(field);
+        if (parsed.unknown_config_override) |field| return config.failStrictConfigUnknownCliOverride(field);
+    }
     var cfg = try config.loadWithOptions(allocator, .{
         .profile = parsed.config_profile orelse options.profile,
         .ignore_user_config = effective_ignore_user_config,
+        .strict_config = effective_strict_config,
     });
     defer cfg.deinit(allocator);
     var runtime_overrides = config.mergeRuntimeOverrides(options.runtime_overrides, parsed.config_overrides);
@@ -236,11 +247,14 @@ fn parseArgsWithOptions(allocator: std.mem.Allocator, args: []const []const u8, 
         if (!end_options and (std.mem.eql(u8, arg, "--config") or std.mem.eql(u8, arg, "-c"))) {
             index += 1;
             if (index >= args.len) return error.MissingReviewOptionValue;
+            try config.rememberStrictConfigUnknownOverride(allocator, &parsed.unknown_config_override, args[index]);
             try config.applyRawConfigOverride(&parsed.config_overrides, &parsed.config_profile, args[index]);
             continue;
         }
         if (!end_options and std.mem.startsWith(u8, arg, "--config=")) {
-            try config.applyRawConfigOverride(&parsed.config_overrides, &parsed.config_profile, arg["--config=".len..]);
+            const raw = arg["--config=".len..];
+            try config.rememberStrictConfigUnknownOverride(allocator, &parsed.unknown_config_override, raw);
+            try config.applyRawConfigOverride(&parsed.config_overrides, &parsed.config_profile, raw);
             continue;
         }
         if (!end_options and std.mem.eql(u8, arg, "--enable")) {
@@ -309,6 +323,10 @@ fn parseArgsWithOptions(allocator: std.mem.Allocator, args: []const []const u8, 
         }
         if (!end_options and parse_options.allow_exec_options and std.mem.eql(u8, arg, "--dangerously-bypass-hook-trust")) {
             parsed.config_overrides.bypass_hook_trust = true;
+            continue;
+        }
+        if (!end_options and std.mem.eql(u8, arg, "--strict-config")) {
+            parsed.strict_config = true;
             continue;
         }
         if (!end_options and std.mem.eql(u8, arg, "--uncommitted")) {
@@ -541,6 +559,7 @@ pub fn printHelp() void {
         \\Options:
         \\  -c, --config key=value
         \\                    Override a supported config value
+        \\  --strict-config   Error on unknown config fields
         \\  --uncommitted     Review staged, unstaged, and untracked changes
         \\  --base BRANCH     Review changes against the merge base with BRANCH
         \\  --enable FEATURE  Enable a feature for this invocation
@@ -609,6 +628,17 @@ test "review args parse local config and feature overrides" {
     try std.testing.expectEqualStrings("gpt-review", parsed.config_overrides.review_model.?);
     try std.testing.expectEqual(true, parsed.feature_overrides.get("goals").?);
     try std.testing.expectEqual(false, parsed.feature_overrides.get("shell_tool").?);
+}
+
+test "review args parse strict config and remember first unknown override" {
+    const allocator = std.testing.allocator;
+    const argv = [_][]const u8{ "-c", "foo=bar", "--config=features.nope=true", "--strict-config", "--uncommitted" };
+    const parsed = try parseArgs(allocator, argv[0..]);
+    defer parsed.deinit(allocator);
+
+    try std.testing.expect(parsed.strict_config);
+    try std.testing.expectEqualStrings("foo", parsed.unknown_config_override.?);
+    try std.testing.expect(parsed.uncommitted);
 }
 
 test "exec review args parse exec-local controls" {

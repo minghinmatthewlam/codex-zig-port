@@ -59,6 +59,7 @@ pub const Options = struct {
     local_remote_control: bool = false,
     remote_control_bind: ?[]const u8 = null,
     feature_overrides: features_cmd.FeatureOverrides = .{},
+    strict_config: bool = false,
 };
 
 pub fn run(allocator: std.mem.Allocator) !void {
@@ -223,11 +224,21 @@ fn validateLocalRemoteControlOptions(enabled: bool, bind: ?[]const u8) !void {
 pub fn runWithOptions(allocator: std.mem.Allocator, options: Options) !void {
     try validateRemoteOptions(allocator, options.remote, options.remote_auth_token_env);
     if (options.remote) |remote| {
+        if (options.strict_config) {
+            var strict_cfg = try config.loadWithOptions(allocator, .{
+                .profile = options.profile,
+                .strict_config = true,
+            });
+            defer strict_cfg.deinit(allocator);
+        }
         return runRemoteTui(allocator, options, remote);
     }
     try validateLocalRemoteControlOptions(options.local_remote_control, options.remote_control_bind);
 
-    var cfg = try config.loadWithOptions(allocator, .{ .profile = options.profile });
+    var cfg = try config.loadWithOptions(allocator, .{
+        .profile = options.profile,
+        .strict_config = options.strict_config,
+    });
     defer cfg.deinit(allocator);
     try config.applyRuntimeOverrides(&cfg, allocator, options.runtime_overrides);
     if (options.oss) {

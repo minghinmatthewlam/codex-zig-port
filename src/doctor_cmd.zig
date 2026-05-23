@@ -16,6 +16,8 @@ pub const Options = struct {
     oss: bool = false,
     oss_provider: ?[]const u8 = null,
     version: []const u8 = "0.0.1",
+    strict_config: bool = false,
+    unknown_config_override: ?[]const u8 = null,
 };
 
 const ParsedArgs = struct {
@@ -30,8 +32,11 @@ const ParsedArgs = struct {
     feature_overrides: features_cmd.FeatureOverrides = .{},
     oss: bool = false,
     oss_provider: ?[]const u8 = null,
+    strict_config: bool = false,
+    unknown_config_override: ?[]const u8 = null,
 
     fn deinit(self: *ParsedArgs, allocator: std.mem.Allocator) void {
+        if (self.unknown_config_override) |field| allocator.free(field);
         self.feature_overrides.deinit(allocator);
     }
 };
@@ -185,6 +190,7 @@ pub fn printHelp() void {
         \\Options:
         \\  -c, --config <key=value>
         \\                          Override a supported config value
+        \\      --strict-config     Error on unknown config fields
         \\      --json              Emit a redacted machine-readable report
         \\      --enable FEATURE    Enable a feature for this invocation
         \\      --summary           Only show grouped rows and final counts
@@ -204,6 +210,8 @@ fn parseArgs(allocator: std.mem.Allocator, argv: []const []const u8, options: Op
         .feature_overrides = try options.feature_overrides.clone(allocator),
         .oss = options.oss,
         .oss_provider = options.oss_provider,
+        .strict_config = options.strict_config,
+        .unknown_config_override = if (options.unknown_config_override) |field| try allocator.dupe(u8, field) else null,
     };
     errdefer parsed.deinit(allocator);
 
@@ -234,14 +242,21 @@ fn parseArgs(allocator: std.mem.Allocator, argv: []const []const u8, options: Op
             parsed.ascii = true;
             continue;
         }
+        if (std.mem.eql(u8, arg, "--strict-config")) {
+            parsed.strict_config = true;
+            continue;
+        }
         if (std.mem.eql(u8, arg, "--config") or std.mem.eql(u8, arg, "-c")) {
             index += 1;
             if (index >= argv.len) return error.MissingConfigOptionValue;
+            try config.rememberStrictConfigUnknownOverride(allocator, &parsed.unknown_config_override, argv[index]);
             try config.applyRawConfigOverride(&parsed.runtime_overrides, &parsed.profile, argv[index]);
             continue;
         }
         if (std.mem.startsWith(u8, arg, "--config=")) {
-            try config.applyRawConfigOverride(&parsed.runtime_overrides, &parsed.profile, arg["--config=".len..]);
+            const raw = arg["--config=".len..];
+            try config.rememberStrictConfigUnknownOverride(allocator, &parsed.unknown_config_override, raw);
+            try config.applyRawConfigOverride(&parsed.runtime_overrides, &parsed.profile, raw);
             continue;
         }
         if (std.mem.eql(u8, arg, "--enable")) {
@@ -266,6 +281,10 @@ fn parseArgs(allocator: std.mem.Allocator, argv: []const []const u8, options: Op
         }
         if (std.mem.startsWith(u8, arg, "-")) return error.UnknownDoctorOption;
         return error.UnexpectedDoctorArgument;
+    }
+
+    if (parsed.strict_config) {
+        if (parsed.unknown_config_override) |field| return config.failStrictConfigUnknownCliOverride(field);
     }
 
     return parsed;
@@ -305,7 +324,7 @@ fn buildReport(allocator: std.mem.Allocator, args: ParsedArgs, codex_version: []
 fn loadConfigForDoctor(allocator: std.mem.Allocator, args: ParsedArgs) !ConfigLoad {
     const cwd = std.process.currentPathAlloc(std.Io.Threaded.global_single_threaded.io(), allocator) catch try allocator.dupeZ(u8, ".");
     const codex_home = config.resolveCodexHome(allocator) catch null;
-    var loaded = config.loadWithOptions(allocator, .{ .profile = args.profile }) catch |err| {
+    var loaded = config.loadWithOptions(allocator, .{ .profile = args.profile, .strict_config = args.strict_config }) catch |err| {
         return .{
             .err = err,
             .codex_home = codex_home,

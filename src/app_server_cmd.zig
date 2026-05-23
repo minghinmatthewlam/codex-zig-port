@@ -378,11 +378,13 @@ const WebsocketAuthArgs = struct {
 const AppServerOptions = struct {
     listen_url: []const u8 = DEFAULT_LISTEN_URL,
     websocket_auth: WebsocketAuthArgs = .{},
+    strict_config: bool = false,
 };
 
 pub const InvocationOptions = struct {
     feature_overrides: features_cmd.FeatureOverrides = .{},
     bypass_hook_trust: bool = false,
+    strict_config: bool = false,
 };
 
 const AppServerState = struct {
@@ -844,6 +846,10 @@ pub fn runWithOptions(
         if (std.mem.eql(u8, arg, "--analytics-default-enabled")) {
             continue;
         }
+        if (std.mem.eql(u8, arg, "--strict-config")) {
+            options.strict_config = true;
+            continue;
+        }
         if (std.mem.eql(u8, arg, "--ws-auth")) {
             options.websocket_auth.ws_auth = try parseWebsocketAuthMode(args.next() orelse return error.MissingAppServerWebsocketAuthMode);
             continue;
@@ -907,7 +913,10 @@ pub fn runWithOptions(
         subcommand = arg;
     }
 
+    const strict_config = invocation_options.strict_config or options.strict_config;
+
     if (subcommand) |name| {
+        if (strict_config) return failStrictConfigUnsupportedForSubcommand(name);
         if (std.mem.eql(u8, name, "proxy")) {
             try runProxy(allocator, subcommand_args.items);
             return;
@@ -925,6 +934,11 @@ pub fn runWithOptions(
             return;
         }
         return error.UnknownAppServerSubcommand;
+    }
+
+    if (strict_config) {
+        var cfg = try config.loadWithOptions(allocator, .{ .strict_config = true });
+        defer cfg.deinit(allocator);
     }
 
     try validateWebsocketAuthArgs(options.websocket_auth);
@@ -969,6 +983,11 @@ fn parseWebsocketAuthMode(value: []const u8) !WebsocketAuthMode {
     if (std.mem.eql(u8, value, "capability-token")) return .capability_token;
     if (std.mem.eql(u8, value, "signed-bearer-token")) return .signed_bearer_token;
     return error.UnsupportedAppServerWebsocketAuthMode;
+}
+
+fn failStrictConfigUnsupportedForSubcommand(subcommand: []const u8) error{StrictConfigUnsupportedForSubcommand} {
+    std.debug.print("`--strict-config` is not supported for `codex-zig app-server {s}`\n", .{subcommand});
+    return error.StrictConfigUnsupportedForSubcommand;
 }
 
 fn parseWebsocketClockSkew(value: []const u8) !u64 {
@@ -63547,7 +63566,7 @@ fn subcommandLabel(arg: []const u8) ?[]const u8 {
 pub fn printHelp() void {
     std.debug.print(
         \\Usage:
-        \\  codex-zig app-server [--listen URL]
+        \\  codex-zig app-server [--strict-config] [--listen URL]
         \\  codex-zig app-server proxy [--sock SOCKET_PATH]
         \\
         \\Runs the app-server JSON-RPC transport.
@@ -63556,6 +63575,7 @@ pub fn printHelp() void {
         \\  proxy                  Proxy stdio to the app-server Unix socket
         \\
         \\Options:
+        \\  --strict-config        Error on unknown config fields.
         \\  --listen URL           Transport URL. Defaults to stdio://.
         \\  --analytics-default-enabled
         \\                          Accept Rust-compatible app-server analytics default flag.

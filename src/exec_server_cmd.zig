@@ -4,6 +4,7 @@ const builtin = @import("builtin");
 const net = std.Io.net;
 
 const cli_utils = @import("cli_utils.zig");
+const config_mod = @import("config.zig");
 const remote_ws_client = @import("remote_ws_client.zig");
 const sandbox_mod = @import("sandbox.zig");
 
@@ -135,6 +136,11 @@ const ParsedOptions = struct {
     remote: ?[]const u8 = null,
     executor_id: ?[]const u8 = null,
     name: ?[]const u8 = null,
+    strict_config: bool = false,
+};
+
+pub const InvocationOptions = struct {
+    strict_config: bool = false,
 };
 
 const ExecStartParams = struct {
@@ -1977,7 +1983,11 @@ fn writeWebSocketFrame(writer: *std.Io.Writer, opcode: u8, payload: []const u8) 
 }
 
 pub fn run(allocator: std.mem.Allocator, args: *std.process.Args.Iterator) !void {
-    const parsed = parseArgs(args) catch |err| switch (err) {
+    try runWithOptions(allocator, args, .{});
+}
+
+pub fn runWithOptions(allocator: std.mem.Allocator, args: *std.process.Args.Iterator, invocation_options: InvocationOptions) !void {
+    const parsed = parseArgs(args, invocation_options) catch |err| switch (err) {
         error.MissingExecServerListenUrl => return fail(allocator, "error: --listen requires a URL\n", .{}),
         error.MissingExecServerRemoteUrl => return fail(allocator, "error: --remote requires a URL\n", .{}),
         error.MissingExecServerExecutorIdOption => return fail(allocator, "error: --executor-id requires an ID\n", .{}),
@@ -1991,6 +2001,11 @@ pub fn run(allocator: std.mem.Allocator, args: *std.process.Args.Iterator) !void
     if (parsed.help) {
         printHelp();
         return;
+    }
+
+    if (parsed.strict_config) {
+        var cfg = try config_mod.loadWithOptions(allocator, .{ .strict_config = true });
+        defer cfg.deinit(allocator);
     }
 
     if (parsed.remote != null) {
@@ -2025,12 +2040,18 @@ pub fn run(allocator: std.mem.Allocator, args: *std.process.Args.Iterator) !void
     }
 }
 
-fn parseArgs(args: *std.process.Args.Iterator) !ParsedOptions {
-    var parsed = ParsedOptions{};
+fn parseArgs(args: *std.process.Args.Iterator, invocation_options: InvocationOptions) !ParsedOptions {
+    var parsed = ParsedOptions{
+        .strict_config = invocation_options.strict_config,
+    };
 
     while (args.next()) |arg| {
         if (isHelpFlag(arg)) {
             parsed.help = true;
+            continue;
+        }
+        if (std.mem.eql(u8, arg, "--strict-config")) {
+            parsed.strict_config = true;
             continue;
         }
         if (std.mem.eql(u8, arg, "--listen")) {
@@ -5458,8 +5479,8 @@ fn isHelpFlag(arg: []const u8) bool {
 pub fn printHelp() void {
     std.debug.print(
         \\Usage:
-        \\  codex-zig exec-server [--listen URL]
-        \\  codex-zig exec-server --remote URL --executor-id ID [--name NAME]
+        \\  codex-zig exec-server [--strict-config] [--listen URL]
+        \\  codex-zig exec-server [--strict-config] --remote URL --executor-id ID [--name NAME]
         \\
         \\Transport endpoint URL values match Rust Codex: `ws://IP:PORT`, `stdio`, or `stdio://`.
         \\Remote registration reads CODEX_EXEC_SERVER_REMOTE_BEARER_TOKEN and serves the returned ws:// rendezvous URL.

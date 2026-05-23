@@ -53,6 +53,8 @@ const ExecArgs = struct {
     prompt: ?[]const u8 = null,
     read_stdin: bool = false,
     approval_policy_requested: bool = false,
+    strict_config: bool = false,
+    unknown_config_override: ?[]const u8 = null,
 
     fn deinit(self: ExecArgs, allocator: std.mem.Allocator) void {
         var feature_overrides = self.feature_overrides;
@@ -73,6 +75,7 @@ const ExecArgs = struct {
         var review_args = self.review_args;
         review_args.deinit(allocator);
         if (self.prompt) |prompt| allocator.free(prompt);
+        if (self.unknown_config_override) |field| allocator.free(field);
     }
 };
 
@@ -85,6 +88,8 @@ pub const Options = struct {
     cwd: ?[]const u8 = null,
     additional_writable_roots: []const []const u8 = &.{},
     explicit_approval_policy: bool = false,
+    strict_config: bool = false,
+    unknown_config_override: ?[]const u8 = null,
 };
 
 pub fn run(allocator: std.mem.Allocator, args: *std.process.Args.Iterator) !void {
@@ -124,6 +129,11 @@ pub fn runWithOptions(allocator: std.mem.Allocator, args: *std.process.Args.Iter
     if (parsed.dangerously_bypass_approvals_and_sandbox and options.explicit_approval_policy) {
         return error.ConflictingExecOptions;
     }
+    const effective_strict_config = options.strict_config or parsed.strict_config;
+    if (effective_strict_config) {
+        if (options.unknown_config_override) |field| return config.failStrictConfigUnknownCliOverride(field);
+        if (parsed.unknown_config_override) |field| return config.failStrictConfigUnknownCliOverride(field);
+    }
 
     const effective_oss = options.oss or parsed.oss;
     const effective_oss_provider = parsed.oss_provider orelse options.oss_provider;
@@ -148,6 +158,8 @@ pub fn runWithOptions(allocator: std.mem.Allocator, args: *std.process.Args.Iter
             .ephemeral = parsed.ephemeral,
             .allow_exec_options = true,
             .explicit_approval_policy = options.explicit_approval_policy or parsed.approval_policy_requested,
+            .strict_config = effective_strict_config,
+            .unknown_config_override = options.unknown_config_override orelse parsed.unknown_config_override,
         });
         return;
     }
@@ -180,6 +192,7 @@ pub fn runWithOptions(allocator: std.mem.Allocator, args: *std.process.Args.Iter
     var cfg = try config.loadWithOptions(allocator, .{
         .profile = parsed.profile,
         .ignore_user_config = parsed.ignore_user_config,
+        .strict_config = effective_strict_config,
     });
     defer cfg.deinit(allocator);
     try config.applyRuntimeOverrides(&cfg, allocator, options.runtime_overrides);
@@ -330,6 +343,10 @@ fn parseArgs(allocator: std.mem.Allocator, args: []const []const u8) !ExecArgs {
             parsed.config_overrides.bypass_hook_trust = true;
             continue;
         }
+        if (!end_options and std.mem.eql(u8, arg, "--strict-config")) {
+            parsed.strict_config = true;
+            continue;
+        }
         if (!end_options and (std.mem.eql(u8, arg, "--model") or std.mem.eql(u8, arg, "-m"))) {
             index += 1;
             if (index >= args.len) return error.MissingExecOptionValue;
@@ -387,11 +404,14 @@ fn parseArgs(allocator: std.mem.Allocator, args: []const []const u8) !ExecArgs {
         if (!end_options and (std.mem.eql(u8, arg, "--config") or std.mem.eql(u8, arg, "-c"))) {
             index += 1;
             if (index >= args.len) return error.MissingExecOptionValue;
+            try config.rememberStrictConfigUnknownOverride(allocator, &parsed.unknown_config_override, args[index]);
             try config.applyRawConfigOverride(&parsed.config_overrides, &parsed.config_profile, args[index]);
             continue;
         }
         if (!end_options and std.mem.startsWith(u8, arg, "--config=")) {
-            try config.applyRawConfigOverride(&parsed.config_overrides, &parsed.config_profile, arg["--config=".len..]);
+            const raw = arg["--config=".len..];
+            try config.rememberStrictConfigUnknownOverride(allocator, &parsed.unknown_config_override, raw);
+            try config.applyRawConfigOverride(&parsed.config_overrides, &parsed.config_profile, raw);
             continue;
         }
         if (!end_options and std.mem.eql(u8, arg, "--enable")) {
@@ -779,6 +799,7 @@ pub fn printHelp() void {
         \\  --ignore-user-config    Do not load CODEX_HOME/config.toml
         \\  --ignore-rules          Accepted for Rust CLI compatibility
         \\  -c, --config key=value  Override a supported config value
+        \\  --strict-config         Error on unknown config fields
         \\  --enable FEATURE        Enable a feature for this invocation
         \\  --disable FEATURE       Disable a feature for this invocation
         \\  --color MODE            auto, always, or never
@@ -835,6 +856,7 @@ fn printResumeHelp() void {
         \\  --ephemeral             Do not save or resume a session file
         \\  --ignore-user-config    Do not load CODEX_HOME/config.toml
         \\  --ignore-rules          Accepted for Rust CLI compatibility
+        \\  --strict-config         Error on unknown config fields
         \\  --json                  Emit JSONL events instead of plain final text
         \\  -o, --output-last-message FILE
         \\                          Write final answer to FILE
@@ -870,6 +892,7 @@ fn printReviewHelp() void {
         \\  --ephemeral             Do not save a session file
         \\  --ignore-user-config    Do not load CODEX_HOME/config.toml
         \\  --ignore-rules          Accepted for Rust CLI compatibility
+        \\  --strict-config         Error on unknown config fields
         \\  --json                  Emit JSONL events instead of plain final text
         \\  -o, --output-last-message FILE
         \\                          Write final answer to FILE
@@ -942,6 +965,17 @@ test "exec args parse runtime feature toggles" {
 
     try std.testing.expectEqual(true, parsed.feature_overrides.get("goals").?);
     try std.testing.expectEqual(false, parsed.feature_overrides.get("shell_tool").?);
+    try std.testing.expectEqualStrings("say hello", parsed.prompt.?);
+}
+
+test "exec args parse strict config and remember first unknown override" {
+    const allocator = std.testing.allocator;
+    const argv = [_][]const u8{ "-c", "foo=bar", "--config=features.nope=true", "--strict-config", "say", "hello" };
+    const parsed = try parseArgs(allocator, argv[0..]);
+    defer parsed.deinit(allocator);
+
+    try std.testing.expect(parsed.strict_config);
+    try std.testing.expectEqualStrings("foo", parsed.unknown_config_override.?);
     try std.testing.expectEqualStrings("say hello", parsed.prompt.?);
 }
 

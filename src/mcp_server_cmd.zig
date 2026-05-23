@@ -12,6 +12,7 @@ pub const Options = struct {
     oss: bool = false,
     oss_provider: ?[]const u8 = null,
     additional_writable_roots: []const []const u8 = &.{},
+    strict_config: bool = false,
 };
 
 const SavedSession = struct {
@@ -401,15 +402,20 @@ pub fn runWithOptions(allocator: std.mem.Allocator, args: *std.process.Args.Iter
     while (args.next()) |arg| {
         try raw_args.append(allocator, arg);
     }
-    if (raw_args.items.len > 0) {
-        if (isHelpFlag(raw_args.items[0])) {
+    var strict_config = options.strict_config;
+    for (raw_args.items) |arg| {
+        if (isHelpFlag(arg)) {
             printHelp();
             return;
+        }
+        if (std.mem.eql(u8, arg, "--strict-config")) {
+            strict_config = true;
+            continue;
         }
         return error.UnknownMcpServerOption;
     }
 
-    var cfg = try config.loadWithOptions(allocator, .{ .profile = options.profile });
+    var cfg = try config.loadWithOptions(allocator, .{ .profile = options.profile, .strict_config = strict_config });
     var cfg_owned = true;
     defer if (cfg_owned) cfg.deinit(allocator);
     try config.applyRuntimeOverrides(&cfg, allocator, options.runtime_overrides);
@@ -635,7 +641,7 @@ fn isHelpFlag(arg: []const u8) bool {
 
 pub fn printHelp() void {
     std.debug.print(
-        \\Usage: codex-zig mcp-server
+        \\Usage: codex-zig mcp-server [--strict-config]
         \\
         \\Run a stdio MCP server exposing the Codex tools `codex` and `codex-reply`.
         \\

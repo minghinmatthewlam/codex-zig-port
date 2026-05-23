@@ -51,6 +51,12 @@ const CliOverrides = struct {
     remote_auth_token_env: ?[]const u8 = null,
     local_remote_control: bool = false,
     remote_control_bind: ?[]const u8 = null,
+    strict_config: bool = false,
+    unknown_config_override: ?[]const u8 = null,
+
+    fn deinit(self: *CliOverrides, allocator: std.mem.Allocator) void {
+        if (self.unknown_config_override) |field| allocator.free(field);
+    }
 };
 
 pub fn main(init: std.process.Init) !void {
@@ -105,6 +111,8 @@ pub fn main(init: std.process.Init) !void {
             ),
             error.ExecServerCommandFailed => {},
             error.HookStoppedTurn => {},
+            error.StrictConfigUnknownField => {},
+            error.StrictConfigUnsupportedForSubcommand => {},
             error.InvalidMcpServerTransport => std.debug.print(
                 "error: invalid transport\n",
                 .{},
@@ -177,6 +185,7 @@ fn mainInner(init: std.process.Init) !void {
     defer runtime_feature_overrides.deinit(allocator);
 
     var overrides = CliOverrides{};
+    defer overrides.deinit(allocator);
     var cmd_opt: ?[]const u8 = null;
     var forced_initial_prompt: ?[]const u8 = null;
     defer if (forced_initial_prompt) |prompt| allocator.free(prompt);
@@ -213,18 +222,22 @@ fn mainInner(init: std.process.Init) !void {
             continue;
         }
         if (std.mem.eql(u8, arg, "--config") or std.mem.eql(u8, arg, "-c")) {
+            const raw = args.next() orelse return error.MissingConfigOptionValue;
+            try config.rememberStrictConfigUnknownOverride(allocator, &overrides.unknown_config_override, raw);
             try config.applyRawConfigOverride(
                 &overrides.runtime,
                 &overrides.profile,
-                args.next() orelse return error.MissingConfigOptionValue,
+                raw,
             );
             continue;
         }
         if (std.mem.startsWith(u8, arg, "--config=")) {
+            const raw = arg["--config=".len..];
+            try config.rememberStrictConfigUnknownOverride(allocator, &overrides.unknown_config_override, raw);
             try config.applyRawConfigOverride(
                 &overrides.runtime,
                 &overrides.profile,
-                arg["--config=".len..],
+                raw,
             );
             continue;
         }
@@ -323,6 +336,10 @@ fn mainInner(init: std.process.Init) !void {
             overrides.runtime.bypass_hook_trust = true;
             continue;
         }
+        if (std.mem.eql(u8, arg, "--strict-config")) {
+            overrides.strict_config = true;
+            continue;
+        }
         if (std.mem.eql(u8, arg, "--search")) {
             overrides.runtime.web_search_mode = .live;
             continue;
@@ -376,6 +393,14 @@ fn mainInner(init: std.process.Init) !void {
         break;
     }
     overrides.additional_writable_roots = additional_writable_roots.items;
+    if (overrides.strict_config) {
+        if (cmd_opt) |cmd| {
+            if (strictConfigUnsupportedSubcommandName(cmd)) |subcommand| {
+                return rejectStrictConfigForSubcommand(subcommand);
+            }
+        }
+        if (overrides.unknown_config_override) |field| return config.failStrictConfigUnknownCliOverride(field);
+    }
 
     const should_apply_cwd = if (cmd_opt) |cmd|
         !isExecCommand(cmd) and
@@ -402,6 +427,7 @@ fn mainInner(init: std.process.Init) !void {
             .local_remote_control = overrides.local_remote_control,
             .remote_control_bind = overrides.remote_control_bind,
             .feature_overrides = runtime_feature_overrides,
+            .strict_config = overrides.strict_config,
         });
         return;
     }
@@ -469,6 +495,8 @@ fn mainInner(init: std.process.Init) !void {
                 .oss = overrides.oss,
                 .oss_provider = overrides.oss_provider,
                 .version = version,
+                .strict_config = overrides.strict_config,
+                .unknown_config_override = overrides.unknown_config_override,
             });
             return;
         }
@@ -479,6 +507,8 @@ fn mainInner(init: std.process.Init) !void {
                 .feature_overrides = runtime_feature_overrides,
                 .oss = overrides.oss,
                 .oss_provider = overrides.oss_provider,
+                .strict_config = overrides.strict_config,
+                .unknown_config_override = overrides.unknown_config_override,
             });
             return;
         }
@@ -528,6 +558,7 @@ fn mainInner(init: std.process.Init) !void {
             try app_server_cmd.runWithOptions(allocator, &args, .{
                 .feature_overrides = runtime_feature_overrides,
                 .bypass_hook_trust = overrides.runtime.bypass_hook_trust orelse false,
+                .strict_config = overrides.strict_config,
             });
             return;
         }
@@ -551,7 +582,9 @@ fn mainInner(init: std.process.Init) !void {
             return;
         }
         if (std.mem.eql(u8, cmd, "exec-server")) {
-            try exec_server_cmd.run(allocator, &args);
+            try exec_server_cmd.runWithOptions(allocator, &args, .{
+                .strict_config = overrides.strict_config,
+            });
             return;
         }
         if (std.mem.eql(u8, cmd, "remote-control")) {
@@ -580,6 +613,7 @@ fn mainInner(init: std.process.Init) !void {
                 .oss = overrides.oss,
                 .oss_provider = overrides.oss_provider,
                 .additional_writable_roots = overrides.additional_writable_roots,
+                .strict_config = overrides.strict_config,
             });
             return;
         }
@@ -593,6 +627,8 @@ fn mainInner(init: std.process.Init) !void {
                 .cwd = overrides.cwd,
                 .additional_writable_roots = overrides.additional_writable_roots,
                 .explicit_approval_policy = overrides.explicit_approval_policy,
+                .strict_config = overrides.strict_config,
+                .unknown_config_override = overrides.unknown_config_override,
             });
             return;
         }
@@ -682,7 +718,7 @@ fn mainInner(init: std.process.Init) !void {
                     return;
                 }
             }
-            try runSessions(allocator, limit_arg, overrides.profile);
+            try runSessions(allocator, limit_arg, overrides.profile, overrides.strict_config);
             return;
         }
         if (std.mem.eql(u8, cmd, "mock-demo")) {
@@ -716,6 +752,7 @@ fn mainInner(init: std.process.Init) !void {
             .local_remote_control = overrides.local_remote_control,
             .remote_control_bind = overrides.remote_control_bind,
             .feature_overrides = runtime_feature_overrides,
+            .strict_config = overrides.strict_config,
         });
         return;
     }
@@ -732,6 +769,7 @@ fn mainInner(init: std.process.Init) !void {
         .local_remote_control = overrides.local_remote_control,
         .remote_control_bind = overrides.remote_control_bind,
         .feature_overrides = runtime_feature_overrides,
+        .strict_config = overrides.strict_config,
     });
 }
 
@@ -839,6 +877,48 @@ fn commandRejectsRootRemote(cmd: []const u8) bool {
         std.mem.eql(u8, cmd, "mock-sandbox-demo") or
         isExecCommand(cmd) or
         isApplyCommand(cmd);
+}
+
+fn strictConfigUnsupportedSubcommandName(cmd: []const u8) ?[]const u8 {
+    if (std.mem.eql(u8, cmd, "auth-status") or
+        std.mem.eql(u8, cmd, "doctor") or
+        std.mem.eql(u8, cmd, "review") or
+        std.mem.eql(u8, cmd, "app-server") or
+        std.mem.eql(u8, cmd, "exec-server") or
+        std.mem.eql(u8, cmd, "mcp-server") or
+        std.mem.eql(u8, cmd, "resume") or
+        std.mem.eql(u8, cmd, "fork") or
+        std.mem.eql(u8, cmd, "remote-fork") or
+        std.mem.eql(u8, cmd, "sessions") or
+        isExecCommand(cmd))
+    {
+        return null;
+    }
+    if (std.mem.eql(u8, cmd, "sandbox")) return "sandbox";
+    if (std.mem.eql(u8, cmd, "features")) return "features";
+    if (std.mem.eql(u8, cmd, "completion")) return "completion";
+    if (std.mem.eql(u8, cmd, "debug")) return "debug";
+    if (std.mem.eql(u8, cmd, "execpolicy")) return "execpolicy";
+    if (isCloudCommand(cmd)) return cmd;
+    if (std.mem.eql(u8, cmd, "mcp")) return "mcp";
+    if (std.mem.eql(u8, cmd, "app")) return "app";
+    if (std.mem.eql(u8, cmd, "remote-control")) return "remote-control";
+    if (std.mem.eql(u8, cmd, "plugin")) return "plugin";
+    if (std.mem.eql(u8, cmd, "login")) return "login";
+    if (std.mem.eql(u8, cmd, "logout")) return "logout";
+    if (std.mem.eql(u8, cmd, "update")) return "update";
+    if (std.mem.eql(u8, cmd, "responses-api-proxy")) return "responses-api-proxy";
+    if (std.mem.eql(u8, cmd, "stdio-to-uds")) return "stdio-to-uds";
+    if (std.mem.eql(u8, cmd, "help")) return "help";
+    if (isApplyCommand(cmd)) return "apply";
+    if (isRemovedTopLevelCommand(cmd)) return cmd;
+    if (std.mem.startsWith(u8, cmd, "mock-")) return cmd;
+    return null;
+}
+
+fn rejectStrictConfigForSubcommand(subcommand: []const u8) error{StrictConfigUnsupportedForSubcommand} {
+    std.debug.print("`--strict-config` is not supported for `codex-zig {s}`\n", .{subcommand});
+    return error.StrictConfigUnsupportedForSubcommand;
 }
 
 fn isRemovedTopLevelCommand(cmd: []const u8) bool {
@@ -1000,6 +1080,7 @@ const SessionCommandArgs = struct {
     include_non_interactive: bool = false,
     profile: ?[]const u8 = null,
     runtime_overrides: config.RuntimeOverrides = .{},
+    unknown_config_override: ?[]const u8 = null,
     oss: bool = false,
     oss_provider: ?[]const u8 = null,
     cwd: ?[]const u8 = null,
@@ -1010,9 +1091,11 @@ const SessionCommandArgs = struct {
     remote_auth_token_env: ?[]const u8 = null,
     local_remote_control: bool = false,
     remote_control_bind: ?[]const u8 = null,
+    strict_config: bool = false,
     help: bool = false,
 
     fn deinit(self: *SessionCommandArgs, allocator: std.mem.Allocator) void {
+        if (self.unknown_config_override) |field| allocator.free(field);
         self.additional_writable_roots.deinit(allocator);
         for (self.image_files.items) |path| allocator.free(path);
         self.image_files.deinit(allocator);
@@ -1048,6 +1131,12 @@ fn prepareSessionLaunchOptions(
     initial_image_files: []const []const u8,
     parsed: SessionCommandArgs,
 ) !SessionLaunchOptions {
+    const effective_strict_config = overrides.strict_config or parsed.strict_config;
+    if (effective_strict_config) {
+        if (overrides.unknown_config_override) |field| return config.failStrictConfigUnknownCliOverride(field);
+        if (parsed.unknown_config_override) |field| return config.failStrictConfigUnknownCliOverride(field);
+    }
+
     if (parsed.cwd) |cwd| try workdir.change(cwd);
 
     const image_files = try cli_utils.mergeStringSlices(allocator, initial_image_files, parsed.image_files.items);
@@ -1074,6 +1163,7 @@ fn prepareSessionLaunchOptions(
             .local_remote_control = overrides.local_remote_control or parsed.local_remote_control,
             .remote_control_bind = parsed.remote_control_bind orelse overrides.remote_control_bind,
             .feature_overrides = feature_overrides,
+            .strict_config = effective_strict_config,
         },
     };
 }
@@ -1122,11 +1212,14 @@ fn parseSessionCommandArgs(allocator: std.mem.Allocator, args: []const []const u
         if (!end_options and (std.mem.eql(u8, arg, "--config") or std.mem.eql(u8, arg, "-c"))) {
             if (index + 1 >= args.len) return error.MissingConfigOptionValue;
             index += 1;
+            try config.rememberStrictConfigUnknownOverride(allocator, &parsed.unknown_config_override, args[index]);
             try config.applyRawConfigOverride(&parsed.runtime_overrides, &parsed.profile, args[index]);
             continue;
         }
         if (!end_options and std.mem.startsWith(u8, arg, "--config=")) {
-            try config.applyRawConfigOverride(&parsed.runtime_overrides, &parsed.profile, arg["--config=".len..]);
+            const raw = arg["--config=".len..];
+            try config.rememberStrictConfigUnknownOverride(allocator, &parsed.unknown_config_override, raw);
+            try config.applyRawConfigOverride(&parsed.runtime_overrides, &parsed.profile, raw);
             continue;
         }
         if (!end_options and (std.mem.eql(u8, arg, "--model") or std.mem.eql(u8, arg, "-m"))) {
@@ -1231,6 +1324,10 @@ fn parseSessionCommandArgs(allocator: std.mem.Allocator, args: []const []const u
         }
         if (!end_options and std.mem.eql(u8, arg, "--dangerously-bypass-hook-trust")) {
             parsed.runtime_overrides.bypass_hook_trust = true;
+            continue;
+        }
+        if (!end_options and std.mem.eql(u8, arg, "--strict-config")) {
+            parsed.strict_config = true;
             continue;
         }
         if (!end_options and std.mem.eql(u8, arg, "--search")) {
@@ -1365,6 +1462,8 @@ fn printHelp() !void {
         \\                          Allow workspace-write shell tools to write DIR
         \\  codex-zig -c key=value ...
         \\                          Override a supported config value
+        \\  codex-zig --strict-config ...
+        \\                          Error on unknown config fields
         \\  codex-zig -m MODEL ...
         \\                          Override model for the command
         \\  codex-zig -i FILE ...
@@ -1508,16 +1607,16 @@ fn printSessionsHelp() void {
     , .{});
 }
 
-fn runSessions(allocator: std.mem.Allocator, limit_arg: ?[]const u8, profile: ?[]const u8) !void {
+fn runSessions(allocator: std.mem.Allocator, limit_arg: ?[]const u8, profile: ?[]const u8, strict_config: bool) !void {
     const limit = if (limit_arg) |value| try std.fmt.parseUnsigned(usize, value, 10) else 10;
-    var cfg = try config.loadWithOptions(allocator, .{ .profile = profile });
+    var cfg = try config.loadWithOptions(allocator, .{ .profile = profile, .strict_config = strict_config });
     defer cfg.deinit(allocator);
 
     try session_store.printSessionList(allocator, cfg.codex_home, limit);
 }
 
 fn runAuthStatus(allocator: std.mem.Allocator, overrides: CliOverrides) !void {
-    var cfg = try config.loadWithOptions(allocator, .{ .profile = overrides.profile });
+    var cfg = try config.loadWithOptions(allocator, .{ .profile = overrides.profile, .strict_config = overrides.strict_config });
     defer cfg.deinit(allocator);
     try config.applyRuntimeOverrides(&cfg, allocator, overrides.runtime);
     var credentials = try auth.loadForConfig(allocator, &cfg);
@@ -1746,13 +1845,14 @@ test "exec command alias matches exec" {
 
 test "session command flags parse resume compatibility options" {
     const allocator = std.testing.allocator;
-    const argv = [_][]const u8{ "--all", "--include-non-interactive", "--last" };
+    const argv = [_][]const u8{ "--all", "--include-non-interactive", "--last", "--strict-config" };
     var parsed = try parseSessionCommandArgs(allocator, argv[0..], true);
     defer parsed.deinit(allocator);
 
     try std.testing.expect(parsed.show_all);
     try std.testing.expect(parsed.include_non_interactive);
     try std.testing.expect(parsed.last);
+    try std.testing.expect(parsed.strict_config);
     try std.testing.expect(parsed.target == null);
 }
 
@@ -1818,6 +1918,22 @@ test "session command flags merge interactive overrides" {
     try std.testing.expectEqualStrings("/tmp/a.png", parsed.image_files.items[0]);
     try std.testing.expectEqualStrings("/tmp/b.png", parsed.image_files.items[1]);
     try std.testing.expect(parsed.no_alt_screen);
+}
+
+test "session command flags remember first unknown config override" {
+    const allocator = std.testing.allocator;
+    const argv = [_][]const u8{
+        "-c",
+        "features.nope=true",
+        "--config=mcp_servers.local.command=echo",
+        "-c",
+        "foo=bar",
+    };
+    var parsed = try parseSessionCommandArgs(allocator, argv[0..], true);
+    defer parsed.deinit(allocator);
+
+    try std.testing.expectEqualStrings("features.nope", parsed.unknown_config_override.?);
+    try std.testing.expect(parsed.target == null);
 }
 
 test "session command variadic images stop at separator before target" {
@@ -1891,6 +2007,22 @@ test "root remote is only accepted for interactive commands" {
     try std.testing.expect(!commandRejectsRootRemote("fork"));
     try std.testing.expect(!commandRejectsRootRemote("remote-fork"));
     try std.testing.expect(!commandRejectsRootRemote("write this prompt"));
+}
+
+test "root strict config is rejected for unsupported subcommands" {
+    try std.testing.expect(strictConfigUnsupportedSubcommandName("exec") == null);
+    try std.testing.expect(strictConfigUnsupportedSubcommandName("e") == null);
+    try std.testing.expect(strictConfigUnsupportedSubcommandName("review") == null);
+    try std.testing.expect(strictConfigUnsupportedSubcommandName("doctor") == null);
+    try std.testing.expect(strictConfigUnsupportedSubcommandName("app-server") == null);
+    try std.testing.expect(strictConfigUnsupportedSubcommandName("exec-server") == null);
+    try std.testing.expect(strictConfigUnsupportedSubcommandName("mcp-server") == null);
+    try std.testing.expect(strictConfigUnsupportedSubcommandName("resume") == null);
+    try std.testing.expect(strictConfigUnsupportedSubcommandName("fork") == null);
+    try std.testing.expect(strictConfigUnsupportedSubcommandName("write this prompt") == null);
+    try std.testing.expectEqualStrings("features", strictConfigUnsupportedSubcommandName("features").?);
+    try std.testing.expectEqualStrings("cloud", strictConfigUnsupportedSubcommandName("cloud").?);
+    try std.testing.expectEqualStrings("apply", strictConfigUnsupportedSubcommandName("apply").?);
 }
 
 test "removed top-level Rust commands are rejected" {
