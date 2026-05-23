@@ -222,7 +222,7 @@ fn writeAllBeforeDeadline(fd: std.posix.fd_t, bytes: []const u8, deadline_ms: i6
     var offset: usize = 0;
     while (offset < bytes.len) {
         if (waitForFd(fd, @intCast(std.posix.POLL.OUT), deadline_ms, .send)) |failure| return failure;
-        const rc = std.c.write(fd, bytes[offset..].ptr, bytes.len - offset);
+        const rc = sendNoSigpipe(fd, bytes[offset..]);
         switch (std.c.errno(rc)) {
             .SUCCESS => {
                 if (rc <= 0) return .{ .kind = .send };
@@ -233,6 +233,17 @@ fn writeAllBeforeDeadline(fd: std.posix.fd_t, bytes: []const u8, deadline_ms: i6
         }
     }
     return null;
+}
+
+fn sendNoSigpipe(fd: std.posix.fd_t, bytes: []const u8) isize {
+    return std.c.send(fd, bytes.ptr, bytes.len, noSigpipeSendFlags());
+}
+
+fn noSigpipeSendFlags() u32 {
+    return switch (builtin.os.tag) {
+        .driverkit, .ios, .linux, .maccatalyst, .macos, .tvos, .visionos, .watchos => std.c.MSG.NOSIGNAL,
+        else => 0,
+    };
 }
 
 fn readIdeContextResponse(
@@ -604,3 +615,22 @@ test "prefixes user request with desktop delimiter" {
         prefixed,
     );
 }
+
+test "closed socket write returns send failure without SIGPIPE" {
+    if (builtin.os.tag != .macos) return error.SkipZigTest;
+
+    var fds: [2]std.c.fd_t = undefined;
+    if (socketpair(@intCast(std.c.AF.UNIX), @intCast(std.c.SOCK.STREAM), 0, &fds) != 0) {
+        return error.SocketPairFailed;
+    }
+    defer _ = close(fds[0]);
+    _ = close(fds[1]);
+
+    const failure = writeAllBeforeDeadline(fds[0], "hello", nowMs() + std.time.ms_per_s) orelse {
+        return error.ExpectedSendFailure;
+    };
+    try std.testing.expectEqual(FetchFailureKind.send, failure.kind);
+}
+
+extern fn socketpair(domain: c_uint, sock_type: c_uint, protocol: c_uint, sv: *[2]std.c.fd_t) c_int;
+extern fn close(fd: std.c.fd_t) c_int;
