@@ -2720,6 +2720,7 @@ const TuiState = struct {
     raw_output_mode: bool = false,
     vim_mode: bool = false,
     plan_mode: bool = false,
+    realtime_phase: RealtimeConversationPhase = .inactive,
     ide_context_enabled: bool = false,
     ide_context_prompt_fetch_warned: bool = false,
     terminal_title_items: std.ArrayList(titleline.Item) = .empty,
@@ -2869,6 +2870,13 @@ fn handleSlashCommand(
         return .handled;
     }
 
+    if (std.ascii.eqlIgnoreCase(parts.name, "realtime")) {
+        // Rust hides /realtime unless realtime conversation support is enabled.
+        if (!realtime_enabled) return .handled;
+        handleRealtimeSlash(state, cfg.*, parts.args);
+        return .handled;
+    }
+
     if (std.ascii.eqlIgnoreCase(parts.name, "settings")) {
         // Rust hides /settings unless realtime conversation support is enabled.
         if (!realtime_enabled) return .handled;
@@ -2883,6 +2891,10 @@ fn handleSlashCommand(
 
     if (std.ascii.eqlIgnoreCase(parts.name, "experimental")) {
         try handleExperimentalFeatures(allocator, cfg.*, feature_overrides, parts.args);
+        if (!realtimeConversationEnabled(feature_overrides.*) and state.realtime_phase != .inactive) {
+            state.realtime_phase = .inactive;
+            std.debug.print("realtime voice mode: inactive\n", .{});
+        }
         return .handled;
     }
 
@@ -3415,6 +3427,22 @@ const RealtimeAudioDeviceKind = enum {
     }
 };
 
+const RealtimeConversationPhase = enum {
+    inactive,
+    active,
+
+    fn label(self: RealtimeConversationPhase) []const u8 {
+        return switch (self) {
+            .inactive => "inactive",
+            .active => "active",
+        };
+    }
+
+    fn isLive(self: RealtimeConversationPhase) bool {
+        return self != .inactive;
+    }
+};
+
 const PetCatalogEntry = struct {
     id: []const u8,
     name: []const u8,
@@ -3434,6 +3462,53 @@ const builtin_pets = [_]PetCatalogEntry{
 fn realtimeConversationEnabled(feature_overrides: features_cmd.FeatureOverrides) bool {
     if (builtin.os.tag == .linux) return false;
     return features_cmd.effectiveEnabled(feature_overrides, "realtime_conversation") orelse false;
+}
+
+fn handleRealtimeSlash(
+    state: *TuiState,
+    cfg: config.Config,
+    args: []const u8,
+) void {
+    const trimmed = std.mem.trim(u8, args, " \t\r\n");
+    if (trimmed.len == 0 or std.ascii.eqlIgnoreCase(trimmed, "toggle")) {
+        state.realtime_phase = if (state.realtime_phase.isLive()) .inactive else .active;
+        printRealtimeStatus(state.*, cfg);
+        return;
+    }
+    if (std.ascii.eqlIgnoreCase(trimmed, "status") or
+        std.ascii.eqlIgnoreCase(trimmed, "list") or
+        std.ascii.eqlIgnoreCase(trimmed, "help"))
+    {
+        printRealtimeStatus(state.*, cfg);
+        printRealtimeUsage();
+        return;
+    }
+    if (std.ascii.eqlIgnoreCase(trimmed, "start") or std.ascii.eqlIgnoreCase(trimmed, "on")) {
+        state.realtime_phase = .active;
+        printRealtimeStatus(state.*, cfg);
+        return;
+    }
+    if (std.ascii.eqlIgnoreCase(trimmed, "stop") or std.ascii.eqlIgnoreCase(trimmed, "off")) {
+        state.realtime_phase = .inactive;
+        printRealtimeStatus(state.*, cfg);
+        return;
+    }
+
+    std.debug.print("unknown realtime action: {s}\n", .{trimmed});
+    printRealtimeUsage();
+}
+
+fn printRealtimeStatus(state: TuiState, cfg: config.Config) void {
+    std.debug.print("realtime voice mode: {s}\n", .{state.realtime_phase.label()});
+    printRealtimeAudioDeviceStatus(cfg, .microphone);
+    printRealtimeAudioDeviceStatus(cfg, .speaker);
+    if (state.realtime_phase.isLive()) {
+        std.debug.print("local audio transport: not connected\n", .{});
+    }
+}
+
+fn printRealtimeUsage() void {
+    std.debug.print("usage: /realtime [start|stop|status]\n", .{});
 }
 
 fn handleSettingsSlash(
@@ -3796,6 +3871,8 @@ fn printSlashHelp(goals_enabled: bool, realtime_enabled: bool) void {
     , .{});
     if (realtime_enabled) {
         std.debug.print(
+            \\  /realtime [start|stop|status]
+            \\                    toggle realtime voice mode
             \\  /settings [microphone|speaker]
             \\                    configure realtime microphone/speaker
         , .{});
@@ -3942,6 +4019,7 @@ fn printStatus(
         \\  search:      {s}
         \\  service tier: {s}
         \\  plan mode:   {s}
+        \\  realtime:    {s}
         \\  ide context:  {s}
         \\  alt screen:   {s}
         \\  term title:  {s}
@@ -3969,6 +4047,7 @@ fn printStatus(
         config.webSearchLabel(cfg.web_search_mode),
         if (cfg.service_tier) |service_tier| service_tier else "unset",
         if (state.plan_mode) "on" else "off",
+        state.realtime_phase.label(),
         if (state.ide_context_enabled) "on" else "off",
         cfg.tui_alternate_screen.label(),
         if (state.terminal_title_items.items.len > 0) "on" else "off",
@@ -5844,6 +5923,10 @@ test "pets slash helper aliases" {
 }
 
 test "settings slash helper aliases" {
+    try std.testing.expect(!RealtimeConversationPhase.inactive.isLive());
+    try std.testing.expect(RealtimeConversationPhase.active.isLive());
+    try std.testing.expectEqualStrings("active", RealtimeConversationPhase.active.label());
+
     try std.testing.expectEqual(RealtimeAudioDeviceKind.microphone, parseRealtimeAudioDeviceKind("microphone").?);
     try std.testing.expectEqual(RealtimeAudioDeviceKind.microphone, parseRealtimeAudioDeviceKind("mic").?);
     try std.testing.expectEqual(RealtimeAudioDeviceKind.speaker, parseRealtimeAudioDeviceKind("speaker").?);

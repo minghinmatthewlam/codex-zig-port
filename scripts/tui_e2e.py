@@ -4573,7 +4573,27 @@ def run_tui_settings_slash_smoke(
 
         mark = len(output)
         send_line(master_fd, "/help")
+        wait_for(master_fd, output, b"/realtime [start|stop|status]", 5, mark)
         wait_for(master_fd, output, b"/settings [microphone|speaker]", 5, mark)
+
+        mark = len(output)
+        send_line(master_fd, "/realtime status")
+        wait_for(master_fd, output, b"realtime voice mode: inactive", 5, mark)
+        wait_for(master_fd, output, b"realtime microphone: System default", 5, mark)
+        wait_for(master_fd, output, b"usage: /realtime", 5, mark)
+
+        mark = len(output)
+        send_line(master_fd, "/realtime")
+        wait_for(master_fd, output, b"realtime voice mode: active", 5, mark)
+        wait_for(master_fd, output, b"local audio transport: not connected", 5, mark)
+
+        mark = len(output)
+        send_line(master_fd, "/status")
+        wait_for(master_fd, output, b"realtime:    active", 5, mark)
+
+        mark = len(output)
+        send_line(master_fd, "/realtime stop")
+        wait_for(master_fd, output, b"realtime voice mode: inactive", 5, mark)
 
         mark = len(output)
         send_line(master_fd, "/settings")

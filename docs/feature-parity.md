@@ -42,7 +42,7 @@ Zig TUI help in `src/tui.zig`, and the broader narrative tracker in
   queued input while a turn is running, `/compact` interactions, active tool
   interruption, and accurate background-process cleanup.
 - Close major missing TUI slash commands that affect daily use:
-  `/agent` / `/subagents` and `/realtime`.
+  `/agent` / `/subagents`.
 - Basic local TUI `/experimental` coverage is implemented as a text-mode
   feature browser/toggler: it lists Rust menu-visible experimental features
   with effective enabled state, menu label, description, and config key, and
@@ -99,6 +99,14 @@ Zig TUI help in `src/tui.zig`, and the broader narrative tracker in
   `[audio].speaker`, including clearing back to the system default. Rust's rich
   device picker, live device enumeration, and restart-active-audio prompt remain
   planned depth.
+- Basic local TUI `/realtime` coverage is implemented behind Rust's
+  `realtime_conversation` feature gate: `/help` shows the command only when the
+  feature is enabled, `/realtime` toggles local active/inactive state,
+  `/realtime start|stop|status` reports the current microphone/speaker
+  selection, and `/status` reflects the local realtime state. Rust's actual
+  microphone capture, speaker playback, websocket/WebRTC session startup,
+  realtime transcript mirroring, and active-turn integration remain planned
+  realtime backend depth.
 - Basic local TUI `/skills` and `/hooks` list views are covered: `/skills`
   lists discovered repo/user/plugin skills with enabled state and load errors,
   and `/hooks` lists discovered lifecycle command hooks with event, source,
