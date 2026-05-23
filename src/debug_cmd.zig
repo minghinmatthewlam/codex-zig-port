@@ -11,6 +11,7 @@ const trace_reduce = @import("trace_reduce.zig");
 
 pub const Options = struct {
     profile: ?[]const u8 = null,
+    profile_v2: ?[]const u8 = null,
     runtime_overrides: config.RuntimeOverrides = .{},
 };
 
@@ -23,6 +24,10 @@ pub fn runWithOptions(allocator: std.mem.Allocator, args: *std.process.Args.Iter
     if (isHelpFlag(subcommand)) {
         printHelp();
         return;
+    }
+
+    if (options.profile_v2 != null and !std.mem.eql(u8, subcommand, "prompt-input")) {
+        return error.ProfileV2UnsupportedCommand;
     }
 
     if (std.mem.eql(u8, subcommand, "prompt-input")) {
@@ -502,7 +507,7 @@ fn renderPromptInput(
     image_data_urls: []const []const u8,
     options: Options,
 ) ![]const u8 {
-    var cfg = try config.loadWithOptions(allocator, .{ .profile = options.profile });
+    var cfg = try config.loadWithOptions(allocator, .{ .profile = options.profile, .profile_v2 = options.profile_v2 });
     defer cfg.deinit(allocator);
     try config.applyRuntimeOverrides(&cfg, allocator, options.runtime_overrides);
 

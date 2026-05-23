@@ -46,6 +46,7 @@ pub const Options = struct {
     fork_picker: bool = false,
     fork_show_all: bool = false,
     profile: ?[]const u8 = null,
+    profile_v2: ?[]const u8 = null,
     runtime_overrides: config.RuntimeOverrides = .{},
     oss: bool = false,
     oss_provider: ?[]const u8 = null,
@@ -227,6 +228,7 @@ pub fn runWithOptions(allocator: std.mem.Allocator, options: Options) !void {
         if (options.strict_config) {
             var strict_cfg = try config.loadWithOptions(allocator, .{
                 .profile = options.profile,
+                .profile_v2 = options.profile_v2,
                 .strict_config = true,
             });
             defer strict_cfg.deinit(allocator);
@@ -237,6 +239,7 @@ pub fn runWithOptions(allocator: std.mem.Allocator, options: Options) !void {
 
     var cfg = try config.loadWithOptions(allocator, .{
         .profile = options.profile,
+        .profile_v2 = options.profile_v2,
         .strict_config = options.strict_config,
     });
     defer cfg.deinit(allocator);

@@ -40,6 +40,7 @@ const version = "0.0.1";
 
 const CliOverrides = struct {
     profile: ?[]const u8 = null,
+    profile_v2: ?[]const u8 = null,
     runtime: config.RuntimeOverrides = .{},
     oss: bool = false,
     oss_provider: ?[]const u8 = null,
@@ -113,6 +114,10 @@ pub fn main(init: std.process.Init) !void {
             error.HookStoppedTurn => {},
             error.StrictConfigUnknownField => {},
             error.StrictConfigUnsupportedForSubcommand => {},
+            error.ProfileV2UnsupportedCommand => std.debug.print(
+                "Error: --profile-v2 only applies to runtime commands: `codex`, `codex exec`, `codex review`, `codex resume`, `codex fork`, and `codex debug prompt-input`.\n",
+                .{},
+            ),
             error.InvalidMcpServerTransport => std.debug.print(
                 "error: invalid transport\n",
                 .{},
@@ -203,6 +208,14 @@ fn mainInner(init: std.process.Init) !void {
         }
         if (std.mem.startsWith(u8, arg, "--profile=")) {
             overrides.profile = arg["--profile=".len..];
+            continue;
+        }
+        if (std.mem.eql(u8, arg, "--profile-v2")) {
+            overrides.profile_v2 = args.next() orelse return error.MissingProfileOptionValue;
+            continue;
+        }
+        if (std.mem.startsWith(u8, arg, "--profile-v2=")) {
+            overrides.profile_v2 = arg["--profile-v2=".len..];
             continue;
         }
         if (std.mem.eql(u8, arg, "--cd") or std.mem.eql(u8, arg, "-C")) {
@@ -401,6 +414,13 @@ fn mainInner(init: std.process.Init) !void {
         }
         if (overrides.unknown_config_override) |field| return config.failStrictConfigUnknownCliOverride(field);
     }
+    if (overrides.profile_v2 != null) {
+        if (cmd_opt) |cmd| {
+            if (profileV2UnsupportedSubcommandName(cmd) != null) {
+                return error.ProfileV2UnsupportedCommand;
+            }
+        }
+    }
 
     const should_apply_cwd = if (cmd_opt) |cmd|
         !isExecCommand(cmd) and
@@ -416,6 +436,7 @@ fn mainInner(init: std.process.Init) !void {
     if (forced_initial_prompt) |initial_prompt| {
         try runTuiWithImages(allocator, initial_image_files.items, .{
             .profile = overrides.profile,
+            .profile_v2 = overrides.profile_v2,
             .runtime_overrides = overrides.runtime,
             .oss = overrides.oss,
             .oss_provider = overrides.oss_provider,
@@ -503,6 +524,7 @@ fn mainInner(init: std.process.Init) !void {
         if (std.mem.eql(u8, cmd, "review")) {
             try review.runWithOptions(allocator, &args, .{
                 .profile = overrides.profile,
+                .profile_v2 = overrides.profile_v2,
                 .runtime_overrides = overrides.runtime,
                 .feature_overrides = runtime_feature_overrides,
                 .oss = overrides.oss,
@@ -542,6 +564,7 @@ fn mainInner(init: std.process.Init) !void {
         if (std.mem.eql(u8, cmd, "debug")) {
             try debug_cmd.runWithOptions(allocator, &args, .{
                 .profile = overrides.profile,
+                .profile_v2 = overrides.profile_v2,
                 .runtime_overrides = overrides.runtime,
             });
             return;
@@ -620,6 +643,7 @@ fn mainInner(init: std.process.Init) !void {
         if (isExecCommand(cmd)) {
             try exec.runWithOptions(allocator, &args, .{
                 .profile = overrides.profile,
+                .profile_v2 = overrides.profile_v2,
                 .runtime_overrides = overrides.runtime,
                 .feature_overrides = runtime_feature_overrides,
                 .oss = overrides.oss,
@@ -741,6 +765,7 @@ fn mainInner(init: std.process.Init) !void {
         defer allocator.free(initial_prompt);
         try runTuiWithImages(allocator, initial_image_files.items, .{
             .profile = overrides.profile,
+            .profile_v2 = overrides.profile_v2,
             .runtime_overrides = overrides.runtime,
             .oss = overrides.oss,
             .oss_provider = overrides.oss_provider,
@@ -759,6 +784,7 @@ fn mainInner(init: std.process.Init) !void {
 
     try runTuiWithImages(allocator, initial_image_files.items, .{
         .profile = overrides.profile,
+        .profile_v2 = overrides.profile_v2,
         .runtime_overrides = overrides.runtime,
         .oss = overrides.oss,
         .oss_provider = overrides.oss_provider,
@@ -921,6 +947,42 @@ fn rejectStrictConfigForSubcommand(subcommand: []const u8) error{StrictConfigUns
     return error.StrictConfigUnsupportedForSubcommand;
 }
 
+fn profileV2UnsupportedSubcommandName(cmd: []const u8) ?[]const u8 {
+    if (std.mem.eql(u8, cmd, "review") or
+        std.mem.eql(u8, cmd, "resume") or
+        std.mem.eql(u8, cmd, "fork") or
+        std.mem.eql(u8, cmd, "remote-fork") or
+        std.mem.eql(u8, cmd, "debug") or
+        isExecCommand(cmd))
+    {
+        return null;
+    }
+    if (std.mem.eql(u8, cmd, "auth-status")) return "auth-status";
+    if (std.mem.eql(u8, cmd, "doctor")) return "doctor";
+    if (std.mem.eql(u8, cmd, "sandbox")) return "sandbox";
+    if (std.mem.eql(u8, cmd, "features")) return "features";
+    if (std.mem.eql(u8, cmd, "completion")) return "completion";
+    if (std.mem.eql(u8, cmd, "execpolicy")) return "execpolicy";
+    if (isCloudCommand(cmd)) return cmd;
+    if (std.mem.eql(u8, cmd, "mcp")) return "mcp";
+    if (std.mem.eql(u8, cmd, "app")) return "app";
+    if (std.mem.eql(u8, cmd, "app-server")) return "app-server";
+    if (std.mem.eql(u8, cmd, "exec-server")) return "exec-server";
+    if (std.mem.eql(u8, cmd, "remote-control")) return "remote-control";
+    if (std.mem.eql(u8, cmd, "plugin")) return "plugin";
+    if (std.mem.eql(u8, cmd, "login")) return "login";
+    if (std.mem.eql(u8, cmd, "logout")) return "logout";
+    if (std.mem.eql(u8, cmd, "update")) return "update";
+    if (std.mem.eql(u8, cmd, "responses-api-proxy")) return "responses-api-proxy";
+    if (std.mem.eql(u8, cmd, "stdio-to-uds")) return "stdio-to-uds";
+    if (std.mem.eql(u8, cmd, "mcp-server")) return "mcp-server";
+    if (std.mem.eql(u8, cmd, "sessions")) return "sessions";
+    if (isApplyCommand(cmd)) return "apply";
+    if (isRemovedTopLevelCommand(cmd)) return cmd;
+    if (std.mem.startsWith(u8, cmd, "mock-")) return cmd;
+    return null;
+}
+
 fn isRemovedTopLevelCommand(cmd: []const u8) bool {
     return std.mem.eql(u8, cmd, "marketplace");
 }
@@ -1079,6 +1141,7 @@ const SessionCommandArgs = struct {
     show_all: bool = false,
     include_non_interactive: bool = false,
     profile: ?[]const u8 = null,
+    profile_v2: ?[]const u8 = null,
     runtime_overrides: config.RuntimeOverrides = .{},
     unknown_config_override: ?[]const u8 = null,
     oss: bool = false,
@@ -1153,6 +1216,7 @@ fn prepareSessionLaunchOptions(
         .image_files = image_files,
         .tui_options = .{
             .profile = parsed.profile orelse overrides.profile,
+            .profile_v2 = parsed.profile_v2 orelse overrides.profile_v2,
             .runtime_overrides = config.mergeRuntimeOverrides(overrides.runtime, parsed.runtime_overrides),
             .oss = overrides.oss or parsed.oss,
             .oss_provider = parsed.oss_provider orelse overrides.oss_provider,
@@ -1207,6 +1271,16 @@ fn parseSessionCommandArgs(allocator: std.mem.Allocator, args: []const []const u
         }
         if (!end_options and std.mem.startsWith(u8, arg, "--profile=")) {
             parsed.profile = arg["--profile=".len..];
+            continue;
+        }
+        if (!end_options and std.mem.eql(u8, arg, "--profile-v2")) {
+            if (index + 1 >= args.len) return error.MissingProfileOptionValue;
+            index += 1;
+            parsed.profile_v2 = args[index];
+            continue;
+        }
+        if (!end_options and std.mem.startsWith(u8, arg, "--profile-v2=")) {
+            parsed.profile_v2 = arg["--profile-v2=".len..];
             continue;
         }
         if (!end_options and (std.mem.eql(u8, arg, "--config") or std.mem.eql(u8, arg, "-c"))) {
@@ -1460,6 +1534,8 @@ fn printHelp() !void {
         \\                          Use DIR as the working root
         \\  codex-zig --add-dir DIR ...
         \\                          Allow workspace-write shell tools to write DIR
+        \\  codex-zig --profile-v2 NAME ...
+        \\                          Layer CODEX_HOME/NAME.config.toml over base config
         \\  codex-zig -c key=value ...
         \\                          Override a supported config value
         \\  codex-zig --strict-config ...
@@ -1616,7 +1692,10 @@ fn runSessions(allocator: std.mem.Allocator, limit_arg: ?[]const u8, profile: ?[
 }
 
 fn runAuthStatus(allocator: std.mem.Allocator, overrides: CliOverrides) !void {
-    var cfg = try config.loadWithOptions(allocator, .{ .profile = overrides.profile, .strict_config = overrides.strict_config });
+    var cfg = try config.loadWithOptions(allocator, .{
+        .profile = overrides.profile,
+        .strict_config = overrides.strict_config,
+    });
     defer cfg.deinit(allocator);
     try config.applyRuntimeOverrides(&cfg, allocator, overrides.runtime);
     var credentials = try auth.loadForConfig(allocator, &cfg);
@@ -1845,13 +1924,14 @@ test "exec command alias matches exec" {
 
 test "session command flags parse resume compatibility options" {
     const allocator = std.testing.allocator;
-    const argv = [_][]const u8{ "--all", "--include-non-interactive", "--last", "--strict-config" };
+    const argv = [_][]const u8{ "--all", "--include-non-interactive", "--last", "--profile-v2", "team", "--strict-config" };
     var parsed = try parseSessionCommandArgs(allocator, argv[0..], true);
     defer parsed.deinit(allocator);
 
     try std.testing.expect(parsed.show_all);
     try std.testing.expect(parsed.include_non_interactive);
     try std.testing.expect(parsed.last);
+    try std.testing.expectEqualStrings("team", parsed.profile_v2.?);
     try std.testing.expect(parsed.strict_config);
     try std.testing.expect(parsed.target == null);
 }
@@ -2023,6 +2103,19 @@ test "root strict config is rejected for unsupported subcommands" {
     try std.testing.expectEqualStrings("features", strictConfigUnsupportedSubcommandName("features").?);
     try std.testing.expectEqualStrings("cloud", strictConfigUnsupportedSubcommandName("cloud").?);
     try std.testing.expectEqualStrings("apply", strictConfigUnsupportedSubcommandName("apply").?);
+}
+
+test "root profile-v2 is restricted to runtime subcommands" {
+    try std.testing.expect(profileV2UnsupportedSubcommandName("exec") == null);
+    try std.testing.expect(profileV2UnsupportedSubcommandName("e") == null);
+    try std.testing.expect(profileV2UnsupportedSubcommandName("review") == null);
+    try std.testing.expect(profileV2UnsupportedSubcommandName("resume") == null);
+    try std.testing.expect(profileV2UnsupportedSubcommandName("fork") == null);
+    try std.testing.expect(profileV2UnsupportedSubcommandName("debug") == null);
+    try std.testing.expect(profileV2UnsupportedSubcommandName("write this prompt") == null);
+    try std.testing.expectEqualStrings("doctor", profileV2UnsupportedSubcommandName("doctor").?);
+    try std.testing.expectEqualStrings("sandbox", profileV2UnsupportedSubcommandName("sandbox").?);
+    try std.testing.expectEqualStrings("apply", profileV2UnsupportedSubcommandName("apply").?);
 }
 
 test "removed top-level Rust commands are rejected" {

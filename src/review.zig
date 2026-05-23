@@ -49,6 +49,7 @@ const ReviewArgs = struct {
 
 pub const Options = struct {
     profile: ?[]const u8 = null,
+    profile_v2: ?[]const u8 = null,
     runtime_overrides: config.RuntimeOverrides = .{},
     feature_overrides: features_cmd.FeatureOverrides = .{},
     oss: bool = false,
@@ -100,6 +101,7 @@ pub fn runRawArgsWithOptions(allocator: std.mem.Allocator, raw_args: []const []c
     }
     var cfg = try config.loadWithOptions(allocator, .{
         .profile = parsed.config_profile orelse options.profile,
+        .profile_v2 = options.profile_v2,
         .ignore_user_config = effective_ignore_user_config,
         .strict_config = effective_strict_config,
     });

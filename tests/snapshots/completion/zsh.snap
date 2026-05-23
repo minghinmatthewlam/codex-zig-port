@@ -3,7 +3,7 @@
 _codex_zig() {
     local -a commands global_options shells
     commands=(a app app-server apply auth-status cloud cloud-tasks completion debug doctor e exec exec-server execpolicy features fork help login logout mcp mcp-server plugin remote-control remote-fork review resume sandbox sessions update)
-    global_options=(--help -h --version -V --profile -p --cd -C --add-dir --config -c --strict-config --model -m --image -i --enable --disable --oss --local-provider --ask-for-approval -a --approval-policy --sandbox -s --dangerously-bypass-approvals-and-sandbox --yolo --dangerously-bypass-hook-trust --search --remote --remote-auth-token-env --remote-control --remote-control-bind --no-alt-screen)
+    global_options=(--help -h --version -V --profile -p --profile-v2 --cd -C --add-dir --config -c --strict-config --model -m --image -i --enable --disable --oss --local-provider --ask-for-approval -a --approval-policy --sandbox -s --dangerously-bypass-approvals-and-sandbox --yolo --dangerously-bypass-hook-trust --search --remote --remote-auth-token-env --remote-control --remote-control-bind --no-alt-screen)
     shells=(bash elvish fish powershell zsh)
     if [[ $words[2] == completion ]]; then
         _describe 'shell' shells
@@ -13,6 +13,7 @@ _codex_zig() {
         '(-h --help)'{-h,--help}'[Print help]' \
         '(-V --version)'{-V,--version}'[Print version]' \
         '(-p --profile)'{-p,--profile}'[Select config profile]:profile:' \
+        '--profile-v2[Layer profile config]:profile:' \
         '(-C --cd)'{-C,--cd}'[Use working root]:directory:_files -/' \
         '--add-dir[Add writable root]:directory:_files -/' \
         '(-c --config)'{-c,--config}'[Override config key]:key=value:' \

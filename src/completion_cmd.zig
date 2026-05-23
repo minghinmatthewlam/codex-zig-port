@@ -5,12 +5,12 @@ const cli_utils = @import("cli_utils.zig");
 const top_level_commands =
     "a app app-server apply auth-status cloud cloud-tasks completion debug doctor e exec exec-server execpolicy features fork help login logout mcp mcp-server plugin remote-control remote-fork review resume sandbox sessions update";
 const global_options =
-    "--help -h --version -V --profile -p --cd -C --add-dir --config -c --strict-config --model -m --image -i --enable --disable --oss --local-provider --ask-for-approval -a --approval-policy --sandbox -s --dangerously-bypass-approvals-and-sandbox --yolo --dangerously-bypass-hook-trust --search --remote --remote-auth-token-env --remote-control --remote-control-bind --no-alt-screen";
+    "--help -h --version -V --profile -p --profile-v2 --cd -C --add-dir --config -c --strict-config --model -m --image -i --enable --disable --oss --local-provider --ask-for-approval -a --approval-policy --sandbox -s --dangerously-bypass-approvals-and-sandbox --yolo --dangerously-bypass-hook-trust --search --remote --remote-auth-token-env --remote-control --remote-control-bind --no-alt-screen";
 const shells = "bash elvish fish powershell zsh";
 const elvish_top_level_commands =
     "'a' 'app' 'app-server' 'apply' 'auth-status' 'cloud' 'cloud-tasks' 'completion' 'debug' 'doctor' 'e' 'exec' 'exec-server' 'execpolicy' 'features' 'fork' 'help' 'login' 'logout' 'mcp' 'mcp-server' 'plugin' 'remote-control' 'remote-fork' 'review' 'resume' 'sandbox' 'sessions' 'update'";
 const elvish_global_options =
-    "'--help' '-h' '--version' '-V' '--profile' '-p' '--cd' '-C' '--add-dir' '--config' '-c' '--strict-config' '--model' '-m' '--image' '-i' '--enable' '--disable' '--oss' '--local-provider' '--ask-for-approval' '-a' '--approval-policy' '--sandbox' '-s' '--dangerously-bypass-approvals-and-sandbox' '--yolo' '--dangerously-bypass-hook-trust' '--search' '--remote' '--remote-auth-token-env' '--remote-control' '--remote-control-bind' '--no-alt-screen'";
+    "'--help' '-h' '--version' '-V' '--profile' '-p' '--profile-v2' '--cd' '-C' '--add-dir' '--config' '-c' '--strict-config' '--model' '-m' '--image' '-i' '--enable' '--disable' '--oss' '--local-provider' '--ask-for-approval' '-a' '--approval-policy' '--sandbox' '-s' '--dangerously-bypass-approvals-and-sandbox' '--yolo' '--dangerously-bypass-hook-trust' '--search' '--remote' '--remote-auth-token-env' '--remote-control' '--remote-control-bind' '--no-alt-screen'";
 const elvish_shells = "'bash' 'elvish' 'fish' 'powershell' 'zsh'";
 
 const Shell = enum {
@@ -133,6 +133,7 @@ fn appendFishOptions(allocator: std.mem.Allocator, out: *std.ArrayList(u8)) !voi
         "complete -c codex-zig -s h -l help -d 'Print help'\n",
         "complete -c codex-zig -s V -l version -d 'Print version'\n",
         "complete -c codex-zig -s p -l profile -r -d 'Select config profile'\n",
+        "complete -c codex-zig -l profile-v2 -r -d 'Layer profile config'\n",
         "complete -c codex-zig -s C -l cd -r -d 'Use working root'\n",
         "complete -c codex-zig -l add-dir -r -d 'Add writable root'\n",
         "complete -c codex-zig -s c -l config -r -d 'Override config key'\n",
@@ -193,6 +194,7 @@ fn renderZsh(allocator: std.mem.Allocator) ![]const u8 {
         \\        '(-h --help)'{{-h,--help}}'[Print help]' \
         \\        '(-V --version)'{{-V,--version}}'[Print version]' \
         \\        '(-p --profile)'{{-p,--profile}}'[Select config profile]:profile:' \
+        \\        '--profile-v2[Layer profile config]:profile:' \
         \\        '(-C --cd)'{{-C,--cd}}'[Use working root]:directory:_files -/' \
         \\        '--add-dir[Add writable root]:directory:_files -/' \
         \\        '(-c --config)'{{-c,--config}}'[Override config key]:key=value:' \
@@ -251,6 +253,7 @@ test "completion renders bash by default shape" {
     try std.testing.expect(std.mem.indexOf(u8, rendered, "doctor") != null);
     try std.testing.expect(std.mem.indexOf(u8, rendered, "remote-control") != null);
     try std.testing.expect(std.mem.indexOf(u8, rendered, "remote-fork") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rendered, "--profile-v2") != null);
     try std.testing.expect(std.mem.indexOf(u8, rendered, "--strict-config") != null);
     try std.testing.expect(std.mem.indexOf(u8, rendered, "--remote-auth-token-env") != null);
     try std.testing.expect(std.mem.indexOf(u8, rendered, "--remote-control-bind") != null);
@@ -263,6 +266,7 @@ test "completion renders fish command and shell values" {
     defer allocator.free(rendered);
 
     try std.testing.expect(std.mem.indexOf(u8, rendered, "complete -c codex-zig") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rendered, "-l profile-v2") != null);
     try std.testing.expect(std.mem.indexOf(u8, rendered, "-l strict-config") != null);
     try std.testing.expect(std.mem.indexOf(u8, rendered, "__fish_seen_subcommand_from completion") != null);
     try std.testing.expect(std.mem.indexOf(u8, rendered, "bash elvish fish powershell zsh") != null);
@@ -274,6 +278,7 @@ test "completion renders zsh command and shell values" {
     defer allocator.free(rendered);
 
     try std.testing.expect(std.mem.indexOf(u8, rendered, "#compdef codex-zig") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rendered, "--profile-v2[Layer profile config]") != null);
     try std.testing.expect(std.mem.indexOf(u8, rendered, "--strict-config[Error on unknown config fields]") != null);
     try std.testing.expect(std.mem.indexOf(u8, rendered, "shells=(bash elvish fish powershell zsh)") != null);
 }
@@ -284,6 +289,7 @@ test "completion renders powershell command and shell values" {
     defer allocator.free(rendered);
 
     try std.testing.expect(std.mem.indexOf(u8, rendered, "Register-ArgumentCompleter") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rendered, "--profile-v2") != null);
     try std.testing.expect(std.mem.indexOf(u8, rendered, "--strict-config") != null);
     try std.testing.expect(std.mem.indexOf(u8, rendered, "$shells = 'bash elvish fish powershell zsh'.Split(' ')") != null);
 }
@@ -295,6 +301,7 @@ test "completion renders elvish quoted command values" {
 
     try std.testing.expect(std.mem.indexOf(u8, rendered, "edit:completion:arg-completer[codex-zig]") != null);
     try std.testing.expect(std.mem.indexOf(u8, rendered, "'--help'") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rendered, "'--profile-v2'") != null);
     try std.testing.expect(std.mem.indexOf(u8, rendered, "'--strict-config'") != null);
     try std.testing.expect(std.mem.indexOf(u8, rendered, "'doctor'") != null);
     try std.testing.expect(std.mem.indexOf(u8, rendered, "put 'bash' 'elvish' 'fish' 'powershell' 'zsh'") != null);

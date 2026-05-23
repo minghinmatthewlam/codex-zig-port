@@ -33,6 +33,7 @@ const ExecArgs = struct {
     config_overrides: config.RuntimeOverrides = .{},
     feature_overrides: features_cmd.FeatureOverrides = .{},
     config_profile: ?[]const u8 = null,
+    profile_v2: ?[]const u8 = null,
     help: ?ExecHelpTopic = null,
     last_message_file: ?[]const u8 = null,
     output_schema_file: ?[]const u8 = null,
@@ -81,6 +82,7 @@ const ExecArgs = struct {
 
 pub const Options = struct {
     profile: ?[]const u8 = null,
+    profile_v2: ?[]const u8 = null,
     runtime_overrides: config.RuntimeOverrides = .{},
     feature_overrides: features_cmd.FeatureOverrides = .{},
     oss: bool = false,
@@ -147,6 +149,7 @@ pub fn runWithOptions(allocator: std.mem.Allocator, args: *std.process.Args.Iter
     if (parsed.review_mode) {
         try review.runRawArgsWithOptions(allocator, parsed.review_args.items, .{
             .profile = parsed.profile,
+            .profile_v2 = parsed.profile_v2 orelse options.profile_v2,
             .runtime_overrides = mergedReviewOverrides(options.runtime_overrides, parsed),
             .feature_overrides = runtime_feature_overrides,
             .oss = effective_oss,
@@ -191,6 +194,7 @@ pub fn runWithOptions(allocator: std.mem.Allocator, args: *std.process.Args.Iter
 
     var cfg = try config.loadWithOptions(allocator, .{
         .profile = parsed.profile,
+        .profile_v2 = parsed.profile_v2 orelse options.profile_v2,
         .ignore_user_config = parsed.ignore_user_config,
         .strict_config = effective_strict_config,
     });
@@ -534,6 +538,16 @@ fn parseArgs(allocator: std.mem.Allocator, args: []const []const u8) !ExecArgs {
             parsed.profile = try allocator.dupe(u8, arg["--profile=".len..]);
             continue;
         }
+        if (!end_options and std.mem.eql(u8, arg, "--profile-v2")) {
+            index += 1;
+            if (index >= args.len) return error.MissingExecOptionValue;
+            parsed.profile_v2 = args[index];
+            continue;
+        }
+        if (!end_options and std.mem.startsWith(u8, arg, "--profile-v2=")) {
+            parsed.profile_v2 = arg["--profile-v2=".len..];
+            continue;
+        }
         if (!end_options and (std.mem.eql(u8, arg, "--json") or std.mem.eql(u8, arg, "--experimental-json"))) {
             parsed.json = true;
             continue;
@@ -810,6 +824,7 @@ pub fn printHelp() void {
         \\  --approval-policy MODE  Alias for --ask-for-approval
         \\  -s, --sandbox MODE      read-only, workspace-write, or danger-full-access
         \\  -p, --profile PROFILE   Select a config profile
+        \\  --profile-v2 PROFILE    Layer CODEX_HOME/PROFILE.config.toml over base config
         \\  --json                  Emit JSONL events instead of plain final text
         \\  -o, --output-last-message FILE
         \\                          Write final answer to FILE
@@ -920,7 +935,7 @@ pub fn printVersion() !void {
 
 test "exec args parse prompt and options" {
     const allocator = std.testing.allocator;
-    const argv = [_][]const u8{ "--auto-approve", "--skip-git-repo-check", "--full-auto", "--sandbox", "read-only", "--ignore-user-config", "--ignore-rules", "-c", "web_search=live", "-c", "review_model=gpt-review", "--color", "never", "--json", "--profile", "work", "--oss", "--local-provider", "ollama", "-m", "gpt-test", "--cd", "/tmp/demo", "--add-dir", "/tmp/extra", "--image", "one.png,two.jpg", "three.webp", "-o", "last.txt", "--", "say", "hello" };
+    const argv = [_][]const u8{ "--auto-approve", "--skip-git-repo-check", "--full-auto", "--sandbox", "read-only", "--ignore-user-config", "--ignore-rules", "-c", "web_search=live", "-c", "review_model=gpt-review", "--color", "never", "--json", "--profile", "work", "--profile-v2", "team", "--oss", "--local-provider", "ollama", "-m", "gpt-test", "--cd", "/tmp/demo", "--add-dir", "/tmp/extra", "--image", "one.png,two.jpg", "three.webp", "-o", "last.txt", "--", "say", "hello" };
     const parsed = try parseArgs(allocator, argv[0..]);
     defer parsed.deinit(allocator);
 
@@ -934,6 +949,7 @@ test "exec args parse prompt and options" {
     try std.testing.expectEqualStrings("gpt-review", parsed.config_overrides.review_model.?);
     try std.testing.expect(parsed.json);
     try std.testing.expectEqualStrings("work", parsed.profile.?);
+    try std.testing.expectEqualStrings("team", parsed.profile_v2.?);
     try std.testing.expect(parsed.oss);
     try std.testing.expectEqualStrings("ollama", parsed.oss_provider.?);
     try std.testing.expectEqualStrings("gpt-test", parsed.model.?);
