@@ -37,6 +37,7 @@ pub const Entry = struct {
     upgrade: ?Upgrade = null,
     supports_personality: bool = false,
     support_verbosity: bool = false,
+    supports_tool_search: bool = true,
     default_verbosity: ?[]const u8 = null,
     additional_speed_tiers: []const []const u8 = &.{},
     service_tiers: []const ServiceTier = &.{},
@@ -171,5 +172,6 @@ pub fn configuredModel(slug: []const u8, description: []const u8) Entry {
         .supported_reasoning_levels = standard_reasoning_levels[0..],
         .input_modalities = text_image_modalities[0..],
         .priority = 0,
+        .supports_tool_search = false,
     };
 }

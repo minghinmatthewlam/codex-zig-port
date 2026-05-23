@@ -7,6 +7,7 @@ const env = @import("env.zig");
 const features_cmd = @import("features_cmd.zig");
 const model_catalog = @import("model_catalog.zig");
 const mcp_runtime = @import("mcp_runtime.zig");
+const subagent_tools = @import("subagent_tools.zig");
 
 pub const FunctionCall = struct {
     kind: Kind = .function,
@@ -782,15 +783,19 @@ pub fn buildRequestBodyWithOptions(
     const write_stdin_tool_enabled = shell_tools_enabled and (options.feature_overrides.get("write_stdin_tool") orelse true);
     const mcp_resource_tools_enabled = options.feature_overrides.get("mcp_resource_tools") orelse true;
     const configured_mcp_tools_enabled = options.feature_overrides.get("mcp_tools") orelse true;
-    const tool_search_enabled = true;
+    const deferred_tool_search_supported = deferredToolSearchSupported(cfg);
     const defer_mcp_tools_behind_tool_search = configured_mcp_tools_enabled and
-        tool_search_enabled and
+        deferred_tool_search_supported and
         (options.feature_overrides.get("tool_search_always_defer_mcp_tools") orelse false) and
         options.mcp_tools.len > 0;
     const request_permissions_tool_enabled = options.feature_overrides.get("request_permissions_tool") orelse false;
     const request_user_input_tool_enabled = options.feature_overrides.get("request_user_input_tool") orelse false;
     const default_mode_request_user_input_enabled = options.feature_overrides.get("default_mode_request_user_input") orelse false;
     const goal_tools_enabled = options.feature_overrides.get("goal_tools") orelse false;
+    const multi_agent_v1_tool_search_enabled = deferred_tool_search_supported and
+        subagent_tools.v1ToolSearchEnabled(options.feature_overrides);
+    const tool_search_tool_enabled = defer_mcp_tools_behind_tool_search or multi_agent_v1_tool_search_enabled;
+    const tool_search_mcp_tools: []const mcp_runtime.ToolSpec = if (defer_mcp_tools_behind_tool_search) options.mcp_tools else &.{};
     if (options.include_tools) {
         const shell_tool = Tool{
             .type = "function",
@@ -910,8 +915,8 @@ pub fn buildRequestBodyWithOptions(
                 \\{"type":"object","properties":{"server":{"type":"string","description":"MCP server name exactly as configured. Must match the 'server' field returned by list_mcp_resources."},"uri":{"type":"string","description":"Resource URI to read. Must be one of the URIs returned by list_mcp_resources."}},"required":["server","uri"],"additionalProperties":false}
             ),
         };
-        if (defer_mcp_tools_behind_tool_search) {
-            tool_search_description = try renderToolSearchDescription(allocator, options.mcp_tools);
+        if (tool_search_tool_enabled) {
+            tool_search_description = try renderToolSearchDescription(allocator, tool_search_mcp_tools, multi_agent_v1_tool_search_enabled);
         }
         const tool_search_tool = Tool{
             .type = "tool_search",
@@ -953,7 +958,7 @@ pub fn buildRequestBodyWithOptions(
                 });
             }
         }
-        if (defer_mcp_tools_behind_tool_search) {
+        if (tool_search_tool_enabled) {
             try tools_list.append(allocator, tool_search_tool);
         }
         if (configured_mcp_tools_enabled and !defer_mcp_tools_behind_tool_search) {
@@ -1062,6 +1067,15 @@ fn verbosityForRequest(cfg: config.Config) ?[]const u8 {
     return model.default_verbosity;
 }
 
+pub fn deferredToolSearchSupported(cfg: config.Config) bool {
+    if (cfg.oss_provider != null) return false;
+    if (cfg.model_provider_id) |provider| {
+        if (!std.mem.eql(u8, provider, "openai")) return false;
+    }
+    const model = model_catalog.bundledModel(cfg.model) orelse return false;
+    return model.supports_tool_search;
+}
+
 fn appendParsedJsonValue(
     allocator: std.mem.Allocator,
     parsed_values: *std.ArrayList(std.json.Parsed(std.json.Value)),
@@ -1073,7 +1087,11 @@ fn appendParsedJsonValue(
     return parsed_values.items[parsed_values.items.len - 1].value;
 }
 
-fn renderToolSearchDescription(allocator: std.mem.Allocator, mcp_tools: []const mcp_runtime.ToolSpec) ![]const u8 {
+fn renderToolSearchDescription(
+    allocator: std.mem.Allocator,
+    mcp_tools: []const mcp_runtime.ToolSpec,
+    include_multi_agent_v1: bool,
+) ![]const u8 {
     var server_names = std.ArrayList([]const u8).empty;
     defer server_names.deinit(allocator);
     for (mcp_tools) |tool| {
@@ -1097,7 +1115,10 @@ fn renderToolSearchDescription(allocator: std.mem.Allocator, mcp_tools: []const 
         \\You have access to tools from the following sources:
         \\
     );
-    if (server_names.items.len == 0) {
+    if (include_multi_agent_v1) {
+        try subagent_tools.appendToolSearchSourceDescription(allocator, &out);
+    }
+    if (server_names.items.len == 0 and !include_multi_agent_v1) {
         try out.appendSlice(allocator, "- None currently enabled.\n");
     } else {
         for (server_names.items) |name| {
@@ -1107,7 +1128,7 @@ fn renderToolSearchDescription(allocator: std.mem.Allocator, mcp_tools: []const 
         }
     }
     try out.appendSlice(allocator,
-        \\Some of the tools may not have been provided to you upfront, and you should use this tool (`tool_search`) to search for the required tools. For MCP tool discovery, always use `tool_search` instead of `list_mcp_resources` or `list_mcp_resource_templates`.
+        \\Some of the tools may not have been provided to you upfront, and you should use this tool (`tool_search`) to search for the required tools. For deferred tool discovery, always use `tool_search` instead of `list_mcp_resources` or `list_mcp_resource_templates`.
     );
     return out.toOwnedSlice(allocator);
 }
@@ -2459,7 +2480,7 @@ test "feature flag defers mcp tools behind tool_search" {
     const cfg = config.Config{
         .codex_home = ".",
         .active_profile = null,
-        .model = "demo-model",
+        .model = "gpt-5.5",
         .openai_base_url = "https://example.invalid/v1",
         .chatgpt_base_url = "https://example.invalid/backend-api/codex",
         .oss_provider = null,
@@ -2525,7 +2546,7 @@ test "removed tool_search flag does not disable mcp deferral" {
     const cfg = config.Config{
         .codex_home = ".",
         .active_profile = null,
-        .model = "demo-model",
+        .model = "gpt-5.5",
         .openai_base_url = "https://example.invalid/v1",
         .chatgpt_base_url = "https://example.invalid/backend-api/codex",
         .oss_provider = null,
@@ -2585,6 +2606,212 @@ test "removed tool_search flag does not disable mcp deferral" {
 
     try std.testing.expect(found_tool_search);
     try std.testing.expect(!found_direct_mcp);
+}
+
+test "default multi_agent feature exposes tool_search discovery" {
+    const allocator = std.testing.allocator;
+    const cfg = config.Config{
+        .codex_home = ".",
+        .active_profile = null,
+        .model = "gpt-5.5",
+        .openai_base_url = "https://example.invalid/v1",
+        .chatgpt_base_url = "https://example.invalid/backend-api/codex",
+        .oss_provider = null,
+        .installation_id = "install-test",
+        .approval_policy = .on_request,
+        .sandbox_mode = .workspace_write,
+        .web_search_mode = null,
+        .model_reasoning_effort = null,
+        .service_tier = null,
+        .syntax_theme = null,
+        .personality = null,
+        .tui_status_line = null,
+        .tui_terminal_title = null,
+        .tui_alternate_screen = .auto,
+    };
+    const history = [_]HistoryItem{.{
+        .kind = .message,
+        .role = "user",
+        .content_type = "input_text",
+        .text = "delegate this",
+    }};
+
+    const body = try buildRequestBodyWithOptions(allocator, cfg, history[0..], .{});
+    defer allocator.free(body);
+
+    var parsed = try std.json.parseFromSlice(std.json.Value, allocator, body, .{});
+    defer parsed.deinit();
+    const request_tools = parsed.value.object.get("tools").?.array;
+
+    var found_tool_search = false;
+    for (request_tools.items) |tool| {
+        const object = tool.object;
+        const tool_type = object.get("type") orelse continue;
+        if (tool_type != .string or !std.mem.eql(u8, tool_type.string, "tool_search")) continue;
+        found_tool_search = true;
+        try std.testing.expectEqualStrings("client", object.get("execution").?.string);
+        const description = object.get("description") orelse return error.MissingToolSearchDescription;
+        try std.testing.expect(description == .string);
+        try std.testing.expect(std.mem.indexOf(u8, description.string, "Multi-agent tools") != null);
+    }
+
+    try std.testing.expect(found_tool_search);
+}
+
+test "direct mcp tools are not described as deferred subagent search sources" {
+    const allocator = std.testing.allocator;
+    const cfg = config.Config{
+        .codex_home = ".",
+        .active_profile = null,
+        .model = "gpt-5.5",
+        .openai_base_url = "https://example.invalid/v1",
+        .chatgpt_base_url = "https://example.invalid/backend-api/codex",
+        .oss_provider = null,
+        .installation_id = "install-test",
+        .approval_policy = .on_request,
+        .sandbox_mode = .workspace_write,
+        .web_search_mode = null,
+        .model_reasoning_effort = null,
+        .service_tier = null,
+        .syntax_theme = null,
+        .personality = null,
+        .tui_status_line = null,
+        .tui_terminal_title = null,
+        .tui_alternate_screen = .auto,
+    };
+    const history = [_]HistoryItem{.{
+        .kind = .message,
+        .role = "user",
+        .content_type = "input_text",
+        .text = "delegate this",
+    }};
+    var mcp_tools = [_]mcp_runtime.ToolSpec{.{
+        .server_name = "demo",
+        .raw_tool_name = "echo",
+        .callable_name = "mcp__demo__echo",
+        .description = "Echo through MCP",
+        .input_schema_json = "{\"type\":\"object\"}",
+    }};
+
+    const body = try buildRequestBodyWithOptions(allocator, cfg, history[0..], .{ .mcp_tools = mcp_tools[0..] });
+    defer allocator.free(body);
+
+    var parsed = try std.json.parseFromSlice(std.json.Value, allocator, body, .{});
+    defer parsed.deinit();
+    const request_tools = parsed.value.object.get("tools").?.array;
+
+    var found_tool_search = false;
+    var found_direct_mcp = false;
+    for (request_tools.items) |tool| {
+        const object = tool.object;
+        const tool_type = object.get("type") orelse continue;
+        if (tool_type == .string and std.mem.eql(u8, tool_type.string, "tool_search")) {
+            found_tool_search = true;
+            const description = object.get("description") orelse return error.MissingToolSearchDescription;
+            try std.testing.expect(description == .string);
+            try std.testing.expect(std.mem.indexOf(u8, description.string, "Multi-agent tools") != null);
+            try std.testing.expect(std.mem.indexOf(u8, description.string, "MCP tools in") == null);
+        }
+        const tool_name = object.get("name") orelse continue;
+        if (tool_name == .string and std.mem.eql(u8, tool_name.string, "mcp__demo__echo")) {
+            found_direct_mcp = true;
+        }
+    }
+
+    try std.testing.expect(found_tool_search);
+    try std.testing.expect(found_direct_mcp);
+}
+
+test "custom provider gates subagent tool_search discovery" {
+    const allocator = std.testing.allocator;
+    const cfg = config.Config{
+        .codex_home = ".",
+        .active_profile = null,
+        .model_provider_id = "mock-provider",
+        .model = "gpt-5.5",
+        .openai_base_url = "https://example.invalid/v1",
+        .chatgpt_base_url = "https://example.invalid/backend-api/codex",
+        .oss_provider = null,
+        .installation_id = "install-test",
+        .approval_policy = .on_request,
+        .sandbox_mode = .workspace_write,
+        .web_search_mode = null,
+        .model_reasoning_effort = null,
+        .service_tier = null,
+        .syntax_theme = null,
+        .personality = null,
+        .tui_status_line = null,
+        .tui_terminal_title = null,
+        .tui_alternate_screen = .auto,
+    };
+    const history = [_]HistoryItem{.{
+        .kind = .message,
+        .role = "user",
+        .content_type = "input_text",
+        .text = "delegate this",
+    }};
+
+    const body = try buildRequestBodyWithOptions(allocator, cfg, history[0..], .{});
+    defer allocator.free(body);
+
+    var parsed = try std.json.parseFromSlice(std.json.Value, allocator, body, .{});
+    defer parsed.deinit();
+    const request_tools = parsed.value.object.get("tools").?.array;
+
+    for (request_tools.items) |tool| {
+        const object = tool.object;
+        const tool_type = object.get("type") orelse continue;
+        if (tool_type == .string and std.mem.eql(u8, tool_type.string, "tool_search")) {
+            return error.UnexpectedToolSearch;
+        }
+    }
+}
+
+test "multi_agent feature flag disables subagent tool_search discovery" {
+    const allocator = std.testing.allocator;
+    const cfg = config.Config{
+        .codex_home = ".",
+        .active_profile = null,
+        .model = "gpt-5.5",
+        .openai_base_url = "https://example.invalid/v1",
+        .chatgpt_base_url = "https://example.invalid/backend-api/codex",
+        .oss_provider = null,
+        .installation_id = "install-test",
+        .approval_policy = .on_request,
+        .sandbox_mode = .workspace_write,
+        .web_search_mode = null,
+        .model_reasoning_effort = null,
+        .service_tier = null,
+        .syntax_theme = null,
+        .personality = null,
+        .tui_status_line = null,
+        .tui_terminal_title = null,
+        .tui_alternate_screen = .auto,
+    };
+    const history = [_]HistoryItem{.{
+        .kind = .message,
+        .role = "user",
+        .content_type = "input_text",
+        .text = "delegate this",
+    }};
+    var feature_overrides = features_cmd.FeatureOverrides{};
+    defer feature_overrides.deinit(allocator);
+    try feature_overrides.put(allocator, "multi_agent", false);
+
+    const body = try buildRequestBodyWithOptions(allocator, cfg, history[0..], .{ .feature_overrides = feature_overrides });
+    defer allocator.free(body);
+
+    var parsed = try std.json.parseFromSlice(std.json.Value, allocator, body, .{});
+    defer parsed.deinit();
+    const request_tools = parsed.value.object.get("tools").?.array;
+
+    for (request_tools.items) |tool| {
+        const object = tool.object;
+        const tool_type = object.get("type") orelse continue;
+        if (tool_type == .string and std.mem.eql(u8, tool_type.string, "tool_search")) {
+            return error.UnexpectedToolSearch;
+        }
+    }
 }
 
 test "serializes tool_search history items" {

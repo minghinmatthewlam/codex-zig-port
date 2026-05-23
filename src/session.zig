@@ -8,6 +8,7 @@ const features_cmd = @import("features_cmd.zig");
 const mcp_runtime = @import("mcp_runtime.zig");
 const plan_tool = @import("plan_tool.zig");
 const proposed_plan = @import("proposed_plan.zig");
+const subagent_tools = @import("subagent_tools.zig");
 const tools = @import("tools.zig");
 
 pub const ThreadGoal = struct {
@@ -1157,7 +1158,12 @@ pub fn runTurnWithOptions(
             }
 
             var tool_result = if (call.kind == .tool_search)
-                try runToolSearchCall(allocator, mcp_catalog, call)
+                try runToolSearchCall(
+                    allocator,
+                    toolSearchMcpTools(cfg, options, mcp_catalog),
+                    options.feature_overrides,
+                    call,
+                )
             else if (std.mem.eql(u8, call.name, "request_permissions"))
                 if (requestPermissionsToolEnabled(options))
                     try runRequestPermissionsToolCall(
@@ -1185,6 +1191,11 @@ pub fn runTurnWithOptions(
                         call,
                         options,
                     )
+                else
+                    try disabledToolResult(allocator, call)
+            else if (isSubagentV1ToolCall(call))
+                if (subagent_tools.v1ToolSearchEnabled(options.feature_overrides))
+                    try runSubagentV1UnavailableCall(allocator, call)
                 else
                     try disabledToolResult(allocator, call)
             else
@@ -1405,6 +1416,27 @@ fn findMcpToolForFunctionCall(
     return mcp_catalog.find(call.name);
 }
 
+fn isSubagentV1ToolCall(call: api.FunctionCall) bool {
+    const namespace = call.namespace orelse return false;
+    if (!std.mem.eql(u8, namespace, subagent_tools.multi_agent_v1_namespace)) return false;
+    for (subagent_tools.v1_tool_specs) |tool| {
+        if (std.mem.eql(u8, tool.name, call.name)) return true;
+    }
+    return false;
+}
+
+fn runSubagentV1UnavailableCall(allocator: std.mem.Allocator, call: api.FunctionCall) !tools.ToolResult {
+    return .{
+        .call_id = try allocator.dupe(u8, call.call_id),
+        .summary = try allocator.dupe(u8, "subagent runtime unavailable"),
+        .output = try std.fmt.allocPrint(
+            allocator,
+            "{{\"error\":\"multi_agent_v1.{s} is discoverable, but subagent runtime execution is not implemented in codex-zig yet\"}}",
+            .{call.name},
+        ),
+    };
+}
+
 const ToolSearchArgs = struct {
     query: []const u8,
     limit: usize,
@@ -1416,7 +1448,8 @@ const tool_search_computer_use_limit: usize = 20;
 
 fn runToolSearchCall(
     allocator: std.mem.Allocator,
-    mcp_catalog: mcp_runtime.Catalog,
+    mcp_tools: []const mcp_runtime.ToolSpec,
+    feature_overrides: features_cmd.FeatureOverrides,
     call: api.FunctionCall,
 ) !tools.ToolResult {
     var parsed = std.json.parseFromSlice(std.json.Value, allocator, call.arguments, .{}) catch {
@@ -1431,7 +1464,7 @@ fn runToolSearchCall(
         error.ToolSearchInvalidLimit => return toolSearchModelError(allocator, call, "limit must be greater than zero"),
     };
 
-    const tools_json = try renderToolSearchMcpResults(allocator, mcp_catalog.tools, args);
+    const tools_json = try renderToolSearchResults(allocator, mcp_tools, feature_overrides, args);
     errdefer allocator.free(tools_json);
     return .{
         .call_id = try allocator.dupe(u8, call.call_id),
@@ -1483,92 +1516,198 @@ fn parseToolSearchArgs(value: std.json.Value) !ToolSearchArgs {
 }
 
 const ToolSearchMatch = struct {
-    tool: mcp_runtime.ToolSpec,
     score: usize,
+    item: union(enum) {
+        mcp: mcp_runtime.ToolSpec,
+        subagent_v1: usize,
+    },
 };
 
-fn renderToolSearchMcpResults(
+fn renderToolSearchResults(
     allocator: std.mem.Allocator,
     mcp_tools: []const mcp_runtime.ToolSpec,
+    feature_overrides: features_cmd.FeatureOverrides,
     args: ToolSearchArgs,
 ) ![]const u8 {
+    var out = std.ArrayList(u8).empty;
+    errdefer out.deinit(allocator);
+    try out.append(allocator, '[');
+
     var matches = std.ArrayList(ToolSearchMatch).empty;
     defer matches.deinit(allocator);
-
-    for (mcp_tools) |tool| {
-        const score = toolSearchScore(args.query, tool);
-        if (score == 0) continue;
-        try matches.append(allocator, .{
-            .tool = tool,
-            .score = score,
-        });
+    if (subagent_tools.v1ToolSearchEnabled(feature_overrides)) {
+        try appendToolSearchSubagentV1Matches(allocator, &matches, args.query);
     }
-
+    try appendToolSearchMcpMatches(allocator, &matches, mcp_tools, args.query);
     std.mem.sort(ToolSearchMatch, matches.items, {}, toolSearchMatchLessThan);
 
-    const limit = toolSearchEffectiveLimit(matches.items, args);
-    const result_limit = @min(matches.items.len, limit);
-    var selected = std.ArrayList(ToolSearchMatch).empty;
+    var selected = try selectToolSearchMatches(allocator, matches.items, args);
     defer selected.deinit(allocator);
-    for (matches.items[0..result_limit]) |match| {
-        if (!args.limit_configured and toolSearchBucketCount(selected.items, match.tool.server_name) >= toolSearchDefaultLimitForBucket(match.tool.server_name)) {
+    var first_namespace = true;
+    try appendToolSearchResultNamespaces(allocator, &out, &first_namespace, selected.items);
+    try out.append(allocator, ']');
+    return out.toOwnedSlice(allocator);
+}
+
+fn toolSearchMcpTools(
+    cfg: config.Config,
+    options: TurnOptions,
+    mcp_catalog: mcp_runtime.Catalog,
+) []const mcp_runtime.ToolSpec {
+    if (!options.include_tools) return &.{};
+    if (!mcpToolsEnabled(options)) return &.{};
+    if (!api.deferredToolSearchSupported(cfg)) return &.{};
+    if (!(options.feature_overrides.get("tool_search_always_defer_mcp_tools") orelse false)) return &.{};
+    return mcp_catalog.tools;
+}
+
+fn appendToolSearchSubagentV1Matches(
+    allocator: std.mem.Allocator,
+    matches: *std.ArrayList(ToolSearchMatch),
+    query: []const u8,
+) !void {
+    for (subagent_tools.v1_tool_specs, 0..) |tool, index| {
+        const score = subagent_tools.scoreV1ToolSearch(query, tool);
+        if (score == 0) continue;
+        try matches.append(allocator, .{
+            .score = score,
+            .item = .{ .subagent_v1 = index },
+        });
+    }
+}
+
+fn appendToolSearchMcpMatches(
+    allocator: std.mem.Allocator,
+    matches: *std.ArrayList(ToolSearchMatch),
+    mcp_tools: []const mcp_runtime.ToolSpec,
+    query: []const u8,
+) !void {
+    for (mcp_tools) |tool| {
+        const score = toolSearchScore(query, tool);
+        if (score == 0) continue;
+        try matches.append(allocator, .{
+            .score = score,
+            .item = .{ .mcp = tool },
+        });
+    }
+}
+
+fn selectToolSearchMatches(
+    allocator: std.mem.Allocator,
+    matches: []const ToolSearchMatch,
+    args: ToolSearchArgs,
+) !std.ArrayList(ToolSearchMatch) {
+    const limit = toolSearchEffectiveLimit(matches, args);
+    const result_limit = @min(matches.len, limit);
+    var selected = std.ArrayList(ToolSearchMatch).empty;
+    errdefer selected.deinit(allocator);
+    for (matches[0..result_limit]) |match| {
+        if (!args.limit_configured and toolSearchBucketCount(selected.items, match) >= toolSearchDefaultLimitForBucket(match)) {
             continue;
         }
         try selected.append(allocator, match);
     }
+    return selected;
+}
 
-    var out = std.ArrayList(u8).empty;
-    errdefer out.deinit(allocator);
-    try out.append(allocator, '[');
-    var emitted_servers = std.ArrayList([]const u8).empty;
-    defer emitted_servers.deinit(allocator);
-    var namespace_count: usize = 0;
-    for (selected.items) |match| {
-        const server_name = match.tool.server_name;
-        if (toolSearchServerEmitted(emitted_servers.items, server_name)) continue;
-        if (namespace_count > 0) try out.append(allocator, ',');
-        try appendToolSearchMcpNamespaceJson(allocator, &out, server_name, selected.items);
-        try emitted_servers.append(allocator, server_name);
-        namespace_count += 1;
+fn appendToolSearchResultNamespaces(
+    allocator: std.mem.Allocator,
+    out: *std.ArrayList(u8),
+    first_namespace: *bool,
+    selected: []const ToolSearchMatch,
+) !void {
+    var emitted_buckets = std.ArrayList(ToolSearchMatch).empty;
+    defer emitted_buckets.deinit(allocator);
+    for (selected) |match| {
+        if (toolSearchBucketEmitted(emitted_buckets.items, match)) continue;
+        if (!first_namespace.*) try out.append(allocator, ',');
+        switch (match.item) {
+            .mcp => |tool| try appendToolSearchMcpNamespaceJson(allocator, out, tool.server_name, selected),
+            .subagent_v1 => try appendToolSearchSubagentV1NamespaceJson(allocator, out, selected),
+        }
+        first_namespace.* = false;
+        try emitted_buckets.append(allocator, match);
     }
-    try out.append(allocator, ']');
-    return out.toOwnedSlice(allocator);
 }
 
 fn toolSearchEffectiveLimit(matches: []const ToolSearchMatch, args: ToolSearchArgs) usize {
     if (args.limit_configured) return args.limit;
     const default_window = @min(matches.len, tool_search_default_limit);
     for (matches[0..default_window]) |match| {
-        if (std.mem.eql(u8, match.tool.server_name, "computer-use")) return tool_search_computer_use_limit;
+        if (toolSearchBucketIsComputerUse(match)) return tool_search_computer_use_limit;
     }
     return args.limit;
 }
 
-fn toolSearchDefaultLimitForBucket(server_name: []const u8) usize {
-    if (std.mem.eql(u8, server_name, "computer-use")) return tool_search_computer_use_limit;
+fn toolSearchDefaultLimitForBucket(match: ToolSearchMatch) usize {
+    if (toolSearchBucketIsComputerUse(match)) return tool_search_computer_use_limit;
     return tool_search_default_limit;
 }
 
-fn toolSearchBucketCount(matches: []const ToolSearchMatch, server_name: []const u8) usize {
+fn toolSearchBucketCount(matches: []const ToolSearchMatch, bucket: ToolSearchMatch) usize {
     var count: usize = 0;
     for (matches) |match| {
-        if (std.mem.eql(u8, match.tool.server_name, server_name)) count += 1;
+        if (toolSearchSameBucket(match, bucket)) count += 1;
     }
     return count;
 }
 
-fn toolSearchServerEmitted(emitted_servers: []const []const u8, server_name: []const u8) bool {
-    for (emitted_servers) |emitted| {
-        if (std.mem.eql(u8, emitted, server_name)) return true;
+fn toolSearchBucketEmitted(emitted_buckets: []const ToolSearchMatch, bucket: ToolSearchMatch) bool {
+    for (emitted_buckets) |emitted| {
+        if (toolSearchSameBucket(emitted, bucket)) return true;
     }
     return false;
 }
 
 fn toolSearchMatchLessThan(_: void, lhs: ToolSearchMatch, rhs: ToolSearchMatch) bool {
     if (lhs.score != rhs.score) return lhs.score > rhs.score;
-    const server_order = std.mem.order(u8, lhs.tool.server_name, rhs.tool.server_name);
-    if (server_order != .eq) return server_order == .lt;
-    return std.mem.lessThan(u8, lhs.tool.raw_tool_name, rhs.tool.raw_tool_name);
+    const bucket_order = std.mem.order(u8, toolSearchMatchBucketDisplayName(lhs), toolSearchMatchBucketDisplayName(rhs));
+    if (bucket_order != .eq) return bucket_order == .lt;
+    const lhs_bucket_kind = toolSearchBucketKindRank(lhs);
+    const rhs_bucket_kind = toolSearchBucketKindRank(rhs);
+    if (lhs_bucket_kind != rhs_bucket_kind) return lhs_bucket_kind < rhs_bucket_kind;
+    return std.mem.lessThan(u8, toolSearchMatchLeafName(lhs), toolSearchMatchLeafName(rhs));
+}
+
+fn toolSearchMatchBucketDisplayName(match: ToolSearchMatch) []const u8 {
+    return switch (match.item) {
+        .mcp => |tool| tool.server_name,
+        .subagent_v1 => subagent_tools.multi_agent_v1_namespace,
+    };
+}
+
+fn toolSearchBucketKindRank(match: ToolSearchMatch) usize {
+    return switch (match.item) {
+        .mcp => 0,
+        .subagent_v1 => 1,
+    };
+}
+
+fn toolSearchSameBucket(lhs: ToolSearchMatch, rhs: ToolSearchMatch) bool {
+    return switch (lhs.item) {
+        .mcp => |lhs_tool| switch (rhs.item) {
+            .mcp => |rhs_tool| std.mem.eql(u8, lhs_tool.server_name, rhs_tool.server_name),
+            .subagent_v1 => false,
+        },
+        .subagent_v1 => switch (rhs.item) {
+            .mcp => false,
+            .subagent_v1 => true,
+        },
+    };
+}
+
+fn toolSearchBucketIsComputerUse(match: ToolSearchMatch) bool {
+    return switch (match.item) {
+        .mcp => |tool| std.mem.eql(u8, tool.server_name, "computer-use"),
+        .subagent_v1 => false,
+    };
+}
+
+fn toolSearchMatchLeafName(match: ToolSearchMatch) []const u8 {
+    return switch (match.item) {
+        .mcp => |tool| tool.raw_tool_name,
+        .subagent_v1 => |index| subagent_tools.v1_tool_specs[index].name,
+    };
 }
 
 fn toolSearchScore(query: []const u8, tool: mcp_runtime.ToolSpec) usize {
@@ -1591,14 +1730,7 @@ fn toolSearchScore(query: []const u8, tool: mcp_runtime.ToolSpec) usize {
 }
 
 fn containsAsciiIgnoreCase(haystack: []const u8, needle: []const u8) bool {
-    if (needle.len == 0) return true;
-    if (needle.len > haystack.len) return false;
-
-    var index: usize = 0;
-    while (index + needle.len <= haystack.len) : (index += 1) {
-        if (std.ascii.eqlIgnoreCase(haystack[index .. index + needle.len], needle)) return true;
-    }
-    return false;
+    return std.ascii.findIgnoreCase(haystack, needle) != null;
 }
 
 fn appendToolSearchMcpNamespaceJson(
@@ -1623,12 +1755,32 @@ fn appendToolSearchMcpNamespaceJson(
     try out.appendSlice(allocator, ",\"tools\":[");
     var first_tool = true;
     for (matches) |match| {
-        if (!std.mem.eql(u8, match.tool.server_name, server_name)) continue;
+        const tool = switch (match.item) {
+            .mcp => |tool| tool,
+            .subagent_v1 => continue,
+        };
+        if (!std.mem.eql(u8, tool.server_name, server_name)) continue;
         if (!first_tool) try out.append(allocator, ',');
-        try appendToolSearchMcpToolJson(allocator, out, match.tool, namespace_name);
+        try appendToolSearchMcpToolJson(allocator, out, tool, namespace_name);
         first_tool = false;
     }
     try out.appendSlice(allocator, "]}");
+}
+
+fn appendToolSearchSubagentV1NamespaceJson(
+    allocator: std.mem.Allocator,
+    out: *std.ArrayList(u8),
+    matches: []const ToolSearchMatch,
+) !void {
+    var tool_indexes = std.ArrayList(usize).empty;
+    defer tool_indexes.deinit(allocator);
+    for (matches) |match| {
+        switch (match.item) {
+            .mcp => {},
+            .subagent_v1 => |index| try tool_indexes.append(allocator, index),
+        }
+    }
+    try subagent_tools.appendV1NamespaceJson(allocator, out, tool_indexes.items);
 }
 
 fn appendToolSearchMcpToolJson(
@@ -1701,6 +1853,25 @@ test "findMcpToolForFunctionCall resolves namespaced mcp calls" {
     try std.testing.expectEqualStrings("mcp__demo__echo", resolved.callable_name);
 }
 
+test "subagent v1 tool calls return unavailable runtime result" {
+    const allocator = std.testing.allocator;
+    const call = api.FunctionCall{
+        .kind = .function,
+        .call_id = "spawn-call",
+        .namespace = "multi_agent_v1",
+        .name = "spawn_agent",
+        .arguments = "{\"message\":\"hello\"}",
+    };
+
+    try std.testing.expect(isSubagentV1ToolCall(call));
+    const result = try runSubagentV1UnavailableCall(allocator, call);
+    defer result.deinit(allocator);
+
+    try std.testing.expectEqualStrings("spawn-call", result.call_id);
+    try std.testing.expectEqualStrings("subagent runtime unavailable", result.summary);
+    try std.testing.expect(std.mem.indexOf(u8, result.output, "multi_agent_v1.spawn_agent") != null);
+}
+
 test "runToolSearchCall returns matching mcp namespace tools" {
     const allocator = std.testing.allocator;
     var mcp_tools = [_]mcp_runtime.ToolSpec{
@@ -1727,7 +1898,7 @@ test "runToolSearchCall returns matching mcp namespace tools" {
         .arguments = "{\"query\":\"echo\",\"limit\":1}",
     };
 
-    const result = try runToolSearchCall(allocator, catalog, call);
+    const result = try runToolSearchCall(allocator, catalog.tools, .{}, call);
     defer result.deinit(allocator);
 
     try std.testing.expectEqualStrings("search-1", result.call_id);
@@ -1763,7 +1934,7 @@ test "runToolSearchCall advertises sanitized mcp callable leaf names" {
         .arguments = "{\"query\":\"read-file\"}",
     };
 
-    const result = try runToolSearchCall(allocator, catalog, call);
+    const result = try runToolSearchCall(allocator, catalog.tools, .{}, call);
     defer result.deinit(allocator);
 
     var parsed = try std.json.parseFromSlice(std.json.Value, allocator, result.output, .{});
@@ -1783,6 +1954,191 @@ test "runToolSearchCall advertises sanitized mcp callable leaf names" {
     try std.testing.expectEqualStrings("read-file", resolved.raw_tool_name);
 }
 
+test "runToolSearchCall keeps mcp server named multi_agent_v1 distinct" {
+    const allocator = std.testing.allocator;
+    var mcp_tools = [_]mcp_runtime.ToolSpec{.{
+        .server_name = "multi_agent_v1",
+        .raw_tool_name = "spawn_agent",
+        .callable_name = "mcp__multi_agent_v1__spawn_agent",
+        .description = "Spawn agent through an MCP server",
+        .input_schema_json = "{\"type\":\"object\"}",
+    }};
+    const catalog = mcp_runtime.Catalog{ .tools = mcp_tools[0..] };
+    const call = api.FunctionCall{
+        .kind = .tool_search,
+        .call_id = "search-collision",
+        .name = "tool_search",
+        .arguments = "{\"query\":\"spawn agent\"}",
+    };
+
+    const result = try runToolSearchCall(allocator, catalog.tools, .{}, call);
+    defer result.deinit(allocator);
+
+    var parsed = try std.json.parseFromSlice(std.json.Value, allocator, result.output, .{});
+    defer parsed.deinit();
+    const namespaces = parsed.value.array;
+    var found_mcp_namespace = false;
+    var found_subagent_namespace = false;
+    for (namespaces.items) |namespace_value| {
+        const namespace = namespace_value.object;
+        const namespace_name = namespace.get("name").?.string;
+        if (std.mem.eql(u8, namespace_name, "mcp__multi_agent_v1__")) {
+            found_mcp_namespace = true;
+            const namespace_tools = namespace.get("tools").?.array;
+            try std.testing.expectEqual(@as(usize, 1), namespace_tools.items.len);
+            try std.testing.expectEqualStrings("spawn_agent", namespace_tools.items[0].object.get("name").?.string);
+        } else if (std.mem.eql(u8, namespace_name, "multi_agent_v1")) {
+            found_subagent_namespace = true;
+        }
+    }
+
+    try std.testing.expect(found_mcp_namespace);
+    try std.testing.expect(found_subagent_namespace);
+}
+
+test "toolSearchMcpTools only includes mcp tools when deferred" {
+    const cfg = config.Config{
+        .codex_home = "/tmp/codex",
+        .active_profile = null,
+        .model = "gpt-5.5",
+        .openai_base_url = "http://127.0.0.1",
+        .chatgpt_base_url = "http://127.0.0.1",
+        .oss_provider = null,
+        .installation_id = "install",
+        .approval_policy = .never,
+        .sandbox_mode = .workspace_write,
+        .web_search_mode = null,
+        .model_reasoning_effort = null,
+        .service_tier = null,
+        .syntax_theme = null,
+        .personality = null,
+        .tui_status_line = null,
+        .tui_terminal_title = null,
+        .tui_alternate_screen = .auto,
+    };
+    var mcp_tools = [_]mcp_runtime.ToolSpec{.{
+        .server_name = "demo",
+        .raw_tool_name = "echo",
+        .callable_name = "mcp__demo__echo",
+        .description = "Echo through MCP",
+        .input_schema_json = "{\"type\":\"object\"}",
+    }};
+    const catalog = mcp_runtime.Catalog{ .tools = mcp_tools[0..] };
+
+    try std.testing.expectEqual(@as(usize, 0), toolSearchMcpTools(cfg, .{}, catalog).len);
+
+    var feature_overrides = features_cmd.FeatureOverrides{};
+    defer feature_overrides.deinit(std.testing.allocator);
+    try feature_overrides.put(std.testing.allocator, "tool_search_always_defer_mcp_tools", true);
+
+    try std.testing.expectEqual(@as(usize, 1), toolSearchMcpTools(cfg, .{
+        .feature_overrides = feature_overrides,
+    }, catalog).len);
+    try std.testing.expectEqual(@as(usize, 0), toolSearchMcpTools(cfg, .{
+        .include_tools = false,
+        .feature_overrides = feature_overrides,
+    }, catalog).len);
+
+    var unsupported_cfg = cfg;
+    unsupported_cfg.model = "configured-model";
+    try std.testing.expectEqual(@as(usize, 0), toolSearchMcpTools(unsupported_cfg, .{
+        .feature_overrides = feature_overrides,
+    }, catalog).len);
+}
+
+test "runToolSearchCall returns multi_agent_v1 namespace tools" {
+    const allocator = std.testing.allocator;
+    const catalog = mcp_runtime.Catalog{ .tools = &.{} };
+    const call = api.FunctionCall{
+        .kind = .tool_search,
+        .call_id = "search-agents",
+        .name = "tool_search",
+        .arguments = "{\"query\":\"spawn subagent\"}",
+    };
+
+    const result = try runToolSearchCall(allocator, catalog.tools, .{}, call);
+    defer result.deinit(allocator);
+
+    try std.testing.expectEqualStrings("tool_search completed", result.summary);
+    var parsed = try std.json.parseFromSlice(std.json.Value, allocator, result.output, .{});
+    defer parsed.deinit();
+    const namespaces = parsed.value.array;
+    try std.testing.expectEqual(@as(usize, 1), namespaces.items.len);
+    const namespace = namespaces.items[0].object;
+    try std.testing.expectEqualStrings("namespace", namespace.get("type").?.string);
+    try std.testing.expectEqualStrings("multi_agent_v1", namespace.get("name").?.string);
+    try std.testing.expectEqualStrings("Tools for spawning and managing sub-agents.", namespace.get("description").?.string);
+
+    const namespace_tools = namespace.get("tools").?.array;
+    const expected = [_][]const u8{ "spawn_agent", "send_input", "resume_agent", "wait_agent", "close_agent" };
+    try std.testing.expectEqual(expected.len, namespace_tools.items.len);
+    var seen = [_]bool{false} ** expected.len;
+    for (namespace_tools.items) |item| {
+        const tool = item.object;
+        const tool_name = tool.get("name").?.string;
+        var matched = false;
+        for (expected, 0..) |name, index| {
+            if (!std.mem.eql(u8, name, tool_name)) continue;
+            try std.testing.expect(!seen[index]);
+            seen[index] = true;
+            matched = true;
+            break;
+        }
+        try std.testing.expect(matched);
+        try std.testing.expectEqualStrings("function", tool.get("type").?.string);
+        try std.testing.expectEqual(false, tool.get("strict").?.bool);
+        try std.testing.expectEqual(true, tool.get("defer_loading").?.bool);
+        try std.testing.expectEqualStrings("object", tool.get("parameters").?.object.get("type").?.string);
+        try std.testing.expect(tool.get("output_schema") == null);
+    }
+    for (seen) |was_seen| try std.testing.expect(was_seen);
+}
+
+test "runToolSearchCall applies explicit limit to multi_agent_v1 leaf tools" {
+    const allocator = std.testing.allocator;
+    const catalog = mcp_runtime.Catalog{ .tools = &.{} };
+    const call = api.FunctionCall{
+        .kind = .tool_search,
+        .call_id = "search-agents-limit",
+        .name = "tool_search",
+        .arguments = "{\"query\":\"spawn subagent\",\"limit\":1}",
+    };
+
+    const result = try runToolSearchCall(allocator, catalog.tools, .{}, call);
+    defer result.deinit(allocator);
+
+    var parsed = try std.json.parseFromSlice(std.json.Value, allocator, result.output, .{});
+    defer parsed.deinit();
+    const namespaces = parsed.value.array;
+    try std.testing.expectEqual(@as(usize, 1), namespaces.items.len);
+    const namespace = namespaces.items[0].object;
+    try std.testing.expectEqualStrings("multi_agent_v1", namespace.get("name").?.string);
+    const namespace_tools = namespace.get("tools").?.array;
+    try std.testing.expectEqual(@as(usize, 1), namespace_tools.items.len);
+    try std.testing.expectEqualStrings("spawn_agent", namespace_tools.items[0].object.get("name").?.string);
+}
+
+test "runToolSearchCall omits multi_agent_v1 when feature is disabled" {
+    const allocator = std.testing.allocator;
+    const catalog = mcp_runtime.Catalog{ .tools = &.{} };
+    var feature_overrides = features_cmd.FeatureOverrides{};
+    defer feature_overrides.deinit(allocator);
+    try feature_overrides.put(allocator, "multi_agent", false);
+    const call = api.FunctionCall{
+        .kind = .tool_search,
+        .call_id = "search-agents-disabled",
+        .name = "tool_search",
+        .arguments = "{\"query\":\"spawn subagent\"}",
+    };
+
+    const result = try runToolSearchCall(allocator, catalog.tools, feature_overrides, call);
+    defer result.deinit(allocator);
+
+    var parsed = try std.json.parseFromSlice(std.json.Value, allocator, result.output, .{});
+    defer parsed.deinit();
+    try std.testing.expectEqual(@as(usize, 0), parsed.value.array.items.len);
+}
+
 test "runToolSearchCall returns empty tools array for invalid arguments" {
     const allocator = std.testing.allocator;
     const catalog = mcp_runtime.Catalog{ .tools = &.{} };
@@ -1793,7 +2149,7 @@ test "runToolSearchCall returns empty tools array for invalid arguments" {
         .arguments = "{\"query\":\"\"}",
     };
 
-    const result = try runToolSearchCall(allocator, catalog, call);
+    const result = try runToolSearchCall(allocator, catalog.tools, .{}, call);
     defer result.deinit(allocator);
 
     try std.testing.expectEqualStrings("search-invalid", result.call_id);
@@ -1813,7 +2169,7 @@ test "runToolSearchCall rejects oversized numeric limit" {
         .arguments = "{\"query\":\"echo\",\"limit\":1e100}",
     };
 
-    const result = try runToolSearchCall(allocator, catalog, call);
+    const result = try runToolSearchCall(allocator, catalog.tools, .{}, call);
     defer result.deinit(allocator);
 
     try std.testing.expectEqualStrings("search-limit", result.call_id);
@@ -1853,7 +2209,7 @@ test "runToolSearchCall uses larger default limit for computer-use tools" {
         .arguments = "{\"query\":\"computer use\"}",
     };
 
-    const result = try runToolSearchCall(allocator, catalog, call);
+    const result = try runToolSearchCall(allocator, catalog.tools, .{}, call);
     defer result.deinit(allocator);
 
     var parsed = try std.json.parseFromSlice(std.json.Value, allocator, result.output, .{});

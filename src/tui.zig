@@ -22,6 +22,7 @@ const session = @import("session.zig");
 const session_store = @import("session_store.zig");
 const skills_list = @import("skills_list.zig");
 const statusline = @import("statusline.zig");
+const subagent_tools = @import("subagent_tools.zig");
 const theme = @import("theme.zig");
 const titleline = @import("titleline.zig");
 const tools = @import("tools.zig");
@@ -2831,7 +2832,7 @@ fn handleSlashCommand(
     }
 
     if (std.ascii.eqlIgnoreCase(parts.name, "status")) {
-        try printStatus(allocator, cfg.*, credentials.*, transcript, session_path.*, cwd, state.*);
+        try printStatus(allocator, cfg.*, credentials.*, transcript, session_path.*, cwd, state.*, feature_overrides.*);
         return .handled;
     }
 
@@ -4023,14 +4024,20 @@ fn printStatus(
     session_path: []const u8,
     cwd: []const u8,
     state: TuiState,
+    feature_overrides: features_cmd.FeatureOverrides,
 ) !void {
-    const tool_label = if (cfg.web_search_mode) |mode|
-        if (mode.externalWebAccess() != null)
+    const web_search_tool_visible = if (cfg.web_search_mode) |mode| mode.externalWebAccess() != null else false;
+    const subagent_tool_search_visible = api.deferredToolSearchSupported(cfg) and
+        subagent_tools.v1ToolSearchEnabled(feature_overrides);
+    const tool_label =
+        if (subagent_tool_search_visible and web_search_tool_visible)
+            "exec_command, write_stdin, shell, shell_command, apply_patch, update_plan, tool_search, web_search"
+        else if (subagent_tool_search_visible)
+            "exec_command, write_stdin, shell, shell_command, apply_patch, update_plan, tool_search"
+        else if (web_search_tool_visible)
             "exec_command, write_stdin, shell, shell_command, apply_patch, update_plan, web_search"
         else
-            "exec_command, write_stdin, shell, shell_command, apply_patch, update_plan"
-    else
-        "exec_command, write_stdin, shell, shell_command, apply_patch, update_plan";
+            "exec_command, write_stdin, shell, shell_command, apply_patch, update_plan";
     const status_line_label = try statusline.itemsLabel(allocator, state.status_line_items.items);
     defer allocator.free(status_line_label);
 
