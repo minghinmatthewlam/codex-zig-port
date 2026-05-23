@@ -1,6 +1,6 @@
 # Feature Parity Gap List
 
-Last checked: 2026-05-22.
+Last checked: 2026-05-23.
 
 This file tracks user-facing feature parity against the local Rust Codex CLI
 reference, not CI, release, OSS hygiene, byte-for-byte fixture parity, or
@@ -9,7 +9,7 @@ purely internal generator parity. The current reference is:
 - Rust checkout: `/Users/matthewlam/dev/codex` at
   `5381240f57fe326b13bc81325f3c61596592fc7a`
 - Installed Rust CLI: `codex-cli 0.133.0`
-- Zig checkout: `35d82bde4c2735e22f202c2805e79b9a3cc66273`
+- Zig checkout: `7f1d8df927450937f13fd05a7e2ce303376d36e3`
 - Zig CLI: `codex-zig 0.0.1`
 
 The source evidence for this pass was the Rust and Zig root help output,
@@ -125,9 +125,13 @@ Zig TUI help in `src/tui.zig`, and the broader narrative tracker in
 
 ### Plugin CLI and TUI User Flows
 
-- Implement CLI `codex plugin add`, `codex plugin list`, and
-  `codex plugin remove`. Zig currently exposes marketplace management at the
-  CLI but rejects these Rust plugin subcommands.
+- CLI `codex plugin add`, `codex plugin list`, and `codex plugin remove` are
+  implemented for configured local and git-backed marketplace snapshots,
+  including `PLUGIN@MARKETPLACE` and `--marketplace` selectors, Rust-shaped
+  listing tables, local plugin cache install, config enablement, and local
+  cache/config removal. Remaining CLI plugin parity is exact config-override
+  option depth, remote catalog/cache synchronization, and full remote/plugin
+  cache behavior.
 - Implement TUI `/plugins` and `/apps` browsing/management flows, reusing the
   existing app-server plugin/app runtime where possible.
 - Close user-visible app-server plugin gaps that remain after CLI/TUI routing:
@@ -230,7 +234,7 @@ Zig TUI help in `src/tui.zig`, and the broader narrative tracker in
    tracking, and lifecycle notifications.
 4. TUI slash-command feature gaps: `/skills`, `/hooks`, `/apps`, `/plugins`,
    `/ide`, `/experimental`, and `/approve`.
-5. Plugin CLI `add/list/remove`.
+5. Plugin TUI `/plugins` and `/apps` flows plus remaining remote/cache depth.
 6. Session/thread store parity needed by resume/fork and desktop clients.
 7. MCP lifecycle depth.
 8. Cloud task feature completion.
