@@ -10,6 +10,7 @@ const plan_tool = @import("plan_tool.zig");
 const proposed_plan = @import("proposed_plan.zig");
 const subagent_tools = @import("subagent_tools.zig");
 const tools = @import("tools.zig");
+const uuid_mod = @import("uuid.zig");
 
 pub const ThreadGoal = struct {
     objective: []const u8,
@@ -579,8 +580,6 @@ pub const SubagentRuntimeAgent = struct {
 };
 
 pub const SubagentRuntime = struct {
-    next_agent_id: usize = 1,
-    next_submission_id: usize = 1,
     agents: std.ArrayList(SubagentRuntimeAgent) = .empty,
 
     pub fn deinit(self: *SubagentRuntime, allocator: std.mem.Allocator) void {
@@ -604,15 +603,14 @@ pub const SubagentRuntime = struct {
     }
 
     fn nextAgentId(self: *SubagentRuntime, allocator: std.mem.Allocator) ![]const u8 {
-        const id = try std.fmt.allocPrint(allocator, "agent-{d}", .{self.next_agent_id});
-        self.next_agent_id += 1;
-        return id;
+        _ = self;
+        return uuid_mod.generateV7String(allocator);
     }
 
     fn nextSubmissionId(self: *SubagentRuntime, allocator: std.mem.Allocator, agent_id: []const u8) ![]const u8 {
-        const id = try std.fmt.allocPrint(allocator, "{s}-input-{d}", .{ agent_id, self.next_submission_id });
-        self.next_submission_id += 1;
-        return id;
+        _ = self;
+        _ = agent_id;
+        return uuid_mod.generateV7String(allocator);
     }
 
     fn appendAgent(
@@ -2427,6 +2425,26 @@ test "findMcpToolForFunctionCall resolves namespaced mcp calls" {
     try std.testing.expectEqualStrings("demo", resolved.server_name);
     try std.testing.expectEqualStrings("echo", resolved.raw_tool_name);
     try std.testing.expectEqualStrings("mcp__demo__echo", resolved.callable_name);
+}
+
+test "subagent runtime generates uuid v7-shaped agent and submission ids" {
+    const allocator = std.testing.allocator;
+    var runtime = SubagentRuntime{};
+    const id = try runtime.nextAgentId(allocator);
+    defer allocator.free(id);
+    const submission_id = try runtime.nextSubmissionId(allocator, id);
+    defer allocator.free(submission_id);
+
+    try std.testing.expectEqual(@as(usize, 36), id.len);
+    try std.testing.expect(id[8] == '-');
+    try std.testing.expect(id[13] == '-');
+    try std.testing.expect(id[18] == '-');
+    try std.testing.expect(id[23] == '-');
+    try std.testing.expect(id[14] == '7');
+    try std.testing.expect(std.mem.indexOfScalar(u8, "89ab", id[19]) != null);
+    try std.testing.expectEqual(@as(usize, 36), submission_id.len);
+    try std.testing.expect(submission_id[14] == '7');
+    try std.testing.expect(std.mem.indexOfScalar(u8, "89ab", submission_id[19]) != null);
 }
 
 test "subagent v1 runtime wait and close return status results" {

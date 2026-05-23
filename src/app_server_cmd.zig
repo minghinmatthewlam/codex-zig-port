@@ -40,6 +40,7 @@ const session_store = @import("session_store.zig");
 const skills_list = @import("skills_list.zig");
 const thread_state = @import("thread_state.zig");
 const tool_runner = @import("tools.zig");
+const uuid_mod = @import("uuid.zig");
 
 pub const DEFAULT_LISTEN_URL = "stdio://";
 const CLI_VERSION = "0.0.1";
@@ -41407,24 +41408,7 @@ fn replaceOwnedString(allocator: std.mem.Allocator, slot: *[]const u8, value: []
 }
 
 fn generateUuidString(allocator: std.mem.Allocator) ![]const u8 {
-    var bytes: [16]u8 = undefined;
-    std.Io.Threaded.global_single_threaded.io().random(&bytes);
-    bytes[6] = (bytes[6] & 0x0f) | 0x40;
-    bytes[8] = (bytes[8] & 0x3f) | 0x80;
-
-    const hex = "0123456789abcdef";
-    var out = try allocator.alloc(u8, 36);
-    var out_index: usize = 0;
-    for (bytes, 0..) |byte, byte_index| {
-        if (byte_index == 4 or byte_index == 6 or byte_index == 8 or byte_index == 10) {
-            out[out_index] = '-';
-            out_index += 1;
-        }
-        out[out_index] = hex[byte >> 4];
-        out[out_index + 1] = hex[byte & 0x0f];
-        out_index += 2;
-    }
-    return out;
+    return uuid_mod.generateV4String(allocator);
 }
 
 fn currentUnixSeconds() i64 {
