@@ -128,17 +128,20 @@ Zig TUI help in `src/tui.zig`, and the broader narrative tracker in
   model-catalog defaulting/validation, including unsupported inherited
   service-tier filtering. Full-history forks still reject `agent_type`, model,
   and reasoning-effort overrides like Rust. `spawn_agent` and `send_input`
-  structured `items` now pass text plus URL-backed `image` and readable
-  `local_image` content into child turns while retaining Rust-shaped image
-  previews for `/agent` listings; unreadable local images become model-visible
-  read-error placeholders instead of aborting the tool call. This local runtime
-  still rejects `agent_type` role overrides and skill/mention structured items
-  until those Rust behaviors are implemented rather than silently dropping them.
+  structured `items` now pass text plus URL-backed `image`, readable
+  `local_image`, registered local `skill`, and structured `mention` content into child
+  turns while retaining Rust-shaped previews for `/agent` listings; unreadable
+  local images become model-visible read-error placeholders instead of aborting
+  the tool call, readable registered skills become Rust-shaped `<skill>` user
+  fragments, unregistered skill paths become model-visible read-error
+  placeholders, and mentions are preserved as explicit model-visible targets.
+  This local runtime still rejects `agent_type` role overrides until that Rust
+  behavior is implemented rather than silently dropping it.
   Rust's background concurrent execution, persisted subagent threads, picker
   navigation, thread switching, lifecycle notifications/hooks, full model-catalog
-  dynamic cache/remote fallback for child overrides, role config, skill/mention
-  item injection, and v2 runtime behavior remain part of the broader subagent
-  runtime bucket.
+  dynamic cache/remote fallback for child overrides, role config, full
+  app/plugin activation from mention items, and v2 runtime behavior remain part
+  of the broader subagent runtime bucket.
 - Basic local TUI `/skills` and `/hooks` list views are covered: `/skills`
   lists discovered repo/user/plugin skills with enabled state and load errors,
   and `/hooks` lists discovered lifecycle command hooks with event, source,
