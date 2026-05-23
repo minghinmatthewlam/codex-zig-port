@@ -6,6 +6,7 @@ const auth = @import("auth.zig");
 const config = @import("config.zig");
 const features_cmd = @import("features_cmd.zig");
 const mcp_runtime = @import("mcp_runtime.zig");
+const model_catalog = @import("model_catalog.zig");
 const plan_tool = @import("plan_tool.zig");
 const proposed_plan = @import("proposed_plan.zig");
 const subagent_tools = @import("subagent_tools.zig");
@@ -1606,6 +1607,158 @@ const SubagentModelControls = struct {
     }
 };
 
+const SubagentModelControlsResolveResult = union(enum) {
+    controls: SubagentModelControls,
+    invalid: []const u8,
+};
+
+fn resolveSubagentSpawnModelControls(
+    allocator: std.mem.Allocator,
+    cfg: config.Config,
+    requested: SubagentModelControls,
+) !SubagentModelControlsResolveResult {
+    var child_cfg = requested.apply(cfg);
+    const maybe_model = model_catalog.bundledModel(child_cfg.model);
+
+    if (requested.model != null and maybe_model == null) {
+        return .{ .invalid = try subagentUnknownModelMessage(allocator, child_cfg.model) };
+    }
+
+    if (requested.model != null) {
+        const model = maybe_model.?;
+        if (requested.has_reasoning_effort) {
+            if (requested.reasoning_effort) |effort| {
+                if (!subagentModelSupportsReasoningEffort(model, effort)) {
+                    return .{ .invalid = try subagentUnsupportedReasoningMessage(allocator, child_cfg.model, maybe_model, effort) };
+                }
+            }
+        } else {
+            child_cfg.model_reasoning_effort = config.ReasoningEffort.parse(model.default_reasoning_level) catch null;
+        }
+    } else if (requested.has_reasoning_effort) {
+        if (requested.reasoning_effort) |effort| {
+            if (maybe_model) |model| {
+                if (!subagentModelSupportsReasoningEffort(model, effort)) {
+                    return .{ .invalid = try subagentUnsupportedReasoningMessage(allocator, child_cfg.model, maybe_model, effort) };
+                }
+            } else {
+                return .{ .invalid = try subagentUnsupportedReasoningMessage(allocator, child_cfg.model, null, effort) };
+            }
+        }
+    }
+
+    if (requested.has_service_tier) {
+        if (child_cfg.service_tier) |service_tier| {
+            if (maybe_model) |model| {
+                if (!subagentModelSupportsServiceTier(model, service_tier)) {
+                    return .{ .invalid = try subagentUnsupportedServiceTierMessage(allocator, child_cfg.model, maybe_model, service_tier) };
+                }
+            } else {
+                return .{ .invalid = try subagentUnsupportedServiceTierMessage(allocator, child_cfg.model, null, service_tier) };
+            }
+        }
+    }
+
+    if (child_cfg.service_tier) |service_tier| {
+        if (maybe_model) |model| {
+            if (!subagentModelSupportsServiceTier(model, service_tier)) child_cfg.service_tier = null;
+        } else {
+            child_cfg.service_tier = null;
+        }
+    }
+
+    return .{ .controls = try SubagentModelControls.fromConfig(allocator, child_cfg) };
+}
+
+fn subagentModelSupportsReasoningEffort(model: model_catalog.Entry, effort: config.ReasoningEffort) bool {
+    const label = effort.label();
+    for (model.supported_reasoning_levels) |reasoning| {
+        if (std.mem.eql(u8, reasoning.effort, label)) return true;
+    }
+    return false;
+}
+
+fn subagentModelSupportsServiceTier(model: model_catalog.Entry, service_tier: []const u8) bool {
+    for (model.service_tiers) |tier| {
+        if (std.mem.eql(u8, tier.id, service_tier)) return true;
+    }
+    return false;
+}
+
+fn subagentUnknownModelMessage(allocator: std.mem.Allocator, requested_model: []const u8) ![]const u8 {
+    const available = try subagentAvailableModelNames(allocator);
+    defer allocator.free(available);
+    return std.fmt.allocPrint(
+        allocator,
+        "Unknown model `{s}` for spawn_agent. Available models: {s}",
+        .{ requested_model, available },
+    );
+}
+
+fn subagentUnsupportedReasoningMessage(
+    allocator: std.mem.Allocator,
+    model_name: []const u8,
+    maybe_model: ?model_catalog.Entry,
+    effort: config.ReasoningEffort,
+) ![]const u8 {
+    const supported = try subagentSupportedReasoningEffortsText(allocator, maybe_model);
+    defer allocator.free(supported);
+    return std.fmt.allocPrint(
+        allocator,
+        "Reasoning effort `{s}` is not supported for model `{s}`. Supported reasoning efforts: {s}",
+        .{ effort.label(), model_name, supported },
+    );
+}
+
+fn subagentUnsupportedServiceTierMessage(
+    allocator: std.mem.Allocator,
+    model_name: []const u8,
+    maybe_model: ?model_catalog.Entry,
+    service_tier: []const u8,
+) ![]const u8 {
+    const supported = try subagentSupportedServiceTiersText(allocator, maybe_model);
+    defer allocator.free(supported);
+    return std.fmt.allocPrint(
+        allocator,
+        "Service tier `{s}` is not supported for model `{s}`. Supported service tiers: {s}",
+        .{ service_tier, model_name, supported },
+    );
+}
+
+fn subagentAvailableModelNames(allocator: std.mem.Allocator) ![]const u8 {
+    var out = std.ArrayList(u8).empty;
+    errdefer out.deinit(allocator);
+    for (model_catalog.bundled_models, 0..) |model, index| {
+        if (index > 0) try out.appendSlice(allocator, ", ");
+        try out.appendSlice(allocator, model.slug);
+    }
+    return out.toOwnedSlice(allocator);
+}
+
+fn subagentSupportedReasoningEffortsText(allocator: std.mem.Allocator, maybe_model: ?model_catalog.Entry) ![]const u8 {
+    const model = maybe_model orelse return allocator.dupe(u8, "none");
+    if (model.supported_reasoning_levels.len == 0) return allocator.dupe(u8, "none");
+    var out = std.ArrayList(u8).empty;
+    errdefer out.deinit(allocator);
+    for (model.supported_reasoning_levels, 0..) |reasoning, index| {
+        if (index > 0) try out.appendSlice(allocator, ", ");
+        try out.appendSlice(allocator, reasoning.effort);
+    }
+    return out.toOwnedSlice(allocator);
+}
+
+fn subagentSupportedServiceTiersText(allocator: std.mem.Allocator, maybe_model: ?model_catalog.Entry) ![]const u8 {
+    const model = maybe_model orelse return allocator.dupe(u8, "none");
+    if (model.service_tiers.len == 0) return allocator.dupe(u8, "none");
+    var out = std.ArrayList(u8).empty;
+    errdefer out.deinit(allocator);
+    for (model.service_tiers, 0..) |tier, index| {
+        if (index > 0) try out.appendSlice(allocator, ", ");
+        try out.appendSlice(allocator, tier.id);
+    }
+    return out.toOwnedSlice(allocator);
+}
+
 const SubagentArgumentsParseError = error{InvalidArguments} || std.mem.Allocator.Error;
 
 fn parseSubagentArgumentsObject(
@@ -1651,10 +1804,14 @@ fn runSubagentSpawnCall(
         else => return subagentModelError(allocator, call, "subagent invalid", subagentSpawnOverrideErrorMessage(err)),
     };
     defer requested_controls.deinit(allocator);
-    const child_cfg = requested_controls.apply(cfg);
-    var model_controls = try SubagentModelControls.fromConfig(allocator, child_cfg);
+    const resolved_controls = try resolveSubagentSpawnModelControls(allocator, cfg, requested_controls);
+    var model_controls = switch (resolved_controls) {
+        .invalid => |message| return subagentModelErrorAlloc(allocator, call, "subagent invalid", message),
+        .controls => |controls| controls,
+    };
     var model_controls_owned = true;
     defer if (model_controls_owned) model_controls.deinit(allocator);
+    const child_cfg = model_controls.apply(cfg);
 
     const agent_id = try runtime.nextAgentId(allocator);
     var agent_id_owned = true;
@@ -2560,6 +2717,28 @@ test "subagent runtime generates uuid v7-shaped agent and submission ids" {
     try std.testing.expect(std.mem.indexOfScalar(u8, "89ab", submission_id[19]) != null);
 }
 
+fn testSubagentConfig(model: []const u8, reasoning_effort: ?config.ReasoningEffort, service_tier: ?[]const u8) config.Config {
+    return .{
+        .codex_home = "/tmp/codex",
+        .active_profile = null,
+        .model = model,
+        .openai_base_url = "http://127.0.0.1",
+        .chatgpt_base_url = "http://127.0.0.1",
+        .oss_provider = null,
+        .installation_id = "install",
+        .approval_policy = .never,
+        .sandbox_mode = .workspace_write,
+        .web_search_mode = null,
+        .model_reasoning_effort = reasoning_effort,
+        .service_tier = service_tier,
+        .syntax_theme = null,
+        .personality = null,
+        .tui_status_line = null,
+        .tui_terminal_title = null,
+        .tui_alternate_screen = .auto,
+    };
+}
+
 test "subagent spawn overrides apply child model controls" {
     const allocator = std.testing.allocator;
     var parsed = try std.json.parseFromSlice(std.json.Value, allocator,
@@ -2594,6 +2773,130 @@ test "subagent spawn overrides apply child model controls" {
     try std.testing.expectEqualStrings("gpt-child", child_cfg.model);
     try std.testing.expectEqual(config.ReasoningEffort.high, child_cfg.model_reasoning_effort.?);
     try std.testing.expectEqualStrings("priority", child_cfg.service_tier.?);
+}
+
+test "subagent spawn model resolver applies selected model defaults" {
+    const allocator = std.testing.allocator;
+    var parsed = try std.json.parseFromSlice(std.json.Value, allocator,
+        \\{"model":"gpt-5.4"}
+    , .{});
+    defer parsed.deinit();
+
+    var overrides = try subagentSpawnOverridesFromArgs(allocator, parsed.value.object, false);
+    defer overrides.deinit(allocator);
+
+    const parent_cfg = testSubagentConfig("gpt-5.3-codex", .low, "priority");
+    const resolved = try resolveSubagentSpawnModelControls(allocator, parent_cfg, overrides);
+    var controls = switch (resolved) {
+        .invalid => |message| {
+            defer allocator.free(message);
+            return error.UnexpectedInvalidSubagentControls;
+        },
+        .controls => |value| value,
+    };
+    defer controls.deinit(allocator);
+
+    const child_cfg = controls.apply(parent_cfg);
+    try std.testing.expectEqualStrings("gpt-5.4", child_cfg.model);
+    try std.testing.expectEqual(config.ReasoningEffort.medium, child_cfg.model_reasoning_effort.?);
+    try std.testing.expectEqualStrings("priority", child_cfg.service_tier.?);
+}
+
+test "subagent spawn model resolver rejects unknown models and unsupported reasoning" {
+    const allocator = std.testing.allocator;
+    var unknown_model = try std.json.parseFromSlice(std.json.Value, allocator,
+        \\{"model":"gpt-unknown"}
+    , .{});
+    defer unknown_model.deinit();
+    var unknown_overrides = try subagentSpawnOverridesFromArgs(allocator, unknown_model.value.object, false);
+    defer unknown_overrides.deinit(allocator);
+
+    const parent_cfg = testSubagentConfig("gpt-5.4", .medium, null);
+    const unknown_result = try resolveSubagentSpawnModelControls(allocator, parent_cfg, unknown_overrides);
+    switch (unknown_result) {
+        .invalid => |message| {
+            defer allocator.free(message);
+            try std.testing.expect(std.mem.indexOf(u8, message, "Unknown model `gpt-unknown` for spawn_agent") != null);
+            try std.testing.expect(std.mem.indexOf(u8, message, "gpt-5.4") != null);
+        },
+        .controls => |value| {
+            var controls = value;
+            defer controls.deinit(allocator);
+            return error.ExpectedInvalidSubagentControls;
+        },
+    }
+
+    var unsupported_reasoning = try std.json.parseFromSlice(std.json.Value, allocator,
+        \\{"model":"gpt-5.4","reasoning_effort":"minimal"}
+    , .{});
+    defer unsupported_reasoning.deinit();
+    var reasoning_overrides = try subagentSpawnOverridesFromArgs(allocator, unsupported_reasoning.value.object, false);
+    defer reasoning_overrides.deinit(allocator);
+
+    const reasoning_result = try resolveSubagentSpawnModelControls(allocator, parent_cfg, reasoning_overrides);
+    switch (reasoning_result) {
+        .invalid => |message| {
+            defer allocator.free(message);
+            try std.testing.expectEqualStrings(
+                "Reasoning effort `minimal` is not supported for model `gpt-5.4`. Supported reasoning efforts: low, medium, high, xhigh",
+                message,
+            );
+        },
+        .controls => |value| {
+            var controls = value;
+            defer controls.deinit(allocator);
+            return error.ExpectedInvalidSubagentControls;
+        },
+    }
+}
+
+test "subagent spawn model resolver validates and filters service tiers" {
+    const allocator = std.testing.allocator;
+    const parent_cfg = testSubagentConfig("gpt-5.4", .medium, "priority");
+
+    var unsupported_tier = try std.json.parseFromSlice(std.json.Value, allocator,
+        \\{"model":"gpt-5.3-codex","service_tier":"priority"}
+    , .{});
+    defer unsupported_tier.deinit();
+    var unsupported_overrides = try subagentSpawnOverridesFromArgs(allocator, unsupported_tier.value.object, false);
+    defer unsupported_overrides.deinit(allocator);
+
+    const unsupported_result = try resolveSubagentSpawnModelControls(allocator, parent_cfg, unsupported_overrides);
+    switch (unsupported_result) {
+        .invalid => |message| {
+            defer allocator.free(message);
+            try std.testing.expectEqualStrings(
+                "Service tier `priority` is not supported for model `gpt-5.3-codex`. Supported service tiers: none",
+                message,
+            );
+        },
+        .controls => |value| {
+            var controls = value;
+            defer controls.deinit(allocator);
+            return error.ExpectedInvalidSubagentControls;
+        },
+    }
+
+    var inherited_tier = try std.json.parseFromSlice(std.json.Value, allocator,
+        \\{"model":"gpt-5.3-codex"}
+    , .{});
+    defer inherited_tier.deinit();
+    var inherited_overrides = try subagentSpawnOverridesFromArgs(allocator, inherited_tier.value.object, false);
+    defer inherited_overrides.deinit(allocator);
+
+    const inherited_result = try resolveSubagentSpawnModelControls(allocator, parent_cfg, inherited_overrides);
+    var controls = switch (inherited_result) {
+        .invalid => |message| {
+            defer allocator.free(message);
+            return error.UnexpectedInvalidSubagentControls;
+        },
+        .controls => |value| value,
+    };
+    defer controls.deinit(allocator);
+
+    const child_cfg = controls.apply(parent_cfg);
+    try std.testing.expectEqualStrings("gpt-5.3-codex", child_cfg.model);
+    try std.testing.expect(child_cfg.service_tier == null);
 }
 
 test "subagent resolved model controls preserve spawn-time inherited controls" {
