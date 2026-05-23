@@ -49,6 +49,7 @@ const DAEMON_DIR_NAME = "app-server-daemon";
 const DAEMON_SETTINGS_FILE_NAME = "settings.json";
 const DAEMON_LOCK_FILE_NAME = "daemon.lock";
 const DAEMON_APP_SERVER_PID_LOCK_FILE_NAME = "app-server.pid.lock";
+const DAEMON_APP_SERVER_UPDATER_PID_LOCK_FILE_NAME = "app-server-updater.pid.lock";
 const THREAD_LIST_DEFAULT_LIMIT = 25;
 const THREAD_LIST_MAX_LIMIT = 100;
 const THREAD_TURNS_DEFAULT_LIMIT = 25;
@@ -1024,6 +1025,25 @@ const DaemonUnixSockaddr = extern union {
     un: std.posix.sockaddr.un,
 };
 
+pub fn runRemoteControlDaemonStart(allocator: std.mem.Allocator) !void {
+    const codex_home = try resolveDaemonCodexHome(allocator);
+    defer allocator.free(codex_home);
+    try validateDaemonSettings(allocator, codex_home);
+    try ensureDaemonUpdaterPidLock(allocator, codex_home);
+    try failManagedStandaloneMissingIfNeeded(allocator, codex_home, false);
+}
+
+pub fn runRemoteControlDaemonStop(allocator: std.mem.Allocator, json: bool) !void {
+    const codex_home = try resolveDaemonCodexHome(allocator);
+    defer allocator.free(codex_home);
+    try ensureDaemonNoManagedServerRunning(allocator, codex_home);
+    if (json) {
+        try writeDaemonLifecycleOutput(allocator, codex_home, "notRunning", null);
+    } else {
+        try cli_utils.writeStdout("Remote control is not running.\n");
+    }
+}
+
 fn runDaemon(allocator: std.mem.Allocator, raw_args: []const []const u8) !void {
     var command: ?DaemonCommand = null;
 
@@ -1111,6 +1131,12 @@ fn daemonCommandFromName(name: []const u8) ?DaemonCommand {
 }
 
 fn runDaemonStop(allocator: std.mem.Allocator, codex_home: []const u8) !void {
+    try ensureDaemonNoManagedServerRunning(allocator, codex_home);
+    try writeDaemonLifecycleOutput(allocator, codex_home, "notRunning", null);
+}
+
+fn ensureDaemonNoManagedServerRunning(allocator: std.mem.Allocator, codex_home: []const u8) !void {
+    try ensureDaemonScaffolding(allocator, codex_home, true);
     try validateDaemonSettings(allocator, codex_home);
     const probe = try probeDaemonSocket(allocator, codex_home);
     defer probe.deinit(allocator);
@@ -1118,7 +1144,6 @@ fn runDaemonStop(allocator: std.mem.Allocator, codex_home: []const u8) !void {
         .running => return failDaemonUnmanagedRunning(),
         .unavailable => {},
     }
-    try writeDaemonLifecycleOutput(allocator, codex_home, "notRunning", null);
 }
 
 fn runDaemonVersion(allocator: std.mem.Allocator, codex_home: []const u8) !void {
@@ -1471,7 +1496,9 @@ fn connectDaemonUnixStream(allocator: std.mem.Allocator, socket_path: []const u8
     defer if (!keep_fd) closeFd(fd);
 
     var storage = std.mem.zeroes(DaemonUnixSockaddr);
-    if (socket_path.len >= storage.un.path.len) return error.NameTooLong;
+    if (socket_path.len >= storage.un.path.len) {
+        return .{ .unavailable = try std.fmt.allocPrint(allocator, "socket path is too long: {s}", .{socket_path}) };
+    }
     storage.un.family = std.posix.AF.UNIX;
     @memcpy(storage.un.path[0..socket_path.len], socket_path);
     storage.un.path[socket_path.len] = 0;
@@ -1626,6 +1653,17 @@ fn ensureDaemonScaffolding(allocator: std.mem.Allocator, codex_home: []const u8,
         defer allocator.free(pid_lock);
         try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = pid_lock, .data = "" });
     }
+}
+
+fn ensureDaemonUpdaterPidLock(allocator: std.mem.Allocator, codex_home: []const u8) !void {
+    const io = std.Io.Threaded.global_single_threaded.io();
+    const daemon_dir = try std.fs.path.join(allocator, &.{ codex_home, DAEMON_DIR_NAME });
+    defer allocator.free(daemon_dir);
+    try std.Io.Dir.cwd().createDirPath(io, daemon_dir);
+
+    const pid_lock = try std.fs.path.join(allocator, &.{ daemon_dir, DAEMON_APP_SERVER_UPDATER_PID_LOCK_FILE_NAME });
+    defer allocator.free(pid_lock);
+    try std.Io.Dir.cwd().writeFile(io, .{ .sub_path = pid_lock, .data = "" });
 }
 
 fn failUnknownDaemonSubcommand(arg: []const u8) error{AppServerDaemonCommandFailed} {

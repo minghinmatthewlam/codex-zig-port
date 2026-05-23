@@ -1,9 +1,19 @@
 const std = @import("std");
 
+const app_server_cmd = @import("app_server_cmd.zig");
+const cli_utils = @import("cli_utils.zig");
 const config = @import("config.zig");
 const features_cmd = @import("features_cmd.zig");
 
+const Command = enum {
+    foreground,
+    start,
+    stop,
+};
+
 pub const ParsedOptions = struct {
+    command: Command = .foreground,
+    json: bool = false,
     runtime_overrides: config.RuntimeOverrides = .{},
     feature_overrides: features_cmd.FeatureOverrides = .{},
 
@@ -20,7 +30,21 @@ pub fn run(allocator: std.mem.Allocator, args: *std.process.Args.Iterator) !void
     var parsed = try parseArgSlice(allocator, raw_args.items);
     defer parsed.deinit(allocator);
 
-    return error.RemoteControlStateDbUnavailable;
+    switch (parsed.command) {
+        .foreground => return error.RemoteControlStateDbUnavailable,
+        .start => {
+            if (!parsed.json) {
+                try cli_utils.writeStdout("Starting app-server daemon with remote control enabled...\n");
+            }
+            try app_server_cmd.runRemoteControlDaemonStart(allocator);
+        },
+        .stop => {
+            if (!parsed.json) {
+                try cli_utils.writeStdout("Stopping remote control...\n");
+            }
+            try app_server_cmd.runRemoteControlDaemonStop(allocator, parsed.json);
+        },
+    }
 }
 
 fn parseArgSlice(allocator: std.mem.Allocator, args: []const []const u8) !ParsedOptions {
@@ -32,8 +56,23 @@ fn parseArgSlice(allocator: std.mem.Allocator, args: []const []const u8) !Parsed
     while (index < args.len) : (index += 1) {
         const arg = args[index];
         if (isHelpFlag(arg)) {
+            printHelpForCommand(parsed.command);
+            return error.RemoteControlHelpRequested;
+        }
+        if (std.mem.eql(u8, arg, "help")) {
+            if (parsed.command != .foreground) return error.UnexpectedRemoteControlArgument;
+            if (index + 1 < args.len) {
+                if (index + 2 < args.len) return error.UnexpectedRemoteControlArgument;
+                const help_command = parseCommand(args[index + 1]) orelse return error.UnexpectedRemoteControlArgument;
+                printCommandHelp(help_command);
+                return error.RemoteControlHelpRequested;
+            }
             printHelp();
             return error.RemoteControlHelpRequested;
+        }
+        if (std.mem.eql(u8, arg, "--json")) {
+            parsed.json = true;
+            continue;
         }
         if (std.mem.eql(u8, arg, "--config") or std.mem.eql(u8, arg, "-c")) {
             index += 1;
@@ -74,7 +113,8 @@ fn parseArgSlice(allocator: std.mem.Allocator, args: []const []const u8) !Parsed
             continue;
         }
         if (std.mem.startsWith(u8, arg, "-")) return error.UnknownRemoteControlOption;
-        return error.UnexpectedRemoteControlArgument;
+        if (parsed.command != .foreground) return error.UnexpectedRemoteControlArgument;
+        parsed.command = parseCommand(arg) orelse return error.UnexpectedRemoteControlArgument;
     }
 
     try enableRemoteControlForInvocation(allocator, &parsed.feature_overrides);
@@ -92,14 +132,28 @@ fn isHelpFlag(arg: []const u8) bool {
     return std.mem.eql(u8, arg, "--help") or std.mem.eql(u8, arg, "-h");
 }
 
+fn parseCommand(arg: []const u8) ?Command {
+    if (std.mem.eql(u8, arg, "start")) return .start;
+    if (std.mem.eql(u8, arg, "stop")) return .stop;
+    return null;
+}
+
 pub fn printHelp() void {
     std.debug.print(
-        \\[experimental] Start a headless app-server with remote control enabled
+        \\[experimental] Manage the app-server daemon with remote control enabled
         \\
         \\Usage:
-        \\  codex-zig remote-control [OPTIONS]
+        \\  codex-zig remote-control [OPTIONS] [COMMAND]
+        \\
+        \\Commands:
+        \\  start       Start the app-server daemon with remote control enabled
+        \\  stop        Stop the app-server daemon
+        \\  help        Print this message or the help of the given subcommand(s)
         \\
         \\Options:
+        \\      --json
+        \\          Emit machine-readable JSON.
+        \\
         \\  -c, --config <key=value>
         \\          Override a configuration value that would otherwise be loaded
         \\          from ~/.codex/config.toml. Dotted paths override nested values.
@@ -116,12 +170,73 @@ pub fn printHelp() void {
     , .{});
 }
 
+fn printHelpForCommand(command: Command) void {
+    switch (command) {
+        .foreground => printHelp(),
+        .start, .stop => printCommandHelp(command),
+    }
+}
+
+fn printCommandHelp(command: Command) void {
+    switch (command) {
+        .foreground => printHelp(),
+        .start => std.debug.print(
+            \\Start the app-server daemon with remote control enabled
+            \\
+            \\Usage: codex-zig remote-control start [OPTIONS]
+            \\
+            \\Options:
+            \\      --json
+            \\          Emit machine-readable JSON.
+            \\
+            \\  -c, --config <key=value>
+            \\          Override a configuration value that would otherwise be loaded
+            \\          from ~/.codex/config.toml. Dotted paths override nested values.
+            \\
+            \\      --enable <FEATURE>
+            \\          Enable a feature for this invocation.
+            \\
+            \\      --disable <FEATURE>
+            \\          Disable a feature for this invocation.
+            \\
+            \\  -h, --help
+            \\          Print help.
+            \\
+        , .{}),
+        .stop => std.debug.print(
+            \\Stop the app-server daemon
+            \\
+            \\Usage: codex-zig remote-control stop [OPTIONS]
+            \\
+            \\Options:
+            \\      --json
+            \\          Emit machine-readable JSON.
+            \\
+            \\  -c, --config <key=value>
+            \\          Override a configuration value that would otherwise be loaded
+            \\          from ~/.codex/config.toml. Dotted paths override nested values.
+            \\
+            \\      --enable <FEATURE>
+            \\          Enable a feature for this invocation.
+            \\
+            \\      --disable <FEATURE>
+            \\          Disable a feature for this invocation.
+            \\
+            \\  -h, --help
+            \\          Print help.
+            \\
+        , .{}),
+    }
+}
+
 test "remote-control command appends feature override after user toggles" {
     const allocator = std.testing.allocator;
     const raw_args = [_][]const u8{ "--disable", "remote_control", "--enable", "goals" };
     var parsed = try parseArgSlice(allocator, raw_args[0..]);
     defer parsed.deinit(allocator);
 
+    try std.testing.expectEqual(Command.foreground, parsed.command);
+    try std.testing.expect(!parsed.json);
     try std.testing.expectEqual(@as(usize, 2), parsed.feature_overrides.items.items.len);
     try std.testing.expectEqualStrings("remote_control", parsed.feature_overrides.items.items[0].key);
     try std.testing.expectEqual(true, parsed.feature_overrides.items.items[0].enabled);
@@ -129,12 +244,37 @@ test "remote-control command appends feature override after user toggles" {
     try std.testing.expectEqual(true, parsed.feature_overrides.items.items[1].enabled);
 }
 
-test "remote-control command rejects positional arguments" {
+test "remote-control command parses daemon subcommands and json" {
     const allocator = std.testing.allocator;
-    const stop_args = [_][]const u8{"stop"};
+    const start_args = [_][]const u8{ "--json", "start" };
+    var start = try parseArgSlice(allocator, start_args[0..]);
+    defer start.deinit(allocator);
+
+    try std.testing.expectEqual(Command.start, start.command);
+    try std.testing.expect(start.json);
+    try std.testing.expectEqual(true, start.feature_overrides.get("remote_control").?);
+
+    const stop_args = [_][]const u8{ "stop", "--json" };
+    var stop = try parseArgSlice(allocator, stop_args[0..]);
+    defer stop.deinit(allocator);
+
+    try std.testing.expectEqual(Command.stop, stop.command);
+    try std.testing.expect(stop.json);
+    try std.testing.expectEqual(true, stop.feature_overrides.get("remote_control").?);
+}
+
+test "remote-control command rejects unexpected positional arguments" {
+    const allocator = std.testing.allocator;
+    const status_args = [_][]const u8{"status"};
     try std.testing.expectError(
         error.UnexpectedRemoteControlArgument,
-        parseArgSlice(allocator, stop_args[0..]),
+        parseArgSlice(allocator, status_args[0..]),
+    );
+
+    const extra_args = [_][]const u8{ "stop", "extra" };
+    try std.testing.expectError(
+        error.UnexpectedRemoteControlArgument,
+        parseArgSlice(allocator, extra_args[0..]),
     );
 }
 
