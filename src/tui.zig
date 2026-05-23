@@ -9,6 +9,7 @@ const env = @import("env.zig");
 const features_cmd = @import("features_cmd.zig");
 const git_diff = @import("git_diff.zig");
 const hooks_list = @import("hooks_list.zig");
+const ide_context = @import("ide_context.zig");
 const login = @import("login.zig");
 const local_remote_control = @import("local_remote_control.zig");
 const memory_reset = @import("memory_reset.zig");
@@ -396,7 +397,7 @@ pub fn runWithOptions(allocator: std.mem.Allocator, options: Options) !void {
                         std.debug.print("\nremote › {s}\n", .{remote_prompt});
                         const input_images = pending_input_images;
                         pending_input_images = &.{};
-                        runUserPrompt(allocator, cfg, &credentials, &transcript, session_path, remote_prompt, options.additional_writable_roots, &state, input_images, feature_overrides) catch |err| {
+                        runUserPrompt(allocator, cfg, &credentials, &transcript, session_path, cwd, remote_prompt, options.additional_writable_roots, &state, input_images, feature_overrides) catch |err| {
                             std.debug.print("\nerror: {s}\n", .{@errorName(err)});
                         };
                         refreshLocalRemoteControlSnapshot(allocator, &local_remote_server, cwd, &transcript);
@@ -474,7 +475,7 @@ fn handleInteractivePromptLine(
 
     const input_images = pending_input_images.*;
     pending_input_images.* = &.{};
-    runUserPrompt(allocator, cfg.*, credentials, transcript, session_path.*, prompt, additional_writable_roots, state, input_images, feature_overrides.*) catch |err| {
+    runUserPrompt(allocator, cfg.*, credentials, transcript, session_path.*, cwd, prompt, additional_writable_roots, state, input_images, feature_overrides.*) catch |err| {
         std.debug.print("\nerror: {s}\n", .{@errorName(err)});
     };
     return false;
@@ -2498,6 +2499,7 @@ fn runUserPrompt(
     credentials: *auth.Credentials,
     transcript: *session.Transcript,
     session_path: []const u8,
+    cwd: []const u8,
     prompt: []const u8,
     additional_writable_roots: []const []const u8,
     state: *TuiState,
@@ -2506,13 +2508,37 @@ fn runUserPrompt(
 ) !void {
     var expanded_prompt: ?[]const u8 = null;
     defer if (expanded_prompt) |value| allocator.free(value);
+    var ide_expanded_prompt: ?[]const u8 = null;
+    defer if (ide_expanded_prompt) |value| allocator.free(value);
 
-    const prompt_for_model = if (state.mentions.items.len == 0)
+    const prompt_with_mentions = if (state.mentions.items.len == 0)
         prompt
     else blk: {
         const value = try buildPromptWithMentions(allocator, prompt, state.mentions.items);
         expanded_prompt = value;
         break :blk value;
+    };
+
+    const prompt_for_model = if (!state.ide_context_enabled)
+        prompt_with_mentions
+    else blk: {
+        switch (try ide_context.fetchPromptContext(allocator, cwd)) {
+            .context => |context_text_opt| {
+                state.ide_context_prompt_fetch_warned = false;
+                const context_text = context_text_opt orelse break :blk prompt_with_mentions;
+                defer allocator.free(context_text);
+                const prefixed = try ide_context.prefixPrompt(allocator, context_text, prompt_with_mentions);
+                ide_expanded_prompt = prefixed;
+                break :blk prefixed;
+            },
+            .failure => |failure| {
+                if (!state.ide_context_prompt_fetch_warned) {
+                    state.ide_context_prompt_fetch_warned = true;
+                    std.debug.print("IDE context was skipped for this message.\n{s}\n", .{ide_context.promptSkipHint(failure)});
+                }
+                break :blk prompt_with_mentions;
+            },
+        }
     };
 
     try runPromptWithToolMode(allocator, cfg, credentials, transcript, session_path, prompt_for_model, additional_writable_roots, !state.plan_mode, state.plan_mode, input_images, feature_overrides);
@@ -2681,6 +2707,8 @@ const TuiState = struct {
     raw_output_mode: bool = false,
     vim_mode: bool = false,
     plan_mode: bool = false,
+    ide_context_enabled: bool = false,
+    ide_context_prompt_fetch_warned: bool = false,
     terminal_title_items: std.ArrayList(titleline.Item) = .empty,
     status_line_items: std.ArrayList(statusline.Item) = .empty,
     syntax_theme: ?[]const u8 = null,
@@ -2731,6 +2759,16 @@ const TuiState = struct {
 
     fn syntaxThemeName(self: TuiState) []const u8 {
         return self.syntax_theme orelse theme.default_theme;
+    }
+
+    fn enableIdeContext(self: *TuiState) void {
+        self.ide_context_enabled = true;
+        self.ide_context_prompt_fetch_warned = false;
+    }
+
+    fn disableIdeContext(self: *TuiState) void {
+        self.ide_context_enabled = false;
+        self.ide_context_prompt_fetch_warned = false;
     }
 };
 
@@ -2839,6 +2877,11 @@ fn handleSlashCommand(
 
     if (std.ascii.eqlIgnoreCase(parts.name, "memories")) {
         try handleMemories(allocator, cfg.*, feature_overrides, parts.args);
+        return .handled;
+    }
+
+    if (std.ascii.eqlIgnoreCase(parts.name, "ide")) {
+        try handleIdeContextSlash(allocator, cwd, state, parts.args);
         return .handled;
     }
 
@@ -3088,6 +3131,74 @@ fn handleLocalRemoteControlSlash(
     std.debug.print("Usage: /remote-control [start|stop]\n", .{});
 }
 
+fn handleIdeContextSlash(
+    allocator: std.mem.Allocator,
+    cwd: []const u8,
+    state: *TuiState,
+    args: []const u8,
+) !void {
+    const trimmed = std.mem.trim(u8, args, " \t\r\n");
+    if (trimmed.len == 0) {
+        if (state.ide_context_enabled) {
+            state.disableIdeContext();
+            std.debug.print("IDE context is off.\n", .{});
+        } else {
+            state.enableIdeContext();
+            try printIdeContextStatus(allocator, cwd, state);
+        }
+        return;
+    }
+
+    if (std.ascii.eqlIgnoreCase(trimmed, "on")) {
+        state.enableIdeContext();
+        try printIdeContextStatus(allocator, cwd, state);
+        return;
+    }
+
+    if (std.ascii.eqlIgnoreCase(trimmed, "off")) {
+        state.disableIdeContext();
+        std.debug.print("IDE context is off.\n", .{});
+        return;
+    }
+
+    if (std.ascii.eqlIgnoreCase(trimmed, "status")) {
+        try printIdeContextStatus(allocator, cwd, state);
+        return;
+    }
+
+    std.debug.print("Usage: /ide [on|off|status]\n", .{});
+}
+
+fn printIdeContextStatus(
+    allocator: std.mem.Allocator,
+    cwd: []const u8,
+    state: *TuiState,
+) !void {
+    if (!state.ide_context_enabled) {
+        std.debug.print("IDE context is off.\n", .{});
+        return;
+    }
+
+    switch (try ide_context.fetchPromptContext(allocator, cwd)) {
+        .context => |context_text_opt| {
+            state.ide_context_prompt_fetch_warned = false;
+            if (context_text_opt) |context_text| {
+                allocator.free(context_text);
+                std.debug.print(
+                    "IDE context is on.\nFuture messages will include your current IDE selection and open tabs.\n",
+                    .{},
+                );
+            } else {
+                std.debug.print("IDE context is on.\nConnected to your IDE.\n", .{});
+            }
+        },
+        .failure => |failure| {
+            state.disableIdeContext();
+            std.debug.print("IDE context could not be enabled.\n{s}\n", .{ide_context.userFacingHint(failure)});
+        },
+    }
+}
+
 fn parseSlash(prompt: []const u8) ?SlashParts {
     if (prompt.len < 2 or prompt[0] != '/') return null;
     const body = std.mem.trim(u8, prompt[1..], " \t");
@@ -3124,6 +3235,8 @@ fn printSlashHelp(goals_enabled: bool) void {
         \\  /apps             list installed and available apps
         \\  /plugins          list available plugin marketplaces
         \\  /memories         configure memory use and generation
+        \\  /ide [on|off|status]
+        \\                    include current selection and open tabs from your IDE
         \\  /rename <title>   set this session's persisted title
         \\  /model [name]     show or set the in-memory model for this session
         \\  /fast [on|off|status]
@@ -3253,6 +3366,7 @@ fn printStatus(
         \\  search:      {s}
         \\  service tier: {s}
         \\  plan mode:   {s}
+        \\  ide context:  {s}
         \\  alt screen:   {s}
         \\  term title:  {s}
         \\  status line: {s}
@@ -3279,6 +3393,7 @@ fn printStatus(
         config.webSearchLabel(cfg.web_search_mode),
         if (cfg.service_tier) |service_tier| service_tier else "unset",
         if (state.plan_mode) "on" else "off",
+        if (state.ide_context_enabled) "on" else "off",
         cfg.tui_alternate_screen.label(),
         if (state.terminal_title_items.items.len > 0) "on" else "off",
         status_line_label,
@@ -4985,6 +5100,10 @@ test "parse slash command names and args" {
     const memories = parseSlash("/memories use on").?;
     try std.testing.expectEqualStrings("memories", memories.name);
     try std.testing.expectEqualStrings("use on", memories.args);
+
+    const ide = parseSlash("/ide status").?;
+    try std.testing.expectEqualStrings("ide", ide.name);
+    try std.testing.expectEqualStrings("status", ide.args);
 
     const remote_control = parseSlash("/remote-control stop").?;
     try std.testing.expectEqualStrings("remote-control", remote_control.name);
