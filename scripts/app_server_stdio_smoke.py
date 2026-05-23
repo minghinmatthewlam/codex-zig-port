@@ -21,6 +21,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Callable
@@ -54,7 +55,7 @@ def stdout_line_queue(proc: subprocess.Popen[str]) -> queue.Queue[str]:
 # out of unrelated config warnings so the next read is the request response.
 EXPERIMENTAL_API_CAPABILITIES = {
     "experimentalApi": True,
-    "optOutNotificationMethods": ["configWarning"],
+    "optOutNotificationMethods": ["configWarning", "remoteControl/status/changed"],
 }
 EXPERIMENTAL_API_STABLE_GATE_CAPABILITIES = {
     "optOutNotificationMethods": ["thread/started", "configWarning"],
@@ -2148,9 +2149,12 @@ class PluginBackendHandler(BaseHTTPRequestHandler):
 
 
 def is_initial_remote_control_status_snapshot(message: dict) -> bool:
-    return message.get("method") == "remoteControl/status/changed" and message.get(
-        "params"
-    ) == {"status": "disabled", "environmentId": None}
+    if message.get("method") != "remoteControl/status/changed":
+        return False
+    params = message.get("params")
+    if not isinstance(params, dict):
+        return False
+    return params.get("status") == "disabled" and params.get("environmentId") is None
 
 
 def is_app_list_updated_notification(message: dict) -> bool:
@@ -2380,7 +2384,13 @@ def exercise_json_rpc(write_line, read_line) -> None:
             "method": "initialize",
             "params": {
                 "clientInfo": {"name": "app-server-smoke", "version": "0"},
-                "capabilities": {"experimentalApi": True},
+                "capabilities": {
+                    "experimentalApi": True,
+                    "optOutNotificationMethods": [
+                        "configWarning",
+                        "remoteControl/status/changed",
+                    ],
+                },
             },
         }
     )
@@ -43350,11 +43360,14 @@ def run_remote_control_status_notification_smoke(binary: Path) -> None:
         initialized = read_json_line(proc, 5, include_remote_control_status=True)
         assert initialized["id"] == "initialize-remote-control-status"
         status = read_json_line(proc, 5, include_remote_control_status=True)
-        assert status == {
-            "jsonrpc": "2.0",
-            "method": "remoteControl/status/changed",
-            "params": {"status": "disabled", "environmentId": None},
-        }
+        assert status["jsonrpc"] == "2.0"
+        assert status["method"] == "remoteControl/status/changed"
+        assert status["params"]["status"] == "disabled"
+        assert status["params"]["serverName"]
+        installation_id = status["params"]["installationId"]
+        assert str(uuid.UUID(installation_id)) == installation_id
+        assert (codex_home / "installation_id").read_text(encoding="utf-8") == installation_id
+        assert status["params"]["environmentId"] is None
     finally:
         if proc.stdin is not None:
             proc.stdin.close()
@@ -43366,6 +43379,51 @@ def run_remote_control_status_notification_smoke(binary: Path) -> None:
         if proc.returncode != 0:
             raise AssertionError(f"app-server exited {proc.returncode}: {proc.stderr.read()}")
         shutil.rmtree(codex_home, ignore_errors=True)
+
+    unwritable_home = Path(tempfile.mkdtemp(prefix="codex-zig-remote-status-unwritable-", dir="/tmp"))
+    unwritable_home.chmod(0o500)
+    env = os.environ.copy()
+    env["CODEX_HOME"] = str(unwritable_home)
+    proc = subprocess.Popen(
+        [str(binary), "app-server"],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        env=env,
+    )
+    try:
+        write_json_line(
+            proc,
+            {
+                "jsonrpc": "2.0",
+                "id": "initialize-remote-control-status-opt-out",
+                "method": "initialize",
+                "params": {
+                    "clientInfo": {"name": "app-server-smoke", "version": "0"},
+                    "capabilities": {
+                        "optOutNotificationMethods": [
+                            "remoteControl/status/changed",
+                        ],
+                    },
+                },
+            },
+        )
+        initialized = read_json_line(proc, 5, include_remote_control_status=True)
+        assert initialized["id"] == "initialize-remote-control-status-opt-out"
+        assert not (unwritable_home / "installation_id").exists()
+    finally:
+        if proc.stdin is not None:
+            proc.stdin.close()
+        try:
+            proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.wait(timeout=5)
+        unwritable_home.chmod(0o700)
+        if proc.returncode != 0:
+            raise AssertionError(f"app-server exited {proc.returncode}: {proc.stderr.read()}")
+        shutil.rmtree(unwritable_home, ignore_errors=True)
 
 
 def run_app_server_root_feature_override_smoke(binary: Path) -> None:
@@ -45643,6 +45701,16 @@ def run_json_schema_smoke(binary: Path) -> None:
         assert client_request["oneOf"][2]["properties"]["method"]["const"] == (
             "thread/start"
         )
+        remote_control_methods = {
+            item["properties"]["method"]["const"]
+            for item in client_request["oneOf"]
+            if item["properties"]["method"].get("const", "").startswith("remoteControl/")
+        }
+        assert remote_control_methods == {
+            "remoteControl/enable",
+            "remoteControl/disable",
+            "remoteControl/status/read",
+        }
         server_request = json.loads(
             (out_dir / "ServerRequest.json").read_text(encoding="utf-8")
         )
@@ -46159,11 +46227,39 @@ def run_json_schema_smoke(binary: Path) -> None:
                 encoding="utf-8"
             )
         )
-        assert remote_status_changed["required"] == ["status"]
+        assert remote_status_changed["required"] == [
+            "status",
+            "serverName",
+            "installationId",
+        ]
         assert (
             remote_status_changed["properties"]["status"]["$ref"]
             == "#/$defs/RemoteControlConnectionStatus"
         )
+        assert remote_status_changed["properties"]["serverName"]["type"] == "string"
+        assert remote_status_changed["properties"]["installationId"]["type"] == "string"
+        for response_name in [
+            "RemoteControlEnableResponse",
+            "RemoteControlDisableResponse",
+            "RemoteControlStatusReadResponse",
+        ]:
+            response_schema = json.loads(
+                (out_dir / f"{response_name}.json").read_text(encoding="utf-8")
+            )
+            assert response_schema["required"] == [
+                "status",
+                "serverName",
+                "installationId",
+            ]
+            assert (
+                response_schema["properties"]["status"]["$ref"]
+                == "#/$defs/RemoteControlConnectionStatus"
+            )
+            assert response_schema["properties"]["serverName"]["type"] == "string"
+            assert response_schema["properties"]["installationId"]["type"] == "string"
+            assert (
+                out_dir / "v2" / f"{response_name}.json"
+            ).is_file()
         memory_reset_response = json.loads(
             (out_dir / "MemoryResetResponse.json").read_text(encoding="utf-8")
         )
@@ -48501,6 +48597,9 @@ def run_json_schema_smoke(binary: Path) -> None:
         assert "AppListUpdatedNotification" in bundle["$defs"]
         assert "RemoteControlConnectionStatus" in bundle["$defs"]
         assert "RemoteControlStatusChangedNotification" in bundle["$defs"]
+        assert "RemoteControlEnableResponse" in bundle["$defs"]
+        assert "RemoteControlDisableResponse" in bundle["$defs"]
+        assert "RemoteControlStatusReadResponse" in bundle["$defs"]
         assert "MemoryResetResponse" in bundle["$defs"]
         assert "GitDiffToRemoteParams" in bundle["$defs"]
         assert "GitDiffToRemoteResponse" in bundle["$defs"]
@@ -48853,6 +48952,21 @@ def run_json_schema_smoke(binary: Path) -> None:
             ]["$ref"]
             == "#/$defs/RemoteControlConnectionStatus"
         )
+        for remote_control_response_def in [
+            "RemoteControlEnableResponse",
+            "RemoteControlDisableResponse",
+            "RemoteControlStatusReadResponse",
+        ]:
+            remote_control_response = bundle["$defs"][remote_control_response_def]
+            assert remote_control_response["required"] == [
+                "status",
+                "serverName",
+                "installationId",
+            ]
+            assert (
+                remote_control_response["properties"]["status"]["$ref"]
+                == "#/$defs/RemoteControlConnectionStatus"
+            )
         assert bundle["$defs"]["SandboxPolicy"]["oneOf"][2]["properties"]["type"]["const"] == "externalSandbox"
         assert (
             bundle["$defs"]["SandboxPolicy"]["oneOf"][3]["properties"]["writableRoots"]["items"]["$ref"]
@@ -49858,6 +49972,12 @@ def run_typescript_generation_smoke(binary: Path) -> None:
             "params: ExperimentalFeatureEnablementSetParams;"
             in client_request
         )
+        for method in [
+            "remoteControl/enable",
+            "remoteControl/disable",
+            "remoteControl/status/read",
+        ]:
+            assert f'method: "{method}";' in client_request
         assert 'method: "command/exec";' in client_request
         assert "params: CommandExecParams;" in client_request
         assert 'method: "command/exec/write";' in client_request
@@ -51100,6 +51220,17 @@ def run_typescript_generation_smoke(binary: Path) -> None:
             "result: ExperimentalFeatureEnablementSetResponse;"
             in client_response
         )
+        for method, response_type in [
+            ("remoteControl/enable", "RemoteControlEnableResponse"),
+            ("remoteControl/disable", "RemoteControlDisableResponse"),
+            ("remoteControl/status/read", "RemoteControlStatusReadResponse"),
+        ]:
+            assert (
+                f'import type {{ {response_type} }} from "./v2/{response_type}";'
+                in client_response
+            )
+            assert f'method: "{method}";' in client_response
+            assert f"result: {response_type};" in client_response
         assert 'method: "thread/start";' in client_response
         assert "result: ThreadStartResponse;" in client_response
         assert 'method: "turn/start";' in client_response
@@ -51356,6 +51487,23 @@ def run_typescript_generation_smoke(binary: Path) -> None:
         )
         assert "status: RemoteControlConnectionStatus;" in remote_status_changed
         assert "environmentId: string | null;" in remote_status_changed
+        for response_name in [
+            "RemoteControlEnableResponse",
+            "RemoteControlDisableResponse",
+            "RemoteControlStatusReadResponse",
+        ]:
+            response_ts = (
+                out_dir / "v2" / f"{response_name}.ts"
+            ).read_text(encoding="utf-8")
+            assert (
+                'import type { RemoteControlConnectionStatus } from "./RemoteControlConnectionStatus";'
+                in response_ts
+            )
+            assert f"export interface {response_name}" in response_ts
+            assert "status: RemoteControlConnectionStatus;" in response_ts
+            assert "serverName: string;" in response_ts
+            assert "installationId: string;" in response_ts
+            assert "environmentId: string | null;" in response_ts
         memory_reset_response = (
             out_dir / "v2" / "MemoryResetResponse.ts"
         ).read_text(encoding="utf-8")

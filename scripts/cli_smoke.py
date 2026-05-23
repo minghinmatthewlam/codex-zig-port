@@ -2284,6 +2284,8 @@ def run_remote_control_command_smoke(binary: Path) -> None:
         env = os.environ.copy()
         codex_home = temp_root / "codex-home"
         codex_home.mkdir(parents=True)
+        installation_id_path = codex_home / "installation_id"
+        installation_id_path.write_text("not-a-uuid", encoding="utf-8")
         env["CODEX_HOME"] = str(codex_home)
         result = subprocess.run(
             [
@@ -2321,14 +2323,19 @@ def run_remote_control_command_smoke(binary: Path) -> None:
             assert app_server_remote.stdin is not None
             assert app_server_remote.stdout is not None
             app_server_remote.stdin.write(
-                '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"clientInfo":{"name":"smoke","version":"0"}}}\n'
+                '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"clientInfo":{"name":"smoke","version":"0"},"capabilities":{"experimentalApi":true}}}\n'
             )
             app_server_remote.stdin.flush()
             initialize_response = app_server_remote.stdout.readline().strip()
             remote_status_notification = app_server_remote.stdout.readline().strip()
             assert '"id":1' in initialize_response
-            assert '"method":"remoteControl/status/changed"' in remote_status_notification
-            assert '"status":"connecting"' in remote_status_notification
+            remote_status_payload = json.loads(remote_status_notification)
+            assert remote_status_payload["method"] == "remoteControl/status/changed"
+            assert remote_status_payload["params"]["status"] == "connecting"
+            assert remote_status_payload["params"]["serverName"]
+            installation_id = remote_status_payload["params"]["installationId"]
+            assert str(uuid.UUID(installation_id)) == installation_id
+            assert installation_id_path.read_text(encoding="utf-8") == installation_id
             app_server_remote.stdin.write(
                 '{"jsonrpc":"2.0","id":2,"method":"experimentalFeature/list","params":{}}\n'
             )
@@ -2347,6 +2354,39 @@ def run_remote_control_command_smoke(binary: Path) -> None:
                 if feature["name"] == "remote_control"
             )
             assert remote_control_feature["enabled"] is True
+            app_server_remote.stdin.write(
+                '{"jsonrpc":"2.0","id":3,"method":"remoteControl/enable","params":null}\n'
+            )
+            app_server_remote.stdin.flush()
+            enable_response = None
+            for _ in range(10):
+                line = app_server_remote.stdout.readline().strip()
+                payload = json.loads(line)
+                if payload.get("id") == 3:
+                    enable_response = payload
+                    break
+            assert enable_response is not None
+            assert enable_response["result"]["status"] == "connecting"
+            assert enable_response["result"]["serverName"]
+            assert enable_response["result"]["installationId"] == installation_id
+            assert enable_response["result"]["environmentId"] is None
+            app_server_remote.stdin.write(
+                '{"jsonrpc":"2.0","id":4,"method":"remoteControl/status/read","params":{}}\n'
+            )
+            app_server_remote.stdin.flush()
+            invalid_params_response = None
+            for _ in range(10):
+                line = app_server_remote.stdout.readline().strip()
+                payload = json.loads(line)
+                if payload.get("id") == 4:
+                    invalid_params_response = payload
+                    break
+            assert invalid_params_response is not None
+            assert invalid_params_response["error"]["code"] == -32602
+            assert (
+                invalid_params_response["error"]["message"]
+                == "remoteControl/status/read params must be null or omitted"
+            )
         finally:
             app_server_remote.terminate()
             try:
@@ -8283,13 +8323,22 @@ def run_app_server_daemon_smoke(binary: Path) -> None:
                 terminate_managed_processes()
 
             root_feature_start = subprocess.run(
-                [str(binary.resolve()), "--enable", "goals", "app-server", "daemon", "start"],
+                [
+                    str(binary.resolve()),
+                    "--enable",
+                    "goals",
+                    "-c",
+                    'model="o3"',
+                    "app-server",
+                    "daemon",
+                    "start",
+                ],
                 cwd=temp_root,
                 env=env,
                 text=True,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
-                timeout=15,
+                timeout=25,
                 check=True,
             )
             root_feature_start_payload = json.loads(root_feature_start.stdout)
@@ -8297,7 +8346,12 @@ def run_app_server_daemon_smoke(binary: Path) -> None:
             root_pid_record = json.loads(
                 (expected_home / "app-server-daemon" / "app-server.pid").read_text(encoding="utf-8")
             )
-            assert root_pid_record["childGlobalArgs"] == ["--enable", "goals"]
+            assert root_pid_record["childGlobalArgs"] == [
+                "--enable",
+                "goals",
+                "-c",
+                'model="o3"',
+            ]
             root_feature_response = managed_app_server_request("experimentalFeature/list", {}, 2)
             root_goals_feature = next(
                 feature for feature in root_feature_response["result"]["data"] if feature["name"] == "goals"
@@ -8310,7 +8364,7 @@ def run_app_server_daemon_smoke(binary: Path) -> None:
                 text=True,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
-                timeout=15,
+                timeout=25,
                 check=True,
             )
             assert json.loads(root_feature_stop.stdout)["status"] == "stopped"
@@ -8449,6 +8503,90 @@ def run_app_server_daemon_smoke(binary: Path) -> None:
             assert managed_disable_running_payload["backend"] == "pid"
             assert managed_disable_running_payload["remoteControlEnabled"] is False
             assert managed_disable_running_payload["appServerVersion"] == "0.0.1"
+
+            remote_control_start_json = subprocess.run(
+                [
+                    str(binary.resolve()),
+                    "--enable",
+                    "goals",
+                    "-c",
+                    'model="o3"',
+                    "remote-control",
+                    "--json",
+                    "start",
+                ],
+                cwd=temp_root,
+                env=env,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                timeout=25,
+                check=True,
+            )
+            assert remote_control_start_json.stderr == ""
+            remote_control_start_payload = json.loads(remote_control_start_json.stdout)
+            assert remote_control_start_payload["mode"] == "daemon"
+            assert remote_control_start_payload["status"] == "connecting"
+            assert remote_control_start_payload["serverName"]
+            assert remote_control_start_payload["environmentId"] is None
+            assert remote_control_start_payload["timedOut"] is True
+            assert remote_control_start_payload["daemon"]["status"] == "alreadyRunning"
+            assert remote_control_start_payload["daemon"]["backend"] == "pid"
+            assert remote_control_start_payload["daemon"]["managedCodexPath"] == str(
+                expected_managed
+            )
+            assert (
+                remote_control_start_payload["daemon"]["managedCodexVersion"]
+                == "0.0.1"
+            )
+            assert remote_control_start_payload["daemon"]["socketPath"] == str(
+                expected_socket
+            )
+            assert remote_control_start_payload["daemon"]["appServerVersion"] == "0.0.1"
+            assert json.loads(settings_path.read_text(encoding="utf-8")) == {
+                "remoteControlEnabled": True
+            }
+            remote_start_pid_record = json.loads(
+                (expected_home / "app-server-daemon" / "app-server.pid").read_text(
+                    encoding="utf-8"
+                )
+            )
+            assert remote_start_pid_record["childGlobalArgs"] == [
+                "--enable",
+                "goals",
+                "-c",
+                'model="o3"',
+            ]
+            feature_response_after_remote_start = managed_app_server_request(
+                "experimentalFeature/list", {}, 4
+            )
+            goals_feature_after_remote_start = next(
+                feature
+                for feature in feature_response_after_remote_start["result"]["data"]
+                if feature["name"] == "goals"
+            )
+            assert goals_feature_after_remote_start["enabled"] is True
+
+            remote_control_start_human = subprocess.run(
+                [str(binary.resolve()), "remote-control", "start"],
+                cwd=temp_root,
+                env=env,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                timeout=25,
+                check=True,
+            )
+            assert remote_control_start_human.stderr == ""
+            assert remote_control_start_human.stdout.startswith(
+                "Starting app-server daemon with remote control enabled...\nRemote control is enabled on "
+            )
+            assert (
+                " and still connecting.\nDaemon used app-server:\n"
+                in remote_control_start_human.stdout
+            )
+            assert f"  path: {expected_managed}\n" in remote_control_start_human.stdout
+            assert "  version: 0.0.1\n" in remote_control_start_human.stdout
 
             remote_control_stop_json = subprocess.run(
                 [str(binary.resolve()), "remote-control", "stop", "--json"],
