@@ -357,7 +357,7 @@ pub fn runWithOptions(allocator: std.mem.Allocator, options: Options) !void {
     if (options.initial_prompt) |initial_prompt| {
         const prompt = std.mem.trim(u8, initial_prompt, " \t\r\n");
         if (prompt.len > 0) {
-            runPrompt(allocator, cfg, &credentials, &transcript, session_path, prompt, options.additional_writable_roots, pending_input_images, feature_overrides) catch |err| {
+            runPrompt(allocator, cfg, &credentials, &transcript, session_path, prompt, options.additional_writable_roots, pending_input_images, feature_overrides, &state.subagents) catch |err| {
                 std.debug.print("\nerror: {s}\n", .{@errorName(err)});
             };
             refreshLocalRemoteControlSnapshot(allocator, &local_remote_server, cwd, &transcript);
@@ -2467,8 +2467,9 @@ fn runPrompt(
     additional_writable_roots: []const []const u8,
     input_images: []const []const u8,
     feature_overrides: features_cmd.FeatureOverrides,
+    subagent_runtime: ?*session.SubagentRuntime,
 ) !void {
-    try runPromptWithToolMode(allocator, cfg, credentials, transcript, session_path, prompt, additional_writable_roots, true, false, input_images, feature_overrides);
+    try runPromptWithToolMode(allocator, cfg, credentials, transcript, session_path, prompt, additional_writable_roots, true, false, input_images, feature_overrides, subagent_runtime);
 }
 
 fn runPromptWithToolMode(
@@ -2483,6 +2484,7 @@ fn runPromptWithToolMode(
     render_plan_blocks: bool,
     input_images: []const []const u8,
     feature_overrides: features_cmd.FeatureOverrides,
+    subagent_runtime: ?*session.SubagentRuntime,
 ) !void {
     std.debug.print("\nassistant:\n", .{});
     var turn_feature_overrides = try localTuiTurnFeatureOverrides(allocator, feature_overrides);
@@ -2494,6 +2496,7 @@ fn runPromptWithToolMode(
         .plan_mode = render_plan_blocks,
         .input_images = input_images,
         .feature_overrides = turn_feature_overrides,
+        .subagent_runtime = subagent_runtime,
     });
     defer allocator.free(answer);
     if (render_plan_blocks and answer.len > 0) {
@@ -2555,7 +2558,7 @@ fn runUserPrompt(
         }
     };
 
-    try runPromptWithToolMode(allocator, cfg, credentials, transcript, session_path, prompt_for_model, additional_writable_roots, !state.plan_mode, state.plan_mode, input_images, feature_overrides);
+    try runPromptWithToolMode(allocator, cfg, credentials, transcript, session_path, prompt_for_model, additional_writable_roots, !state.plan_mode, state.plan_mode, input_images, feature_overrides, &state.subagents);
     state.clearMentions(allocator);
 }
 
@@ -2728,6 +2731,7 @@ const TuiState = struct {
     status_line_items: std.ArrayList(statusline.Item) = .empty,
     syntax_theme: ?[]const u8 = null,
     mentions: std.ArrayList([]const u8) = .empty,
+    subagents: session.SubagentRuntime = .{},
 
     fn deinit(self: *TuiState, allocator: std.mem.Allocator) void {
         if (self.syntax_theme) |value| allocator.free(value);
@@ -2735,6 +2739,7 @@ const TuiState = struct {
         self.mentions.deinit(allocator);
         self.terminal_title_items.deinit(allocator);
         self.status_line_items.deinit(allocator);
+        self.subagents.deinit(allocator);
     }
 
     fn addMention(self: *TuiState, allocator: std.mem.Allocator, path: []const u8) !void {
@@ -2822,7 +2827,7 @@ fn handleSlashCommand(
             std.debug.print("{s} already exists here. Skipping /init to avoid overwriting it.\n", .{agents_filename});
             return .handled;
         }
-        try runPrompt(allocator, cfg.*, credentials, transcript, session_path.*, init_prompt, additional_writable_roots, &.{}, feature_overrides.*);
+        try runPrompt(allocator, cfg.*, credentials, transcript, session_path.*, init_prompt, additional_writable_roots, &.{}, feature_overrides.*, &state.subagents);
         return .handled;
     }
 
@@ -2857,7 +2862,7 @@ fn handleSlashCommand(
     }
 
     if (std.ascii.eqlIgnoreCase(parts.name, "agent") or std.ascii.eqlIgnoreCase(parts.name, "subagents")) {
-        handleAgentSlash(feature_overrides.*, parts.args);
+        handleAgentSlash(feature_overrides.*, &state.subagents, parts.args);
         return .handled;
     }
 
@@ -3023,7 +3028,7 @@ fn handleSlashCommand(
         defer allocator.free(review_prompt);
         var review_cfg = cfg.*;
         review_cfg.model = review.selectedModelForReview(cfg.model, cfg.review_model);
-        try runPrompt(allocator, review_cfg, credentials, transcript, session_path.*, review_prompt, additional_writable_roots, &.{}, feature_overrides.*);
+        try runPrompt(allocator, review_cfg, credentials, transcript, session_path.*, review_prompt, additional_writable_roots, &.{}, feature_overrides.*, &state.subagents);
         return .handled;
     }
 
@@ -3474,7 +3479,11 @@ fn multiAgentEnabled(feature_overrides: features_cmd.FeatureOverrides) bool {
     return features_cmd.effectiveEnabled(feature_overrides, "multi_agent") orelse true;
 }
 
-fn handleAgentSlash(feature_overrides: features_cmd.FeatureOverrides, args: []const u8) void {
+fn handleAgentSlash(
+    feature_overrides: features_cmd.FeatureOverrides,
+    runtime: *const session.SubagentRuntime,
+    args: []const u8,
+) void {
     const trimmed = std.mem.trim(u8, args, " \t\r\n");
     if (trimmed.len != 0 and
         !std.ascii.eqlIgnoreCase(trimmed, "status") and
@@ -3488,7 +3497,16 @@ fn handleAgentSlash(feature_overrides: features_cmd.FeatureOverrides, args: []co
         std.debug.print("subagents are disabled by the `multi_agent` feature flag. Start Codex with `--enable multi_agent` or set `[features].multi_agent = true` in config.toml.\n", .{});
         return;
     }
-    std.debug.print("No agents available yet.\n", .{});
+    if (runtime.count() == 0) {
+        std.debug.print("No agents available yet.\n", .{});
+        return;
+    }
+    std.debug.print("Agents:\n", .{});
+    var index: usize = 0;
+    while (index < runtime.count()) : (index += 1) {
+        const agent = runtime.agentAt(index);
+        std.debug.print("- {s}  {s}  {s}\n", .{ agent.id, agent.statusLabel(), agent.last_task_message });
+    }
 }
 
 fn handleRealtimeSlash(

@@ -550,6 +550,87 @@ pub const TurnOptions = struct {
     feature_overrides: features_cmd.FeatureOverrides = .{},
     workdir: ?[]const u8 = null,
     background_terminal_owner: ?[]const u8 = null,
+    subagent_runtime: ?*SubagentRuntime = null,
+};
+
+pub const SubagentRuntimeAgent = struct {
+    id: []const u8,
+    status_json: []const u8,
+    last_task_message: []const u8,
+    transcript: Transcript,
+
+    pub fn statusLabel(self: SubagentRuntimeAgent) []const u8 {
+        if (std.mem.eql(u8, self.status_json, "\"pending_init\"")) return "pending";
+        if (std.mem.eql(u8, self.status_json, "\"running\"")) return "running";
+        if (std.mem.eql(u8, self.status_json, "\"interrupted\"")) return "interrupted";
+        if (std.mem.eql(u8, self.status_json, "\"shutdown\"")) return "shutdown";
+        if (std.mem.eql(u8, self.status_json, "\"not_found\"")) return "not found";
+        if (std.mem.startsWith(u8, self.status_json, "{\"completed\"")) return "completed";
+        if (std.mem.startsWith(u8, self.status_json, "{\"errored\"")) return "errored";
+        return "unknown";
+    }
+
+    fn deinit(self: *SubagentRuntimeAgent, allocator: std.mem.Allocator) void {
+        allocator.free(self.id);
+        allocator.free(self.status_json);
+        allocator.free(self.last_task_message);
+        self.transcript.deinit(allocator);
+    }
+};
+
+pub const SubagentRuntime = struct {
+    next_agent_id: usize = 1,
+    next_submission_id: usize = 1,
+    agents: std.ArrayList(SubagentRuntimeAgent) = .empty,
+
+    pub fn deinit(self: *SubagentRuntime, allocator: std.mem.Allocator) void {
+        for (self.agents.items) |*agent| agent.deinit(allocator);
+        self.agents.deinit(allocator);
+    }
+
+    pub fn count(self: *const SubagentRuntime) usize {
+        return self.agents.items.len;
+    }
+
+    pub fn agentAt(self: *const SubagentRuntime, index: usize) *const SubagentRuntimeAgent {
+        return &self.agents.items[index];
+    }
+
+    fn find(self: *SubagentRuntime, id: []const u8) ?*SubagentRuntimeAgent {
+        for (self.agents.items) |*agent| {
+            if (std.mem.eql(u8, agent.id, id)) return agent;
+        }
+        return null;
+    }
+
+    fn nextAgentId(self: *SubagentRuntime, allocator: std.mem.Allocator) ![]const u8 {
+        const id = try std.fmt.allocPrint(allocator, "agent-{d}", .{self.next_agent_id});
+        self.next_agent_id += 1;
+        return id;
+    }
+
+    fn nextSubmissionId(self: *SubagentRuntime, allocator: std.mem.Allocator, agent_id: []const u8) ![]const u8 {
+        const id = try std.fmt.allocPrint(allocator, "{s}-input-{d}", .{ agent_id, self.next_submission_id });
+        self.next_submission_id += 1;
+        return id;
+    }
+
+    fn appendAgent(
+        self: *SubagentRuntime,
+        allocator: std.mem.Allocator,
+        id: []const u8,
+        status_json: []const u8,
+        last_task_message: []const u8,
+        transcript: Transcript,
+    ) !*SubagentRuntimeAgent {
+        try self.agents.append(allocator, .{
+            .id = id,
+            .status_json = status_json,
+            .last_task_message = last_task_message,
+            .transcript = transcript,
+        });
+        return &self.agents.items[self.agents.items.len - 1];
+    }
 };
 
 pub const PlanUpdateCallback = struct {
@@ -1038,6 +1119,13 @@ pub fn runTurnWithOptions(
     var turn_network_enabled = options.network_enabled;
     const turn_start_total_usage: TokenUsage = if (transcript.token_usage) |usage_info| usage_info.total else .{};
     var turn_token_usage: TokenUsage = .{};
+    var effective_feature_overrides = try options.feature_overrides.clone(allocator);
+    defer effective_feature_overrides.deinit(allocator);
+    if (options.subagent_runtime == null) {
+        try effective_feature_overrides.put(allocator, "multi_agent", false);
+        try effective_feature_overrides.put(allocator, "multi_agent_v2", false);
+    }
+    const subagent_runtime = options.subagent_runtime;
 
     const load_mcp_tools = options.include_tools and mcpToolsEnabled(options);
     var mcp_catalog = if (load_mcp_tools)
@@ -1057,7 +1145,7 @@ pub fn runTurnWithOptions(
         create_options.input_images = &.{};
         create_options.include_tools = options.include_tools;
         create_options.mcp_tools = if (load_mcp_tools) mcp_catalog.tools else &.{};
-        create_options.feature_overrides = options.feature_overrides;
+        create_options.feature_overrides = effective_feature_overrides;
         create_options.external_auth_refresh_callback = options.external_auth_refresh_callback;
         if (options.stream_text and !options.json_events and !options.plan_mode) {
             create_options.stream_callback = api.StreamCallback{
@@ -1161,7 +1249,7 @@ pub fn runTurnWithOptions(
                 try runToolSearchCall(
                     allocator,
                     toolSearchMcpTools(cfg, options, mcp_catalog),
-                    options.feature_overrides,
+                    effective_feature_overrides,
                     call,
                 )
             else if (std.mem.eql(u8, call.name, "request_permissions"))
@@ -1194,8 +1282,16 @@ pub fn runTurnWithOptions(
                 else
                     try disabledToolResult(allocator, call)
             else if (isSubagentV1ToolCall(call))
-                if (subagent_tools.v1ToolSearchEnabled(options.feature_overrides))
-                    try runSubagentV1UnavailableCall(allocator, call)
+                if (subagent_runtime != null and subagent_tools.v1ToolSearchEnabled(effective_feature_overrides))
+                    try runSubagentV1Call(
+                        allocator,
+                        cfg,
+                        credentials,
+                        transcript,
+                        options,
+                        subagent_runtime.?,
+                        call,
+                    )
                 else
                     try disabledToolResult(allocator, call)
             else
@@ -1425,16 +1521,496 @@ fn isSubagentV1ToolCall(call: api.FunctionCall) bool {
     return false;
 }
 
-fn runSubagentV1UnavailableCall(allocator: std.mem.Allocator, call: api.FunctionCall) !tools.ToolResult {
+fn runSubagentV1Call(
+    allocator: std.mem.Allocator,
+    cfg: config.Config,
+    credentials: *auth.Credentials,
+    parent_transcript: *Transcript,
+    options: TurnOptions,
+    runtime: *SubagentRuntime,
+    call: api.FunctionCall,
+) anyerror!tools.ToolResult {
+    if (std.mem.eql(u8, call.name, "spawn_agent")) {
+        return runSubagentSpawnCall(allocator, cfg, credentials, parent_transcript, options, runtime, call);
+    }
+    if (std.mem.eql(u8, call.name, "send_input")) {
+        return runSubagentSendInputCall(allocator, cfg, credentials, options, runtime, call);
+    }
+    if (std.mem.eql(u8, call.name, "resume_agent")) {
+        return runSubagentResumeCall(allocator, runtime, call);
+    }
+    if (std.mem.eql(u8, call.name, "wait_agent")) {
+        return runSubagentWaitCall(allocator, runtime, call);
+    }
+    if (std.mem.eql(u8, call.name, "close_agent")) {
+        return runSubagentCloseCall(allocator, runtime, call);
+    }
+    return subagentModelError(allocator, call, "subagent invalid", "unknown multi_agent_v1 tool");
+}
+
+const SubagentInputParseError = error{
+    InvalidArguments,
+    MessageAndItems,
+    MissingInput,
+    EmptyMessage,
+    InvalidItems,
+    UnsupportedItems,
+    EmptyItems,
+};
+
+const SubagentArgumentsParseError = error{InvalidArguments} || std.mem.Allocator.Error;
+
+fn parseSubagentArgumentsObject(
+    allocator: std.mem.Allocator,
+    arguments: []const u8,
+) SubagentArgumentsParseError!std.json.Parsed(std.json.Value) {
+    var parsed = std.json.parseFromSlice(std.json.Value, allocator, arguments, .{}) catch |err| switch (err) {
+        error.OutOfMemory => return error.OutOfMemory,
+        else => return error.InvalidArguments,
+    };
+    errdefer parsed.deinit();
+    if (parsed.value != .object) return error.InvalidArguments;
+    return parsed;
+}
+
+fn subagentInvalidArgumentsResult(allocator: std.mem.Allocator, call: api.FunctionCall) !tools.ToolResult {
+    return subagentModelError(allocator, call, "subagent invalid", "arguments must be a JSON object");
+}
+
+fn runSubagentSpawnCall(
+    allocator: std.mem.Allocator,
+    cfg: config.Config,
+    credentials: *auth.Credentials,
+    parent_transcript: *Transcript,
+    options: TurnOptions,
+    runtime: *SubagentRuntime,
+    call: api.FunctionCall,
+) anyerror!tools.ToolResult {
+    var parsed = parseSubagentArgumentsObject(allocator, call.arguments) catch |err| switch (err) {
+        error.InvalidArguments => return subagentInvalidArgumentsResult(allocator, call),
+        else => return err,
+    };
+    defer parsed.deinit();
+    const object = parsed.value.object;
+    const prompt = subagentInputPromptFromArgs(allocator, object) catch |err| {
+        return subagentModelError(allocator, call, "subagent invalid", subagentInputErrorMessage(err));
+    };
+    defer allocator.free(prompt);
+
+    const fork_context = optionalBoolField(object, "fork_context") orelse false;
+    if (fork_context and hasAnyField(object, &.{ "agent_type", "model", "reasoning_effort" })) {
+        return subagentModelError(allocator, call, "subagent invalid", "Full-history forked agents inherit the parent agent type, model, and reasoning effort; omit agent_type, model, and reasoning_effort, or spawn without a full-history fork.");
+    }
+    if (hasAnyField(object, &.{ "agent_type", "model", "reasoning_effort", "service_tier" })) {
+        return subagentModelError(allocator, call, "subagent invalid", "spawn_agent agent_type, model, reasoning_effort, and service_tier overrides are not implemented in codex-zig yet");
+    }
+
+    const agent_id = try runtime.nextAgentId(allocator);
+    var agent_id_owned = true;
+    defer if (agent_id_owned) allocator.free(agent_id);
+    var child_transcript = if (fork_context)
+        try parent_transcript.clone(allocator)
+    else
+        Transcript{};
+    var child_transcript_owned = true;
+    defer if (child_transcript_owned) child_transcript.deinit(allocator);
+
+    var child_options = try subagentChildTurnOptions(allocator, options);
+    defer child_options.feature_overrides.deinit(allocator);
+
+    const answer = runTurnWithOptions(allocator, cfg, credentials, &child_transcript, prompt, child_options) catch |err| {
+        return subagentModelErrorAlloc(
+            allocator,
+            call,
+            "subagent spawn failed",
+            try std.fmt.allocPrint(allocator, "spawn_agent failed: {s}", .{@errorName(err)}),
+        );
+    };
+    defer allocator.free(answer);
+
+    const status_json = try renderCompletedStatusJson(allocator, answer);
+    var status_json_owned = true;
+    defer if (status_json_owned) allocator.free(status_json);
+    const last_task_message = try allocator.dupe(u8, prompt);
+    var last_task_message_owned = true;
+    defer if (last_task_message_owned) allocator.free(last_task_message);
+    _ = try runtime.appendAgent(allocator, agent_id, status_json, last_task_message, child_transcript);
+    agent_id_owned = false;
+    status_json_owned = false;
+    last_task_message_owned = false;
+    child_transcript_owned = false;
+
     return .{
         .call_id = try allocator.dupe(u8, call.call_id),
-        .summary = try allocator.dupe(u8, "subagent runtime unavailable"),
-        .output = try std.fmt.allocPrint(
-            allocator,
-            "{{\"error\":\"multi_agent_v1.{s} is discoverable, but subagent runtime execution is not implemented in codex-zig yet\"}}",
-            .{call.name},
-        ),
+        .summary = try allocator.dupe(u8, "spawned agent"),
+        .output = try renderSpawnAgentResult(allocator, agent_id),
     };
+}
+
+fn runSubagentSendInputCall(
+    allocator: std.mem.Allocator,
+    cfg: config.Config,
+    credentials: *auth.Credentials,
+    options: TurnOptions,
+    runtime: *SubagentRuntime,
+    call: api.FunctionCall,
+) anyerror!tools.ToolResult {
+    var parsed = parseSubagentArgumentsObject(allocator, call.arguments) catch |err| switch (err) {
+        error.InvalidArguments => return subagentInvalidArgumentsResult(allocator, call),
+        else => return err,
+    };
+    defer parsed.deinit();
+    const object = parsed.value.object;
+    const target = requiredJsonStringField(object, "target") orelse {
+        return subagentModelError(allocator, call, "subagent invalid", "target must be a string");
+    };
+    const agent = runtime.find(target) orelse {
+        return subagentAgentNotFound(allocator, call, target);
+    };
+    if (std.mem.eql(u8, agent.status_json, "\"shutdown\"")) {
+        return subagentModelError(allocator, call, "subagent closed", "agent is shutdown; call resume_agent before send_input");
+    }
+    const prompt = subagentInputPromptFromArgs(allocator, object) catch |err| {
+        return subagentModelError(allocator, call, "subagent invalid", subagentInputErrorMessage(err));
+    };
+    defer allocator.free(prompt);
+
+    var child_options = try subagentChildTurnOptions(allocator, options);
+    defer child_options.feature_overrides.deinit(allocator);
+
+    const answer = runTurnWithOptions(allocator, cfg, credentials, &agent.transcript, prompt, child_options) catch |err| {
+        return subagentModelErrorAlloc(
+            allocator,
+            call,
+            "subagent send failed",
+            try std.fmt.allocPrint(allocator, "send_input failed: {s}", .{@errorName(err)}),
+        );
+    };
+    defer allocator.free(answer);
+
+    const next_task = try allocator.dupe(u8, prompt);
+    var next_task_owned = true;
+    defer if (next_task_owned) allocator.free(next_task);
+    const next_status = try renderCompletedStatusJson(allocator, answer);
+    var next_status_owned = true;
+    defer if (next_status_owned) allocator.free(next_status);
+    const submission_id = try runtime.nextSubmissionId(allocator, target);
+    defer allocator.free(submission_id);
+    const result_call_id = try allocator.dupe(u8, call.call_id);
+    errdefer allocator.free(result_call_id);
+    const result_summary = try allocator.dupe(u8, "sent input");
+    errdefer allocator.free(result_summary);
+    const result_output = try renderSendInputResult(allocator, submission_id);
+    errdefer allocator.free(result_output);
+
+    allocator.free(agent.status_json);
+    agent.status_json = next_status;
+    next_status_owned = false;
+    allocator.free(agent.last_task_message);
+    agent.last_task_message = next_task;
+    next_task_owned = false;
+
+    return .{
+        .call_id = result_call_id,
+        .summary = result_summary,
+        .output = result_output,
+    };
+}
+
+fn runSubagentResumeCall(
+    allocator: std.mem.Allocator,
+    runtime: *SubagentRuntime,
+    call: api.FunctionCall,
+) !tools.ToolResult {
+    var parsed = parseSubagentArgumentsObject(allocator, call.arguments) catch |err| switch (err) {
+        error.InvalidArguments => return subagentInvalidArgumentsResult(allocator, call),
+        else => return err,
+    };
+    defer parsed.deinit();
+    const id = requiredJsonStringField(parsed.value.object, "id") orelse {
+        return subagentModelError(allocator, call, "subagent invalid", "id must be a string");
+    };
+    const agent = runtime.find(id) orelse {
+        return subagentAgentNotFound(allocator, call, id);
+    };
+    if (std.mem.eql(u8, agent.status_json, "\"shutdown\"")) {
+        const reopened = try allocator.dupe(u8, "\"interrupted\"");
+        allocator.free(agent.status_json);
+        agent.status_json = reopened;
+    }
+    return .{
+        .call_id = try allocator.dupe(u8, call.call_id),
+        .summary = try allocator.dupe(u8, "resumed agent"),
+        .output = try renderResumeAgentResult(allocator, agent.status_json),
+    };
+}
+
+fn runSubagentWaitCall(
+    allocator: std.mem.Allocator,
+    runtime: *SubagentRuntime,
+    call: api.FunctionCall,
+) !tools.ToolResult {
+    var parsed = parseSubagentArgumentsObject(allocator, call.arguments) catch |err| switch (err) {
+        error.InvalidArguments => return subagentInvalidArgumentsResult(allocator, call),
+        else => return err,
+    };
+    defer parsed.deinit();
+    const targets_value = parsed.value.object.get("targets") orelse {
+        return subagentModelError(allocator, call, "subagent invalid", "agent ids must be non-empty");
+    };
+    if (targets_value != .array) {
+        return subagentModelError(allocator, call, "subagent invalid", "targets must be an array");
+    }
+    const targets = targets_value.array.items;
+    if (targets.len == 0) {
+        return subagentModelError(allocator, call, "subagent invalid", "agent ids must be non-empty");
+    }
+    for (targets) |target_value| {
+        if (target_value != .string or target_value.string.len == 0) {
+            return subagentModelError(allocator, call, "subagent invalid", "targets must be an array of strings");
+        }
+    }
+    return .{
+        .call_id = try allocator.dupe(u8, call.call_id),
+        .summary = try allocator.dupe(u8, "waited for agent"),
+        .output = try renderWaitAgentResult(allocator, runtime, targets),
+    };
+}
+
+fn runSubagentCloseCall(
+    allocator: std.mem.Allocator,
+    runtime: *SubagentRuntime,
+    call: api.FunctionCall,
+) !tools.ToolResult {
+    var parsed = parseSubagentArgumentsObject(allocator, call.arguments) catch |err| switch (err) {
+        error.InvalidArguments => return subagentInvalidArgumentsResult(allocator, call),
+        else => return err,
+    };
+    defer parsed.deinit();
+    const target = requiredJsonStringField(parsed.value.object, "target") orelse {
+        return subagentModelError(allocator, call, "subagent invalid", "target must be a string");
+    };
+    const agent = runtime.find(target) orelse {
+        return subagentAgentNotFound(allocator, call, target);
+    };
+    const previous = agent.status_json;
+    const shutdown = try allocator.dupe(u8, "\"shutdown\"");
+    var shutdown_owned = true;
+    defer if (shutdown_owned) allocator.free(shutdown);
+    const output = try renderCloseAgentResult(allocator, previous);
+    errdefer allocator.free(output);
+    const result_call_id = try allocator.dupe(u8, call.call_id);
+    errdefer allocator.free(result_call_id);
+    const result_summary = try allocator.dupe(u8, "closed agent");
+    errdefer allocator.free(result_summary);
+
+    allocator.free(agent.status_json);
+    agent.status_json = shutdown;
+    shutdown_owned = false;
+
+    return .{
+        .call_id = result_call_id,
+        .summary = result_summary,
+        .output = output,
+    };
+}
+
+fn subagentModelError(
+    allocator: std.mem.Allocator,
+    call: api.FunctionCall,
+    summary: []const u8,
+    message: []const u8,
+) !tools.ToolResult {
+    return .{
+        .call_id = try allocator.dupe(u8, call.call_id),
+        .summary = try allocator.dupe(u8, summary),
+        .output = try renderErrorOutput(allocator, message),
+    };
+}
+
+fn subagentModelErrorAlloc(
+    allocator: std.mem.Allocator,
+    call: api.FunctionCall,
+    summary: []const u8,
+    message: []const u8,
+) !tools.ToolResult {
+    defer allocator.free(message);
+    return subagentModelError(allocator, call, summary, message);
+}
+
+fn subagentAgentNotFound(allocator: std.mem.Allocator, call: api.FunctionCall, agent_id: []const u8) !tools.ToolResult {
+    const message = try std.fmt.allocPrint(allocator, "agent with id {s} not found", .{agent_id});
+    defer allocator.free(message);
+    return subagentModelError(allocator, call, "subagent not found", message);
+}
+
+fn subagentChildTurnOptions(allocator: std.mem.Allocator, options: TurnOptions) !TurnOptions {
+    var child_options = options;
+    child_options.prompt_for_approval = false;
+    child_options.approval_callback = null;
+    child_options.request_permissions_callback = null;
+    child_options.request_user_input_callback = null;
+    child_options.goal_tool_callback = null;
+    child_options.mcp_elicitation_callback = null;
+    child_options.stream_text = false;
+    child_options.json_events = false;
+    child_options.plan_mode = false;
+    child_options.plan_update_callback = null;
+    child_options.proposed_plan_callback = null;
+    child_options.diff_update_callback = null;
+    child_options.command_execution_output_callback = null;
+    child_options.terminal_interaction_callback = null;
+    child_options.file_change_patch_update_callback = null;
+    child_options.output_schema = null;
+    child_options.input_images = &.{};
+    child_options.raw_response_item_callback = null;
+    child_options.reasoning_event_callback = null;
+    child_options.server_model_callback = null;
+    child_options.models_etag_callback = null;
+    child_options.model_verification_callback = null;
+    child_options.mcp_tool_call_progress_callback = null;
+    child_options.mcp_startup_status_callback = null;
+    child_options.developer_messages_before_user = &.{};
+    child_options.developer_messages_after_user = &.{};
+    child_options.feature_overrides = try options.feature_overrides.clone(allocator);
+    errdefer child_options.feature_overrides.deinit(allocator);
+    try child_options.feature_overrides.put(allocator, "multi_agent", false);
+    try child_options.feature_overrides.put(allocator, "multi_agent_v2", false);
+    try child_options.feature_overrides.put(allocator, "request_permissions_tool", false);
+    try child_options.feature_overrides.put(allocator, "request_user_input_tool", false);
+    try child_options.feature_overrides.put(allocator, "default_mode_request_user_input", false);
+    try child_options.feature_overrides.put(allocator, "goal_tools", false);
+    child_options.background_terminal_owner = null;
+    child_options.subagent_runtime = null;
+    return child_options;
+}
+
+fn subagentInputPromptFromArgs(allocator: std.mem.Allocator, object: std.json.ObjectMap) SubagentInputParseError![]const u8 {
+    const message_value = object.get("message");
+    const items_value = object.get("items");
+    if (message_value != null and items_value != null) return error.MessageAndItems;
+    if (message_value == null and items_value == null) return error.MissingInput;
+    if (message_value) |value| {
+        if (value != .string) return error.InvalidArguments;
+        const trimmed = std.mem.trim(u8, value.string, " \t\r\n");
+        if (trimmed.len == 0) return error.EmptyMessage;
+        return allocator.dupe(u8, trimmed) catch return error.InvalidArguments;
+    }
+    const items = items_value.?;
+    if (items != .array) return error.InvalidItems;
+    if (items.array.items.len == 0) return error.EmptyItems;
+    var out = std.ArrayList(u8).empty;
+    errdefer out.deinit(allocator);
+    for (items.array.items) |item| {
+        if (item != .object) return error.InvalidItems;
+        const kind = requiredJsonStringField(item.object, "type") orelse "text";
+        if (!std.mem.eql(u8, kind, "text")) {
+            if (std.mem.eql(u8, kind, "image") or
+                std.mem.eql(u8, kind, "local_image") or
+                std.mem.eql(u8, kind, "skill") or
+                std.mem.eql(u8, kind, "mention"))
+            {
+                return error.UnsupportedItems;
+            }
+            return error.InvalidItems;
+        }
+        const text = requiredJsonStringField(item.object, "text") orelse return error.InvalidItems;
+        if (out.items.len > 0) out.append(allocator, '\n') catch return error.InvalidArguments;
+        out.appendSlice(allocator, text) catch return error.InvalidArguments;
+    }
+    if (out.items.len == 0) return error.InvalidItems;
+    return out.toOwnedSlice(allocator) catch return error.InvalidArguments;
+}
+
+fn subagentInputErrorMessage(err: SubagentInputParseError) []const u8 {
+    return switch (err) {
+        error.InvalidArguments => "arguments must be a JSON object",
+        error.MessageAndItems => "Provide either message or items, but not both",
+        error.MissingInput => "Provide one of: message or items",
+        error.EmptyMessage => "Empty message can't be sent to an agent",
+        error.InvalidItems => "items must be structured input items",
+        error.UnsupportedItems => "subagent items currently support only text items in codex-zig",
+        error.EmptyItems => "Items can't be empty",
+    };
+}
+
+fn optionalBoolField(object: std.json.ObjectMap, name: []const u8) ?bool {
+    const value = object.get(name) orelse return null;
+    if (value != .bool) return null;
+    return value.bool;
+}
+
+fn hasAnyField(object: std.json.ObjectMap, names: []const []const u8) bool {
+    for (names) |name| {
+        if (object.get(name) != null) return true;
+    }
+    return false;
+}
+
+fn renderCompletedStatusJson(allocator: std.mem.Allocator, answer: []const u8) ![]const u8 {
+    const answer_json = try std.json.Stringify.valueAlloc(allocator, answer, .{});
+    defer allocator.free(answer_json);
+    return std.fmt.allocPrint(allocator, "{{\"completed\":{s}}}", .{answer_json});
+}
+
+fn renderErrorOutput(allocator: std.mem.Allocator, message: []const u8) ![]const u8 {
+    const message_json = try std.json.Stringify.valueAlloc(allocator, message, .{});
+    defer allocator.free(message_json);
+    return std.fmt.allocPrint(allocator, "{{\"error\":{s}}}", .{message_json});
+}
+
+fn renderSpawnAgentResult(allocator: std.mem.Allocator, agent_id: []const u8) ![]const u8 {
+    const id_json = try std.json.Stringify.valueAlloc(allocator, agent_id, .{});
+    defer allocator.free(id_json);
+    return std.fmt.allocPrint(allocator, "{{\"agent_id\":{s},\"nickname\":null}}", .{id_json});
+}
+
+fn renderSendInputResult(allocator: std.mem.Allocator, submission_id: []const u8) ![]const u8 {
+    const id_json = try std.json.Stringify.valueAlloc(allocator, submission_id, .{});
+    defer allocator.free(id_json);
+    return std.fmt.allocPrint(allocator, "{{\"submission_id\":{s}}}", .{id_json});
+}
+
+fn renderResumeAgentResult(allocator: std.mem.Allocator, status_json: []const u8) ![]const u8 {
+    return std.fmt.allocPrint(allocator, "{{\"status\":{s}}}", .{status_json});
+}
+
+fn renderCloseAgentResult(allocator: std.mem.Allocator, status_json: []const u8) ![]const u8 {
+    return std.fmt.allocPrint(allocator, "{{\"previous_status\":{s}}}", .{status_json});
+}
+
+fn renderWaitAgentResult(
+    allocator: std.mem.Allocator,
+    runtime: *SubagentRuntime,
+    targets: []const std.json.Value,
+) ![]const u8 {
+    var out = std.ArrayList(u8).empty;
+    errdefer out.deinit(allocator);
+    try out.appendSlice(allocator, "{\"status\":{");
+    var first = true;
+    for (targets) |target_value| {
+        const status_json = if (runtime.find(target_value.string)) |agent| blk: {
+            if (!subagentStatusIsFinal(agent.status_json)) continue;
+            break :blk agent.status_json;
+        } else "\"not_found\"";
+        if (!first) try out.append(allocator, ',');
+        first = false;
+        const target_json = try std.json.Stringify.valueAlloc(allocator, target_value.string, .{});
+        defer allocator.free(target_json);
+        try out.appendSlice(allocator, target_json);
+        try out.append(allocator, ':');
+        try out.appendSlice(allocator, status_json);
+    }
+    try out.appendSlice(allocator, "},\"timed_out\":");
+    try out.appendSlice(allocator, if (first) "true" else "false");
+    try out.appendSlice(allocator, "}");
+    return out.toOwnedSlice(allocator);
+}
+
+fn subagentStatusIsFinal(status_json: []const u8) bool {
+    return !std.mem.eql(u8, status_json, "\"pending_init\"") and
+        !std.mem.eql(u8, status_json, "\"running\"") and
+        !std.mem.eql(u8, status_json, "\"interrupted\"");
 }
 
 const ToolSearchArgs = struct {
@@ -1853,23 +2429,169 @@ test "findMcpToolForFunctionCall resolves namespaced mcp calls" {
     try std.testing.expectEqualStrings("mcp__demo__echo", resolved.callable_name);
 }
 
-test "subagent v1 tool calls return unavailable runtime result" {
+test "subagent v1 runtime wait and close return status results" {
     const allocator = std.testing.allocator;
-    const call = api.FunctionCall{
+    var runtime = SubagentRuntime{};
+    defer runtime.deinit(allocator);
+    const status_json = try renderCompletedStatusJson(allocator, "done");
+    errdefer allocator.free(status_json);
+    const task = try allocator.dupe(u8, "check this");
+    errdefer allocator.free(task);
+    _ = try runtime.appendAgent(
+        allocator,
+        try allocator.dupe(u8, "agent-1"),
+        status_json,
+        task,
+        .{},
+    );
+
+    const wait_call = api.FunctionCall{
         .kind = .function,
-        .call_id = "spawn-call",
+        .call_id = "wait-call",
         .namespace = "multi_agent_v1",
-        .name = "spawn_agent",
-        .arguments = "{\"message\":\"hello\"}",
+        .name = "wait_agent",
+        .arguments = "{\"targets\":[\"agent-1\"]}",
     };
 
-    try std.testing.expect(isSubagentV1ToolCall(call));
-    const result = try runSubagentV1UnavailableCall(allocator, call);
-    defer result.deinit(allocator);
+    try std.testing.expect(isSubagentV1ToolCall(wait_call));
+    const wait_result = try runSubagentWaitCall(allocator, &runtime, wait_call);
+    defer wait_result.deinit(allocator);
+    try std.testing.expectEqualStrings("wait-call", wait_result.call_id);
+    try std.testing.expectEqualStrings("waited for agent", wait_result.summary);
+    try std.testing.expect(std.mem.indexOf(u8, wait_result.output, "\"agent-1\":{\"completed\":\"done\"}") != null);
+    try std.testing.expect(std.mem.indexOf(u8, wait_result.output, "\"timed_out\":false") != null);
 
-    try std.testing.expectEqualStrings("spawn-call", result.call_id);
-    try std.testing.expectEqualStrings("subagent runtime unavailable", result.summary);
-    try std.testing.expect(std.mem.indexOf(u8, result.output, "multi_agent_v1.spawn_agent") != null);
+    const close_call = api.FunctionCall{
+        .kind = .function,
+        .call_id = "close-call",
+        .namespace = "multi_agent_v1",
+        .name = "close_agent",
+        .arguments = "{\"target\":\"agent-1\"}",
+    };
+    const close_result = try runSubagentCloseCall(allocator, &runtime, close_call);
+    defer close_result.deinit(allocator);
+    try std.testing.expectEqualStrings("closed agent", close_result.summary);
+    try std.testing.expect(std.mem.indexOf(u8, close_result.output, "\"previous_status\":{\"completed\":\"done\"}") != null);
+    try std.testing.expectEqualStrings("shutdown", runtime.agents.items[0].statusLabel());
+
+    const send_call = api.FunctionCall{
+        .kind = .function,
+        .call_id = "send-call",
+        .namespace = "multi_agent_v1",
+        .name = "send_input",
+        .arguments = "{\"target\":\"agent-1\",\"message\":\"again\"}",
+    };
+    var dummy_credentials = auth.Credentials{ .mode = .provider_no_auth, .token = "" };
+    const blocked_send = try runSubagentSendInputCall(allocator, undefined, &dummy_credentials, .{}, &runtime, send_call);
+    defer blocked_send.deinit(allocator);
+    try std.testing.expectEqualStrings("subagent closed", blocked_send.summary);
+    try std.testing.expect(std.mem.indexOf(u8, blocked_send.output, "resume_agent") != null);
+
+    const resume_call = api.FunctionCall{
+        .kind = .function,
+        .call_id = "resume-call",
+        .namespace = "multi_agent_v1",
+        .name = "resume_agent",
+        .arguments = "{\"id\":\"agent-1\"}",
+    };
+    const resume_result = try runSubagentResumeCall(allocator, &runtime, resume_call);
+    defer resume_result.deinit(allocator);
+    try std.testing.expectEqualStrings("resumed agent", resume_result.summary);
+    try std.testing.expect(std.mem.indexOf(u8, resume_result.output, "\"status\":\"interrupted\"") != null);
+    try std.testing.expectEqualStrings("interrupted", runtime.agents.items[0].statusLabel());
+
+    const missing_resume_call = api.FunctionCall{
+        .kind = .function,
+        .call_id = "missing-resume-call",
+        .namespace = "multi_agent_v1",
+        .name = "resume_agent",
+        .arguments = "{\"id\":\"agent-missing\"}",
+    };
+    const missing_resume_result = try runSubagentResumeCall(allocator, &runtime, missing_resume_call);
+    defer missing_resume_result.deinit(allocator);
+    try std.testing.expectEqualStrings("subagent not found", missing_resume_result.summary);
+    try std.testing.expect(std.mem.indexOf(u8, missing_resume_result.output, "agent with id agent-missing not found") != null);
+}
+
+test "subagent v1 runtime rejects unsupported role and structured items" {
+    const allocator = std.testing.allocator;
+    var runtime = SubagentRuntime{};
+    defer runtime.deinit(allocator);
+    var transcript = Transcript{};
+    defer transcript.deinit(allocator);
+    var dummy_credentials = auth.Credentials{ .mode = .provider_no_auth, .token = "" };
+
+    const role_call = api.FunctionCall{
+        .kind = .function,
+        .call_id = "spawn-role-call",
+        .namespace = "multi_agent_v1",
+        .name = "spawn_agent",
+        .arguments = "{\"message\":\"hello\",\"agent_type\":\"explorer\"}",
+    };
+    const role_result = try runSubagentSpawnCall(allocator, undefined, &dummy_credentials, &transcript, .{}, &runtime, role_call);
+    defer role_result.deinit(allocator);
+    try std.testing.expectEqualStrings("subagent invalid", role_result.summary);
+    try std.testing.expect(std.mem.indexOf(u8, role_result.output, "agent_type") != null);
+
+    const model_type_call = api.FunctionCall{
+        .kind = .function,
+        .call_id = "spawn-model-type-call",
+        .namespace = "multi_agent_v1",
+        .name = "spawn_agent",
+        .arguments = "{\"message\":\"hello\",\"model\":123}",
+    };
+    const model_type_result = try runSubagentSpawnCall(allocator, undefined, &dummy_credentials, &transcript, .{}, &runtime, model_type_call);
+    defer model_type_result.deinit(allocator);
+    try std.testing.expectEqualStrings("subagent invalid", model_type_result.summary);
+    try std.testing.expect(std.mem.indexOf(u8, model_type_result.output, "model") != null);
+
+    var parsed = try std.json.parseFromSlice(std.json.Value, allocator, "{\"items\":[{\"type\":\"image\",\"image_url\":\"https://example.test/image.png\"}]}", .{});
+    defer parsed.deinit();
+    try std.testing.expectError(error.UnsupportedItems, subagentInputPromptFromArgs(allocator, parsed.value.object));
+}
+
+fn testPlanUpdated(ctx: *anyopaque, state: *const plan_tool.State) anyerror!void {
+    _ = ctx;
+    _ = state;
+}
+
+test "subagent child turn options clear parent scoped callbacks and features" {
+    const allocator = std.testing.allocator;
+    var feature_overrides = features_cmd.FeatureOverrides{};
+    defer feature_overrides.deinit(allocator);
+    try feature_overrides.put(allocator, "multi_agent", true);
+    try feature_overrides.put(allocator, "request_permissions_tool", true);
+    try feature_overrides.put(allocator, "request_user_input_tool", true);
+    try feature_overrides.put(allocator, "default_mode_request_user_input", true);
+    try feature_overrides.put(allocator, "goal_tools", true);
+
+    var runtime = SubagentRuntime{};
+    defer runtime.deinit(allocator);
+    var ctx: u8 = 0;
+    const options = TurnOptions{
+        .prompt_for_approval = true,
+        .plan_update_callback = .{
+            .ctx = &ctx,
+            .on_plan_updated = testPlanUpdated,
+        },
+        .background_terminal_owner = "parent-thread",
+        .subagent_runtime = &runtime,
+        .feature_overrides = feature_overrides,
+    };
+
+    var child_options = try subagentChildTurnOptions(allocator, options);
+    defer child_options.feature_overrides.deinit(allocator);
+
+    try std.testing.expect(!child_options.prompt_for_approval);
+    try std.testing.expect(child_options.plan_update_callback == null);
+    try std.testing.expect(child_options.background_terminal_owner == null);
+    try std.testing.expect(child_options.subagent_runtime == null);
+    try std.testing.expectEqual(false, child_options.feature_overrides.get("multi_agent").?);
+    try std.testing.expectEqual(false, child_options.feature_overrides.get("request_permissions_tool").?);
+    try std.testing.expectEqual(false, child_options.feature_overrides.get("request_user_input_tool").?);
+    try std.testing.expectEqual(false, child_options.feature_overrides.get("default_mode_request_user_input").?);
+    try std.testing.expectEqual(false, child_options.feature_overrides.get("goal_tools").?);
+    try std.testing.expectEqual(true, feature_overrides.get("multi_agent").?);
 }
 
 test "runToolSearchCall returns matching mcp namespace tools" {
