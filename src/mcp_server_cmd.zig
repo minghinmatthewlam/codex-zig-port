@@ -20,12 +20,14 @@ const SavedSession = struct {
     cwd: []const u8,
     cfg: config.Config,
     transcript: session.Transcript,
+    subagents: session.SubagentRuntime = .{},
 
     fn deinit(self: *SavedSession, allocator: std.mem.Allocator) void {
         allocator.free(self.id);
         allocator.free(self.cwd);
         self.cfg.deinit(allocator);
         self.transcript.deinit(allocator);
+        self.subagents.deinit(allocator);
     }
 };
 
@@ -182,11 +184,15 @@ const Server = struct {
         const call_cwd = try currentWorkingDirectory(self.allocator);
         var call_cwd_moved = false;
         defer if (!call_cwd_moved) self.allocator.free(call_cwd);
+        var subagents = session.SubagentRuntime{};
+        var subagents_moved = false;
+        defer if (!subagents_moved) subagents.deinit(self.allocator);
 
         const answer = session.runTurnWithOptions(self.allocator, turn_cfg, &self.credentials, &transcript, prompt, .{
             .auto_approve = true,
             .prompt_for_approval = false,
             .additional_writable_roots = self.additional_writable_roots,
+            .subagent_runtime = &subagents,
         }) catch |err| {
             const message = try std.fmt.allocPrint(self.allocator, "Codex failed: {s}", .{@errorName(err)});
             defer self.allocator.free(message);
@@ -197,10 +203,11 @@ const Server = struct {
 
         const thread_id = try self.nextThreadId();
         errdefer self.allocator.free(thread_id);
-        try self.sessions.append(self.allocator, .{ .id = thread_id, .cwd = call_cwd, .cfg = turn_cfg, .transcript = transcript });
+        try self.sessions.append(self.allocator, .{ .id = thread_id, .cwd = call_cwd, .cfg = turn_cfg, .transcript = transcript, .subagents = subagents });
         transcript_moved = true;
         call_cwd_moved = true;
         turn_cfg_moved = true;
+        subagents_moved = true;
 
         try self.writeToolResult(id_value, thread_id, answer, false);
     }
@@ -233,6 +240,7 @@ const Server = struct {
             .auto_approve = true,
             .prompt_for_approval = false,
             .additional_writable_roots = self.additional_writable_roots,
+            .subagent_runtime = &saved.subagents,
         }) catch |err| {
             const message = try std.fmt.allocPrint(self.allocator, "Codex failed: {s}", .{@errorName(err)});
             defer self.allocator.free(message);

@@ -688,6 +688,7 @@ const LoadedThread = struct {
     git_origin_url: ?[]const u8,
     goal: ?LoadedThreadGoal,
     transcript: session_mod.Transcript,
+    subagents: session_mod.SubagentRuntime = .{},
     turns_json: []const u8,
     next_turn_index: usize,
     reserved_next_turn_index: ?usize = null,
@@ -735,6 +736,7 @@ const LoadedThread = struct {
         if (self.git_origin_url) |value| allocator.free(value);
         if (self.goal) |*goal| goal.deinit(allocator);
         self.transcript.deinit(allocator);
+        self.subagents.deinit(allocator);
         allocator.free(self.turns_json);
         if (self.pending_session_start_source) |value| allocator.free(value);
         if (self.realtime_session) |*session| session.deinit(allocator);
@@ -31795,6 +31797,7 @@ fn handleReviewStart(
         .feature_overrides = turn_feature_overrides,
         .workdir = thread.cwd,
         .background_terminal_owner = thread.id,
+        .subagent_runtime = &thread.subagents,
     }) catch |err| {
         if (err == error.AppServerApprovalCanceled) {
             const completed_at_ms = currentUnixMilliseconds();
@@ -32731,6 +32734,7 @@ fn handleTurnStart(
         .feature_overrides = turn_feature_overrides,
         .workdir = thread.cwd,
         .background_terminal_owner = thread.id,
+        .subagent_runtime = &thread.subagents,
     }) catch |err| {
         if (err == error.AppServerApprovalCanceled) {
             const completed_at_ms = currentUnixMilliseconds();
