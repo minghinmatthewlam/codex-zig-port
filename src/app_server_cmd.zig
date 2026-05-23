@@ -48,8 +48,10 @@ const DEFAULT_SOCKET_FILE_NAME = "app-server-control.sock";
 const DAEMON_DIR_NAME = "app-server-daemon";
 const DAEMON_SETTINGS_FILE_NAME = "settings.json";
 const DAEMON_LOCK_FILE_NAME = "daemon.lock";
+const DAEMON_APP_SERVER_PID_FILE_NAME = "app-server.pid";
 const DAEMON_APP_SERVER_PID_LOCK_FILE_NAME = "app-server.pid.lock";
 const DAEMON_APP_SERVER_UPDATER_PID_LOCK_FILE_NAME = "app-server-updater.pid.lock";
+const DAEMON_APP_SERVER_STDERR_LOG_FILE_NAME = "app-server.stderr.log";
 const THREAD_LIST_DEFAULT_LIMIT = 25;
 const THREAD_LIST_MAX_LIMIT = 100;
 const THREAD_TURNS_DEFAULT_LIMIT = 25;
@@ -385,18 +387,21 @@ const AppServerOptions = struct {
     listen_url: []const u8 = DEFAULT_LISTEN_URL,
     websocket_auth: WebsocketAuthArgs = .{},
     strict_config: bool = false,
+    remote_control_enabled: bool = false,
 };
 
 pub const InvocationOptions = struct {
     feature_overrides: features_cmd.FeatureOverrides = .{},
     bypass_hook_trust: bool = false,
     strict_config: bool = false,
+    remote_control_enabled: bool = false,
 };
 
 const AppServerState = struct {
     deferred_command_exec_stdio: bool = false,
     experimental_api_enabled: bool = false,
     bypass_hook_trust: bool = false,
+    remote_control_enabled: bool = false,
     cli_feature_overrides: features_cmd.FeatureOverrides = .{},
     runtime_feature_enablement: features_cmd.FeatureOverrides = .{},
     loaded_threads: std.ArrayList(LoadedThread) = .empty,
@@ -449,6 +454,7 @@ fn initAppServerState(
     var state = AppServerState{
         .deferred_command_exec_stdio = deferred_command_exec_stdio,
         .bypass_hook_trust = invocation_options.bypass_hook_trust,
+        .remote_control_enabled = invocation_options.remote_control_enabled,
         .cli_feature_overrides = try invocation_options.feature_overrides.clone(allocator),
     };
     errdefer state.deinit(allocator);
@@ -852,6 +858,10 @@ pub fn runWithOptions(
         if (std.mem.eql(u8, arg, "--analytics-default-enabled")) {
             continue;
         }
+        if (std.mem.eql(u8, arg, "--remote-control")) {
+            options.remote_control_enabled = true;
+            continue;
+        }
         if (std.mem.eql(u8, arg, "--strict-config")) {
             options.strict_config = true;
             continue;
@@ -928,7 +938,7 @@ pub fn runWithOptions(
             return;
         }
         if (std.mem.eql(u8, name, "daemon")) {
-            try runDaemon(allocator, subcommand_args.items);
+            try runDaemon(allocator, subcommand_args.items, invocation_options.feature_overrides);
             return;
         }
         if (std.mem.eql(u8, name, "generate-ts")) {
@@ -964,26 +974,35 @@ pub fn runWithOptions(
         return err;
     };
 
+    var server_feature_overrides = try invocation_options.feature_overrides.clone(allocator);
+    defer server_feature_overrides.deinit(allocator);
+    if (options.remote_control_enabled) {
+        try server_feature_overrides.put(allocator, "remote_control", true);
+    }
+    var server_invocation_options = invocation_options;
+    server_invocation_options.feature_overrides = server_feature_overrides;
+    server_invocation_options.remote_control_enabled = options.remote_control_enabled;
+
     switch (transport) {
         .stdio => {
-            var server = StdioServer{ .allocator = allocator, .invocation_options = invocation_options };
+            var server = StdioServer{ .allocator = allocator, .invocation_options = server_invocation_options };
             try server.run();
         },
         .off => try cli_utils.writeStdout("app-server transport: off\n"),
         .unix_default => {
             const socket_path = try defaultUnixSocketPath(allocator);
             defer allocator.free(socket_path);
-            var server = UnixServer{ .allocator = allocator, .socket_path = socket_path, .invocation_options = invocation_options };
+            var server = UnixServer{ .allocator = allocator, .socket_path = socket_path, .invocation_options = server_invocation_options };
             try server.run();
         },
         .unix_path => |path| {
-            var server = UnixServer{ .allocator = allocator, .socket_path = path, .invocation_options = invocation_options };
+            var server = UnixServer{ .allocator = allocator, .socket_path = path, .invocation_options = server_invocation_options };
             try server.run();
         },
         .websocket => |address| {
             var auth_policy = try websocketAuthPolicyFromArgs(allocator, options.websocket_auth);
             defer auth_policy.deinit(allocator);
-            var server = WebSocketServer{ .allocator = allocator, .address = address, .auth_policy = auth_policy, .invocation_options = invocation_options };
+            var server = WebSocketServer{ .allocator = allocator, .address = address, .auth_policy = auth_policy, .invocation_options = server_invocation_options };
             try server.run();
         },
     }
@@ -1003,6 +1022,14 @@ const DaemonRemoteControlSettings = struct {
     remoteControlEnabled: bool,
 };
 
+const DaemonRunOptions = struct {
+    child_global_args: std.ArrayList([]const u8) = .empty,
+
+    fn deinit(self: *DaemonRunOptions, allocator: std.mem.Allocator) void {
+        self.child_global_args.deinit(allocator);
+    }
+};
+
 const DaemonSocketProbe = union(enum) {
     unavailable: []const u8,
     running: []const u8,
@@ -1012,6 +1039,42 @@ const DaemonSocketProbe = union(enum) {
             .unavailable => |cause| allocator.free(cause),
             .running => |version| allocator.free(version),
         }
+    }
+};
+
+const DaemonLifecycleOutputOptions = struct {
+    backend: ?[]const u8 = null,
+    pid: ?i64 = null,
+    app_server_version: ?[]const u8 = null,
+};
+
+const DaemonRemoteControlOutputOptions = struct {
+    backend: ?[]const u8 = null,
+    app_server_version: ?[]const u8 = null,
+};
+
+const DaemonStartOutput = struct {
+    pid: i64,
+    app_server_version: []const u8,
+    started: bool,
+};
+
+const ManagedPidRecord = struct {
+    pid: i64,
+    process_start_time: []const u8,
+    child_global_args: [][]const u8,
+
+    fn deinit(self: *ManagedPidRecord, allocator: std.mem.Allocator) void {
+        allocator.free(self.process_start_time);
+        freeStringSlice(allocator, self.child_global_args);
+    }
+};
+
+const DaemonFileLock = struct {
+    file: std.Io.File,
+
+    fn release(self: *DaemonFileLock) void {
+        self.file.close(std.Io.Threaded.global_single_threaded.io());
     }
 };
 
@@ -1030,22 +1093,34 @@ pub fn runRemoteControlDaemonStart(allocator: std.mem.Allocator) !void {
     defer allocator.free(codex_home);
     try validateDaemonSettings(allocator, codex_home);
     try ensureDaemonUpdaterPidLock(allocator, codex_home);
-    try failManagedStandaloneMissingIfNeeded(allocator, codex_home, false);
+    const managed_path = try ensureManagedCodexPath(allocator, codex_home);
+    defer allocator.free(managed_path);
+    try cli_utils.writeStderr("Error: remote-control daemon readiness is not implemented in codex-zig yet\n");
+    return error.AppServerDaemonCommandFailed;
 }
 
 pub fn runRemoteControlDaemonStop(allocator: std.mem.Allocator, json: bool) !void {
     const codex_home = try resolveDaemonCodexHome(allocator);
     defer allocator.free(codex_home);
-    try ensureDaemonNoManagedServerRunning(allocator, codex_home);
+    try ensureDaemonScaffolding(allocator, codex_home, true);
+    var operation_lock = try acquireDaemonOperationLock(allocator, codex_home);
+    defer operation_lock.release();
+
+    const stopped = try stopDaemonLifecycleLocked(allocator, codex_home);
     if (json) {
-        try writeDaemonLifecycleOutput(allocator, codex_home, "notRunning", null);
+        try writeDaemonLifecycleOutput(allocator, codex_home, if (stopped) "stopped" else "notRunning", .{
+            .backend = if (stopped) "pid" else null,
+        });
     } else {
-        try cli_utils.writeStdout("Remote control is not running.\n");
+        try cli_utils.writeStdout(if (stopped) "Remote control stopped.\n" else "Remote control is not running.\n");
     }
 }
 
-fn runDaemon(allocator: std.mem.Allocator, raw_args: []const []const u8) !void {
+fn runDaemon(allocator: std.mem.Allocator, raw_args: []const []const u8, root_feature_overrides: features_cmd.FeatureOverrides) !void {
     var command: ?DaemonCommand = null;
+    var options = DaemonRunOptions{};
+    defer options.deinit(allocator);
+    try appendDaemonFeatureOverrideArgs(allocator, &options.child_global_args, root_feature_overrides);
 
     var index: usize = 0;
     while (index < raw_args.len) : (index += 1) {
@@ -1070,18 +1145,24 @@ fn runDaemon(allocator: std.mem.Allocator, raw_args: []const []const u8) !void {
         }
         if (std.mem.eql(u8, arg, "-c") or std.mem.eql(u8, arg, "--config")) {
             if (index + 1 >= raw_args.len) return failMissingDaemonOptionValue(arg);
+            try options.child_global_args.append(allocator, arg);
             index += 1;
+            try options.child_global_args.append(allocator, raw_args[index]);
             continue;
         }
         if (std.mem.startsWith(u8, arg, "--config=")) {
+            try options.child_global_args.append(allocator, arg);
             continue;
         }
         if (std.mem.eql(u8, arg, "--enable") or std.mem.eql(u8, arg, "--disable")) {
             if (index + 1 >= raw_args.len) return failMissingDaemonOptionValue(arg);
+            try options.child_global_args.append(allocator, arg);
             index += 1;
+            try options.child_global_args.append(allocator, raw_args[index]);
             continue;
         }
         if (std.mem.startsWith(u8, arg, "--enable=") or std.mem.startsWith(u8, arg, "--disable=")) {
+            try options.child_global_args.append(allocator, arg);
             continue;
         }
         if (std.mem.eql(u8, arg, "--remote-control")) {
@@ -1110,12 +1191,23 @@ fn runDaemon(allocator: std.mem.Allocator, raw_args: []const []const u8) !void {
 
     switch (cmd) {
         .stop => try runDaemonStop(allocator, codex_home),
-        .enable_remote_control => try runDaemonSetRemoteControl(allocator, codex_home, true),
-        .disable_remote_control => try runDaemonSetRemoteControl(allocator, codex_home, false),
+        .enable_remote_control => try runDaemonSetRemoteControl(allocator, codex_home, true, options.child_global_args.items),
+        .disable_remote_control => try runDaemonSetRemoteControl(allocator, codex_home, false, options.child_global_args.items),
         .version => try runDaemonVersion(allocator, codex_home),
         .bootstrap => try failManagedStandaloneMissingIfNeeded(allocator, codex_home, false),
-        .start => try runDaemonStart(allocator, codex_home),
-        .restart => try runDaemonRestart(allocator, codex_home),
+        .start => try runDaemonStart(allocator, codex_home, options.child_global_args.items),
+        .restart => try runDaemonRestart(allocator, codex_home, options.child_global_args.items),
+    }
+}
+
+fn appendDaemonFeatureOverrideArgs(
+    allocator: std.mem.Allocator,
+    child_global_args: *std.ArrayList([]const u8),
+    overrides: features_cmd.FeatureOverrides,
+) !void {
+    for (overrides.items.items) |item| {
+        try child_global_args.append(allocator, if (item.enabled) "--enable" else "--disable");
+        try child_global_args.append(allocator, item.key);
     }
 }
 
@@ -1131,8 +1223,22 @@ fn daemonCommandFromName(name: []const u8) ?DaemonCommand {
 }
 
 fn runDaemonStop(allocator: std.mem.Allocator, codex_home: []const u8) !void {
-    try ensureDaemonNoManagedServerRunning(allocator, codex_home);
-    try writeDaemonLifecycleOutput(allocator, codex_home, "notRunning", null);
+    try ensureDaemonScaffolding(allocator, codex_home, true);
+    var operation_lock = try acquireDaemonOperationLock(allocator, codex_home);
+    defer operation_lock.release();
+
+    const stopped = try stopDaemonLifecycleLocked(allocator, codex_home);
+    try writeDaemonLifecycleOutput(allocator, codex_home, if (stopped) "stopped" else "notRunning", .{
+        .backend = if (stopped) "pid" else null,
+    });
+}
+
+fn stopDaemonLifecycleLocked(allocator: std.mem.Allocator, codex_home: []const u8) !bool {
+    const stopped = try stopManagedDaemonIfRunning(allocator, codex_home);
+    if (!stopped) {
+        try ensureDaemonNoManagedServerRunning(allocator, codex_home);
+    }
+    return stopped;
 }
 
 fn ensureDaemonNoManagedServerRunning(allocator: std.mem.Allocator, codex_home: []const u8) !void {
@@ -1152,46 +1258,84 @@ fn runDaemonVersion(allocator: std.mem.Allocator, codex_home: []const u8) !void 
     defer probe.deinit(allocator);
     switch (probe) {
         .running => |app_server_version| {
-            try writeDaemonLifecycleOutput(allocator, codex_home, "running", app_server_version);
+            const backend = try managedDaemonBackend(allocator, codex_home);
+            try writeDaemonLifecycleOutput(allocator, codex_home, "running", .{
+                .backend = backend,
+                .app_server_version = app_server_version,
+            });
             return;
         },
         .unavailable => |cause| try failDaemonSocketUnavailable(allocator, codex_home, cause),
     }
 }
 
-fn runDaemonStart(allocator: std.mem.Allocator, codex_home: []const u8) !void {
+fn runDaemonStart(allocator: std.mem.Allocator, codex_home: []const u8, child_global_args: []const []const u8) !void {
+    try ensureDaemonScaffolding(allocator, codex_home, true);
+    var operation_lock = try acquireDaemonOperationLock(allocator, codex_home);
+    defer operation_lock.release();
+
     try validateDaemonSettings(allocator, codex_home);
     const probe = try probeDaemonSocket(allocator, codex_home);
     defer probe.deinit(allocator);
     switch (probe) {
         .running => |app_server_version| {
-            try writeDaemonLifecycleOutput(allocator, codex_home, "alreadyRunning", app_server_version);
+            const backend = try managedDaemonBackend(allocator, codex_home);
+            try writeDaemonLifecycleOutput(allocator, codex_home, "alreadyRunning", .{
+                .backend = backend,
+                .app_server_version = app_server_version,
+            });
             return;
         },
         .unavailable => {},
     }
-    try failManagedStandaloneMissingIfNeeded(allocator, codex_home, true);
+    const started = try startManagedDaemon(allocator, codex_home, child_global_args);
+    defer allocator.free(started.app_server_version);
+    try writeDaemonLifecycleOutput(allocator, codex_home, if (started.started) "started" else "alreadyRunning", .{
+        .backend = "pid",
+        .pid = if (started.started) started.pid else null,
+        .app_server_version = started.app_server_version,
+    });
 }
 
-fn runDaemonRestart(allocator: std.mem.Allocator, codex_home: []const u8) !void {
+fn runDaemonRestart(allocator: std.mem.Allocator, codex_home: []const u8, child_global_args: []const []const u8) !void {
+    try ensureDaemonScaffolding(allocator, codex_home, true);
+    var operation_lock = try acquireDaemonOperationLock(allocator, codex_home);
+    defer operation_lock.release();
+
     try validateDaemonSettings(allocator, codex_home);
-    const probe = try probeDaemonSocket(allocator, codex_home);
-    defer probe.deinit(allocator);
-    switch (probe) {
-        .running => return failDaemonUnmanagedRunning(),
-        .unavailable => {},
+    const managed_running = try managedDaemonBackend(allocator, codex_home) != null;
+    if (managed_running) {
+        const managed_path = try ensureManagedCodexPath(allocator, codex_home);
+        defer allocator.free(managed_path);
     }
-    try failManagedStandaloneMissingIfNeeded(allocator, codex_home, false);
+    const stopped = try stopManagedDaemonIfRunning(allocator, codex_home);
+    if (!stopped) {
+        const probe = try probeDaemonSocket(allocator, codex_home);
+        defer probe.deinit(allocator);
+        switch (probe) {
+            .running => return failDaemonUnmanagedRunning(),
+            .unavailable => {},
+        }
+    }
+    const started = try startManagedDaemon(allocator, codex_home, child_global_args);
+    defer allocator.free(started.app_server_version);
+    try writeDaemonLifecycleOutput(allocator, codex_home, "restarted", .{
+        .backend = "pid",
+        .pid = started.pid,
+        .app_server_version = started.app_server_version,
+    });
 }
 
 fn writeDaemonLifecycleOutput(
     allocator: std.mem.Allocator,
     codex_home: []const u8,
     status: []const u8,
-    app_server_version: ?[]const u8,
+    options: DaemonLifecycleOutputOptions,
 ) !void {
     const managed_path = try managedCodexPath(allocator, codex_home);
     defer allocator.free(managed_path);
+    const managed_version = try managedCodexVersionBestEffort(allocator, managed_path);
+    defer if (managed_version) |version| allocator.free(version);
     const socket_path = try daemonSocketPath(allocator, codex_home);
     defer allocator.free(socket_path);
 
@@ -1199,13 +1343,29 @@ fn writeDaemonLifecycleOutput(
     defer out.deinit(allocator);
     try out.appendSlice(allocator, "{\"status\":");
     try appendJsonString(allocator, &out, status);
+    if (options.backend) |backend| {
+        try out.appendSlice(allocator, ",\"backend\":");
+        try appendJsonString(allocator, &out, backend);
+    }
+    if (options.pid) |pid| {
+        const pid_text = try std.fmt.allocPrint(allocator, "{d}", .{pid});
+        defer allocator.free(pid_text);
+        try out.appendSlice(allocator, ",\"pid\":");
+        try out.appendSlice(allocator, pid_text);
+    }
     try out.appendSlice(allocator, ",\"managedCodexPath\":");
     try appendJsonString(allocator, &out, managed_path);
-    try out.appendSlice(allocator, ",\"managedCodexVersion\":null,\"socketPath\":");
+    try out.appendSlice(allocator, ",\"managedCodexVersion\":");
+    if (managed_version) |version| {
+        try appendJsonString(allocator, &out, version);
+    } else {
+        try out.appendSlice(allocator, "null");
+    }
+    try out.appendSlice(allocator, ",\"socketPath\":");
     try appendJsonString(allocator, &out, socket_path);
     try out.appendSlice(allocator, ",\"cliVersion\":");
     try appendJsonString(allocator, &out, CLI_VERSION);
-    if (app_server_version) |version| {
+    if (options.app_server_version) |version| {
         try out.appendSlice(allocator, ",\"appServerVersion\":");
         try appendJsonString(allocator, &out, version);
     }
@@ -1213,36 +1373,95 @@ fn writeDaemonLifecycleOutput(
     try writeStdoutLine(out.items);
 }
 
-fn runDaemonSetRemoteControl(allocator: std.mem.Allocator, codex_home: []const u8, enabled: bool) !void {
+fn runDaemonSetRemoteControl(allocator: std.mem.Allocator, codex_home: []const u8, enabled: bool, child_global_args: []const []const u8) !void {
+    try ensureDaemonScaffolding(allocator, codex_home, true);
+    var operation_lock = try acquireDaemonOperationLock(allocator, codex_home);
+    defer operation_lock.release();
+
     const settings_path = try daemonSettingsPath(allocator, codex_home);
     defer allocator.free(settings_path);
     const previous = try readDaemonRemoteControlEnabled(allocator, settings_path);
+    const managed_running = try managedDaemonBackend(allocator, codex_home) != null;
     const probe = try probeDaemonSocket(allocator, codex_home);
     defer probe.deinit(allocator);
     switch (probe) {
-        .running => return failDaemonUnmanagedRunning(),
+        .running => {
+            if (!managed_running) return failDaemonUnmanagedRunning();
+        },
         .unavailable => {},
     }
 
-    try ensureDaemonScaffolding(allocator, codex_home, true);
-    try writeDaemonRemoteControlSettings(settings_path, enabled);
-
-    const socket_path = try daemonSocketPath(allocator, codex_home);
-    defer allocator.free(socket_path);
     const status = if (enabled)
         if (previous) "alreadyEnabled" else "enabled"
     else if (previous) "disabled" else "alreadyDisabled";
+
+    if (previous == enabled) {
+        const app_server_version = if (managed_running)
+            try waitForDaemonReady(allocator, codex_home)
+        else
+            null;
+        defer if (app_server_version) |version| allocator.free(version);
+        try writeDaemonRemoteControlOutput(allocator, codex_home, status, enabled, .{
+            .backend = if (managed_running) "pid" else null,
+            .app_server_version = app_server_version,
+        });
+        return;
+    }
+
+    if (managed_running) {
+        const managed_path = try ensureManagedCodexPath(allocator, codex_home);
+        defer allocator.free(managed_path);
+    }
+    var preserved_child_global_args: ?[][]const u8 = null;
+    defer if (preserved_child_global_args) |args| freeStringSlice(allocator, args);
+    const restart_child_global_args = if (managed_running and child_global_args.len == 0) args: {
+        preserved_child_global_args = try activeManagedDaemonChildGlobalArgs(allocator, codex_home);
+        break :args preserved_child_global_args orelse child_global_args;
+    } else child_global_args;
+    try writeDaemonRemoteControlSettings(settings_path, enabled);
+
+    if (managed_running) {
+        _ = try stopManagedDaemonIfRunning(allocator, codex_home);
+        const started = try startManagedDaemon(allocator, codex_home, restart_child_global_args);
+        defer allocator.free(started.app_server_version);
+        try writeDaemonRemoteControlOutput(allocator, codex_home, status, enabled, .{
+            .backend = "pid",
+            .app_server_version = started.app_server_version,
+        });
+        return;
+    }
+
+    try writeDaemonRemoteControlOutput(allocator, codex_home, status, enabled, .{});
+}
+
+fn writeDaemonRemoteControlOutput(
+    allocator: std.mem.Allocator,
+    codex_home: []const u8,
+    status: []const u8,
+    enabled: bool,
+    options: DaemonRemoteControlOutputOptions,
+) !void {
+    const socket_path = try daemonSocketPath(allocator, codex_home);
+    defer allocator.free(socket_path);
 
     var out = std.ArrayList(u8).empty;
     defer out.deinit(allocator);
     try out.appendSlice(allocator, "{\"status\":");
     try appendJsonString(allocator, &out, status);
+    if (options.backend) |backend| {
+        try out.appendSlice(allocator, ",\"backend\":");
+        try appendJsonString(allocator, &out, backend);
+    }
     try out.appendSlice(allocator, ",\"remoteControlEnabled\":");
     try out.appendSlice(allocator, if (enabled) "true" else "false");
     try out.appendSlice(allocator, ",\"socketPath\":");
     try appendJsonString(allocator, &out, socket_path);
     try out.appendSlice(allocator, ",\"cliVersion\":");
     try appendJsonString(allocator, &out, CLI_VERSION);
+    if (options.app_server_version) |version| {
+        try out.appendSlice(allocator, ",\"appServerVersion\":");
+        try appendJsonString(allocator, &out, version);
+    }
     try out.appendSlice(allocator, "}");
     try writeStdoutLine(out.items);
 }
@@ -1254,12 +1473,16 @@ fn failManagedStandaloneMissingIfNeeded(
 ) !void {
     try ensureDaemonScaffolding(allocator, codex_home, create_pid_lock);
 
-    const managed_path = try managedCodexPath(allocator, codex_home);
+    const managed_path = try ensureManagedCodexPath(allocator, codex_home);
     defer allocator.free(managed_path);
-    if ((try statPathFollow(allocator, managed_path)) != null) {
-        try cli_utils.writeStderr("Error: managed app-server daemon lifecycle is not implemented in codex-zig yet\n");
-        return error.AppServerDaemonCommandFailed;
-    }
+    try cli_utils.writeStderr("Error: managed app-server daemon bootstrap is not implemented in codex-zig yet\n");
+    return error.AppServerDaemonCommandFailed;
+}
+
+fn ensureManagedCodexPath(allocator: std.mem.Allocator, codex_home: []const u8) ![]const u8 {
+    const managed_path = try managedCodexPath(allocator, codex_home);
+    errdefer allocator.free(managed_path);
+    if (try managedCodexPathIsFile(allocator, managed_path)) return managed_path;
 
     const message = try std.fmt.allocPrint(
         allocator,
@@ -1275,6 +1498,200 @@ fn failManagedStandaloneMissingIfNeeded(
     ,
         .{managed_path},
     );
+    defer allocator.free(message);
+    try cli_utils.writeStderr(message);
+    return error.AppServerDaemonCommandFailed;
+}
+
+fn startManagedDaemon(allocator: std.mem.Allocator, codex_home: []const u8, child_global_args: []const []const u8) !DaemonStartOutput {
+    try ensureDaemonScaffolding(allocator, codex_home, true);
+
+    var pid_lock = try acquireDaemonPidLock(allocator, codex_home);
+    defer pid_lock.release();
+
+    const managed_path = try ensureManagedCodexPath(allocator, codex_home);
+    defer allocator.free(managed_path);
+
+    const pid_path = try daemonPidPath(allocator, codex_home);
+    defer allocator.free(pid_path);
+    if (try activeManagedPid(allocator, codex_home, pid_path)) |pid| {
+        const version = try waitForDaemonReady(allocator, codex_home);
+        return .{ .pid = pid, .app_server_version = version, .started = false };
+    }
+    try removeFileIfExists(pid_path);
+
+    const settings_path = try daemonSettingsPath(allocator, codex_home);
+    defer allocator.free(settings_path);
+    const remote_control_enabled = try readDaemonRemoteControlEnabled(allocator, settings_path);
+
+    const stderr_path = try daemonStderrLogPath(allocator, codex_home);
+    defer allocator.free(stderr_path);
+    var io_instance: std.Io.Threaded = .init(allocator, .{});
+    defer io_instance.deinit();
+    const io = io_instance.io();
+    var stderr_file = try std.Io.Dir.cwd().createFile(io, stderr_path, .{});
+    defer stderr_file.close(io);
+    var child_env = try daemonChildEnvironment(allocator, codex_home);
+    defer child_env.deinit();
+
+    var argv = std.ArrayList([]const u8).empty;
+    defer argv.deinit(allocator);
+    try argv.append(allocator, managed_path);
+    try argv.appendSlice(allocator, child_global_args);
+    try argv.append(allocator, "app-server");
+    if (remote_control_enabled) try argv.append(allocator, "--remote-control");
+    try argv.append(allocator, "--listen");
+    try argv.append(allocator, "unix://");
+
+    var child = std.process.spawn(io, .{
+        .argv = argv.items,
+        .stdin = .ignore,
+        .stdout = .ignore,
+        .stderr = .{ .file = stderr_file },
+        .environ_map = &child_env,
+        .pgid = 0,
+    }) catch |err| {
+        try failManagedDaemonSpawn(allocator, managed_path, err);
+        unreachable;
+    };
+    const pid = child.id orelse return error.AppServerDaemonCommandFailed;
+    child.id = null;
+    var keep_child = false;
+    errdefer if (!keep_child) {
+        terminatePid(pid);
+        removeFileIfExists(pid_path) catch {};
+    };
+
+    const process_start_time = try processStartTime(allocator, pid) orelse {
+        try cli_utils.writeStderr("Error: failed to record managed app-server process identity\n");
+        return error.AppServerDaemonCommandFailed;
+    };
+    defer allocator.free(process_start_time);
+    try writeDaemonPidRecord(allocator, pid_path, pid, process_start_time, child_global_args);
+
+    const version = try waitForDaemonReady(allocator, codex_home);
+    keep_child = true;
+    return .{ .pid = pid, .app_server_version = version, .started = true };
+}
+
+fn stopManagedDaemonIfRunning(allocator: std.mem.Allocator, codex_home: []const u8) !bool {
+    const pid_path = try daemonPidPath(allocator, codex_home);
+    defer allocator.free(pid_path);
+    var record = (try activeManagedPidRecord(allocator, codex_home, pid_path)) orelse {
+        try removeFileIfExists(pid_path);
+        return false;
+    };
+    defer record.deinit(allocator);
+    const pid = record.pid;
+
+    terminatePid(pid);
+    const deadline_ms = appServerAwakeDeadlineMs(10 * std.time.ms_per_s);
+    while (try processMatchesManagedDaemon(allocator, codex_home, record)) {
+        if (remainingAppServerAwakeMillis(deadline_ms) == null) {
+            forceTerminatePid(pid);
+            break;
+        }
+        std.Io.sleep(
+            std.Io.Threaded.global_single_threaded.io(),
+            .{ .nanoseconds = 50 * std.time.ns_per_ms },
+            .awake,
+        ) catch {};
+    }
+    try removeFileIfExists(pid_path);
+    return true;
+}
+
+fn managedDaemonBackend(allocator: std.mem.Allocator, codex_home: []const u8) !?[]const u8 {
+    const pid_path = try daemonPidPath(allocator, codex_home);
+    defer allocator.free(pid_path);
+    return if ((try activeManagedPid(allocator, codex_home, pid_path)) != null) "pid" else null;
+}
+
+fn acquireDaemonOperationLock(allocator: std.mem.Allocator, codex_home: []const u8) !DaemonFileLock {
+    const operation_lock_path = try daemonOperationLockPath(allocator, codex_home);
+    defer allocator.free(operation_lock_path);
+    return acquireDaemonFileLock(operation_lock_path);
+}
+
+fn acquireDaemonPidLock(allocator: std.mem.Allocator, codex_home: []const u8) !DaemonFileLock {
+    const pid_lock_path = try daemonPidLockPath(allocator, codex_home);
+    defer allocator.free(pid_lock_path);
+    return acquireDaemonFileLock(pid_lock_path);
+}
+
+fn acquireDaemonFileLock(path: []const u8) !DaemonFileLock {
+    const io = std.Io.Threaded.global_single_threaded.io();
+    const file = try std.Io.Dir.cwd().openFile(io, path, .{
+        .mode = .write_only,
+        .lock = .exclusive,
+        .lock_nonblocking = false,
+    });
+    return .{ .file = file };
+}
+
+fn daemonChildEnvironment(allocator: std.mem.Allocator, codex_home: []const u8) !std.process.Environ.Map {
+    var result = std.process.Environ.Map.init(allocator);
+    errdefer result.deinit();
+
+    var index: usize = 0;
+    while (std.c.environ[index]) |entry_ptr| : (index += 1) {
+        const entry = std.mem.span(entry_ptr);
+        const eq = std.mem.indexOfScalar(u8, entry, '=') orelse continue;
+        const key = entry[0..eq];
+        if (!std.process.Environ.Map.validateKeyForPut(key)) continue;
+        try result.put(key, entry[eq + 1 ..]);
+    }
+    try result.put("CODEX_HOME", codex_home);
+    return result;
+}
+
+fn waitForDaemonReady(allocator: std.mem.Allocator, codex_home: []const u8) ![]const u8 {
+    const deadline_ms = appServerAwakeDeadlineMs(10 * std.time.ms_per_s);
+    while (true) {
+        const probe = try probeDaemonSocket(allocator, codex_home);
+        switch (probe) {
+            .running => |version| return version,
+            .unavailable => |cause| allocator.free(cause),
+        }
+        if (remainingAppServerAwakeMillis(deadline_ms) == null) {
+            try failDaemonNotReady(allocator, codex_home);
+        }
+        std.Io.sleep(
+            std.Io.Threaded.global_single_threaded.io(),
+            .{ .nanoseconds = 50 * std.time.ns_per_ms },
+            .awake,
+        ) catch {};
+    }
+}
+
+fn failManagedDaemonSpawn(allocator: std.mem.Allocator, managed_path: []const u8, err: anyerror) !void {
+    const message = std.fmt.allocPrint(
+        allocator,
+        "Error: failed to spawn detached app-server process using {s}\n\nCaused by:\n    {s}\n",
+        .{ managed_path, @errorName(err) },
+    ) catch {
+        try cli_utils.writeStderr("Error: failed to spawn detached app-server process\n");
+        return error.AppServerDaemonCommandFailed;
+    };
+    defer allocator.free(message);
+    try cli_utils.writeStderr(message);
+    return error.AppServerDaemonCommandFailed;
+}
+
+fn failDaemonNotReady(allocator: std.mem.Allocator, codex_home: []const u8) !void {
+    const socket_path = daemonSocketPath(allocator, codex_home) catch {
+        try cli_utils.writeStderr("Error: app server did not become ready\n");
+        return error.AppServerDaemonCommandFailed;
+    };
+    defer allocator.free(socket_path);
+    const message = std.fmt.allocPrint(
+        allocator,
+        "Error: app server did not become ready on {s}\n",
+        .{socket_path},
+    ) catch {
+        try cli_utils.writeStderr("Error: app server did not become ready\n");
+        return error.AppServerDaemonCommandFailed;
+    };
     defer allocator.free(message);
     try cli_utils.writeStderr(message);
     return error.AppServerDaemonCommandFailed;
@@ -1622,8 +2039,259 @@ fn writeDaemonRemoteControlSettings(settings_path: []const u8, enabled: bool) !v
     });
 }
 
+fn activeManagedPid(allocator: std.mem.Allocator, codex_home: []const u8, pid_path: []const u8) !?i64 {
+    var record = try activeManagedPidRecord(allocator, codex_home, pid_path) orelse return null;
+    defer record.deinit(allocator);
+    return record.pid;
+}
+
+fn activeManagedDaemonChildGlobalArgs(allocator: std.mem.Allocator, codex_home: []const u8) !?[][]const u8 {
+    const pid_path = try daemonPidPath(allocator, codex_home);
+    defer allocator.free(pid_path);
+    var record = try activeManagedPidRecord(allocator, codex_home, pid_path) orelse return null;
+    defer record.deinit(allocator);
+    return try duplicateStringSlice(allocator, record.child_global_args);
+}
+
+fn activeManagedPidRecord(allocator: std.mem.Allocator, codex_home: []const u8, pid_path: []const u8) !?ManagedPidRecord {
+    var record = try readManagedPid(allocator, pid_path) orelse return null;
+    if (!processExists(record.pid)) {
+        record.deinit(allocator);
+        try removeFileIfExists(pid_path);
+        return null;
+    }
+    if (!try processMatchesManagedDaemon(allocator, codex_home, record)) {
+        record.deinit(allocator);
+        try removeFileIfExists(pid_path);
+        return null;
+    }
+    return record;
+}
+
+fn readManagedPid(allocator: std.mem.Allocator, pid_path: []const u8) !?ManagedPidRecord {
+    const io = std.Io.Threaded.global_single_threaded.io();
+    const bytes = std.Io.Dir.cwd().readFileAlloc(io, pid_path, allocator, .limited(4096)) catch |err| switch (err) {
+        error.FileNotFound => return null,
+        error.StreamTooLong => return null,
+        else => return err,
+    };
+    defer allocator.free(bytes);
+
+    const trimmed = std.mem.trim(u8, bytes, " \t\r\n");
+    if (trimmed.len == 0) return null;
+    var parsed = std.json.parseFromSlice(std.json.Value, allocator, trimmed, .{}) catch return null;
+    defer parsed.deinit();
+    if (parsed.value != .object) return null;
+    const pid_value = parsed.value.object.get("pid") orelse return null;
+    const pid = switch (pid_value) {
+        .integer => |value| value,
+        .number_string => |value| std.fmt.parseInt(i64, value, 10) catch return null,
+        else => return null,
+    };
+    if (pid <= 0) return null;
+    const start_value = parsed.value.object.get("processStartTime") orelse return null;
+    if (start_value != .string or start_value.string.len == 0) return null;
+    const process_start_time = try allocator.dupe(u8, start_value.string);
+    errdefer allocator.free(process_start_time);
+    const child_global_args = parseManagedPidChildGlobalArgs(allocator, parsed.value.object) catch |err| switch (err) {
+        error.InvalidManagedPidRecord => {
+            allocator.free(process_start_time);
+            return null;
+        },
+        else => return err,
+    };
+    return .{ .pid = pid, .process_start_time = process_start_time, .child_global_args = child_global_args };
+}
+
+fn parseManagedPidChildGlobalArgs(allocator: std.mem.Allocator, object: std.json.ObjectMap) ![][]const u8 {
+    const args_value = object.get("childGlobalArgs") orelse return try allocator.alloc([]const u8, 0);
+    if (args_value != .array) return error.InvalidManagedPidRecord;
+    var args = try allocator.alloc([]const u8, args_value.array.items.len);
+    var copied: usize = 0;
+    errdefer {
+        for (args[0..copied]) |arg| allocator.free(arg);
+        allocator.free(args);
+    }
+    for (args_value.array.items, 0..) |value, index| {
+        if (value != .string) return error.InvalidManagedPidRecord;
+        args[index] = try allocator.dupe(u8, value.string);
+        copied += 1;
+    }
+    return args;
+}
+
+fn duplicateStringSlice(allocator: std.mem.Allocator, items: []const []const u8) ![][]const u8 {
+    var duplicated = try allocator.alloc([]const u8, items.len);
+    var copied: usize = 0;
+    errdefer {
+        for (duplicated[0..copied]) |item| allocator.free(item);
+        allocator.free(duplicated);
+    }
+    for (items, 0..) |item, index| {
+        duplicated[index] = try allocator.dupe(u8, item);
+        copied += 1;
+    }
+    return duplicated;
+}
+
+fn freeStringSlice(allocator: std.mem.Allocator, items: []const []const u8) void {
+    for (items) |item| allocator.free(item);
+    allocator.free(items);
+}
+
+fn writeDaemonPidRecord(allocator: std.mem.Allocator, pid_path: []const u8, pid: i64, process_start_time: []const u8, child_global_args: []const []const u8) !void {
+    var record = std.ArrayList(u8).empty;
+    defer record.deinit(allocator);
+    try record.appendSlice(allocator, "{\"pid\":");
+    const pid_text = try std.fmt.allocPrint(allocator, "{d}", .{pid});
+    defer allocator.free(pid_text);
+    try record.appendSlice(allocator, pid_text);
+    try record.appendSlice(allocator, ",\"processStartTime\":");
+    try appendJsonString(allocator, &record, process_start_time);
+    try record.appendSlice(allocator, ",\"childGlobalArgs\":[");
+    for (child_global_args, 0..) |arg, index| {
+        if (index > 0) try record.append(allocator, ',');
+        try appendJsonString(allocator, &record, arg);
+    }
+    try record.append(allocator, ']');
+    try record.appendSlice(allocator, "}");
+    try std.Io.Dir.cwd().writeFile(std.Io.Threaded.global_single_threaded.io(), .{
+        .sub_path = pid_path,
+        .data = record.items,
+    });
+}
+
+fn removeFileIfExists(path: []const u8) !void {
+    std.Io.Dir.cwd().deleteFile(std.Io.Threaded.global_single_threaded.io(), path) catch |err| switch (err) {
+        error.FileNotFound => return,
+        else => return err,
+    };
+}
+
+fn processExists(pid: i64) bool {
+    if (pid <= 0 or pid > std.math.maxInt(std.posix.pid_t)) return false;
+    const raw_pid: std.c.pid_t = @intCast(pid);
+    const result = std.c.kill(raw_pid, @enumFromInt(0));
+    if (result == 0) return true;
+    return std.c.errno(result) == .PERM;
+}
+
+fn processMatchesManagedDaemon(allocator: std.mem.Allocator, codex_home: []const u8, record: ManagedPidRecord) !bool {
+    const managed_path = try managedCodexPath(allocator, codex_home);
+    defer allocator.free(managed_path);
+    const current_start_time = try processStartTime(allocator, record.pid) orelse return false;
+    defer allocator.free(current_start_time);
+    if (!std.mem.eql(u8, current_start_time, record.process_start_time)) return false;
+
+    const command = try processCommand(allocator, record.pid) orelse return false;
+    defer allocator.free(command);
+    return processCommandMatchesManagedDaemon(command, managed_path);
+}
+
+fn processCommandMatchesManagedDaemon(command: []const u8, managed_path: []const u8) bool {
+    if (!std.mem.startsWith(u8, command, managed_path)) return false;
+    const rest = command[managed_path.len..];
+    return std.mem.endsWith(u8, rest, " app-server --listen unix://") or
+        std.mem.endsWith(u8, rest, " app-server --remote-control --listen unix://");
+}
+
+fn processStartTime(allocator: std.mem.Allocator, pid: i64) !?[]const u8 {
+    return processPsField(allocator, pid, "lstart=");
+}
+
+fn processCommand(allocator: std.mem.Allocator, pid: i64) !?[]const u8 {
+    return processPsField(allocator, pid, "command=");
+}
+
+fn processPsField(allocator: std.mem.Allocator, pid: i64, field: []const u8) !?[]const u8 {
+    const pid_text = try std.fmt.allocPrint(allocator, "{d}", .{pid});
+    defer allocator.free(pid_text);
+
+    var io_instance: std.Io.Threaded = .init(allocator, .{});
+    defer io_instance.deinit();
+    const result = std.process.run(allocator, io_instance.io(), .{
+        .argv = &.{ "/bin/ps", "-p", pid_text, "-o", field },
+        .stdout_limit = .limited(4096),
+        .stderr_limit = .limited(4096),
+    }) catch return null;
+    defer allocator.free(result.stdout);
+    defer allocator.free(result.stderr);
+    if (!daemonChildTermSuccess(result.term)) return null;
+    const trimmed = std.mem.trim(u8, result.stdout, " \t\r\n");
+    if (trimmed.len == 0) return null;
+    return try allocator.dupe(u8, trimmed);
+}
+
+fn daemonChildTermSuccess(term: std.process.Child.Term) bool {
+    return switch (term) {
+        .exited => |code| code == 0,
+        else => false,
+    };
+}
+
+fn managedCodexVersionBestEffort(allocator: std.mem.Allocator, managed_path: []const u8) !?[]const u8 {
+    const is_file = managedCodexPathIsFile(allocator, managed_path) catch |err| switch (err) {
+        error.AccessDenied, error.PermissionDenied, error.SymLinkLoop => return null,
+        else => return err,
+    };
+    if (!is_file) return null;
+    var io_instance: std.Io.Threaded = .init(allocator, .{});
+    defer io_instance.deinit();
+    const result = std.process.run(allocator, io_instance.io(), .{
+        .argv = &.{ managed_path, "--version" },
+        .stdout_limit = .limited(4096),
+        .stderr_limit = .limited(4096),
+    }) catch return null;
+    defer allocator.free(result.stdout);
+    defer allocator.free(result.stderr);
+    if (!daemonChildTermSuccess(result.term)) return null;
+    return parseManagedCodexVersion(allocator, if (result.stdout.len > 0) result.stdout else result.stderr) catch null;
+}
+
+fn managedCodexPathIsFile(allocator: std.mem.Allocator, managed_path: []const u8) !bool {
+    const stat = statPathFollow(allocator, managed_path) catch |err| switch (err) {
+        error.NotDir, error.NameTooLong => return false,
+        else => return err,
+    } orelse return false;
+    return std.c.S.ISREG(@intCast(stat.mode));
+}
+
+fn parseManagedCodexVersion(allocator: std.mem.Allocator, output: []const u8) ![]const u8 {
+    var parts = std.mem.tokenizeAny(u8, output, " \t\r\n");
+    _ = parts.next() orelse return error.InvalidManagedCodexVersion;
+    const version = parts.next() orelse return error.InvalidManagedCodexVersion;
+    if (version.len == 0) return error.InvalidManagedCodexVersion;
+    return allocator.dupe(u8, version);
+}
+
+fn terminatePid(pid: i64) void {
+    if (pid <= 0 or pid > std.math.maxInt(std.posix.pid_t)) return;
+    std.posix.kill(@intCast(pid), .TERM) catch {};
+}
+
+fn forceTerminatePid(pid: i64) void {
+    if (pid <= 0 or pid > std.math.maxInt(std.posix.pid_t)) return;
+    std.posix.kill(@intCast(pid), .KILL) catch {};
+}
+
 fn daemonSocketPath(allocator: std.mem.Allocator, codex_home: []const u8) ![]const u8 {
     return std.fs.path.join(allocator, &.{ codex_home, DEFAULT_SOCKET_DIR_NAME, DEFAULT_SOCKET_FILE_NAME });
+}
+
+fn daemonPidPath(allocator: std.mem.Allocator, codex_home: []const u8) ![]const u8 {
+    return std.fs.path.join(allocator, &.{ codex_home, DAEMON_DIR_NAME, DAEMON_APP_SERVER_PID_FILE_NAME });
+}
+
+fn daemonOperationLockPath(allocator: std.mem.Allocator, codex_home: []const u8) ![]const u8 {
+    return std.fs.path.join(allocator, &.{ codex_home, DAEMON_DIR_NAME, DAEMON_LOCK_FILE_NAME });
+}
+
+fn daemonPidLockPath(allocator: std.mem.Allocator, codex_home: []const u8) ![]const u8 {
+    return std.fs.path.join(allocator, &.{ codex_home, DAEMON_DIR_NAME, DAEMON_APP_SERVER_PID_LOCK_FILE_NAME });
+}
+
+fn daemonStderrLogPath(allocator: std.mem.Allocator, codex_home: []const u8) ![]const u8 {
+    return std.fs.path.join(allocator, &.{ codex_home, DAEMON_DIR_NAME, DAEMON_APP_SERVER_STDERR_LOG_FILE_NAME });
 }
 
 fn daemonSettingsPath(allocator: std.mem.Allocator, codex_home: []const u8) ![]const u8 {
@@ -36050,7 +36718,8 @@ fn renderMcpServerStatusUpdatedNotification(
 }
 
 fn queueInitialRemoteControlStatusNotification(allocator: std.mem.Allocator, state: *AppServerState) !void {
-    const notification = try renderRemoteControlStatusChangedNotification(allocator, "disabled", null);
+    const status = if (state.remote_control_enabled) "connecting" else "disabled";
+    const notification = try renderRemoteControlStatusChangedNotification(allocator, status, null);
     var notification_moved = false;
     errdefer if (!notification_moved) allocator.free(notification);
     try queuePendingServerNotification(allocator, state, "remoteControl/status/changed", notification);
@@ -65782,6 +66451,23 @@ test "app-server initialize emits remote-control status snapshot" {
     try std.testing.expect(std.mem.indexOf(u8, state.pending_notifications.items[0], "\"method\":\"remoteControl/status/changed\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, state.pending_notifications.items[0], "\"status\":\"disabled\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, state.pending_notifications.items[0], "\"environmentId\":null") != null);
+}
+
+test "app-server initialize reflects remote-control runtime flag" {
+    const allocator = std.testing.allocator;
+    var state = try initAppServerState(allocator, .{ .remote_control_enabled = true }, false);
+    defer state.deinit(allocator);
+
+    const response = try handleJsonRpcLine(
+        allocator,
+        &state,
+        "{\"jsonrpc\":\"2.0\",\"id\":\"initialize\",\"method\":\"initialize\",\"params\":{\"clientInfo\":{\"name\":\"test\",\"version\":\"0\"}}}",
+    );
+    defer allocator.free(response.?);
+
+    try std.testing.expectEqual(@as(usize, 1), state.pending_notifications.items.len);
+    try std.testing.expect(std.mem.indexOf(u8, state.pending_notifications.items[0], "\"method\":\"remoteControl/status/changed\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, state.pending_notifications.items[0], "\"status\":\"connecting\"") != null);
 }
 
 test "app-server initialize honors remote-control status opt-out" {
