@@ -5,6 +5,7 @@ const api = @import("api.zig");
 const auth = @import("auth.zig");
 const config = @import("config.zig");
 const features_cmd = @import("features_cmd.zig");
+const input_images = @import("input_images.zig");
 const mcp_runtime = @import("mcp_runtime.zig");
 const model_catalog = @import("model_catalog.zig");
 const plan_tool = @import("plan_tool.zig");
@@ -1559,6 +1560,45 @@ const SubagentInputParseError = error{
     InvalidItems,
     UnsupportedItems,
     EmptyItems,
+} || std.mem.Allocator.Error;
+
+const SubagentInput = struct {
+    prompt: []const u8,
+    preview: []const u8,
+    image_urls: []const []const u8 = &.{},
+    local_image_paths: []const []const u8 = &.{},
+    preview_is_prompt: bool = false,
+
+    fn deinit(self: *SubagentInput, allocator: std.mem.Allocator) void {
+        allocator.free(self.prompt);
+        if (!self.preview_is_prompt) allocator.free(self.preview);
+        for (self.image_urls) |image_url| allocator.free(image_url);
+        if (self.image_urls.len > 0) allocator.free(self.image_urls);
+        for (self.local_image_paths) |path| allocator.free(path);
+        if (self.local_image_paths.len > 0) allocator.free(self.local_image_paths);
+        self.* = .{
+            .prompt = "",
+            .preview = "",
+            .preview_is_prompt = true,
+        };
+    }
+};
+
+const PreparedSubagentInput = struct {
+    prompt: []const u8,
+    input_images: []const []const u8 = &.{},
+    owned_local_image_urls: []const []const u8 = &.{},
+    combined_images_owned: bool = false,
+
+    fn deinit(self: *PreparedSubagentInput, allocator: std.mem.Allocator) void {
+        allocator.free(self.prompt);
+        for (self.owned_local_image_urls) |image_url| allocator.free(image_url);
+        if (self.owned_local_image_urls.len > 0) allocator.free(self.owned_local_image_urls);
+        if (self.combined_images_owned and self.input_images.len > 0) allocator.free(self.input_images);
+        self.* = .{
+            .prompt = "",
+        };
+    }
 };
 
 const SubagentSpawnOverridesParseError = error{
@@ -1793,10 +1833,11 @@ fn runSubagentSpawnCall(
     };
     defer parsed.deinit();
     const object = parsed.value.object;
-    const prompt = subagentInputPromptFromArgs(allocator, object) catch |err| {
-        return subagentModelError(allocator, call, "subagent invalid", subagentInputErrorMessage(err));
+    var input = subagentInputFromArgs(allocator, object) catch |err| switch (err) {
+        error.OutOfMemory => return error.OutOfMemory,
+        else => return subagentModelError(allocator, call, "subagent invalid", subagentInputErrorMessage(err)),
     };
-    defer allocator.free(prompt);
+    defer input.deinit(allocator);
 
     const fork_context = optionalBoolField(object, "fork_context") orelse false;
     var requested_controls = subagentSpawnOverridesFromArgs(allocator, object, fork_context) catch |err| switch (err) {
@@ -1825,8 +1866,11 @@ fn runSubagentSpawnCall(
 
     var child_options = try subagentChildTurnOptions(allocator, options);
     defer child_options.feature_overrides.deinit(allocator);
+    var prepared_input = try prepareSubagentInput(allocator, input, child_options.workdir);
+    defer prepared_input.deinit(allocator);
+    child_options.input_images = prepared_input.input_images;
 
-    const answer = runTurnWithOptions(allocator, child_cfg, credentials, &child_transcript, prompt, child_options) catch |err| {
+    const answer = runTurnWithOptions(allocator, child_cfg, credentials, &child_transcript, prepared_input.prompt, child_options) catch |err| {
         return subagentModelErrorAlloc(
             allocator,
             call,
@@ -1839,7 +1883,7 @@ fn runSubagentSpawnCall(
     const status_json = try renderCompletedStatusJson(allocator, answer);
     var status_json_owned = true;
     defer if (status_json_owned) allocator.free(status_json);
-    const last_task_message = try allocator.dupe(u8, prompt);
+    const last_task_message = try allocator.dupe(u8, input.preview);
     var last_task_message_owned = true;
     defer if (last_task_message_owned) allocator.free(last_task_message);
     _ = try runtime.appendAgent(allocator, agent_id, status_json, last_task_message, child_transcript, model_controls);
@@ -1879,16 +1923,20 @@ fn runSubagentSendInputCall(
     if (std.mem.eql(u8, agent.status_json, "\"shutdown\"")) {
         return subagentModelError(allocator, call, "subagent closed", "agent is shutdown; call resume_agent before send_input");
     }
-    const prompt = subagentInputPromptFromArgs(allocator, object) catch |err| {
-        return subagentModelError(allocator, call, "subagent invalid", subagentInputErrorMessage(err));
+    var input = subagentInputFromArgs(allocator, object) catch |err| switch (err) {
+        error.OutOfMemory => return error.OutOfMemory,
+        else => return subagentModelError(allocator, call, "subagent invalid", subagentInputErrorMessage(err)),
     };
-    defer allocator.free(prompt);
+    defer input.deinit(allocator);
 
     var child_options = try subagentChildTurnOptions(allocator, options);
     defer child_options.feature_overrides.deinit(allocator);
+    var prepared_input = try prepareSubagentInput(allocator, input, child_options.workdir);
+    defer prepared_input.deinit(allocator);
+    child_options.input_images = prepared_input.input_images;
     const child_cfg = agent.model_controls.apply(cfg);
 
-    const answer = runTurnWithOptions(allocator, child_cfg, credentials, &agent.transcript, prompt, child_options) catch |err| {
+    const answer = runTurnWithOptions(allocator, child_cfg, credentials, &agent.transcript, prepared_input.prompt, child_options) catch |err| {
         return subagentModelErrorAlloc(
             allocator,
             call,
@@ -1898,7 +1946,7 @@ fn runSubagentSendInputCall(
     };
     defer allocator.free(answer);
 
-    const next_task = try allocator.dupe(u8, prompt);
+    const next_task = try allocator.dupe(u8, input.preview);
     var next_task_owned = true;
     defer if (next_task_owned) allocator.free(next_task);
     const next_status = try renderCompletedStatusJson(allocator, answer);
@@ -2095,7 +2143,95 @@ fn subagentChildTurnOptions(allocator: std.mem.Allocator, options: TurnOptions) 
     return child_options;
 }
 
-fn subagentInputPromptFromArgs(allocator: std.mem.Allocator, object: std.json.ObjectMap) SubagentInputParseError![]const u8 {
+fn appendSubagentInputPreviewLine(allocator: std.mem.Allocator, out: *std.ArrayList(u8), line: []const u8) !void {
+    if (out.items.len > 0) try out.append(allocator, '\n');
+    try out.appendSlice(allocator, line);
+}
+
+fn renderSubagentLocalImagePreview(allocator: std.mem.Allocator, path: []const u8) ![]const u8 {
+    return std.fmt.allocPrint(allocator, "[local_image:{s}]", .{path});
+}
+
+fn appendSubagentOwnedString(
+    allocator: std.mem.Allocator,
+    values: *std.ArrayList([]const u8),
+    value: []const u8,
+) !void {
+    values.append(allocator, value) catch |err| {
+        allocator.free(value);
+        return err;
+    };
+}
+
+fn ownedSubagentStringList(allocator: std.mem.Allocator, values: *std.ArrayList([]const u8)) ![]const []const u8 {
+    if (values.items.len == 0) {
+        values.deinit(allocator);
+        return &.{};
+    }
+    return values.toOwnedSlice(allocator);
+}
+
+fn prepareSubagentInput(allocator: std.mem.Allocator, input: SubagentInput, base_cwd: ?[]const u8) SubagentInputParseError!PreparedSubagentInput {
+    var prompt = std.ArrayList(u8).empty;
+    errdefer prompt.deinit(allocator);
+    if (input.prompt.len > 0) try prompt.appendSlice(allocator, input.prompt);
+
+    var local_image_urls = std.ArrayList([]const u8).empty;
+    var local_image_urls_moved = false;
+    errdefer if (!local_image_urls_moved) {
+        for (local_image_urls.items) |image_url| allocator.free(image_url);
+        local_image_urls.deinit(allocator);
+    };
+
+    for (input.local_image_paths) |path| {
+        const image_url = input_images.loadOneFromBase(allocator, base_cwd, path) catch |err| switch (err) {
+            error.OutOfMemory => return error.OutOfMemory,
+            else => {
+                const placeholder = try input_images.renderLoadErrorPlaceholder(allocator, path, err);
+                defer allocator.free(placeholder);
+                try appendSubagentInputPreviewLine(allocator, &prompt, placeholder);
+                continue;
+            },
+        };
+        try appendSubagentOwnedString(allocator, &local_image_urls, image_url);
+    }
+
+    if (prompt.items.len == 0) try prompt.appendSlice(allocator, input.preview);
+    const prompt_owned = try prompt.toOwnedSlice(allocator);
+    errdefer allocator.free(prompt_owned);
+    const local_image_urls_owned = try ownedSubagentStringList(allocator, &local_image_urls);
+    local_image_urls_moved = true;
+    errdefer {
+        for (local_image_urls_owned) |image_url| allocator.free(image_url);
+        if (local_image_urls_owned.len > 0) allocator.free(local_image_urls_owned);
+    }
+
+    if (local_image_urls_owned.len == 0) {
+        return .{
+            .prompt = prompt_owned,
+            .input_images = input.image_urls,
+        };
+    }
+    if (input.image_urls.len == 0) {
+        return .{
+            .prompt = prompt_owned,
+            .input_images = local_image_urls_owned,
+            .owned_local_image_urls = local_image_urls_owned,
+        };
+    }
+
+    const combined_images = try allocator.alloc([]const u8, input.image_urls.len + local_image_urls_owned.len);
+    @memcpy(combined_images[0..input.image_urls.len], input.image_urls);
+    @memcpy(combined_images[input.image_urls.len..], local_image_urls_owned);
+    return .{
+        .prompt = prompt_owned,
+        .input_images = combined_images,
+        .owned_local_image_urls = local_image_urls_owned,
+        .combined_images_owned = true,
+    };
+}
+
+fn subagentInputFromArgs(allocator: std.mem.Allocator, object: std.json.ObjectMap) SubagentInputParseError!SubagentInput {
     const message_value = object.get("message");
     const items_value = object.get("items");
     if (message_value != null and items_value != null) return error.MessageAndItems;
@@ -2104,42 +2240,90 @@ fn subagentInputPromptFromArgs(allocator: std.mem.Allocator, object: std.json.Ob
         if (value != .string) return error.InvalidArguments;
         const trimmed = std.mem.trim(u8, value.string, " \t\r\n");
         if (trimmed.len == 0) return error.EmptyMessage;
-        return allocator.dupe(u8, trimmed) catch return error.InvalidArguments;
+        const prompt = try allocator.dupe(u8, trimmed);
+        return .{
+            .prompt = prompt,
+            .preview = prompt,
+            .preview_is_prompt = true,
+        };
     }
     const items = items_value.?;
     if (items != .array) return error.InvalidItems;
     if (items.array.items.len == 0) return error.EmptyItems;
-    var out = std.ArrayList(u8).empty;
-    errdefer out.deinit(allocator);
+    var prompt = std.ArrayList(u8).empty;
+    errdefer prompt.deinit(allocator);
+    var preview = std.ArrayList(u8).empty;
+    errdefer preview.deinit(allocator);
+    var images = std.ArrayList([]const u8).empty;
+    var images_moved = false;
+    errdefer if (!images_moved) {
+        for (images.items) |image_url| allocator.free(image_url);
+        images.deinit(allocator);
+    };
+    var local_image_paths = std.ArrayList([]const u8).empty;
+    var local_image_paths_moved = false;
+    errdefer if (!local_image_paths_moved) {
+        for (local_image_paths.items) |path| allocator.free(path);
+        local_image_paths.deinit(allocator);
+    };
     for (items.array.items) |item| {
         if (item != .object) return error.InvalidItems;
         const kind = requiredJsonStringField(item.object, "type") orelse "text";
-        if (!std.mem.eql(u8, kind, "text")) {
-            if (std.mem.eql(u8, kind, "image") or
-                std.mem.eql(u8, kind, "local_image") or
-                std.mem.eql(u8, kind, "skill") or
-                std.mem.eql(u8, kind, "mention"))
-            {
-                return error.UnsupportedItems;
-            }
+        if (std.mem.eql(u8, kind, "text")) {
+            const text = requiredJsonStringField(item.object, "text") orelse return error.InvalidItems;
+            try appendSubagentInputPreviewLine(allocator, &prompt, text);
+            try appendSubagentInputPreviewLine(allocator, &preview, text);
+        } else if (std.mem.eql(u8, kind, "image")) {
+            const image_url_value = requiredJsonStringField(item.object, "image_url") orelse return error.InvalidItems;
+            const image_url = try allocator.dupe(u8, image_url_value);
+            try appendSubagentOwnedString(allocator, &images, image_url);
+            try appendSubagentInputPreviewLine(allocator, &preview, "[image]");
+        } else if (std.mem.eql(u8, kind, "local_image")) {
+            const path = requiredJsonStringField(item.object, "path") orelse return error.InvalidItems;
+            const path_copy = try allocator.dupe(u8, path);
+            try appendSubagentOwnedString(allocator, &local_image_paths, path_copy);
+            const preview_line = try renderSubagentLocalImagePreview(allocator, path);
+            defer allocator.free(preview_line);
+            try appendSubagentInputPreviewLine(allocator, &preview, preview_line);
+        } else {
+            if (std.mem.eql(u8, kind, "skill") or std.mem.eql(u8, kind, "mention")) return error.UnsupportedItems;
             return error.InvalidItems;
         }
-        const text = requiredJsonStringField(item.object, "text") orelse return error.InvalidItems;
-        if (out.items.len > 0) out.append(allocator, '\n') catch return error.InvalidArguments;
-        out.appendSlice(allocator, text) catch return error.InvalidArguments;
     }
-    if (out.items.len == 0) return error.InvalidItems;
-    return out.toOwnedSlice(allocator) catch return error.InvalidArguments;
+    if (preview.items.len == 0) return error.InvalidItems;
+    const prompt_owned = try prompt.toOwnedSlice(allocator);
+    errdefer allocator.free(prompt_owned);
+    const preview_owned = try preview.toOwnedSlice(allocator);
+    errdefer allocator.free(preview_owned);
+    const images_owned = try ownedSubagentStringList(allocator, &images);
+    images_moved = true;
+    errdefer {
+        for (images_owned) |image_url| allocator.free(image_url);
+        if (images_owned.len > 0) allocator.free(images_owned);
+    }
+    const local_image_paths_owned = try ownedSubagentStringList(allocator, &local_image_paths);
+    local_image_paths_moved = true;
+    errdefer {
+        for (local_image_paths_owned) |path| allocator.free(path);
+        if (local_image_paths_owned.len > 0) allocator.free(local_image_paths_owned);
+    }
+    return .{
+        .prompt = prompt_owned,
+        .preview = preview_owned,
+        .image_urls = images_owned,
+        .local_image_paths = local_image_paths_owned,
+    };
 }
 
 fn subagentInputErrorMessage(err: SubagentInputParseError) []const u8 {
     return switch (err) {
         error.InvalidArguments => "arguments must be a JSON object",
+        error.OutOfMemory => "arguments must be a JSON object",
         error.MessageAndItems => "Provide either message or items, but not both",
         error.MissingInput => "Provide one of: message or items",
         error.EmptyMessage => "Empty message can't be sent to an agent",
         error.InvalidItems => "items must be structured input items",
-        error.UnsupportedItems => "subagent items currently support only text items in codex-zig",
+        error.UnsupportedItems => "subagent items currently support text, image, and local_image items in codex-zig",
         error.EmptyItems => "Items can't be empty",
     };
 }
@@ -3149,7 +3333,98 @@ test "subagent v1 runtime wait and close return status results" {
     try std.testing.expect(std.mem.indexOf(u8, missing_resume_result.output, "agent with id agent-missing not found") != null);
 }
 
-test "subagent v1 runtime rejects unsupported role and structured items" {
+test "subagent input parser passes structured image items to child turns" {
+    const allocator = std.testing.allocator;
+    var parsed = try std.json.parseFromSlice(std.json.Value, allocator,
+        \\{"items":[{"type":"text","text":"check this"},{"type":"image","image_url":"https://example.test/subagent.png"}]}
+    , .{});
+    defer parsed.deinit();
+
+    var input = try subagentInputFromArgs(allocator, parsed.value.object);
+    defer input.deinit(allocator);
+
+    try std.testing.expectEqualStrings("check this", input.prompt);
+    try std.testing.expectEqualStrings("check this\n[image]", input.preview);
+    try std.testing.expectEqual(@as(usize, 1), input.image_urls.len);
+    try std.testing.expectEqualStrings("https://example.test/subagent.png", input.image_urls[0]);
+    try std.testing.expectEqual(@as(usize, 0), input.local_image_paths.len);
+
+    var prepared = try prepareSubagentInput(allocator, input, null);
+    defer prepared.deinit(allocator);
+    try std.testing.expectEqualStrings("check this", prepared.prompt);
+    try std.testing.expectEqual(@as(usize, 1), prepared.input_images.len);
+    try std.testing.expectEqualStrings("https://example.test/subagent.png", prepared.input_images[0]);
+}
+
+test "subagent input parser gives image-only items a model-visible placeholder" {
+    const allocator = std.testing.allocator;
+    var parsed = try std.json.parseFromSlice(std.json.Value, allocator,
+        \\{"items":[{"type":"image","image_url":"https://example.test/only.png"}]}
+    , .{});
+    defer parsed.deinit();
+
+    var input = try subagentInputFromArgs(allocator, parsed.value.object);
+    defer input.deinit(allocator);
+
+    try std.testing.expectEqualStrings("", input.prompt);
+    try std.testing.expectEqualStrings("[image]", input.preview);
+    try std.testing.expectEqual(@as(usize, 1), input.image_urls.len);
+    try std.testing.expectEqualStrings("https://example.test/only.png", input.image_urls[0]);
+
+    var prepared = try prepareSubagentInput(allocator, input, null);
+    defer prepared.deinit(allocator);
+    try std.testing.expectEqualStrings("[image]", prepared.prompt);
+    try std.testing.expectEqual(@as(usize, 1), prepared.input_images.len);
+    try std.testing.expectEqualStrings("https://example.test/only.png", prepared.input_images[0]);
+}
+
+test "subagent input materializer turns unreadable local images into prompt placeholders" {
+    const allocator = std.testing.allocator;
+    var parsed = try std.json.parseFromSlice(std.json.Value, allocator,
+        \\{"items":[{"type":"local_image","path":"missing-subagent-image.png"}]}
+    , .{});
+    defer parsed.deinit();
+
+    var input = try subagentInputFromArgs(allocator, parsed.value.object);
+    defer input.deinit(allocator);
+
+    try std.testing.expectEqualStrings("", input.prompt);
+    try std.testing.expectEqualStrings("[local_image:missing-subagent-image.png]", input.preview);
+    try std.testing.expect(input.image_urls.len == 0);
+    try std.testing.expectEqual(@as(usize, 1), input.local_image_paths.len);
+
+    var prepared = try prepareSubagentInput(allocator, input, null);
+    defer prepared.deinit(allocator);
+    try std.testing.expect(prepared.input_images.len == 0);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.prompt, "Codex could not read the local image at `missing-subagent-image.png`") != null);
+}
+
+test "subagent input materializer resolves local images against turn workdir" {
+    const allocator = std.testing.allocator;
+    var dir = std.testing.tmpDir(.{});
+    defer dir.cleanup();
+    try dir.dir.writeFile(std.Io.Threaded.global_single_threaded.io(), .{
+        .sub_path = "tiny.png",
+        .data = "\x89PNG\r\n\x1a\nsubagent-turn-workdir-image\n",
+    });
+    const base = try dir.dir.realPathFileAlloc(std.Io.Threaded.global_single_threaded.io(), ".", allocator);
+    defer allocator.free(base);
+    var parsed = try std.json.parseFromSlice(std.json.Value, allocator,
+        \\{"items":[{"type":"text","text":"inspect image"},{"type":"local_image","path":"tiny.png"}]}
+    , .{});
+    defer parsed.deinit();
+
+    var input = try subagentInputFromArgs(allocator, parsed.value.object);
+    defer input.deinit(allocator);
+    var prepared = try prepareSubagentInput(allocator, input, base);
+    defer prepared.deinit(allocator);
+
+    try std.testing.expectEqualStrings("inspect image", prepared.prompt);
+    try std.testing.expectEqual(@as(usize, 1), prepared.input_images.len);
+    try std.testing.expect(std.mem.startsWith(u8, prepared.input_images[0], "data:image/png;base64,"));
+}
+
+test "subagent v1 runtime rejects unsupported role and skill mention items" {
     const allocator = std.testing.allocator;
     var runtime = SubagentRuntime{};
     defer runtime.deinit(allocator);
@@ -3181,9 +3456,9 @@ test "subagent v1 runtime rejects unsupported role and structured items" {
     try std.testing.expectEqualStrings("subagent invalid", model_type_result.summary);
     try std.testing.expect(std.mem.indexOf(u8, model_type_result.output, "model") != null);
 
-    var parsed = try std.json.parseFromSlice(std.json.Value, allocator, "{\"items\":[{\"type\":\"image\",\"image_url\":\"https://example.test/image.png\"}]}", .{});
+    var parsed = try std.json.parseFromSlice(std.json.Value, allocator, "{\"items\":[{\"type\":\"skill\",\"name\":\"demo\",\"path\":\"/tmp/SKILL.md\"}]}", .{});
     defer parsed.deinit();
-    try std.testing.expectError(error.UnsupportedItems, subagentInputPromptFromArgs(allocator, parsed.value.object));
+    try std.testing.expectError(error.UnsupportedItems, subagentInputFromArgs(allocator, parsed.value.object));
 }
 
 fn testPlanUpdated(ctx: *anyopaque, state: *const plan_tool.State) anyerror!void {

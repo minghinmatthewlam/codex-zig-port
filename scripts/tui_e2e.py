@@ -715,7 +715,16 @@ class MockResponsesHandler(BaseHTTPRequestHandler):
                         "namespace": "multi_agent_v1",
                         "name": "send_input",
                         "arguments": json.dumps(
-                            {"target": agent_id, "message": "check again"},
+                            {
+                                "target": agent_id,
+                                "items": [
+                                    {"type": "text", "text": "check again"},
+                                    {
+                                        "type": "image",
+                                        "image_url": "https://example.test/subagent-send.png",
+                                    },
+                                ],
+                            },
                             separators=(",", ":"),
                         ),
                     },
@@ -738,7 +747,13 @@ class MockResponsesHandler(BaseHTTPRequestHandler):
                         "name": "spawn_agent",
                         "arguments": json.dumps(
                             {
-                                "message": "check this",
+                                "items": [
+                                    {"type": "text", "text": "check this"},
+                                    {
+                                        "type": "image",
+                                        "image_url": "https://example.test/subagent-spawn.png",
+                                    },
+                                ],
                                 "model": "gpt-5.4",
                                 "service_tier": "fast",
                             },
@@ -7630,7 +7645,11 @@ def run_e2e(binary: Path) -> str:
                     subagent_spawn_ids.append(agent_id)
         if not subagent_spawn_ids:
             raise AssertionError("expected multi_agent_v1.spawn_agent to return a UUID v7 agent id")
-        for child_prompt in ("check this", "check again"):
+        subagent_child_image_expectations = {
+            "check this": "https://example.test/subagent-spawn.png",
+            "check again": "https://example.test/subagent-send.png",
+        }
+        for child_prompt, image_url in subagent_child_image_expectations.items():
             subagent_child_bodies = [
                 body
                 for body in server.request_bodies
@@ -7647,6 +7666,13 @@ def run_e2e(binary: Path) -> str:
             ):
                 raise AssertionError(
                     f"expected subagent child turn {child_prompt!r} to use model default reasoning and service_tier override"
+                )
+            if not any(
+                image_url in latest_user_images(body.get("input", []))
+                for body in subagent_child_bodies
+            ):
+                raise AssertionError(
+                    f"expected subagent child turn {child_prompt!r} to include image {image_url!r}"
                 )
         subagent_wait_bodies = [
             body
