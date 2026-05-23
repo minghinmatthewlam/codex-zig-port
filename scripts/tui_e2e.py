@@ -4781,10 +4781,9 @@ def run_tui_ide_slash_smoke(
         shutil.rmtree(smoke_root)
     smoke_home = smoke_root / "codex-home"
     smoke_workspace = smoke_root / "workspace"
-    socket_root = smoke_root / "codex-ipc"
+    socket_root = Path(tempfile.mkdtemp(prefix="codex-zig-ide-ipc.", dir="/tmp"))
     smoke_home.mkdir(parents=True)
     smoke_workspace.mkdir(parents=True)
-    socket_root.mkdir(mode=0o700)
     socket_root.chmod(0o700)
     (smoke_workspace / "src").mkdir()
     (smoke_workspace / "src" / "main.zig").write_text("pub fn main() void {}\n", encoding="utf-8")
@@ -4909,6 +4908,7 @@ def run_tui_ide_slash_smoke(
                 proc.kill()
                 proc.wait(timeout=2)
         ide_server.join()
+        shutil.rmtree(socket_root, ignore_errors=True)
 
 
 def run_tui_experimental_slash_smoke(
