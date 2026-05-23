@@ -628,6 +628,13 @@ class MockResponsesHandler(BaseHTTPRequestHandler):
                     "delta": "child checked this\n",
                 },
             )
+        elif latest_prompt.strip() == "check again":
+            payload = sse(
+                {
+                    "type": "response.output_text.delta",
+                    "delta": "child checked again\n",
+                },
+            )
         elif "find subagent tools" in latest_prompt and has_tool_search_output(
             items, "call-tui-e2e-subagent-search"
         ):
@@ -663,7 +670,7 @@ class MockResponsesHandler(BaseHTTPRequestHandler):
             )
         elif "try subagent spawn" in latest_prompt and has_tool_output(
             items, "call-tui-e2e-spawn-agent"
-        ):
+        ) and has_tool_output(items, "call-tui-e2e-send-agent"):
             spawn_output = tool_output_json(items, "call-tui-e2e-spawn-agent")
             agent_id = (
                 spawn_output.get("agent_id")
@@ -686,6 +693,34 @@ class MockResponsesHandler(BaseHTTPRequestHandler):
                     },
                 },
             )
+        elif "try subagent spawn" in latest_prompt and has_tool_output(
+            items, "call-tui-e2e-spawn-agent"
+        ):
+            spawn_output = tool_output_json(items, "call-tui-e2e-spawn-agent")
+            agent_id = (
+                spawn_output.get("agent_id")
+                if isinstance(spawn_output, dict) and isinstance(spawn_output.get("agent_id"), str)
+                else "missing-agent"
+            )
+            payload = sse(
+                {
+                    "type": "response.output_text.delta",
+                    "delta": "I'll send a follow-up to the subagent.\n",
+                },
+                {
+                    "type": "response.output_item.done",
+                    "item": {
+                        "type": "function_call",
+                        "call_id": "call-tui-e2e-send-agent",
+                        "namespace": "multi_agent_v1",
+                        "name": "send_input",
+                        "arguments": json.dumps(
+                            {"target": agent_id, "message": "check again"},
+                            separators=(",", ":"),
+                        ),
+                    },
+                },
+            )
         elif "try subagent spawn" in latest_prompt and has_tool_search_output(
             items, "call-tui-e2e-spawn-search"
         ):
@@ -701,7 +736,15 @@ class MockResponsesHandler(BaseHTTPRequestHandler):
                         "call_id": "call-tui-e2e-spawn-agent",
                         "namespace": "multi_agent_v1",
                         "name": "spawn_agent",
-                        "arguments": "{\"message\":\"check this\"}",
+                        "arguments": json.dumps(
+                            {
+                                "message": "check this",
+                                "model": "gpt-5.4",
+                                "reasoning_effort": "high",
+                                "service_tier": "fast",
+                            },
+                            separators=(",", ":"),
+                        ),
                     },
                 },
             )
@@ -7438,6 +7481,7 @@ def run_e2e(binary: Path) -> str:
             mark = len(output)
             send_line(master_fd, "try subagent spawn")
             wait_for(master_fd, output, b"spawned agent", 8, mark)
+            wait_for(master_fd, output, b"sent input", 8, mark)
             wait_for(master_fd, output, b"waited for agent", 8, mark)
             wait_for(master_fd, output, b"subagent completed", 8, mark)
             send_line(master_fd, "/agent")
@@ -7587,6 +7631,24 @@ def run_e2e(binary: Path) -> str:
                     subagent_spawn_ids.append(agent_id)
         if not subagent_spawn_ids:
             raise AssertionError("expected multi_agent_v1.spawn_agent to return a UUID v7 agent id")
+        for child_prompt in ("check this", "check again"):
+            subagent_child_bodies = [
+                body
+                for body in server.request_bodies
+                if latest_user_text(body.get("input", [])) == child_prompt
+            ]
+            if not subagent_child_bodies:
+                raise AssertionError(f"expected subagent child turn for {child_prompt!r}")
+            if not any(
+                body.get("model") == "gpt-5.4"
+                and body.get("service_tier") == "priority"
+                and isinstance(body.get("reasoning"), dict)
+                and body["reasoning"].get("effort") == "high"
+                for body in subagent_child_bodies
+            ):
+                raise AssertionError(
+                    f"expected subagent child turn {child_prompt!r} to use model/reasoning/service_tier overrides"
+                )
         subagent_wait_bodies = [
             body
             for body in server.request_bodies
@@ -7594,7 +7656,7 @@ def run_e2e(binary: Path) -> str:
                 isinstance(item, dict)
                 and item.get("type") == "function_call_output"
                 and item.get("call_id") == "call-tui-e2e-wait-agent"
-                and '"completed":"childcheckedthis' in str(item.get("output", "")).replace(" ", "")
+                and '"completed":"childcheckedagain' in str(item.get("output", "")).replace(" ", "")
                 for item in body.get("input", [])
             )
         ]
