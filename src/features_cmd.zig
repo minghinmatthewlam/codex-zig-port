@@ -235,8 +235,7 @@ pub fn persistFeatureOverride(
     const can_clear_default_false = !enabled and
         profile == null and
         feature_registry.isCanonicalFeatureKey(feature) and
-        isDirectDefaultFalseFeature(canonical) and
-        !targetSectionContainsAliasForCanonical(existing_config, profile, canonical);
+        isDirectDefaultFalseFeature(canonical);
     const update: FeatureConfigUpdate = if (can_clear_default_false)
         .clear
     else
@@ -499,33 +498,6 @@ fn featureConfigSectionForLine(line: []const u8, profile: ?[]const u8) FeatureCo
     return .none;
 }
 
-fn targetSectionContainsAliasForCanonical(bytes: []const u8, profile: ?[]const u8, canonical: []const u8) bool {
-    const target_section = if (profile != null) FeatureConfigSection.profile else FeatureConfigSection.top_level;
-    var in_target_section = false;
-
-    var start: usize = 0;
-    while (start < bytes.len) {
-        const end = std.mem.indexOfScalarPos(u8, bytes, start, '\n') orelse bytes.len;
-        const line_raw = bytes[start..end];
-        start = if (end < bytes.len) end + 1 else bytes.len;
-
-        const line_without_comment = if (std.mem.indexOfScalar(u8, line_raw, '#')) |index| line_raw[0..index] else line_raw;
-        const trimmed = std.mem.trim(u8, line_without_comment, " \t\r");
-        if (trimmed.len == 0) continue;
-        if (trimmed[0] == '[') {
-            in_target_section = featureConfigSectionForLine(trimmed, profile) == target_section;
-            continue;
-        }
-        if (!in_target_section) continue;
-        const key = featureLineKey(trimmed) orelse continue;
-        if (std.mem.eql(u8, key, canonical)) continue;
-        const key_canonical = feature_registry.canonicalFeatureKey(key) orelse continue;
-        if (std.mem.eql(u8, key_canonical, canonical)) return true;
-    }
-
-    return false;
-}
-
 fn updateFeatureConfig(
     allocator: std.mem.Allocator,
     bytes: []const u8,
@@ -540,6 +512,7 @@ fn updateFeatureConfig(
     var in_target_section = false;
     var saw_target_section = false;
     var wrote_feature = false;
+    const feature_canonical = feature_registry.canonicalFeatureKey(feature) orelse feature;
 
     var start: usize = 0;
     while (start < bytes.len) {
@@ -563,9 +536,16 @@ fn updateFeatureConfig(
             saw_target_section = saw_target_section or in_target_section;
         }
 
-        if (in_target_section and featureLineMatches(trimmed, feature)) {
+        if ((if (in_target_section) featureLineCanonical(trimmed) else null)) |line_canonical| {
+            if (!std.mem.eql(u8, line_canonical, feature_canonical)) {
+                try output.appendSlice(allocator, line_raw);
+                try output.append(allocator, '\n');
+                continue;
+            }
             switch (update) {
-                .set => |enabled| try appendFeatureLine(allocator, &output, feature, enabled),
+                .set => |enabled| if (!wrote_feature) {
+                    try appendFeatureLine(allocator, &output, feature, enabled);
+                },
                 .clear => {},
             }
             wrote_feature = true;
@@ -634,9 +614,9 @@ fn appendTomlStringLiteral(allocator: std.mem.Allocator, output: *std.ArrayList(
     try output.append(allocator, '"');
 }
 
-fn featureLineMatches(trimmed: []const u8, feature: []const u8) bool {
-    const key = featureLineKey(trimmed) orelse return false;
-    return std.mem.eql(u8, key, feature);
+fn featureLineCanonical(trimmed: []const u8) ?[]const u8 {
+    const key = featureLineKey(trimmed) orelse return null;
+    return feature_registry.canonicalFeatureKey(key);
 }
 
 fn featureLineKey(trimmed: []const u8) ?[]const u8 {
@@ -1022,7 +1002,7 @@ test "persist feature override preserves legacy alias disables" {
     try std.testing.expectEqual(false, overrides.get("memories").?);
 }
 
-test "persist canonical default false disable overrides legacy aliases" {
+test "persist canonical default false disable removes legacy aliases" {
     const allocator = std.testing.allocator;
     const io = std.Io.Threaded.global_single_threaded.io();
     var dir = std.testing.tmpDir(.{});
@@ -1044,12 +1024,45 @@ test "persist canonical default false disable overrides legacy aliases" {
 
     const updated = try readConfigToml(allocator, codex_home) orelse return error.TestExpectedEqual;
     defer allocator.free(updated);
-    try std.testing.expect(std.mem.indexOf(u8, updated, "memory_tool = true\n") != null);
-    try std.testing.expect(std.mem.indexOf(u8, updated, "memories = false\n") != null);
+    try std.testing.expect(std.mem.indexOf(u8, updated, "memory_tool =") == null);
+    try std.testing.expect(std.mem.indexOf(u8, updated, "memories =") == null);
 
     var overrides = try parseFeatureOverrides(allocator, updated);
     defer overrides.deinit(allocator);
-    try std.testing.expectEqual(false, overrides.get("memories").?);
+    try std.testing.expectEqual(false, effectiveEnabled(overrides, "memories").?);
+}
+
+test "persist canonical toggles remove later legacy aliases" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var dir = std.testing.tmpDir(.{});
+    defer dir.cleanup();
+
+    const codex_home = try dir.dir.realPathFileAlloc(io, ".", allocator);
+    defer allocator.free(codex_home);
+    try dir.dir.writeFile(io, .{
+        .sub_path = "config.toml",
+        .data =
+        \\[features]
+        \\memories = true
+        \\memory_tool = true
+        \\shell_tool = true
+        \\
+        ,
+    });
+
+    const written_key = try persistFeatureOverride(allocator, codex_home, null, "memories", false);
+    try std.testing.expectEqualStrings("memories", written_key);
+
+    const updated = try readConfigToml(allocator, codex_home) orelse return error.TestExpectedEqual;
+    defer allocator.free(updated);
+    try std.testing.expect(std.mem.indexOf(u8, updated, "memory_tool =") == null);
+    try std.testing.expect(std.mem.indexOf(u8, updated, "memories =") == null);
+    try std.testing.expect(std.mem.indexOf(u8, updated, "shell_tool = true\n") != null);
+
+    var overrides = try parseFeatureOverrides(allocator, updated);
+    defer overrides.deinit(allocator);
+    try std.testing.expectEqual(false, effectiveEnabled(overrides, "memories").?);
 }
 
 test "runtime feature toggles accept legacy aliases" {

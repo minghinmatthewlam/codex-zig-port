@@ -6390,6 +6390,35 @@ def run_features_profile_smoke(binary: Path) -> None:
         lines = listed.stdout.splitlines()
         assert any(line.startswith("memories ") and line.endswith(" false") for line in lines)
 
+        (codex_home / "config.toml").write_text(
+            "[features]\nmemories = true\nmemory_tool = true\nshell_tool = true\n",
+            encoding="utf-8",
+        )
+        subprocess.run(
+            [str(binary), "features", "disable", "memories"],
+            env=env,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=5,
+            check=True,
+        )
+        contents = (codex_home / "config.toml").read_text(encoding="utf-8")
+        assert "memories =" not in contents
+        assert "memory_tool =" not in contents
+        assert "shell_tool = true" in contents
+        listed = subprocess.run(
+            [str(binary), "features", "list"],
+            env=env,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=5,
+            check=True,
+        )
+        lines = listed.stdout.splitlines()
+        assert any(line.startswith("memories ") and line.endswith(" false") for line in lines)
+
         listed = subprocess.run(
             [str(binary), "--disable", "collab", "features", "list"],
             env=env,
