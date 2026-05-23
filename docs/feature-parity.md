@@ -112,10 +112,11 @@ Zig TUI help in `src/tui.zig`, and the broader narrative tracker in
   exposed through capability-gated, client-executed `tool_search`, returning
   the Rust-shaped `multi_agent_v1` namespace with `spawn_agent`, `send_input`,
   `resume_agent`, `wait_agent`, and `close_agent`; the local TUI now carries a
-  basic in-process v1 runtime where `spawn_agent` runs a child turn, `wait_agent`
-  reports the completed child status, `send_input` can continue an existing
-  child, `close_agent` marks it shutdown, `resume_agent` reopens a shutdown
-  child for follow-up input, and `/agent` lists created agents. Local TUI,
+  basic in-process v1 runtime where `spawn_agent` runs a child turn and returns
+  a UUID v7-shaped agent id, `wait_agent` reports the completed child status,
+  `send_input` can continue an existing child, `close_agent` marks it shutdown,
+  `resume_agent` reopens a shutdown child for follow-up input, and `/agent`
+  lists created agents. Local TUI,
   app-server loaded threads, and `mcp-server` `codex-reply` sessions keep this
   runtime in memory across turns; non-stateful turns without a runtime do not
   advertise the subagent tools. Child turns strip parent-scoped callbacks before
