@@ -252,7 +252,7 @@ pub fn runWithOptions(allocator: std.mem.Allocator, options: Options) !void {
     var feature_overrides = try features_cmd.loadFeatureOverridesForProfile(allocator, cfg.codex_home, cfg.active_profile);
     defer feature_overrides.deinit(allocator);
     try feature_overrides.putAll(allocator, options.feature_overrides);
-    const goals_enabled = feature_overrides.get("goals") orelse false;
+    const goals_enabled = features_cmd.effectiveEnabled(feature_overrides, "goals") orelse false;
 
     var credentials = if (options.oss)
         try auth.localOssCredentials(allocator)

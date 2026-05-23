@@ -196,19 +196,45 @@ fn listFeatures(allocator: std.mem.Allocator, options: Options) !void {
 }
 
 fn setFeature(allocator: std.mem.Allocator, options: Options, feature: []const u8, enabled: bool) !void {
-    if (!isKnownFeature(feature)) return error.UnknownFeature;
-
     const codex_home = try config.resolveCodexHome(allocator);
     defer allocator.free(codex_home);
+
+    const canonical = try persistFeatureOverride(allocator, codex_home, options.profile, feature, enabled);
+
+    const verb = if (enabled) "Enabled" else "Disabled";
+    const message = try std.fmt.allocPrint(allocator, "{s} feature `{s}` in config.toml.\n", .{ verb, canonical });
+    defer allocator.free(message);
+    try cli_utils.writeStdout(message);
+    if (enabled and options.profile == null and isDirectUnderDevelopmentFeature(canonical)) {
+        const config_path = try config.configTomlPath(allocator, codex_home);
+        defer allocator.free(config_path);
+        const warning = try std.fmt.allocPrint(
+            allocator,
+            "Under-development features enabled: {s}. Under-development features are incomplete and may behave unpredictably. To suppress this warning, set `suppress_unstable_features_warning = true` in {s}.\n",
+            .{ canonical, config_path },
+        );
+        defer allocator.free(warning);
+        try cli_utils.writeStderr(warning);
+    }
+}
+
+pub fn persistFeatureOverride(
+    allocator: std.mem.Allocator,
+    codex_home: []const u8,
+    profile: ?[]const u8,
+    feature: []const u8,
+    enabled: bool,
+) ![]const u8 {
+    const canonical = feature_registry.canonicalFeatureKey(feature) orelse return error.UnknownFeature;
 
     const config_bytes = try readConfigToml(allocator, codex_home);
     defer if (config_bytes) |bytes| allocator.free(bytes);
 
-    const update: FeatureConfigUpdate = if (!enabled and options.profile == null and isDirectDefaultFalseFeature(feature))
+    const update: FeatureConfigUpdate = if (!enabled and profile == null and isDirectDefaultFalseFeature(canonical))
         .clear
     else
         .{ .set = enabled };
-    const updated = try updateFeatureConfig(allocator, config_bytes orelse "", options.profile, feature, update);
+    const updated = try updateFeatureConfig(allocator, config_bytes orelse "", profile, canonical, update);
     defer allocator.free(updated);
 
     const io = std.Io.Threaded.global_single_threaded.io();
@@ -220,21 +246,7 @@ fn setFeature(allocator: std.mem.Allocator, options: Options, feature: []const u
         .data = updated,
     });
 
-    const verb = if (enabled) "Enabled" else "Disabled";
-    const message = try std.fmt.allocPrint(allocator, "{s} feature `{s}` in config.toml.\n", .{ verb, feature });
-    defer allocator.free(message);
-    try cli_utils.writeStdout(message);
-    if (enabled and options.profile == null and isDirectUnderDevelopmentFeature(feature)) {
-        const config_path = try config.configTomlPath(allocator, codex_home);
-        defer allocator.free(config_path);
-        const warning = try std.fmt.allocPrint(
-            allocator,
-            "Under-development features enabled: {s}. Under-development features are incomplete and may behave unpredictably. To suppress this warning, set `suppress_unstable_features_warning = true` in {s}.\n",
-            .{ feature, config_path },
-        );
-        defer allocator.free(warning);
-        try cli_utils.writeStderr(warning);
-    }
+    return canonical;
 }
 
 pub fn unstableFeaturesWarningMessage(
@@ -613,6 +625,16 @@ pub fn isKnownFeature(key: []const u8) bool {
 
 pub fn canonicalFeatureKey(key: []const u8) ?[]const u8 {
     return feature_registry.canonicalFeatureKey(key);
+}
+
+pub fn specForKey(key: []const u8) ?FeatureSpec {
+    const canonical = feature_registry.canonicalFeatureKey(key) orelse return null;
+    return feature_registry.featureSpec(canonical);
+}
+
+pub fn effectiveEnabled(overrides: FeatureOverrides, key: []const u8) ?bool {
+    const spec = specForKey(key) orelse return null;
+    return overrides.get(spec.key) orelse spec.default_enabled;
 }
 
 pub fn isCanonicalFeatureKey(key: []const u8) bool {
