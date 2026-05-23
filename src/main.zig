@@ -1531,7 +1531,7 @@ fn printHelp() !void {
         \\                          Browse Codex Cloud tasks
         \\  codex-zig exec-server --listen stdio
         \\                          Run the exec-server stdio JSON-RPC transport
-        \\  codex-zig plugin marketplace <COMMAND>
+        \\  codex-zig plugin <COMMAND>
         \\  codex-zig remote-control
         \\                          Headless app-server remote control
         \\  codex-zig auth-status  Check local Codex auth reuse
