@@ -2204,6 +2204,7 @@ def run_plugin_marketplace_smoke(
 
     marketplace_help_cases = [
         (["add", "--help"], "codex-zig plugin marketplace add"),
+        (["list", "--help"], "codex-zig plugin marketplace list"),
         (["upgrade", "--help"], "codex-zig plugin marketplace upgrade"),
         (["remove", "--help"], "codex-zig plugin marketplace remove"),
     ]
@@ -2221,7 +2222,9 @@ def run_plugin_marketplace_smoke(
 
     nested_help_cases = [
         (["help", "marketplace", "add"], "codex-zig plugin marketplace add"),
+        (["help", "marketplace", "list"], "codex-zig plugin marketplace list"),
         (["marketplace", "help", "add"], "codex-zig plugin marketplace add"),
+        (["marketplace", "help", "list"], "codex-zig plugin marketplace list"),
     ]
     for args, usage in nested_help_cases:
         result = subprocess.run(
@@ -2243,6 +2246,62 @@ def run_plugin_marketplace_smoke(
     write_git_marketplace_fixture(git_source, "git-debug", "git-sample")
     write_git_url_rewrite_config(git_config, git_url, git_source)
     write_marketplace_fixture(Path(env["CODEX_HOME"]), "home-only", "home-plugin")
+
+    home_marketplace_home = workspace / "home-marketplace-home"
+    home_marketplace_home.mkdir()
+    write_marketplace_fixture(home_marketplace_home, "home-debug", "home-plugin")
+    home_list_codex_home = workspace / "home-marketplace-codex-home"
+    home_list_codex_home.mkdir()
+    home_list_codex_home.joinpath("config.toml").write_text("[features]\nplugins = true\n")
+    home_list_env = env.copy()
+    home_list_env["CODEX_HOME"] = str(home_list_codex_home)
+    home_list_env["HOME"] = str(home_marketplace_home)
+    home_marketplace_list = subprocess.run(
+        [str(binary), "plugin", "marketplace", "list"],
+        cwd=workspace,
+        env=home_list_env,
+        text=True,
+        capture_output=True,
+        check=True,
+    )
+    if (
+        "MARKETPLACE  ROOT" not in home_marketplace_list.stderr
+        or "home-debug" not in home_marketplace_list.stderr
+        or str(home_marketplace_home) not in home_marketplace_list.stderr
+        or "\t" in home_marketplace_list.stderr
+    ):
+        raise AssertionError(
+            f"expected HOME marketplace list row:\n{home_marketplace_list.stderr}"
+        )
+
+    empty_source = workspace / "empty-marketplace-source"
+    empty_source.joinpath(".agents", "plugins").mkdir(parents=True)
+    empty_source.joinpath(".agents", "plugins", "marketplace.json").write_text(
+        json.dumps({"name": "empty", "plugins": []})
+    )
+    empty_home = workspace / "empty-marketplace-codex-home"
+    empty_home.mkdir()
+    empty_env = env.copy()
+    empty_env["CODEX_HOME"] = str(empty_home)
+    empty_home.joinpath("config.toml").write_text(
+        f'[marketplaces.empty]\nsource_type = "local"\nsource = "{empty_source}"\n'
+    )
+    empty_marketplace_list = subprocess.run(
+        [str(binary), "plugin", "marketplace", "list"],
+        cwd=workspace,
+        env=empty_env,
+        text=True,
+        capture_output=True,
+        check=True,
+    )
+    if (
+        "MARKETPLACE  ROOT" not in empty_marketplace_list.stderr
+        or "empty" not in empty_marketplace_list.stderr
+        or str(empty_source) not in empty_marketplace_list.stderr
+    ):
+        raise AssertionError(
+            f"expected marketplace list to include empty marketplace root:\n{empty_marketplace_list.stderr}"
+        )
 
     home_plugin_add = subprocess.run(
         [str(binary), "plugin", "add", "home-plugin@home-only"],
@@ -2451,6 +2510,22 @@ def run_plugin_marketplace_smoke(
     if "is already added" not in repeated.stderr:
         raise AssertionError(f"expected marketplace already-added output:\n{repeated.stderr}")
 
+    marketplace_list = subprocess.run(
+        [str(binary), "plugin", "marketplace", "list"],
+        cwd=workspace,
+        env=env,
+        text=True,
+        capture_output=True,
+        check=True,
+    )
+    if (
+        "MARKETPLACE  ROOT" not in marketplace_list.stderr
+        or "debug" not in marketplace_list.stderr
+        or str(source) not in marketplace_list.stderr
+        or "\t" in marketplace_list.stderr
+    ):
+        raise AssertionError(f"expected marketplace list output:\n{marketplace_list.stderr}")
+
     valid_config_text = Path(env["CODEX_HOME"], "config.toml").read_text()
     missing_root = workspace / "missing-marketplace-root"
     Path(env["CODEX_HOME"], "config.toml").write_text(
@@ -2471,6 +2546,22 @@ def run_plugin_marketplace_smoke(
     ):
         raise AssertionError(
             f"expected missing configured marketplace load failure:\n{missing_list.stderr}"
+        )
+    missing_marketplace_list = subprocess.run(
+        [str(binary), "plugin", "marketplace", "list"],
+        cwd=workspace,
+        env=env,
+        text=True,
+        capture_output=True,
+    )
+    if (
+        missing_marketplace_list.returncode == 0
+        or "failed to load marketplace(s)" not in missing_marketplace_list.stderr
+        or "marketplace root does not contain a supported manifest"
+        not in missing_marketplace_list.stderr
+    ):
+        raise AssertionError(
+            f"expected missing marketplace list failure:\n{missing_marketplace_list.stderr}"
         )
     Path(env["CODEX_HOME"], "config.toml").write_text(valid_config_text)
 

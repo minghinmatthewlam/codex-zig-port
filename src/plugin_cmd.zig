@@ -1,6 +1,7 @@
 const std = @import("std");
 
 const config = @import("config.zig");
+const env = @import("env.zig");
 const marketplace_config = @import("marketplace_config.zig");
 const plugin_config = @import("plugin_config.zig");
 const plugin_list = @import("plugin_list.zig");
@@ -342,6 +343,196 @@ fn listPluginsAndPrint(allocator: std.mem.Allocator, marketplace_filter: ?[]cons
             std.debug.print("No marketplace plugins found.\n", .{});
         }
     }
+}
+
+const MarketplaceListRow = struct {
+    marketplace_name: []const u8,
+    root: []const u8,
+
+    fn deinit(self: *MarketplaceListRow, allocator: std.mem.Allocator) void {
+        allocator.free(self.marketplace_name);
+        allocator.free(self.root);
+    }
+};
+
+const MarketplaceListIssue = struct {
+    marketplace_name: []const u8,
+    path: []const u8,
+    message: []const u8,
+
+    fn deinit(self: *MarketplaceListIssue, allocator: std.mem.Allocator) void {
+        allocator.free(self.marketplace_name);
+        allocator.free(self.path);
+        allocator.free(self.message);
+    }
+};
+
+fn listMarketplacesAndPrint(allocator: std.mem.Allocator) !void {
+    var context = try loadPluginCommandContext(allocator);
+    defer context.deinit(allocator);
+
+    var rows = std.ArrayList(MarketplaceListRow).empty;
+    defer {
+        for (rows.items) |*row| row.deinit(allocator);
+        rows.deinit(allocator);
+    }
+    var issues = std.ArrayList(MarketplaceListIssue).empty;
+    defer {
+        for (issues.items) |*issue| issue.deinit(allocator);
+        issues.deinit(allocator);
+    }
+
+    const config_bytes = context.config_bytes orelse "";
+    if (plugin_config.pluginsFeatureEnabled(config_bytes)) {
+        if (try env.getOwned(allocator, "HOME")) |home| {
+            defer allocator.free(home);
+            try appendMarketplaceListRoot(allocator, &rows, &issues, null, home, false);
+        }
+        try appendMarketplaceListRoot(allocator, &rows, &issues, null, context.codex_home, false);
+
+        var configured = try marketplace_config.configuredMarketplaceRootsStrict(allocator, context.codex_home, config_bytes);
+        defer configured.deinit(allocator);
+        for (configured.issues) |issue| {
+            try appendMarketplaceListIssue(allocator, &issues, issue.marketplace_name, issue.marketplace_path, issue.message);
+        }
+        for (configured.roots) |root| {
+            try appendMarketplaceListRoot(allocator, &rows, &issues, root.marketplace_name, root.root, true);
+        }
+    }
+
+    try failOnMarketplaceListIssues(issues.items);
+    if (rows.items.len == 0) {
+        std.debug.print("No plugin marketplaces in scope.\n", .{});
+        return;
+    }
+
+    var marketplace_width: usize = "MARKETPLACE".len;
+    for (rows.items) |row| {
+        marketplace_width = @max(marketplace_width, row.marketplace_name.len);
+    }
+
+    printPadded("MARKETPLACE", marketplace_width);
+    std.debug.print("  ROOT\n", .{});
+    for (rows.items) |row| {
+        printPadded(row.marketplace_name, marketplace_width);
+        std.debug.print("  {s}\n", .{row.root});
+    }
+}
+
+fn appendMarketplaceListRoot(
+    allocator: std.mem.Allocator,
+    rows: *std.ArrayList(MarketplaceListRow),
+    issues: *std.ArrayList(MarketplaceListIssue),
+    configured_marketplace_name: ?[]const u8,
+    root: []const u8,
+    fail_missing_manifest: bool,
+) !void {
+    for (plugin_list.MARKETPLACE_MANIFEST_RELATIVE_PATHS) |relative_path| {
+        const marketplace_path = try std.fs.path.join(allocator, &.{ root, relative_path });
+        defer allocator.free(marketplace_path);
+        const bytes = try readFileOptional(allocator, marketplace_path, 1024 * 1024) orelse continue;
+        defer allocator.free(bytes);
+        try appendMarketplaceListRowFromBytes(allocator, rows, issues, configured_marketplace_name, marketplace_path, bytes);
+        return;
+    }
+
+    if (!fail_missing_manifest) return;
+    const name = configured_marketplace_name orelse root;
+    if (configured_marketplace_name) |configured_name| {
+        if (plugin_list.isImplicitSystemMarketplaceRoot(configured_name, root)) return;
+    }
+    try appendMarketplaceListIssue(allocator, issues, name, root, "marketplace root does not contain a supported manifest");
+}
+
+fn appendMarketplaceListRowFromBytes(
+    allocator: std.mem.Allocator,
+    rows: *std.ArrayList(MarketplaceListRow),
+    issues: *std.ArrayList(MarketplaceListIssue),
+    configured_marketplace_name: ?[]const u8,
+    marketplace_path: []const u8,
+    bytes: []const u8,
+) !void {
+    var parsed = std.json.parseFromSlice(std.json.Value, allocator, bytes, .{}) catch {
+        const name = configured_marketplace_name orelse marketplace_path;
+        try appendMarketplaceListIssue(allocator, issues, name, marketplace_path, "invalid marketplace file");
+        return;
+    };
+    defer parsed.deinit();
+
+    if (parsed.value != .object) {
+        const name = configured_marketplace_name orelse marketplace_path;
+        try appendMarketplaceListIssue(allocator, issues, name, marketplace_path, "invalid marketplace file: root must be an object");
+        return;
+    }
+    const object = parsed.value.object;
+    const marketplace_name = stringField(object, "name") orelse {
+        const name = configured_marketplace_name orelse marketplace_path;
+        try appendMarketplaceListIssue(allocator, issues, name, marketplace_path, "invalid marketplace file: name must be a string");
+        return;
+    };
+    const plugins_value = object.get("plugins") orelse {
+        const name = configured_marketplace_name orelse marketplace_path;
+        try appendMarketplaceListIssue(allocator, issues, name, marketplace_path, "invalid marketplace file: plugins must be an array");
+        return;
+    };
+    if (plugins_value != .array) {
+        const name = configured_marketplace_name orelse marketplace_path;
+        try appendMarketplaceListIssue(allocator, issues, name, marketplace_path, "invalid marketplace file: plugins must be an array");
+        return;
+    }
+
+    const root = try plugin_list.marketplaceRootDir(allocator, marketplace_path);
+    errdefer allocator.free(root);
+    if (marketplaceListContainsRoot(rows.items, root)) {
+        allocator.free(root);
+        return;
+    }
+    const name = try allocator.dupe(u8, marketplace_name);
+    errdefer allocator.free(name);
+    try rows.append(allocator, .{ .marketplace_name = name, .root = root });
+}
+
+fn appendMarketplaceListIssue(
+    allocator: std.mem.Allocator,
+    issues: *std.ArrayList(MarketplaceListIssue),
+    marketplace_name: []const u8,
+    path: []const u8,
+    message: []const u8,
+) !void {
+    const owned_name = try allocator.dupe(u8, marketplace_name);
+    errdefer allocator.free(owned_name);
+    const owned_path = try allocator.dupe(u8, path);
+    errdefer allocator.free(owned_path);
+    const owned_message = try allocator.dupe(u8, message);
+    errdefer allocator.free(owned_message);
+    try issues.append(allocator, .{
+        .marketplace_name = owned_name,
+        .path = owned_path,
+        .message = owned_message,
+    });
+}
+
+fn failOnMarketplaceListIssues(issues: []MarketplaceListIssue) !void {
+    if (issues.len == 0) return;
+    std.debug.print("failed to load marketplace(s):\n", .{});
+    for (issues) |issue| {
+        std.debug.print("- `{s}` at {s}: {s}\n", .{ issue.marketplace_name, issue.path, issue.message });
+    }
+    return error.PluginMarketplaceLoadFailed;
+}
+
+fn marketplaceListContainsRoot(rows: []const MarketplaceListRow, root: []const u8) bool {
+    for (rows) |row| {
+        if (std.mem.eql(u8, row.root, root)) return true;
+    }
+    return false;
+}
+
+fn readFileOptional(allocator: std.mem.Allocator, path: []const u8, limit: usize) !?[]const u8 {
+    return std.Io.Dir.cwd().readFileAlloc(std.Io.Threaded.global_single_threaded.io(), path, allocator, .limited(limit)) catch |err| switch (err) {
+        error.FileNotFound, error.NotDir => return null,
+        else => return err,
+    };
 }
 
 fn removePluginAndPrint(allocator: std.mem.Allocator, selection: PluginSelection) !void {
@@ -723,6 +914,10 @@ fn runMarketplace(allocator: std.mem.Allocator, args: *std.process.Args.Iterator
         try runMarketplaceAdd(allocator, args);
         return;
     }
+    if (std.mem.eql(u8, subcommand, "list")) {
+        try runMarketplaceList(allocator, args);
+        return;
+    }
     if (std.mem.eql(u8, subcommand, "upgrade")) {
         try runMarketplaceUpgrade(allocator, args);
         return;
@@ -746,6 +941,8 @@ fn runMarketplaceHelp(args: *std.process.Args.Iterator) !void {
     if (args.next() != null) return error.UnexpectedPluginMarketplaceArgument;
     if (std.mem.eql(u8, target, "add")) {
         printMarketplaceAddHelp();
+    } else if (std.mem.eql(u8, target, "list")) {
+        printMarketplaceListHelp();
     } else if (std.mem.eql(u8, target, "upgrade")) {
         printMarketplaceUpgradeHelp();
     } else if (std.mem.eql(u8, target, "remove")) {
@@ -800,6 +997,17 @@ fn runMarketplaceAdd(allocator: std.mem.Allocator, args: *std.process.Args.Itera
         return error.MissingPluginMarketplaceSource;
     };
     try addMarketplaceAndPrint(allocator, source_value, ref_name, sparse_paths.items);
+}
+
+fn runMarketplaceList(allocator: std.mem.Allocator, args: *std.process.Args.Iterator) !void {
+    while (args.next()) |arg| {
+        if (isHelpFlag(arg)) {
+            printMarketplaceListHelp();
+            return;
+        }
+        return error.UnexpectedPluginMarketplaceArgument;
+    }
+    try listMarketplacesAndPrint(allocator);
 }
 
 fn runMarketplaceUpgrade(allocator: std.mem.Allocator, args: *std.process.Args.Iterator) !void {
@@ -983,6 +1191,7 @@ fn printMarketplaceHelp() void {
         \\
         \\Subcommands:
         \\  add SOURCE          Add a marketplace source
+        \\  list                List marketplace roots currently in scope
         \\  upgrade [NAME]      Upgrade configured Git marketplaces
         \\  remove NAME         Remove a configured marketplace
         \\
@@ -1000,6 +1209,14 @@ fn printMarketplaceAddHelp() void {
         \\Options:
         \\  --ref REF           Git ref for the marketplace source
         \\  --sparse PATH       Sparse checkout path; repeatable
+        \\
+    , .{});
+}
+
+fn printMarketplaceListHelp() void {
+    std.debug.print(
+        \\Usage:
+        \\  codex-zig plugin marketplace list
         \\
     , .{});
 }

@@ -129,9 +129,11 @@ Zig TUI help in `src/tui.zig`, and the broader narrative tracker in
   implemented for configured local and git-backed marketplace snapshots,
   including `PLUGIN@MARKETPLACE` and `--marketplace` selectors, Rust-shaped
   listing tables, local plugin cache install, config enablement, and local
-  cache/config removal. Remaining CLI plugin parity is exact config-override
-  option depth, remote catalog/cache synchronization, and full remote/plugin
-  cache behavior.
+  cache/config removal. CLI `codex plugin marketplace list` lists configured
+  and home marketplace roots, including roots whose plugin entries are filtered
+  out or empty. Remaining CLI plugin parity is exact config-override option
+  depth, remote catalog/cache synchronization, and full remote/plugin cache
+  behavior.
 - Implement TUI `/plugins` and `/apps` browsing/management flows, reusing the
   existing app-server plugin/app runtime where possible.
 - Close user-visible app-server plugin gaps that remain after CLI/TUI routing:

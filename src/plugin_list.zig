@@ -6,7 +6,7 @@ const mcp_runtime = @import("mcp_runtime.zig");
 const plugin_config = @import("plugin_config.zig");
 const skills_list = @import("skills_list.zig");
 
-const MARKETPLACE_MANIFEST_RELATIVE_PATHS = [_][]const u8{
+pub const MARKETPLACE_MANIFEST_RELATIVE_PATHS = [_][]const u8{
     ".agents/plugins/marketplace.json",
     ".claude-plugin/marketplace.json",
 };
@@ -699,7 +699,7 @@ fn appendConfiguredMarketplaceFromRoot(
     );
 }
 
-fn isImplicitSystemMarketplaceRoot(configured_marketplace_name: []const u8, root: []const u8) bool {
+pub fn isImplicitSystemMarketplaceRoot(configured_marketplace_name: []const u8, root: []const u8) bool {
     if (std.mem.eql(u8, configured_marketplace_name, OPENAI_BUNDLED_MARKETPLACE_NAME)) {
         return pathHasDirectorySuffix(root, "/.tmp/bundled-marketplaces/openai-bundled");
     }
@@ -1215,7 +1215,7 @@ fn resolveLocalPluginPath(allocator: std.mem.Allocator, marketplace_path: []cons
     return resolved;
 }
 
-fn marketplaceRootDir(allocator: std.mem.Allocator, marketplace_path: []const u8) ![]const u8 {
+pub fn marketplaceRootDir(allocator: std.mem.Allocator, marketplace_path: []const u8) ![]const u8 {
     if (std.mem.endsWith(u8, marketplace_path, AGENTS_MARKETPLACE_SUFFIX)) {
         const end = marketplace_path.len - AGENTS_MARKETPLACE_SUFFIX.len;
         if (end == 0) return allocator.dupe(u8, "/");
