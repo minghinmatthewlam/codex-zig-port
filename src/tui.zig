@@ -3116,6 +3116,11 @@ fn handleSlashCommand(
         return .handled;
     }
 
+    if (std.ascii.eqlIgnoreCase(parts.name, "pets") or std.ascii.eqlIgnoreCase(parts.name, "pet")) {
+        try handlePetsSlash(allocator, cfg, parts.args);
+        return .handled;
+    }
+
     std.debug.print("unknown slash command: /{s} (try /help)\n", .{parts.name});
     return .handled;
 }
@@ -3379,6 +3384,155 @@ fn renderRemoteFeedbackUploadRequest(
     return out.toOwnedSlice(allocator);
 }
 
+const disabled_pet_id = "disabled";
+const default_pet_id = "codex";
+const custom_pet_prefix = "custom:";
+
+const PetCatalogEntry = struct {
+    id: []const u8,
+    name: []const u8,
+};
+
+const builtin_pets = [_]PetCatalogEntry{
+    .{ .id = "codex", .name = "Codex" },
+    .{ .id = "dewey", .name = "Dewey" },
+    .{ .id = "fireball", .name = "Fireball" },
+    .{ .id = "rocky", .name = "Rocky" },
+    .{ .id = "seedy", .name = "Seedy" },
+    .{ .id = "stacky", .name = "Stacky" },
+    .{ .id = "bsod", .name = "BSOD" },
+    .{ .id = "null-signal", .name = "Null Signal" },
+};
+
+fn handlePetsSlash(
+    allocator: std.mem.Allocator,
+    cfg: *config.Config,
+    args: []const u8,
+) !void {
+    const trimmed = std.mem.trim(u8, args, " \t\r\n");
+    if (trimmed.len == 0 or std.ascii.eqlIgnoreCase(trimmed, "status") or
+        std.ascii.eqlIgnoreCase(trimmed, "list") or std.ascii.eqlIgnoreCase(trimmed, "help"))
+    {
+        try printPetsStatusAndList(allocator, cfg.codex_home);
+        return;
+    }
+
+    if (isPetDisableArg(trimmed)) {
+        try config.persistTuiPet(allocator, cfg.codex_home, disabled_pet_id);
+        std.debug.print("terminal pet: disabled\n", .{});
+        return;
+    }
+
+    if (!isKnownPetId(trimmed) and !try customPetExists(allocator, cfg.codex_home, trimmed) and !try petPathExists(allocator, trimmed)) {
+        std.debug.print("unknown pet: {s}\n", .{trimmed});
+        printPetsUsage();
+        return;
+    }
+
+    try config.persistTuiPet(allocator, cfg.codex_home, trimmed);
+    std.debug.print("terminal pet: {s}\n", .{trimmed});
+}
+
+fn printPetsStatusAndList(allocator: std.mem.Allocator, codex_home: []const u8) !void {
+    const current_pet = try config.loadTuiPet(allocator, codex_home);
+    defer if (current_pet) |value| allocator.free(value);
+    const current = current_pet orelse default_pet_id;
+    const suffix: []const u8 = if (current_pet == null) " (default)" else "";
+
+    std.debug.print("terminal pet: {s}{s}\n", .{ current, suffix });
+    std.debug.print("terminal pets:\n", .{});
+    for (builtin_pets) |pet| {
+        const marker: []const u8 = if (std.mem.eql(u8, current, pet.id)) "*" else " ";
+        std.debug.print("  {s} {s} - {s}\n", .{ marker, pet.id, pet.name });
+    }
+    std.debug.print("    disabled - hide the terminal pet\n", .{});
+    printPetsUsage();
+}
+
+fn printPetsUsage() void {
+    std.debug.print("usage: /pets [list|status|<pet-id>|disable]\n", .{});
+}
+
+fn isKnownPetId(value: []const u8) bool {
+    for (builtin_pets) |pet| {
+        if (std.mem.eql(u8, value, pet.id)) return true;
+    }
+    return std.mem.eql(u8, value, disabled_pet_id);
+}
+
+fn isPetDisableArg(value: []const u8) bool {
+    return std.ascii.eqlIgnoreCase(value, "disable") or
+        std.ascii.eqlIgnoreCase(value, "disabled") or
+        std.ascii.eqlIgnoreCase(value, "hide") or
+        std.ascii.eqlIgnoreCase(value, "hidden") or
+        std.ascii.eqlIgnoreCase(value, "off") or
+        std.ascii.eqlIgnoreCase(value, "none");
+}
+
+fn customPetExists(allocator: std.mem.Allocator, codex_home: []const u8, pet_id: []const u8) !bool {
+    const custom_id = if (std.mem.startsWith(u8, pet_id, custom_pet_prefix))
+        pet_id[custom_pet_prefix.len..]
+    else
+        pet_id;
+    if (custom_id.len == 0 or std.mem.indexOfAny(u8, custom_id, "/\\") != null) return false;
+
+    const pet_dir = try std.fs.path.join(allocator, &.{ codex_home, "pets", custom_id });
+    defer allocator.free(pet_dir);
+    if (try petManifestFileExists(allocator, pet_dir, "pet.json")) return true;
+
+    const avatar_dir = try std.fs.path.join(allocator, &.{ codex_home, "avatars", custom_id });
+    defer allocator.free(avatar_dir);
+    return try petManifestFileExists(allocator, avatar_dir, "avatar.json");
+}
+
+fn isPetPathLike(value: []const u8) bool {
+    return std.mem.eql(u8, value, ".") or
+        std.mem.eql(u8, value, "..") or
+        std.mem.startsWith(u8, value, "~/") or
+        std.mem.startsWith(u8, value, "../") or
+        std.mem.startsWith(u8, value, "./") or
+        std.fs.path.isAbsolute(value) or
+        std.mem.indexOfAny(u8, value, "/\\") != null;
+}
+
+fn petPathExists(allocator: std.mem.Allocator, raw_path: []const u8) !bool {
+    if (!isPetPathLike(raw_path)) return false;
+    const expanded_path = if (std.mem.startsWith(u8, raw_path, "~/")) blk: {
+        const home = (try env.getOwned(allocator, "HOME")) orelse return false;
+        defer allocator.free(home);
+        break :blk try std.fs.path.join(allocator, &.{ home, raw_path[2..] });
+    } else try allocator.dupe(u8, raw_path);
+    defer allocator.free(expanded_path);
+
+    const resolved = std.Io.Dir.cwd().realPathFileAlloc(std.Io.Threaded.global_single_threaded.io(), expanded_path, allocator) catch |err| switch (err) {
+        error.FileNotFound, error.NotDir => return false,
+        else => return err,
+    };
+    defer allocator.free(resolved);
+
+    const pet_dir = if (std.mem.endsWith(u8, resolved, ".json"))
+        std.fs.path.dirname(resolved) orelse return false
+    else
+        resolved;
+    return try petManifestExists(allocator, pet_dir);
+}
+
+fn petManifestExists(allocator: std.mem.Allocator, pet_dir: []const u8) !bool {
+    return try petManifestFileExists(allocator, pet_dir, "pet.json") or
+        try petManifestFileExists(allocator, pet_dir, "avatar.json");
+}
+
+fn petManifestFileExists(allocator: std.mem.Allocator, pet_dir: []const u8, file_name: []const u8) !bool {
+    const path = try std.fs.path.join(allocator, &.{ pet_dir, file_name });
+    defer allocator.free(path);
+    return pathExists(path);
+}
+
+fn pathExists(path: []const u8) bool {
+    std.Io.Dir.cwd().access(std.Io.Threaded.global_single_threaded.io(), path, .{}) catch return false;
+    return true;
+}
+
 fn handleLocalRemoteControlSlash(
     allocator: std.mem.Allocator,
     server_opt: *?local_remote_control.Server,
@@ -3510,6 +3664,8 @@ fn printSlashHelp(goals_enabled: bool) void {
         \\                    configure status line preview items
         \\  /theme [status|list|NAME]
         \\                    choose a syntax highlighting theme
+        \\  /pets, /pet [id|disable|list|status]
+        \\                    choose or hide the terminal pet
         \\  /personality [status|list|none|friendly|pragmatic]
         \\                    choose a communication style
         \\  /experimental [enable|disable FEATURE]
@@ -5490,6 +5646,10 @@ test "parse slash command names and args" {
     try std.testing.expectEqualStrings("feedback", feedback.name);
     try std.testing.expectEqualStrings("bug --logs include traceback", feedback.args);
 
+    const pet = parseSlash("/pet hide").?;
+    try std.testing.expectEqualStrings("pet", pet.name);
+    try std.testing.expectEqualStrings("hide", pet.args);
+
     const ps = parseSlash("/ps").?;
     try std.testing.expectEqualStrings("ps", ps.name);
     try std.testing.expectEqualStrings("", ps.args);
@@ -5533,6 +5693,74 @@ test "parse feedback slash args" {
 
     const unknown = parseFeedbackSlashArgs("unknown");
     try std.testing.expectEqualStrings("unknown feedback category", unknown.invalid);
+}
+
+test "pets slash helper aliases" {
+    try std.testing.expect(isKnownPetId("codex"));
+    try std.testing.expect(isKnownPetId("dewey"));
+    try std.testing.expect(isKnownPetId("disabled"));
+    try std.testing.expect(!isKnownPetId("chefito"));
+    try std.testing.expect(isPetDisableArg("hide"));
+    try std.testing.expect(isPetDisableArg("none"));
+    try std.testing.expect(!isPetDisableArg("codex"));
+    try std.testing.expect(isPetPathLike("."));
+    try std.testing.expect(isPetPathLike("./pet.json"));
+    try std.testing.expect(!isPetPathLike("chefito"));
+}
+
+test "pet path validation requires manifest file" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var dir = std.testing.tmpDir(.{});
+    defer dir.cleanup();
+
+    try dir.dir.writeFile(io, .{
+        .sub_path = "settings.json",
+        .data = "{}",
+    });
+    const root = try dir.dir.realPathFileAlloc(io, ".", allocator);
+    defer allocator.free(root);
+    const loose_json = try std.fs.path.join(allocator, &.{ root, "settings.json" });
+    defer allocator.free(loose_json);
+
+    try std.testing.expect(!try petPathExists(allocator, loose_json));
+
+    try dir.dir.writeFile(io, .{
+        .sub_path = "pet.json",
+        .data = "{}",
+    });
+    const pet_json = try std.fs.path.join(allocator, &.{ root, "pet.json" });
+    defer allocator.free(pet_json);
+
+    try std.testing.expect(try petPathExists(allocator, root));
+    try std.testing.expect(try petPathExists(allocator, pet_json));
+}
+
+test "custom pet validation supports prefixed pets and legacy avatars" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var dir = std.testing.tmpDir(.{});
+    defer dir.cleanup();
+
+    try dir.dir.createDirPath(io, "pets/chefito");
+    try dir.dir.writeFile(io, .{
+        .sub_path = "pets/chefito/pet.json",
+        .data = "{}",
+    });
+    try dir.dir.createDirPath(io, "avatars/legacy");
+    try dir.dir.writeFile(io, .{
+        .sub_path = "avatars/legacy/avatar.json",
+        .data = "{}",
+    });
+    const codex_home = try dir.dir.realPathFileAlloc(io, ".", allocator);
+    defer allocator.free(codex_home);
+
+    try std.testing.expect(try customPetExists(allocator, codex_home, "chefito"));
+    try std.testing.expect(try customPetExists(allocator, codex_home, "custom:chefito"));
+    try std.testing.expect(try customPetExists(allocator, codex_home, "legacy"));
+    try std.testing.expect(try customPetExists(allocator, codex_home, "custom:legacy"));
+    try std.testing.expect(!try customPetExists(allocator, codex_home, "custom:"));
+    try std.testing.expect(!try customPetExists(allocator, codex_home, "nested/id"));
 }
 
 test "first display line trims multi-line values" {

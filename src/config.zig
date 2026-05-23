@@ -1653,6 +1653,22 @@ pub fn persistTuiTheme(allocator: std.mem.Allocator, codex_home: []const u8, nam
     try writeConfigToml(allocator, codex_home, updated);
 }
 
+pub fn loadTuiPet(allocator: std.mem.Allocator, codex_home: []const u8) !?[]const u8 {
+    const bytes = try readConfigToml(allocator, codex_home);
+    defer if (bytes) |value| allocator.free(value);
+
+    return sectionStringValue(allocator, bytes orelse "", "tui", "pet");
+}
+
+pub fn persistTuiPet(allocator: std.mem.Allocator, codex_home: []const u8, name: []const u8) !void {
+    const bytes = try readConfigToml(allocator, codex_home);
+    defer if (bytes) |value| allocator.free(value);
+
+    const updated = try updateTomlStringValue(allocator, bytes orelse "", .{ .section = "tui" }, "pet", name);
+    defer allocator.free(updated);
+    try writeConfigToml(allocator, codex_home, updated);
+}
+
 pub fn persistPersonality(allocator: std.mem.Allocator, codex_home: []const u8, active_profile: ?[]const u8, personality: Personality) !void {
     const bytes = try readConfigToml(allocator, codex_home);
     defer if (bytes) |value| allocator.free(value);
@@ -4470,6 +4486,16 @@ test "toml string update writes top-level section and profile values" {
     );
     defer allocator.free(with_array);
     try std.testing.expect(std.mem.indexOf(u8, with_array, "status_line = [\"model-with-reasoning\", \"current-dir\"]") != null);
+
+    const with_pet = try updateTomlStringValue(
+        allocator,
+        "[tui]\ntheme = \"custom-demo\"\n",
+        .{ .section = "tui" },
+        "pet",
+        "dewey",
+    );
+    defer allocator.free(with_pet);
+    try std.testing.expect(std.mem.indexOf(u8, with_pet, "pet = \"dewey\"") != null);
 }
 
 test "toml table removal clears target and nested sections" {
