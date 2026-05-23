@@ -543,19 +543,51 @@ fn readFileOptional(allocator: std.mem.Allocator, path: []const u8, limit: usize
 }
 
 fn resolveHomeMarketplaceRoot(allocator: std.mem.Allocator) !?[]const u8 {
-    if (try resolveAbsoluteEnvPath(allocator, "HOME")) |home| return home;
-    if (try resolveAbsoluteEnvPath(allocator, "USERPROFILE")) |home| return home;
+    const home = try env.getOwned(allocator, "HOME");
+    defer if (home) |value| allocator.free(value);
+    const userprofile = try env.getOwned(allocator, "USERPROFILE");
+    defer if (userprofile) |value| allocator.free(value);
+
+    return resolvePreferredHomePath(allocator, home, userprofile, resolveOsHomePath());
+}
+
+fn resolvePreferredHomePath(allocator: std.mem.Allocator, home: ?[]const u8, userprofile: ?[]const u8, os_home: ?[]const u8) !?[]const u8 {
+    const candidates = [_]?[]const u8{ home, userprofile, os_home };
+    for (candidates) |candidate| {
+        const value = candidate orelse continue;
+        if (value.len == 0 or !std.fs.path.isAbsolute(value)) continue;
+        return try allocator.dupe(u8, value);
+    }
     return null;
 }
 
-fn resolveAbsoluteEnvPath(allocator: std.mem.Allocator, comptime name: []const u8) !?[]const u8 {
-    const value = (try env.getOwned(allocator, name)) orelse return null;
-    errdefer allocator.free(value);
-    if (value.len == 0 or !std.fs.path.isAbsolute(value)) {
-        allocator.free(value);
-        return null;
-    }
-    return value;
+fn resolveOsHomePath() ?[]const u8 {
+    if (!@hasDecl(std.c, "getpwuid") or !@hasDecl(std.c, "getuid")) return null;
+    const passwd = std.c.getpwuid(std.c.getuid()) orelse return null;
+    const dir = passwd.dir orelse return null;
+    return std.mem.span(dir);
+}
+
+test "home marketplace root prefers env paths before OS fallback" {
+    const allocator = std.testing.allocator;
+
+    const home = try resolvePreferredHomePath(allocator, "/tmp/home", "/tmp/userprofile", "/tmp/os-home");
+    try std.testing.expect(home != null);
+    defer allocator.free(home.?);
+    try std.testing.expectEqualStrings("/tmp/home", home.?);
+
+    const userprofile = try resolvePreferredHomePath(allocator, "relative-home", "/tmp/userprofile", "/tmp/os-home");
+    try std.testing.expect(userprofile != null);
+    defer allocator.free(userprofile.?);
+    try std.testing.expectEqualStrings("/tmp/userprofile", userprofile.?);
+
+    const os_home = try resolvePreferredHomePath(allocator, null, "", "/tmp/os-home");
+    try std.testing.expect(os_home != null);
+    defer allocator.free(os_home.?);
+    try std.testing.expectEqualStrings("/tmp/os-home", os_home.?);
+
+    const absent = try resolvePreferredHomePath(allocator, null, "relative", null);
+    try std.testing.expect(absent == null);
 }
 
 fn removePluginAndPrint(allocator: std.mem.Allocator, selection: PluginSelection) !void {

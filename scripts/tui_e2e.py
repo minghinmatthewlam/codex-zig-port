@@ -2147,6 +2147,12 @@ def run_plugin_marketplace_smoke(
     env: dict[str, str],
     workspace: Path,
 ) -> None:
+    isolated_home = workspace / "isolated-personal-home"
+    isolated_home.mkdir()
+    env = env.copy()
+    env["HOME"] = str(isolated_home)
+    env.pop("USERPROFILE", None)
+
     root_help = subprocess.run(
         [str(binary), "plugin", "--help"],
         cwd=workspace,
