@@ -559,6 +559,7 @@ pub const SubagentRuntimeAgent = struct {
     status_json: []const u8,
     last_task_message: []const u8,
     transcript: Transcript,
+    model_controls: SubagentModelControls = .{},
 
     pub fn statusLabel(self: SubagentRuntimeAgent) []const u8 {
         if (std.mem.eql(u8, self.status_json, "\"pending_init\"")) return "pending";
@@ -576,6 +577,7 @@ pub const SubagentRuntimeAgent = struct {
         allocator.free(self.status_json);
         allocator.free(self.last_task_message);
         self.transcript.deinit(allocator);
+        self.model_controls.deinit(allocator);
     }
 };
 
@@ -620,12 +622,14 @@ pub const SubagentRuntime = struct {
         status_json: []const u8,
         last_task_message: []const u8,
         transcript: Transcript,
+        model_controls: SubagentModelControls,
     ) !*SubagentRuntimeAgent {
         try self.agents.append(allocator, .{
             .id = id,
             .status_json = status_json,
             .last_task_message = last_task_message,
             .transcript = transcript,
+            .model_controls = model_controls,
         });
         return &self.agents.items[self.agents.items.len - 1];
     }
@@ -1556,6 +1560,52 @@ const SubagentInputParseError = error{
     EmptyItems,
 };
 
+const SubagentSpawnOverridesParseError = error{
+    FullForkOverrides,
+    UnsupportedAgentType,
+    InvalidAgentType,
+    InvalidModel,
+    EmptyModel,
+    InvalidReasoningEffort,
+    InvalidServiceTier,
+} || std.mem.Allocator.Error;
+
+const SubagentModelControls = struct {
+    model: ?[]const u8 = null,
+    has_reasoning_effort: bool = false,
+    reasoning_effort: ?config.ReasoningEffort = null,
+    has_service_tier: bool = false,
+    service_tier: ?[]const u8 = null,
+
+    fn fromConfig(allocator: std.mem.Allocator, cfg: config.Config) !SubagentModelControls {
+        const model = try allocator.dupe(u8, cfg.model);
+        errdefer allocator.free(model);
+        const service_tier = if (cfg.service_tier) |value| try allocator.dupe(u8, value) else null;
+        errdefer if (service_tier) |value| allocator.free(value);
+        return .{
+            .model = model,
+            .has_reasoning_effort = true,
+            .reasoning_effort = cfg.model_reasoning_effort,
+            .has_service_tier = true,
+            .service_tier = service_tier,
+        };
+    }
+
+    fn deinit(self: *SubagentModelControls, allocator: std.mem.Allocator) void {
+        if (self.model) |value| allocator.free(value);
+        if (self.service_tier) |value| allocator.free(value);
+        self.* = .{};
+    }
+
+    fn apply(self: SubagentModelControls, cfg: config.Config) config.Config {
+        var child_cfg = cfg;
+        if (self.model) |value| child_cfg.model = value;
+        if (self.has_reasoning_effort) child_cfg.model_reasoning_effort = self.reasoning_effort;
+        if (self.has_service_tier) child_cfg.service_tier = self.service_tier;
+        return child_cfg;
+    }
+};
+
 const SubagentArgumentsParseError = error{InvalidArguments} || std.mem.Allocator.Error;
 
 fn parseSubagentArgumentsObject(
@@ -1596,12 +1646,15 @@ fn runSubagentSpawnCall(
     defer allocator.free(prompt);
 
     const fork_context = optionalBoolField(object, "fork_context") orelse false;
-    if (fork_context and hasAnyField(object, &.{ "agent_type", "model", "reasoning_effort" })) {
-        return subagentModelError(allocator, call, "subagent invalid", "Full-history forked agents inherit the parent agent type, model, and reasoning effort; omit agent_type, model, and reasoning_effort, or spawn without a full-history fork.");
-    }
-    if (hasAnyField(object, &.{ "agent_type", "model", "reasoning_effort", "service_tier" })) {
-        return subagentModelError(allocator, call, "subagent invalid", "spawn_agent agent_type, model, reasoning_effort, and service_tier overrides are not implemented in codex-zig yet");
-    }
+    var requested_controls = subagentSpawnOverridesFromArgs(allocator, object, fork_context) catch |err| switch (err) {
+        error.OutOfMemory => return error.OutOfMemory,
+        else => return subagentModelError(allocator, call, "subagent invalid", subagentSpawnOverrideErrorMessage(err)),
+    };
+    defer requested_controls.deinit(allocator);
+    const child_cfg = requested_controls.apply(cfg);
+    var model_controls = try SubagentModelControls.fromConfig(allocator, child_cfg);
+    var model_controls_owned = true;
+    defer if (model_controls_owned) model_controls.deinit(allocator);
 
     const agent_id = try runtime.nextAgentId(allocator);
     var agent_id_owned = true;
@@ -1616,7 +1669,7 @@ fn runSubagentSpawnCall(
     var child_options = try subagentChildTurnOptions(allocator, options);
     defer child_options.feature_overrides.deinit(allocator);
 
-    const answer = runTurnWithOptions(allocator, cfg, credentials, &child_transcript, prompt, child_options) catch |err| {
+    const answer = runTurnWithOptions(allocator, child_cfg, credentials, &child_transcript, prompt, child_options) catch |err| {
         return subagentModelErrorAlloc(
             allocator,
             call,
@@ -1632,11 +1685,12 @@ fn runSubagentSpawnCall(
     const last_task_message = try allocator.dupe(u8, prompt);
     var last_task_message_owned = true;
     defer if (last_task_message_owned) allocator.free(last_task_message);
-    _ = try runtime.appendAgent(allocator, agent_id, status_json, last_task_message, child_transcript);
+    _ = try runtime.appendAgent(allocator, agent_id, status_json, last_task_message, child_transcript, model_controls);
     agent_id_owned = false;
     status_json_owned = false;
     last_task_message_owned = false;
     child_transcript_owned = false;
+    model_controls_owned = false;
 
     return .{
         .call_id = try allocator.dupe(u8, call.call_id),
@@ -1675,8 +1729,9 @@ fn runSubagentSendInputCall(
 
     var child_options = try subagentChildTurnOptions(allocator, options);
     defer child_options.feature_overrides.deinit(allocator);
+    const child_cfg = agent.model_controls.apply(cfg);
 
-    const answer = runTurnWithOptions(allocator, cfg, credentials, &agent.transcript, prompt, child_options) catch |err| {
+    const answer = runTurnWithOptions(allocator, child_cfg, credentials, &agent.transcript, prompt, child_options) catch |err| {
         return subagentModelErrorAlloc(
             allocator,
             call,
@@ -1932,17 +1987,75 @@ fn subagentInputErrorMessage(err: SubagentInputParseError) []const u8 {
     };
 }
 
+fn subagentSpawnOverridesFromArgs(
+    allocator: std.mem.Allocator,
+    object: std.json.ObjectMap,
+    fork_context: bool,
+) SubagentSpawnOverridesParseError!SubagentModelControls {
+    var overrides = SubagentModelControls{};
+    errdefer overrides.deinit(allocator);
+
+    const agent_type = optionalStringField(object, "agent_type") catch |err| switch (err) {
+        error.InvalidStringField => return error.InvalidAgentType,
+    };
+    const has_agent_type = if (agent_type) |value| std.mem.trim(u8, value, " \t\r\n").len > 0 else false;
+    const model = optionalStringField(object, "model") catch |err| switch (err) {
+        error.InvalidStringField => return error.InvalidModel,
+    };
+    const reasoning_effort = try optionalReasoningEffortField(object, "reasoning_effort");
+
+    if (fork_context and (has_agent_type or model != null or reasoning_effort != null)) {
+        return error.FullForkOverrides;
+    }
+    if (has_agent_type) return error.UnsupportedAgentType;
+    if (model) |value| {
+        const trimmed = std.mem.trim(u8, value, " \t\r\n");
+        if (trimmed.len == 0) return error.EmptyModel;
+        overrides.model = try allocator.dupe(u8, trimmed);
+    }
+    overrides.has_reasoning_effort = reasoning_effort != null;
+    overrides.reasoning_effort = reasoning_effort;
+    const service_tier = optionalStringField(object, "service_tier") catch |err| switch (err) {
+        error.InvalidStringField => return error.InvalidServiceTier,
+    };
+    if (service_tier) |value| {
+        overrides.has_service_tier = true;
+        overrides.service_tier = try config.normalizeServiceTier(allocator, value);
+    }
+    return overrides;
+}
+
+fn subagentSpawnOverrideErrorMessage(err: SubagentSpawnOverridesParseError) []const u8 {
+    return switch (err) {
+        error.FullForkOverrides => "Full-history forked agents inherit the parent agent type, model, and reasoning effort; omit agent_type, model, and reasoning_effort, or spawn without a full-history fork.",
+        error.UnsupportedAgentType => "spawn_agent agent_type overrides are not implemented in codex-zig yet",
+        error.InvalidAgentType => "agent_type must be a string",
+        error.InvalidModel => "model must be a string",
+        error.EmptyModel => "model must not be empty",
+        error.InvalidReasoningEffort => "reasoning_effort must be one of: none, minimal, low, medium, high, xhigh",
+        error.InvalidServiceTier => "service_tier must be a string",
+        error.OutOfMemory => "out of memory",
+    };
+}
+
+const OptionalStringFieldError = error{InvalidStringField};
+
+fn optionalStringField(object: std.json.ObjectMap, name: []const u8) OptionalStringFieldError!?[]const u8 {
+    const value = object.get(name) orelse return null;
+    if (value != .string) return error.InvalidStringField;
+    return value.string;
+}
+
+fn optionalReasoningEffortField(object: std.json.ObjectMap, name: []const u8) error{InvalidReasoningEffort}!?config.ReasoningEffort {
+    const value = object.get(name) orelse return null;
+    if (value != .string) return error.InvalidReasoningEffort;
+    return config.ReasoningEffort.parse(value.string) catch error.InvalidReasoningEffort;
+}
+
 fn optionalBoolField(object: std.json.ObjectMap, name: []const u8) ?bool {
     const value = object.get(name) orelse return null;
     if (value != .bool) return null;
     return value.bool;
-}
-
-fn hasAnyField(object: std.json.ObjectMap, names: []const []const u8) bool {
-    for (names) |name| {
-        if (object.get(name) != null) return true;
-    }
-    return false;
 }
 
 fn renderCompletedStatusJson(allocator: std.mem.Allocator, answer: []const u8) ![]const u8 {
@@ -2447,6 +2560,207 @@ test "subagent runtime generates uuid v7-shaped agent and submission ids" {
     try std.testing.expect(std.mem.indexOfScalar(u8, "89ab", submission_id[19]) != null);
 }
 
+test "subagent spawn overrides apply child model controls" {
+    const allocator = std.testing.allocator;
+    var parsed = try std.json.parseFromSlice(std.json.Value, allocator,
+        \\{"model":"gpt-child","reasoning_effort":"high","service_tier":"fast"}
+    , .{});
+    defer parsed.deinit();
+
+    var overrides = try subagentSpawnOverridesFromArgs(allocator, parsed.value.object, false);
+    defer overrides.deinit(allocator);
+
+    const parent_cfg = config.Config{
+        .codex_home = "/tmp/codex",
+        .active_profile = null,
+        .model = "gpt-parent",
+        .openai_base_url = "http://127.0.0.1",
+        .chatgpt_base_url = "http://127.0.0.1",
+        .oss_provider = null,
+        .installation_id = "install",
+        .approval_policy = .never,
+        .sandbox_mode = .workspace_write,
+        .web_search_mode = null,
+        .model_reasoning_effort = .low,
+        .service_tier = "flex",
+        .syntax_theme = null,
+        .personality = null,
+        .tui_status_line = null,
+        .tui_terminal_title = null,
+        .tui_alternate_screen = .auto,
+    };
+    const child_cfg = overrides.apply(parent_cfg);
+
+    try std.testing.expectEqualStrings("gpt-child", child_cfg.model);
+    try std.testing.expectEqual(config.ReasoningEffort.high, child_cfg.model_reasoning_effort.?);
+    try std.testing.expectEqualStrings("priority", child_cfg.service_tier.?);
+}
+
+test "subagent resolved model controls preserve spawn-time inherited controls" {
+    const allocator = std.testing.allocator;
+    var parsed = try std.json.parseFromSlice(std.json.Value, allocator,
+        \\{"model":"gpt-child"}
+    , .{});
+    defer parsed.deinit();
+
+    var overrides = try subagentSpawnOverridesFromArgs(allocator, parsed.value.object, false);
+    defer overrides.deinit(allocator);
+
+    const spawn_parent_cfg = config.Config{
+        .codex_home = "/tmp/codex",
+        .active_profile = null,
+        .model = "gpt-parent",
+        .openai_base_url = "http://127.0.0.1",
+        .chatgpt_base_url = "http://127.0.0.1",
+        .oss_provider = null,
+        .installation_id = "install",
+        .approval_policy = .never,
+        .sandbox_mode = .workspace_write,
+        .web_search_mode = null,
+        .model_reasoning_effort = .low,
+        .service_tier = "flex",
+        .syntax_theme = null,
+        .personality = null,
+        .tui_status_line = null,
+        .tui_terminal_title = null,
+        .tui_alternate_screen = .auto,
+    };
+    var resolved = try SubagentModelControls.fromConfig(allocator, overrides.apply(spawn_parent_cfg));
+    defer resolved.deinit(allocator);
+
+    const later_parent_cfg = config.Config{
+        .codex_home = "/tmp/codex",
+        .active_profile = null,
+        .model = "gpt-later",
+        .openai_base_url = "http://127.0.0.1",
+        .chatgpt_base_url = "http://127.0.0.1",
+        .oss_provider = null,
+        .installation_id = "install",
+        .approval_policy = .never,
+        .sandbox_mode = .workspace_write,
+        .web_search_mode = null,
+        .model_reasoning_effort = .high,
+        .service_tier = "priority",
+        .syntax_theme = null,
+        .personality = null,
+        .tui_status_line = null,
+        .tui_terminal_title = null,
+        .tui_alternate_screen = .auto,
+    };
+    const followup_cfg = resolved.apply(later_parent_cfg);
+
+    try std.testing.expectEqualStrings("gpt-child", followup_cfg.model);
+    try std.testing.expectEqual(config.ReasoningEffort.low, followup_cfg.model_reasoning_effort.?);
+    try std.testing.expectEqualStrings("flex", followup_cfg.service_tier.?);
+}
+
+test "subagent resolved model controls preserve spawn-time unset controls" {
+    const allocator = std.testing.allocator;
+    const spawn_parent_cfg = config.Config{
+        .codex_home = "/tmp/codex",
+        .active_profile = null,
+        .model = "gpt-parent",
+        .openai_base_url = "http://127.0.0.1",
+        .chatgpt_base_url = "http://127.0.0.1",
+        .oss_provider = null,
+        .installation_id = "install",
+        .approval_policy = .never,
+        .sandbox_mode = .workspace_write,
+        .web_search_mode = null,
+        .model_reasoning_effort = null,
+        .service_tier = null,
+        .syntax_theme = null,
+        .personality = null,
+        .tui_status_line = null,
+        .tui_terminal_title = null,
+        .tui_alternate_screen = .auto,
+    };
+    var resolved = try SubagentModelControls.fromConfig(allocator, spawn_parent_cfg);
+    defer resolved.deinit(allocator);
+
+    const later_parent_cfg = config.Config{
+        .codex_home = "/tmp/codex",
+        .active_profile = null,
+        .model = "gpt-later",
+        .openai_base_url = "http://127.0.0.1",
+        .chatgpt_base_url = "http://127.0.0.1",
+        .oss_provider = null,
+        .installation_id = "install",
+        .approval_policy = .never,
+        .sandbox_mode = .workspace_write,
+        .web_search_mode = null,
+        .model_reasoning_effort = .high,
+        .service_tier = "priority",
+        .syntax_theme = null,
+        .personality = null,
+        .tui_status_line = null,
+        .tui_terminal_title = null,
+        .tui_alternate_screen = .auto,
+    };
+    const followup_cfg = resolved.apply(later_parent_cfg);
+
+    try std.testing.expectEqualStrings("gpt-parent", followup_cfg.model);
+    try std.testing.expect(followup_cfg.model_reasoning_effort == null);
+    try std.testing.expect(followup_cfg.service_tier == null);
+}
+
+test "subagent forked spawn permits service tier override" {
+    const allocator = std.testing.allocator;
+    var parsed = try std.json.parseFromSlice(std.json.Value, allocator,
+        \\{"service_tier":"fast","fork_context":true}
+    , .{});
+    defer parsed.deinit();
+
+    var overrides = try subagentSpawnOverridesFromArgs(allocator, parsed.value.object, true);
+    defer overrides.deinit(allocator);
+
+    const parent_cfg = config.Config{
+        .codex_home = "/tmp/codex",
+        .active_profile = null,
+        .model = "gpt-parent",
+        .openai_base_url = "http://127.0.0.1",
+        .chatgpt_base_url = "http://127.0.0.1",
+        .oss_provider = null,
+        .installation_id = "install",
+        .approval_policy = .never,
+        .sandbox_mode = .workspace_write,
+        .web_search_mode = null,
+        .model_reasoning_effort = .low,
+        .service_tier = "flex",
+        .syntax_theme = null,
+        .personality = null,
+        .tui_status_line = null,
+        .tui_terminal_title = null,
+        .tui_alternate_screen = .auto,
+    };
+    const child_cfg = overrides.apply(parent_cfg);
+
+    try std.testing.expectEqualStrings("gpt-parent", child_cfg.model);
+    try std.testing.expectEqual(config.ReasoningEffort.low, child_cfg.model_reasoning_effort.?);
+    try std.testing.expectEqualStrings("priority", child_cfg.service_tier.?);
+}
+
+test "subagent spawn overrides reject forked model controls and unsupported roles" {
+    const allocator = std.testing.allocator;
+    var forked = try std.json.parseFromSlice(std.json.Value, allocator,
+        \\{"model":"gpt-child","reasoning_effort":"high","fork_context":true}
+    , .{});
+    defer forked.deinit();
+    try std.testing.expectError(error.FullForkOverrides, subagentSpawnOverridesFromArgs(allocator, forked.value.object, true));
+
+    var role = try std.json.parseFromSlice(std.json.Value, allocator,
+        \\{"agent_type":"explorer"}
+    , .{});
+    defer role.deinit();
+    try std.testing.expectError(error.UnsupportedAgentType, subagentSpawnOverridesFromArgs(allocator, role.value.object, false));
+
+    var invalid_reasoning = try std.json.parseFromSlice(std.json.Value, allocator,
+        \\{"reasoning_effort":"extreme"}
+    , .{});
+    defer invalid_reasoning.deinit();
+    try std.testing.expectError(error.InvalidReasoningEffort, subagentSpawnOverridesFromArgs(allocator, invalid_reasoning.value.object, false));
+}
+
 test "subagent v1 runtime wait and close return status results" {
     const allocator = std.testing.allocator;
     var runtime = SubagentRuntime{};
@@ -2460,6 +2774,7 @@ test "subagent v1 runtime wait and close return status results" {
         try allocator.dupe(u8, "agent-1"),
         status_json,
         task,
+        .{},
         .{},
     );
 
