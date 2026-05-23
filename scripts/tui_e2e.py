@@ -2334,6 +2334,57 @@ def run_plugin_marketplace_smoke(
             f"expected plugin list to support relative CODEX_HOME:\n{relative_list.stderr}"
         )
 
+    system_home = workspace / "system-codex-home"
+    system_home.mkdir()
+    system_root = system_home / ".tmp" / "bundled-marketplaces" / "openai-bundled"
+    system_root.mkdir(parents=True)
+    system_env = env.copy()
+    system_env["CODEX_HOME"] = str(system_home)
+    system_home.joinpath("config.toml").write_text(
+        f'[marketplaces.debug]\nsource_type = "local"\nsource = "{source}"\n'
+        + f'\n[marketplaces.openai-bundled]\nsource_type = "local"\nsource = "{system_root}"\n'
+    )
+    system_list = subprocess.run(
+        [str(binary), "plugin", "list"],
+        cwd=workspace,
+        env=system_env,
+        text=True,
+        capture_output=True,
+        check=True,
+    )
+    if "sample@debug" not in system_list.stderr:
+        raise AssertionError(
+            f"expected implicit system marketplace root to be ignored:\n{system_list.stderr}"
+        )
+
+    custom_system_home = workspace / "custom-system-codex-home"
+    custom_system_home.mkdir()
+    custom_system_root = (
+        custom_system_home / ".tmp" / "bundled-marketplaces" / "custom-marketplace"
+    )
+    custom_system_root.mkdir(parents=True)
+    custom_system_env = env.copy()
+    custom_system_env["CODEX_HOME"] = str(custom_system_home)
+    custom_system_home.joinpath("config.toml").write_text(
+        f'[marketplaces.custom-marketplace]\nsource_type = "local"\nsource = "{custom_system_root}"\n'
+    )
+    custom_system_list = subprocess.run(
+        [str(binary), "plugin", "list"],
+        cwd=workspace,
+        env=custom_system_env,
+        text=True,
+        capture_output=True,
+    )
+    if (
+        custom_system_list.returncode == 0
+        or "custom-marketplace" not in custom_system_list.stderr
+        or "marketplace root does not contain a supported manifest"
+        not in custom_system_list.stderr
+    ):
+        raise AssertionError(
+            f"expected custom system-like marketplace root to fail:\n{custom_system_list.stderr}"
+        )
+
     stale_home = workspace / "stale-cache-codex-home"
     stale_home.mkdir()
     stale_env = env.copy()

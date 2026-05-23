@@ -13,6 +13,9 @@ const MARKETPLACE_MANIFEST_RELATIVE_PATHS = [_][]const u8{
 
 const AGENTS_MARKETPLACE_SUFFIX = "/.agents/plugins/marketplace.json";
 const CLAUDE_MARKETPLACE_SUFFIX = "/.claude-plugin/marketplace.json";
+const OPENAI_BUNDLED_MARKETPLACE_NAME = "openai-bundled";
+const OPENAI_BUNDLED_ALPHA_MARKETPLACE_NAME = "openai-bundled-alpha";
+const OPENAI_PRIMARY_RUNTIME_MARKETPLACE_NAME = "openai-primary-runtime";
 const disallowed_connector_prefix = "connector_openai_";
 const disallowed_connector_ids = [_][]const u8{
     "asdk_app_6938a94a61d881918ef32cb999ff937c",
@@ -685,6 +688,7 @@ fn appendConfiguredMarketplaceFromRoot(
         );
         return;
     }
+    if (isImplicitSystemMarketplaceRoot(configured_marketplace_name, root)) return;
     try appendConfiguredMarketplaceLoadError(
         allocator,
         load_errors,
@@ -693,6 +697,27 @@ fn appendConfiguredMarketplaceFromRoot(
         root,
         "marketplace root does not contain a supported manifest",
     );
+}
+
+fn isImplicitSystemMarketplaceRoot(configured_marketplace_name: []const u8, root: []const u8) bool {
+    if (std.mem.eql(u8, configured_marketplace_name, OPENAI_BUNDLED_MARKETPLACE_NAME)) {
+        return pathHasDirectorySuffix(root, "/.tmp/bundled-marketplaces/openai-bundled");
+    }
+    if (std.mem.eql(u8, configured_marketplace_name, OPENAI_BUNDLED_ALPHA_MARKETPLACE_NAME)) {
+        return pathHasDirectorySuffix(root, "/.tmp/bundled-marketplaces/openai-bundled-alpha");
+    }
+    if (std.mem.eql(u8, configured_marketplace_name, OPENAI_PRIMARY_RUNTIME_MARKETPLACE_NAME)) {
+        return pathHasDirectorySuffix(root, "/codex-runtimes/codex-primary-runtime/plugins/openai-primary-runtime");
+    }
+    return false;
+}
+
+fn pathHasDirectorySuffix(path: []const u8, suffix: []const u8) bool {
+    var end = path.len;
+    while (end > 0 and path[end - 1] == '/') end -= 1;
+    const trimmed = path[0..end];
+    if (std.mem.endsWith(u8, trimmed, suffix)) return true;
+    return suffix.len > 0 and suffix[0] == '/' and std.mem.eql(u8, trimmed, suffix[1..]);
 }
 
 fn appendMarketplaceFromFile(
@@ -3325,6 +3350,87 @@ test "plugin list renders local marketplaces with installed state and manifest m
     try std.testing.expect(std.mem.indexOf(u8, read_response, "\"summary\":{\"id\":\"enabled-plugin@codex-curated\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, read_response, "\"description\":null") != null);
     try std.testing.expect(std.mem.indexOf(u8, read_response, "\"skills\":[]") != null);
+}
+
+test "plugin list ignores implicit system marketplace roots without manifests" {
+    const allocator = std.testing.allocator;
+    var dir = std.testing.tmpDir(.{});
+    defer dir.cleanup();
+    const io = std.Io.Threaded.global_single_threaded.io();
+
+    try dir.dir.createDirPath(io, "codex-home/.tmp/bundled-marketplaces/openai-bundled");
+    try dir.dir.createDirPath(io, "codex-home/.tmp/bundled-marketplaces/custom-marketplace");
+    try dir.dir.createDirPath(io, "debug-marketplace/.agents/plugins");
+    try dir.dir.createDirPath(io, "debug-marketplace/plugins/sample/.codex-plugin");
+    try dir.dir.writeFile(io, .{
+        .sub_path = "debug-marketplace/.agents/plugins/marketplace.json",
+        .data =
+        \\{
+        \\  "name": "debug",
+        \\  "plugins": [
+        \\    {
+        \\      "name": "sample",
+        \\      "source": {"source": "local", "path": "./plugins/sample"}
+        \\    }
+        \\  ]
+        \\}
+        ,
+    });
+    try dir.dir.writeFile(io, .{
+        .sub_path = "debug-marketplace/plugins/sample/.codex-plugin/plugin.json",
+        .data = "{\"name\":\"sample\"}",
+    });
+
+    const root = try dir.dir.realPathFileAlloc(io, ".", allocator);
+    defer allocator.free(root);
+    const codex_home = try std.fs.path.join(allocator, &.{ root, "codex-home" });
+    defer allocator.free(codex_home);
+    const debug_root = try std.fs.path.join(allocator, &.{ root, "debug-marketplace" });
+    defer allocator.free(debug_root);
+    const system_root = try std.fs.path.join(allocator, &.{ codex_home, ".tmp", "bundled-marketplaces", "openai-bundled" });
+    defer allocator.free(system_root);
+    const custom_system_root = try std.fs.path.join(allocator, &.{ codex_home, ".tmp", "bundled-marketplaces", "custom-marketplace" });
+    defer allocator.free(custom_system_root);
+
+    const config_bytes = try std.fmt.allocPrint(
+        allocator,
+        \\[features]
+        \\plugins = true
+        \\
+        \\[marketplaces.debug]
+        \\source_type = "local"
+        \\source = "{s}"
+        \\
+        \\[marketplaces.openai-bundled]
+        \\source_type = "local"
+        \\source = "{s}"
+        \\
+    ,
+        .{ debug_root, system_root },
+    );
+    defer allocator.free(config_bytes);
+    const response = try renderConfiguredResponse(allocator, codex_home, config_bytes);
+    defer allocator.free(response);
+    try std.testing.expect(std.mem.indexOf(u8, response, "\"id\":\"sample@debug\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, response, "\"marketplaceLoadErrors\":[]") != null);
+
+    const custom_config = try std.fmt.allocPrint(
+        allocator,
+        \\[features]
+        \\plugins = true
+        \\
+        \\[marketplaces.custom-marketplace]
+        \\source_type = "local"
+        \\source = "{s}"
+        \\
+    ,
+        .{custom_system_root},
+    );
+    defer allocator.free(custom_config);
+    const custom_response = try renderConfiguredResponse(allocator, codex_home, custom_config);
+    defer allocator.free(custom_response);
+    try std.testing.expect(std.mem.indexOf(u8, custom_response, "\"marketplaceName\":\"custom-marketplace\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, custom_response, "marketplace root does not contain a supported manifest") != null);
 }
 
 test "plugin list reports invalid marketplace files and honors plugins feature flag" {
