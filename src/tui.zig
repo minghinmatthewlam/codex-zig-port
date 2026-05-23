@@ -11,6 +11,7 @@ const git_diff = @import("git_diff.zig");
 const hooks_list = @import("hooks_list.zig");
 const login = @import("login.zig");
 const local_remote_control = @import("local_remote_control.zig");
+const memory_reset = @import("memory_reset.zig");
 const mcp_cmd = @import("mcp_cmd.zig");
 const plugin_list = @import("plugin_list.zig");
 const remote_ws_client = @import("remote_ws_client.zig");
@@ -28,6 +29,7 @@ const mention_file_limit = 128 * 1024;
 const remote_line_limit = 16 * 1024 * 1024;
 const remote_history_page_limit = 100;
 const terminal_title_limit = 240;
+const memories_doc_url = "https://developers.openai.com/codex/memories";
 const default_status_line_ids = [_][]const u8{ "model-with-reasoning", "current-dir" };
 const init_prompt =
     \\Create an AGENTS.md file for this repository.
@@ -2835,6 +2837,11 @@ fn handleSlashCommand(
         return .handled;
     }
 
+    if (std.ascii.eqlIgnoreCase(parts.name, "memories")) {
+        try handleMemories(allocator, cfg.*, feature_overrides, parts.args);
+        return .handled;
+    }
+
     if (std.ascii.eqlIgnoreCase(parts.name, "rename")) {
         if (try renameThread(allocator, transcript, session_path.*, parts.args)) {
             try refreshTerminalTitle(allocator, cfg.*, cwd, transcript, session_path.*, state);
@@ -3116,6 +3123,7 @@ fn printSlashHelp(goals_enabled: bool) void {
         \\                    list or toggle experimental features
         \\  /apps             list installed and available apps
         \\  /plugins          list available plugin marketplaces
+        \\  /memories         configure memory use and generation
         \\  /rename <title>   set this session's persisted title
         \\  /model [name]     show or set the in-memory model for this session
         \\  /fast [on|off|status]
@@ -3891,6 +3899,172 @@ fn printOptionalStringArray(label: []const u8, items_opt: ?[]const std.json.Valu
         printed_any = true;
     }
     if (printed_any) std.debug.print("\n", .{});
+}
+
+const MemorySettings = struct {
+    use_memories: bool = true,
+    generate_memories: bool = true,
+};
+
+fn handleMemories(
+    allocator: std.mem.Allocator,
+    cfg: config.Config,
+    feature_overrides: *features_cmd.FeatureOverrides,
+    args: []const u8,
+) !void {
+    const trimmed = std.mem.trim(u8, args, " \t\r\n");
+    if (trimmed.len == 0 or std.ascii.eqlIgnoreCase(trimmed, "status") or std.ascii.eqlIgnoreCase(trimmed, "list")) {
+        try printMemoriesStatus(allocator, cfg.codex_home, features_cmd.effectiveEnabled(feature_overrides.*, "memories") orelse false);
+        return;
+    }
+    if (std.ascii.eqlIgnoreCase(trimmed, "help")) {
+        printMemoriesUsage();
+        return;
+    }
+
+    var tokens = std.mem.tokenizeAny(u8, trimmed, " \t\r\n");
+    const action = tokens.next() orelse {
+        printMemoriesUsage();
+        return;
+    };
+
+    if (std.ascii.eqlIgnoreCase(action, "enable") or std.ascii.eqlIgnoreCase(action, "disable")) {
+        if (tokens.next() != null) {
+            printMemoriesUsage();
+            return;
+        }
+        const enabled = std.ascii.eqlIgnoreCase(action, "enable");
+        _ = try features_cmd.persistFeatureOverride(allocator, cfg.codex_home, cfg.active_profile, "memories", enabled);
+        try feature_overrides.put(allocator, "memories", enabled);
+        std.debug.print("memories feature: {s}\n", .{if (enabled) "enabled" else "disabled"});
+        try printMemoriesStatus(allocator, cfg.codex_home, enabled);
+        return;
+    }
+
+    const memories_enabled = features_cmd.effectiveEnabled(feature_overrides.*, "memories") orelse false;
+    if (!memories_enabled) {
+        std.debug.print("Memories are disabled.\nEnable the memories feature to use /memories settings.\n", .{});
+        printMemoriesUsage();
+        return;
+    }
+
+    if (std.ascii.eqlIgnoreCase(action, "use") or std.ascii.eqlIgnoreCase(action, "generate")) {
+        const value_arg = tokens.next() orelse {
+            printMemoriesUsage();
+            return;
+        };
+        if (tokens.next() != null) {
+            printMemoriesUsage();
+            return;
+        }
+        const enabled = parseOnOff(value_arg) orelse {
+            printMemoriesUsage();
+            return;
+        };
+        const key = if (std.ascii.eqlIgnoreCase(action, "use")) "use_memories" else "generate_memories";
+        try persistMemorySetting(allocator, cfg.codex_home, key, enabled);
+        try printMemoriesStatus(allocator, cfg.codex_home, memories_enabled);
+        return;
+    }
+
+    if (std.ascii.eqlIgnoreCase(action, "reset")) {
+        if (tokens.next() != null) {
+            printMemoriesUsage();
+            return;
+        }
+        try resetMemoriesAndPrint(allocator, cfg.codex_home);
+        return;
+    }
+
+    printMemoriesUsage();
+}
+
+fn printMemoriesStatus(allocator: std.mem.Allocator, codex_home: []const u8, feature_enabled: bool) !void {
+    const settings = try loadMemorySettings(allocator, codex_home);
+    std.debug.print(
+        \\memories:
+        \\  feature: {s}
+        \\  use memories: {s}
+        \\  generate memories: {s}
+        \\  docs: {s}
+        \\usage: /memories [status|enable|disable|use on|use off|generate on|generate off|reset]
+        \\
+    , .{
+        if (feature_enabled) "enabled" else "disabled",
+        onOffLabel(settings.use_memories),
+        onOffLabel(settings.generate_memories),
+        memories_doc_url,
+    });
+}
+
+fn printMemoriesUsage() void {
+    std.debug.print("usage: /memories [status|enable|disable|use on|use off|generate on|generate off|reset]\n", .{});
+}
+
+fn loadMemorySettings(allocator: std.mem.Allocator, codex_home: []const u8) !MemorySettings {
+    const config_path = try config.configTomlPath(allocator, codex_home);
+    defer allocator.free(config_path);
+    const config_bytes = try config.readConfigTomlFile(allocator, config_path);
+    defer if (config_bytes) |bytes| allocator.free(bytes);
+    const bytes = config_bytes orelse "";
+    return .{
+        .use_memories = config.sectionBoolValue(bytes, "memories", "use_memories") orelse true,
+        .generate_memories = config.sectionBoolValue(bytes, "memories", "generate_memories") orelse true,
+    };
+}
+
+fn persistMemorySetting(allocator: std.mem.Allocator, codex_home: []const u8, key: []const u8, enabled: bool) !void {
+    const config_path = try config.configTomlPath(allocator, codex_home);
+    defer allocator.free(config_path);
+    const config_bytes = try config.readConfigTomlFile(allocator, config_path);
+    defer if (config_bytes) |bytes| allocator.free(bytes);
+
+    const key_path = try std.fmt.allocPrint(allocator, "memories.{s}", .{key});
+    defer allocator.free(key_path);
+    const updated = try config.updateTomlRawValueForKeyPath(allocator, config_bytes orelse "", key_path, if (enabled) "true" else "false");
+    defer allocator.free(updated);
+    try config.writeConfigTomlFile(config_path, updated);
+}
+
+fn resetMemoriesAndPrint(allocator: std.mem.Allocator, codex_home: []const u8) !void {
+    const state_path = try memory_reset.resolveStateDbPath(allocator, codex_home);
+    defer allocator.free(state_path);
+    const state_exists = try memory_reset.stateDbExists(allocator, state_path);
+    var cleared_state_db = false;
+    if (state_exists) {
+        try memory_reset.clearMemoryStateDb(allocator, state_path);
+        cleared_state_db = true;
+    }
+
+    try memory_reset.clearMemoryRootsContents(allocator, codex_home);
+    if (cleared_state_db) {
+        std.debug.print("cleared memory state from {s}\n", .{state_path});
+    } else {
+        std.debug.print("no memory state db found at {s}\n", .{state_path});
+    }
+    std.debug.print("cleared memory directories under {s}\n", .{codex_home});
+}
+
+fn parseOnOff(value: []const u8) ?bool {
+    if (std.ascii.eqlIgnoreCase(value, "on") or
+        std.ascii.eqlIgnoreCase(value, "true") or
+        std.ascii.eqlIgnoreCase(value, "enable") or
+        std.ascii.eqlIgnoreCase(value, "enabled"))
+    {
+        return true;
+    }
+    if (std.ascii.eqlIgnoreCase(value, "off") or
+        std.ascii.eqlIgnoreCase(value, "false") or
+        std.ascii.eqlIgnoreCase(value, "disable") or
+        std.ascii.eqlIgnoreCase(value, "disabled"))
+    {
+        return false;
+    }
+    return null;
+}
+
+fn onOffLabel(enabled: bool) []const u8 {
+    return if (enabled) "on" else "off";
 }
 
 fn printAppsUsage() void {
@@ -4807,6 +4981,10 @@ test "parse slash command names and args" {
     const plugins = parseSlash("/plugins list").?;
     try std.testing.expectEqualStrings("plugins", plugins.name);
     try std.testing.expectEqualStrings("list", plugins.args);
+
+    const memories = parseSlash("/memories use on").?;
+    try std.testing.expectEqualStrings("memories", memories.name);
+    try std.testing.expectEqualStrings("use on", memories.args);
 
     const remote_control = parseSlash("/remote-control stop").?;
     try std.testing.expectEqualStrings("remote-control", remote_control.name);
