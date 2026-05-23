@@ -2256,6 +2256,52 @@ def run_plugin_marketplace_smoke(
             f"expected unconfigured home marketplace to be ignored:\n{home_plugin_add.stderr}"
         )
 
+    dual_source = workspace / "dual-manifest-marketplace"
+    write_marketplace_fixture(dual_source, "dual", "dual-plugin")
+    dual_source.joinpath(".claude-plugin").mkdir(parents=True)
+    dual_source.joinpath(".claude-plugin", "marketplace.json").write_text("{bad")
+    dual_home = workspace / "dual-codex-home"
+    dual_home.mkdir()
+    dual_env = env.copy()
+    dual_env["CODEX_HOME"] = str(dual_home)
+    dual_home.joinpath("config.toml").write_text(
+        f'[marketplaces.dual]\nsource_type = "local"\nsource = "{dual_source}"\n'
+    )
+    dual_list = subprocess.run(
+        [str(binary), "plugin", "list", "--marketplace", "dual"],
+        cwd=workspace,
+        env=dual_env,
+        text=True,
+        capture_output=True,
+        check=True,
+    )
+    if "dual-plugin@dual" not in dual_list.stderr:
+        raise AssertionError(
+            f"expected first supported marketplace manifest to be used:\n{dual_list.stderr}"
+        )
+
+    filtered_home = workspace / "filtered-codex-home"
+    filtered_home.mkdir()
+    filtered_env = env.copy()
+    filtered_env["CODEX_HOME"] = str(filtered_home)
+    filtered_missing = workspace / "filtered-missing-marketplace"
+    filtered_home.joinpath("config.toml").write_text(
+        f'[marketplaces.debug]\nsource_type = "local"\nsource = "{source}"\n'
+        + f'\n[marketplaces.other]\nsource_type = "local"\nsource = "{filtered_missing}"\n'
+    )
+    filtered_add = subprocess.run(
+        [str(binary), "plugin", "add", "sample@debug"],
+        cwd=workspace,
+        env=filtered_env,
+        text=True,
+        capture_output=True,
+        check=True,
+    )
+    if "Added plugin `sample` from marketplace `debug`." not in filtered_add.stderr:
+        raise AssertionError(
+            f"expected plugin add to ignore unrelated marketplace load error:\n{filtered_add.stderr}"
+        )
+
     add = subprocess.run(
         [str(binary), "plugin", "marketplace", "add", str(source)],
         cwd=workspace,
