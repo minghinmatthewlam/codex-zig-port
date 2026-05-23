@@ -8,6 +8,7 @@ const config = @import("config.zig");
 const env = @import("env.zig");
 const features_cmd = @import("features_cmd.zig");
 const git_diff = @import("git_diff.zig");
+const hooks_list = @import("hooks_list.zig");
 const login = @import("login.zig");
 const local_remote_control = @import("local_remote_control.zig");
 const mcp_cmd = @import("mcp_cmd.zig");
@@ -15,6 +16,7 @@ const remote_ws_client = @import("remote_ws_client.zig");
 const review = @import("review.zig");
 const session = @import("session.zig");
 const session_store = @import("session_store.zig");
+const skills_list = @import("skills_list.zig");
 const statusline = @import("statusline.zig");
 const theme = @import("theme.zig");
 const titleline = @import("titleline.zig");
@@ -2882,6 +2884,16 @@ fn handleSlashCommand(
         return .handled;
     }
 
+    if (std.ascii.eqlIgnoreCase(parts.name, "skills")) {
+        try printSkillsStatus(allocator, cwd, parts.args);
+        return .handled;
+    }
+
+    if (std.ascii.eqlIgnoreCase(parts.name, "hooks")) {
+        try printHooksStatus(allocator, cfg.codex_home, cwd, parts.args);
+        return .handled;
+    }
+
     if (std.ascii.eqlIgnoreCase(parts.name, "ps")) {
         try printBackgroundTerminals(allocator);
         return .handled;
@@ -3108,6 +3120,8 @@ fn printSlashHelp(goals_enabled: bool) void {
         \\  /raw [on|off]     toggle copy-friendly transcript output
         \\  /vim              toggle Vim composer mode
         \\  /mcp [verbose]    list configured MCP servers
+        \\  /skills           list configured skills
+        \\  /hooks            list configured lifecycle hooks
         \\  /ps               list background terminals
         \\  /stop, /clean     stop all background terminals
         \\  /logout           remove local Codex auth
@@ -4102,6 +4116,107 @@ fn printMcpStatus(allocator: std.mem.Allocator, codex_home: []const u8, args: []
     }
 }
 
+fn printSkillsStatus(allocator: std.mem.Allocator, cwd: []const u8, args: []const u8) !void {
+    const trimmed = std.mem.trim(u8, args, " \t\r\n");
+    if (trimmed.len != 0) {
+        std.debug.print("usage: /skills\n", .{});
+        return;
+    }
+
+    var result = try skills_list.list(allocator, &.{cwd}, &.{});
+    defer result.deinit(allocator);
+
+    if (result.entries.len == 0) {
+        std.debug.print("skills: none\n", .{});
+        return;
+    }
+
+    const entry = result.entries[0];
+    if (entry.skills.len == 0 and entry.errors.len == 0) {
+        std.debug.print("skills: none\n", .{});
+        return;
+    }
+
+    std.debug.print("skills:\n", .{});
+    for (entry.skills) |skill| {
+        const description = if (skill.short_description) |value| firstDisplayLine(value) else firstDisplayLine(skill.description);
+        std.debug.print("  - {s} [{s}, {s}]\n", .{
+            skill.name,
+            skill.scope,
+            if (skill.enabled) "enabled" else "disabled",
+        });
+        if (description.len > 0) {
+            std.debug.print("      {s}\n", .{description});
+        }
+        std.debug.print("      path: {s}\n", .{skill.path});
+    }
+    if (entry.errors.len > 0) {
+        std.debug.print("  errors:\n", .{});
+        for (entry.errors) |err| {
+            std.debug.print("    - {s}: {s}\n", .{ err.path, err.message });
+        }
+    }
+}
+
+fn printHooksStatus(allocator: std.mem.Allocator, codex_home: []const u8, cwd: []const u8, args: []const u8) !void {
+    const trimmed = std.mem.trim(u8, args, " \t\r\n");
+    if (trimmed.len != 0) {
+        std.debug.print("usage: /hooks\n", .{});
+        return;
+    }
+
+    var result = try hooks_list.list(allocator, codex_home, &.{cwd});
+    defer result.deinit(allocator);
+
+    if (result.entries.len == 0) {
+        std.debug.print("hooks: none\n", .{});
+        return;
+    }
+
+    const entry = result.entries[0];
+    if (entry.hooks.len == 0 and entry.warnings.len == 0 and entry.errors.len == 0) {
+        std.debug.print("hooks: none\n", .{});
+        return;
+    }
+
+    std.debug.print("hooks:\n", .{});
+    for (entry.hooks) |hook| {
+        std.debug.print("  - {s} [{s}, {s}, {s}]\n", .{
+            hook.event_name.jsonLabel(),
+            hook.source.label(),
+            if (hook.enabled) "enabled" else "disabled",
+            hook.trust_status.label(),
+        });
+        if (hook.matcher) |matcher| {
+            std.debug.print("      matcher: {s}\n", .{matcher});
+        }
+        if (hook.status_message) |status_message| {
+            const status_line = firstDisplayLine(status_message);
+            if (status_line.len > 0) std.debug.print("      status: {s}\n", .{status_line});
+        }
+        std.debug.print("      command: {s}\n", .{hook.command});
+        std.debug.print("      source: {s}\n", .{hook.source_path});
+    }
+    if (entry.warnings.len > 0) {
+        std.debug.print("  warnings:\n", .{});
+        for (entry.warnings) |warning| {
+            std.debug.print("    - {s}\n", .{warning});
+        }
+    }
+    if (entry.errors.len > 0) {
+        std.debug.print("  errors:\n", .{});
+        for (entry.errors) |err| {
+            std.debug.print("    - {s}: {s}\n", .{ err.path, err.message });
+        }
+    }
+}
+
+fn firstDisplayLine(value: []const u8) []const u8 {
+    const trimmed = std.mem.trim(u8, value, " \t\r\n");
+    const line_end = std.mem.indexOfAny(u8, trimmed, "\r\n") orelse trimmed.len;
+    return std.mem.trim(u8, trimmed[0..line_end], " \t");
+}
+
 fn parseBangShellCommand(prompt: []const u8) ?[]const u8 {
     if (prompt.len == 0 or prompt[0] != '!') return null;
     return std.mem.trim(u8, prompt[1..], " \t\r\n");
@@ -4382,6 +4497,14 @@ test "parse slash command names and args" {
     try std.testing.expectEqualStrings("mcp", mcp.name);
     try std.testing.expectEqualStrings("verbose", mcp.args);
 
+    const skills = parseSlash("/skills").?;
+    try std.testing.expectEqualStrings("skills", skills.name);
+    try std.testing.expectEqualStrings("", skills.args);
+
+    const hooks = parseSlash("/hooks").?;
+    try std.testing.expectEqualStrings("hooks", hooks.name);
+    try std.testing.expectEqualStrings("", hooks.args);
+
     const ps = parseSlash("/ps").?;
     try std.testing.expectEqualStrings("ps", ps.name);
     try std.testing.expectEqualStrings("", ps.args);
@@ -4403,6 +4526,11 @@ test "parse slash command names and args" {
     try std.testing.expectEqualStrings("check regressions", review_cmd.args);
 
     try std.testing.expect(parseSlash("hello") == null);
+}
+
+test "first display line trims multi-line values" {
+    try std.testing.expectEqualStrings("alpha beta", firstDisplayLine(" \n alpha beta \n second "));
+    try std.testing.expectEqualStrings("", firstDisplayLine(" \t\r\n "));
 }
 
 test "compact prompt uses config override" {
