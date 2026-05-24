@@ -1756,11 +1756,18 @@ def run_help_command_smoke(
         env=env,
         text=True,
         capture_output=True,
-        check=True,
+        check=False,
     )
-    if exec_help_flag_result.stderr != exec_help_help_result.stderr:
+    if exec_help_flag_result.returncode == 0:
+        raise AssertionError("expected exec help --help to fail")
+    if "error: unrecognized subcommand '--help'" not in exec_help_flag_result.stderr:
         raise AssertionError(
-            "expected exec help --help to match exec help help:\n"
+            "expected exec help --help to reject --help as a nested subcommand:\n"
+            f"{exec_help_flag_result.stderr}"
+        )
+    if "Usage: codex-zig exec [OPTIONS] [PROMPT]" not in exec_help_flag_result.stderr:
+        raise AssertionError(
+            "expected exec help --help to print exec root usage:\n"
             f"{exec_help_flag_result.stderr}"
         )
     if exec_help_flag_result.stdout != "":

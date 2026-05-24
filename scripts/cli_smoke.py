@@ -2237,6 +2237,55 @@ def run_help_command_smoke(binary: Path) -> None:
     assert exec_help_help.stdout == ""
     assert "Usage: codex-zig exec help [COMMAND]..." in exec_help_help.stderr
 
+    root_nested_exec_resume = subprocess.run(
+        [str(binary), "help", "exec", "resume"],
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        timeout=5,
+        check=True,
+    )
+    assert root_nested_exec_resume.stdout == ""
+    assert "Usage:" in root_nested_exec_resume.stderr
+    assert "codex-zig exec resume [OPTIONS] [SESSION_ID] [PROMPT]" in root_nested_exec_resume.stderr
+
+    root_nested_exec_review = subprocess.run(
+        [str(binary), "help", "exec", "review"],
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        timeout=5,
+        check=True,
+    )
+    assert root_nested_exec_review.stdout == ""
+    assert "codex-zig exec review [OPTIONS] [PROMPT]" in root_nested_exec_review.stderr
+
+    for argv, rejected_subcommand, usage in [
+        ([str(binary), "help", "--help"], "--help", "Usage: codex-zig [OPTIONS] [PROMPT]"),
+        ([str(binary), "exec", "help", "--help"], "--help", "Usage: codex-zig exec [OPTIONS] [PROMPT]"),
+        ([str(binary), "exec", "help", "exec"], "exec", "Usage: codex-zig exec [OPTIONS] [PROMPT]"),
+        ([str(binary), "help", "exec", "exec"], "exec", "Usage: codex-zig exec [OPTIONS] [PROMPT]"),
+        ([str(binary), "exec", "help", "resume", "--help"], "--help", "Usage: codex-zig exec resume [OPTIONS] [SESSION_ID] [PROMPT]"),
+        ([str(binary), "exec", "help", "help", "--help"], "--help", "Usage: codex-zig exec help [COMMAND]..."),
+        ([str(binary), "sandbox", "help", "--help"], "--help", "Usage: codex-zig sandbox [OPTIONS] <COMMAND>"),
+        ([str(binary), "sandbox", "help", "nope"], "nope", "Usage: codex-zig sandbox [OPTIONS] <COMMAND>"),
+        ([str(binary), "sandbox", "help", "help", "--help"], "--help", "Usage: codex-zig sandbox help [COMMAND]..."),
+        ([str(binary), "help", "sandbox", "nope"], "nope", "Usage: codex-zig sandbox [OPTIONS] <COMMAND>"),
+        ([str(binary), "help", "sandbox", "macos", "--help"], "--help", "Usage: codex-zig sandbox macos [OPTIONS] [COMMAND]..."),
+    ]:
+        rejected = subprocess.run(
+            argv,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=5,
+            check=False,
+        )
+        assert rejected.returncode != 0
+        assert rejected.stdout == ""
+        assert f"error: unrecognized subcommand '{rejected_subcommand}'" in rejected.stderr
+        assert usage in rejected.stderr
+
 
 def run_update_command_smoke(binary: Path) -> None:
     help_result = subprocess.run(

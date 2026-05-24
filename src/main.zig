@@ -175,6 +175,7 @@ pub fn main(init: std.process.Init) !void {
                 "error: bearer_token is not supported for streamable_http\n",
                 .{},
             ),
+            error.HelpSubcommandInvalid => {},
             else => std.debug.print("error: {s}\n", .{@errorName(err)}),
         }
         std.process.exit(1);
@@ -1048,6 +1049,10 @@ fn runHelpCommand(allocator: std.mem.Allocator, args: *std.process.Args.Iterator
         try printHelp();
         return;
     };
+    if (isHelpFlag(target)) {
+        failRootHelpSubcommand(target, .root);
+        return error.HelpSubcommandInvalid;
+    }
     if (isCloudCommand(target)) {
         try cloud_cmd.printHelpForArgs(targets.items[1..]);
         return;
@@ -1056,14 +1061,21 @@ fn runHelpCommand(allocator: std.mem.Allocator, args: *std.process.Args.Iterator
         try sandbox_cmd.printHelpForArgs(targets.items[1..]);
         return;
     }
-    try requireSingleHelpTarget(targets.items);
-    if (isHelpFlag(target)) {
-        try printHelp();
-    } else if (std.mem.eql(u8, target, "help")) {
+    if (std.mem.eql(u8, target, "help")) {
+        if (targets.items.len > 1) {
+            failRootHelpSubcommand(targets.items[1], .help_cmd);
+            return error.HelpSubcommandInvalid;
+        }
         printHelpCommandHelp();
-    } else if (isExecCommand(target)) {
-        exec.printHelp();
-    } else if (isApplyCommand(target)) {
+        return;
+    }
+    if (isExecCommand(target)) {
+        try exec.printHelpForArgs(targets.items[1..]);
+        return;
+    }
+
+    try requireSingleHelpTarget(targets.items);
+    if (isApplyCommand(target)) {
         apply_command.printHelp();
     } else if (std.mem.eql(u8, target, "review")) {
         review.printHelp();
@@ -1116,6 +1128,19 @@ fn runHelpCommand(allocator: std.mem.Allocator, args: *std.process.Args.Iterator
 
 fn requireSingleHelpTarget(targets: []const []const u8) !void {
     if (targets.len != 1) return error.UnexpectedHelpArgument;
+}
+
+const RootHelpUsage = enum {
+    root,
+    help_cmd,
+};
+
+fn failRootHelpSubcommand(subcommand: []const u8, usage: RootHelpUsage) void {
+    if (builtin.is_test) return;
+    cli_utils.printUnrecognizedSubcommand(subcommand, switch (usage) {
+        .root => "Usage: codex-zig [OPTIONS] [PROMPT]\n       codex-zig [OPTIONS] <COMMAND> [ARGS]",
+        .help_cmd => "Usage: codex-zig help [COMMAND]...",
+    }, usage == .root);
 }
 
 fn joinInitialPrompt(

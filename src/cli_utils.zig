@@ -29,6 +29,22 @@ pub fn writeStderr(bytes: []const u8) !void {
     try std.Io.File.stderr().writeStreamingAll(std.Io.Threaded.global_single_threaded.io(), bytes);
 }
 
+pub fn printUnrecognizedSubcommand(subcommand: []const u8, usage: []const u8, include_for_more: bool) void {
+    std.debug.print(
+        \\error: unrecognized subcommand '{s}'
+        \\
+        \\{s}
+        \\
+    , .{ subcommand, usage });
+    if (include_for_more) {
+        std.debug.print(
+            \\
+            \\For more information, try '--help'.
+            \\
+        , .{});
+    }
+}
+
 test "join with spaces" {
     const allocator = std.testing.allocator;
     const parts = [_][]const u8{ "one", "two", "three" };

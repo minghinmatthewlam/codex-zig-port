@@ -674,14 +674,36 @@ fn parseArgs(allocator: std.mem.Allocator, args: []const []const u8) !ExecArgs {
 
 fn parseHelpTopic(args: []const []const u8) !ExecHelpTopic {
     if (args.len == 0) return .root;
-    if (args.len > 1) return error.UnexpectedExecHelpArgument;
     const target = args[0];
-    if (std.mem.eql(u8, target, "--help") or std.mem.eql(u8, target, "-h")) return .help_cmd;
-    if (std.mem.eql(u8, target, "exec")) return .root;
-    if (std.mem.eql(u8, target, "resume")) return .resume_cmd;
-    if (std.mem.eql(u8, target, "review")) return .review_cmd;
-    if (std.mem.eql(u8, target, "help")) return .help_cmd;
-    return error.UnknownExecHelpCommand;
+    const topic: ExecHelpTopic = if (std.mem.eql(u8, target, "resume"))
+        .resume_cmd
+    else if (std.mem.eql(u8, target, "review"))
+        .review_cmd
+    else if (std.mem.eql(u8, target, "help"))
+        .help_cmd
+    else {
+        failExecHelpSubcommand(target, .root);
+        return error.HelpSubcommandInvalid;
+    };
+    if (args.len > 1) {
+        failExecHelpSubcommand(args[1], topic);
+        return error.HelpSubcommandInvalid;
+    }
+    return topic;
+}
+
+fn failExecHelpSubcommand(subcommand: []const u8, topic: ExecHelpTopic) void {
+    if (builtin.is_test) return;
+    cli_utils.printUnrecognizedSubcommand(subcommand, execHelpUsage(topic), topic != .help_cmd);
+}
+
+fn execHelpUsage(topic: ExecHelpTopic) []const u8 {
+    return switch (topic) {
+        .root => "Usage: codex-zig exec [OPTIONS] [PROMPT]\n       codex-zig exec [OPTIONS] <COMMAND> [ARGS]",
+        .resume_cmd => "Usage: codex-zig exec resume [OPTIONS] [SESSION_ID] [PROMPT]",
+        .review_cmd => "Usage: codex-zig exec review [OPTIONS] [PROMPT]",
+        .help_cmd => "Usage: codex-zig exec help [COMMAND]...",
+    };
 }
 
 fn containsOptionHelp(args: []const []const u8) bool {
@@ -836,6 +858,11 @@ pub fn printHelp() void {
         \\  -V, --version           Print version
         \\
     , .{});
+}
+
+pub fn printHelpForArgs(args: []const []const u8) !void {
+    const topic = try parseHelpTopic(args);
+    printHelpTopic(topic);
 }
 
 fn printHelpTopic(topic: ExecHelpTopic) void {
@@ -1069,14 +1096,10 @@ test "exec args parse help command topics" {
     try std.testing.expectEqual(ExecHelpTopic.help_cmd, parsed_help.help.?);
 
     const help_flag = [_][]const u8{ "help", "--help" };
-    const parsed_help_flag = try parseArgs(allocator, help_flag[0..]);
-    defer parsed_help_flag.deinit(allocator);
-    try std.testing.expectEqual(ExecHelpTopic.help_cmd, parsed_help_flag.help.?);
+    try std.testing.expectError(error.HelpSubcommandInvalid, parseArgs(allocator, help_flag[0..]));
 
     const help_short_flag = [_][]const u8{ "help", "-h" };
-    const parsed_help_short_flag = try parseArgs(allocator, help_short_flag[0..]);
-    defer parsed_help_short_flag.deinit(allocator);
-    try std.testing.expectEqual(ExecHelpTopic.help_cmd, parsed_help_short_flag.help.?);
+    try std.testing.expectError(error.HelpSubcommandInvalid, parseArgs(allocator, help_short_flag[0..]));
 }
 
 test "exec args parse resume help flags" {
@@ -1122,10 +1145,10 @@ test "exec args reject invalid help topics" {
     const allocator = std.testing.allocator;
 
     const unknown = [_][]const u8{ "help", "nope" };
-    try std.testing.expectError(error.UnknownExecHelpCommand, parseArgs(allocator, unknown[0..]));
+    try std.testing.expectError(error.HelpSubcommandInvalid, parseArgs(allocator, unknown[0..]));
 
     const extra = [_][]const u8{ "help", "resume", "extra" };
-    try std.testing.expectError(error.UnexpectedExecHelpArgument, parseArgs(allocator, extra[0..]));
+    try std.testing.expectError(error.HelpSubcommandInvalid, parseArgs(allocator, extra[0..]));
 }
 
 test "exec args reject version after resume subcommand" {

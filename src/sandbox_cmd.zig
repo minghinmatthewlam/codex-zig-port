@@ -225,18 +225,51 @@ pub fn printHelpForArgs(args: []const []const u8) !void {
         printHelp();
         return;
     }
-    if (args.len != 1) return error.UnexpectedHelpArgument;
     const target = args[0];
     if (isHelpFlag(target)) {
-        printHelp();
-        return;
+        failSandboxHelpSubcommand(target, .root);
+        return error.HelpSubcommandInvalid;
     }
     if (std.mem.eql(u8, target, "help")) {
+        if (args.len > 1) {
+            failSandboxHelpSubcommand(args[1], .help_cmd);
+            return error.HelpSubcommandInvalid;
+        }
         printSandboxHelpSubcommandHelp();
         return;
     }
-    const kind = parseSandboxKind(target) orelse return error.UnknownSandboxSubcommand;
+    const kind = parseSandboxKind(target) orelse {
+        failSandboxHelpSubcommand(target, .root);
+        return error.HelpSubcommandInvalid;
+    };
+    if (args.len > 1) {
+        failSandboxHelpSubcommand(args[1], switch (kind) {
+            .macos => .macos_cmd,
+            .linux => .linux_cmd,
+            .windows => .windows_cmd,
+        });
+        return error.HelpSubcommandInvalid;
+    }
     printSandboxKindHelp(kind);
+}
+
+const SandboxHelpUsage = enum {
+    root,
+    help_cmd,
+    macos_cmd,
+    linux_cmd,
+    windows_cmd,
+};
+
+fn failSandboxHelpSubcommand(subcommand: []const u8, usage: SandboxHelpUsage) void {
+    if (builtin.is_test) return;
+    cli_utils.printUnrecognizedSubcommand(subcommand, switch (usage) {
+        .root => "Usage: codex-zig sandbox [OPTIONS] <COMMAND>",
+        .help_cmd => "Usage: codex-zig sandbox help [COMMAND]...",
+        .macos_cmd => "Usage: codex-zig sandbox macos [OPTIONS] [COMMAND]...",
+        .linux_cmd => "Usage: codex-zig sandbox linux [OPTIONS] [COMMAND]...",
+        .windows_cmd => "Usage: codex-zig sandbox windows [OPTIONS] [COMMAND]...",
+    }, usage != .help_cmd);
 }
 
 fn parseSandboxKind(subcommand: []const u8) ?SandboxKind {
