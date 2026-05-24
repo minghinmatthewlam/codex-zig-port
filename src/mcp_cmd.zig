@@ -415,24 +415,40 @@ fn preflightGetHelp(args: []const []const u8) !DirectMcpHelpPreflight {
     return .run;
 }
 
+fn isMissingOptionValueToken(arg: []const u8) bool {
+    return std.mem.eql(u8, arg, "--") or isHelpFlag(arg) or std.mem.startsWith(u8, arg, "--");
+}
+
 fn preflightAddHelp(args: []const []const u8) !DirectMcpHelpPreflight {
     var saw_name = false;
+    var saw_url = false;
+    var saw_bearer_token_env_var = false;
     var index: usize = 0;
     while (index < args.len) : (index += 1) {
         const arg = args[index];
         if (std.mem.eql(u8, arg, "--")) return .run;
         if (isHelpFlag(arg)) return .{ .help = .add_cmd };
         if (std.mem.eql(u8, arg, "--url") or std.mem.eql(u8, arg, "--bearer-token-env-var") or std.mem.eql(u8, arg, "--env")) {
+            const is_url = std.mem.eql(u8, arg, "--url");
+            const is_bearer = std.mem.eql(u8, arg, "--bearer-token-env-var");
             index += 1;
-            if (index >= args.len or isHelpFlag(args[index])) return error.MissingMcpOptionValue;
+            if (index >= args.len or isMissingOptionValueToken(args[index])) return error.MissingMcpOptionValue;
             if (std.mem.startsWith(u8, args[index], "-")) return error.UnknownMcpAddOption;
+            saw_url = saw_url or is_url;
+            saw_bearer_token_env_var = saw_bearer_token_env_var or is_bearer;
             continue;
         }
         if (std.mem.startsWith(u8, arg, "--url=") or std.mem.startsWith(u8, arg, "--bearer-token-env-var=") or std.mem.startsWith(u8, arg, "--env=")) {
+            saw_url = saw_url or std.mem.startsWith(u8, arg, "--url=");
+            saw_bearer_token_env_var = saw_bearer_token_env_var or std.mem.startsWith(u8, arg, "--bearer-token-env-var=");
             continue;
         }
         if (std.mem.startsWith(u8, arg, "-")) return error.UnknownMcpAddOption;
-        if (saw_name) return error.UnknownMcpAddOption;
+        if (saw_name) {
+            if (saw_url) return error.ConflictingMcpTransports;
+            if (saw_bearer_token_env_var) return error.MissingMcpUrl;
+            return .run;
+        }
         saw_name = true;
     }
     return .run;
@@ -447,7 +463,7 @@ fn preflightLoginHelp(args: []const []const u8) !DirectMcpHelpPreflight {
         if (isHelpFlag(arg)) return .{ .help = .login_cmd };
         if (std.mem.eql(u8, arg, "--scopes")) {
             index += 1;
-            if (index >= args.len or isHelpFlag(args[index])) return error.MissingMcpOptionValue;
+            if (index >= args.len or isMissingOptionValueToken(args[index])) return error.MissingMcpOptionValue;
             if (std.mem.startsWith(u8, args[index], "-")) return error.UnknownMcpLoginOption;
             continue;
         }
@@ -503,7 +519,7 @@ fn mcpHelpUsage(usage: McpHelpUsage) []const u8 {
         .help_cmd => "Usage: codex-zig mcp help [COMMAND]...",
         .list_cmd => "Usage: codex-zig mcp list [OPTIONS]",
         .get_cmd => "Usage: codex-zig mcp get [OPTIONS] <NAME>",
-        .add_cmd => "Usage: codex-zig mcp add [OPTIONS] <NAME> (--url <URL> | -- <COMMAND>...)",
+        .add_cmd => "Usage: codex-zig mcp add [OPTIONS] <NAME> (--url <URL> | [--] <COMMAND>...)",
         .remove_cmd => "Usage: codex-zig mcp remove [OPTIONS] <NAME>",
         .login_cmd => "Usage: codex-zig mcp login [OPTIONS] <NAME>",
         .logout_cmd => "Usage: codex-zig mcp logout [OPTIONS] <NAME>",
@@ -756,29 +772,33 @@ fn runAdd(
     args: []const []const u8,
 ) !void {
     if (args.len == 0) return error.MissingMcpServerName;
-    if (isHelpFlag(args[0])) {
-        printAddHelp();
-        return;
-    }
-    const name = args[0];
-    try validateServerName(name);
 
-    var parsed = McpServer{ .name = try allocator.dupe(u8, name) };
+    var parsed = McpServer{ .name = try allocator.dupe(u8, "") };
     var parsed_moved = false;
     errdefer if (!parsed_moved) parsed.deinit(allocator);
 
-    var index: usize = 1;
-    var saw_command_separator = false;
+    var name_set = false;
+    var index: usize = 0;
+    var command_start: ?usize = null;
     while (index < args.len) : (index += 1) {
         const arg = args[index];
         if (std.mem.eql(u8, arg, "--")) {
-            saw_command_separator = true;
             index += 1;
+            if (!name_set) {
+                if (index >= args.len) return error.MissingMcpServerName;
+                allocator.free(parsed.name);
+                parsed.name = try allocator.dupe(u8, args[index]);
+                try validateServerName(parsed.name);
+                name_set = true;
+                index += 1;
+            }
+            if (index < args.len or parsed.kind != .streamable_http) command_start = index;
             break;
         }
         if (std.mem.eql(u8, arg, "--url")) {
             index += 1;
-            if (index >= args.len or isHelpFlag(args[index])) return error.MissingMcpOptionValue;
+            if (index >= args.len or isMissingOptionValueToken(args[index])) return error.MissingMcpOptionValue;
+            if (std.mem.startsWith(u8, args[index], "-")) return error.UnknownMcpAddOption;
             if (parsed.kind == .stdio) return error.ConflictingMcpTransports;
             parsed.kind = .streamable_http;
             if (parsed.url) |existing| allocator.free(existing);
@@ -794,7 +814,8 @@ fn runAdd(
         }
         if (std.mem.eql(u8, arg, "--bearer-token-env-var")) {
             index += 1;
-            if (index >= args.len or isHelpFlag(args[index])) return error.MissingMcpOptionValue;
+            if (index >= args.len or isMissingOptionValueToken(args[index])) return error.MissingMcpOptionValue;
+            if (std.mem.startsWith(u8, args[index], "-")) return error.UnknownMcpAddOption;
             if (parsed.bearer_token_env_var) |existing| allocator.free(existing);
             parsed.bearer_token_env_var = try allocator.dupe(u8, args[index]);
             continue;
@@ -806,7 +827,8 @@ fn runAdd(
         }
         if (std.mem.eql(u8, arg, "--env")) {
             index += 1;
-            if (index >= args.len or isHelpFlag(args[index])) return error.MissingMcpOptionValue;
+            if (index >= args.len or isMissingOptionValueToken(args[index])) return error.MissingMcpOptionValue;
+            if (std.mem.startsWith(u8, args[index], "-")) return error.UnknownMcpAddOption;
             try appendEnvPair(allocator, &parsed, args[index]);
             continue;
         }
@@ -818,15 +840,26 @@ fn runAdd(
             printAddHelp();
             return;
         }
-        return error.UnknownMcpAddOption;
+        if (std.mem.startsWith(u8, arg, "-")) return error.UnknownMcpAddOption;
+        if (!name_set) {
+            allocator.free(parsed.name);
+            parsed.name = try allocator.dupe(u8, arg);
+            try validateServerName(parsed.name);
+            name_set = true;
+            continue;
+        }
+        if (parsed.kind == .streamable_http) return error.ConflictingMcpTransports;
+        command_start = index;
+        break;
     }
 
-    if (saw_command_separator) {
+    if (!name_set) return error.MissingMcpServerName;
+    if (command_start) |start| {
         if (parsed.kind == .streamable_http) return error.ConflictingMcpTransports;
-        if (index >= args.len) return error.MissingMcpCommand;
+        if (start >= args.len) return error.MissingMcpCommand;
         parsed.kind = .stdio;
-        parsed.command = try allocator.dupe(u8, args[index]);
-        index += 1;
+        parsed.command = try allocator.dupe(u8, args[start]);
+        index = start + 1;
         while (index < args.len) : (index += 1) {
             try parsed.args.append(allocator, try allocator.dupe(u8, args[index]));
         }
@@ -837,16 +870,17 @@ fn runAdd(
     if (parsed.kind == .stdio and parsed.command == null) return error.MissingMcpCommand;
     try validateParsedMcpServer(&parsed);
 
-    if (servers.remove(allocator, name)) {}
+    if (servers.remove(allocator, parsed.name)) {}
     try servers.items.append(allocator, parsed);
     parsed_moved = true;
+    const added_name = servers.items.items[servers.items.items.len - 1].name;
 
     try writeServersConfig(allocator, codex_home, original_config, servers.*);
-    const message = try std.fmt.allocPrint(allocator, "Added global MCP server '{s}'.\n", .{name});
+    const message = try std.fmt.allocPrint(allocator, "Added global MCP server '{s}'.\n", .{added_name});
     defer allocator.free(message);
     try cli_utils.writeStdout(message);
 
-    const added_server = servers.get(name) orelse return;
+    const added_server = servers.get(added_name) orelse return;
     if (added_server.kind == .streamable_http and added_server.url != null and added_server.bearer_token_env_var == null and (streamableHttpSupportsOAuth(allocator, added_server.url.?) catch false)) {
         try cli_utils.writeStdout("Detected OAuth support. Starting OAuth flow…\n");
         try performMcpOAuthLogin(allocator, codex_home, original_config, added_server.*, &.{}, true);
@@ -904,7 +938,8 @@ fn runLogin(allocator: std.mem.Allocator, codex_home: []const u8, config_bytes: 
         }
         if (std.mem.eql(u8, arg, "--scopes")) {
             index += 1;
-            if (index >= args.len or isHelpFlag(args[index])) return error.MissingMcpOptionValue;
+            if (index >= args.len or isMissingOptionValueToken(args[index])) return error.MissingMcpOptionValue;
+            if (std.mem.startsWith(u8, args[index], "-")) return error.UnknownMcpLoginOption;
             try replaceMcpOAuthScopesCsv(allocator, &explicit_scopes, args[index]);
             explicit_scopes_present = true;
             continue;
@@ -4166,7 +4201,7 @@ pub fn printHelp() void {
         \\Usage:
         \\  codex-zig mcp list [--json]
         \\  codex-zig mcp get NAME [--json]
-        \\  codex-zig mcp add NAME (--url URL | -- COMMAND...)
+        \\  codex-zig mcp add NAME (--url URL | [--] COMMAND...)
         \\  codex-zig mcp remove NAME
         \\  codex-zig mcp login NAME [--scopes SCOPE,SCOPE]
         \\  codex-zig mcp logout NAME
@@ -4196,7 +4231,7 @@ fn printGetHelp() void {
 }
 
 fn printAddHelp() void {
-    std.debug.print("Usage:\n  codex-zig mcp add NAME (--url URL | -- COMMAND...)\n", .{});
+    std.debug.print("Usage:\n  codex-zig mcp add NAME (--url URL | [--] COMMAND...)\n", .{});
 }
 
 fn printRemoveHelp() void {

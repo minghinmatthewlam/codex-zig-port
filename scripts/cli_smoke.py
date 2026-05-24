@@ -2414,7 +2414,6 @@ def run_help_command_smoke(binary: Path) -> None:
             [str(binary), "mcp", "list", "--bad", "--help"],
             [str(binary), "mcp", "get", "demo", "--bad", "--help"],
             [str(binary), "mcp", "add", "demo", "--bad", "--help"],
-            [str(binary), "mcp", "add", "demo", "extra", "--help"],
             [str(binary), "mcp", "remove", "demo", "extra", "--help"],
             [str(binary), "mcp", "login", "demo", "--bad", "--help"],
             [str(binary), "mcp", "logout", "demo", "extra", "--help"],
@@ -2484,7 +2483,7 @@ def run_help_command_smoke(binary: Path) -> None:
         ([str(binary), "help", "plugin", "marketplace", "help", "add"], "add", "Usage: codex-zig plugin marketplace help [COMMAND]..."),
         ([str(binary), "plugin", "help", "marketplace", "help", "add"], "add", "Usage: codex-zig plugin marketplace help [COMMAND]..."),
         ([str(binary), "mcp", "help", "--help"], "--help", "Usage: codex-zig mcp [OPTIONS] <COMMAND>"),
-        ([str(binary), "help", "mcp", "add", "--help"], "--help", "Usage: codex-zig mcp add [OPTIONS] <NAME> (--url <URL> | -- <COMMAND>...)"),
+        ([str(binary), "help", "mcp", "add", "--help"], "--help", "Usage: codex-zig mcp add [OPTIONS] <NAME> (--url <URL> | [--] <COMMAND>...)"),
         ([str(binary), "help", "mcp", "nope"], "nope", "Usage: codex-zig mcp [OPTIONS] <COMMAND>"),
         ([str(binary), "mcp", "nope"], "nope", "Usage: codex-zig mcp [OPTIONS] <COMMAND>"),
         ([str(binary), "help", "mcp", "help", "--help"], "--help", "Usage: codex-zig mcp help [COMMAND]..."),
@@ -11879,6 +11878,251 @@ def run_mcp_oauth_login_logout_smoke(binary: Path) -> None:
         assert f'url = "{remote_url}"' in bearer_config
         assert 'bearer_token_env_var = "MCP_TOKEN"' in bearer_config
         assert not (bearer_home / ".credentials.json").exists()
+
+        bearer_before_name_add = subprocess.run(
+            [
+                str(binary.resolve()),
+                "mcp",
+                "add",
+                "--url",
+                remote_url,
+                "--bearer-token-env-var",
+                "MCP_TOKEN",
+                "bearer-before-name",
+            ],
+            cwd=temp_root,
+            env=bearer_env,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=5,
+            check=True,
+        )
+        assert (
+            bearer_before_name_add.stdout
+            == "Added global MCP server 'bearer-before-name'.\n"
+        )
+        assert bearer_before_name_add.stderr == ""
+        bearer_before_config = bearer_home.joinpath("config.toml").read_text(
+            encoding="utf-8"
+        )
+        assert "[mcp_servers.bearer-before-name]" in bearer_before_config
+        assert f'url = "{remote_url}"' in bearer_before_config
+        assert 'bearer_token_env_var = "MCP_TOKEN"' in bearer_before_config
+        assert not (bearer_home / ".credentials.json").exists()
+
+        stdio_home = temp_root / "stdio-add-codex-home"
+        stdio_home.mkdir()
+        stdio_env = env.copy()
+        stdio_env["CODEX_HOME"] = str(stdio_home)
+        stdio_add = subprocess.run(
+            [
+                str(binary.resolve()),
+                "mcp",
+                "add",
+                "stdio-added",
+                "echo",
+                "--help",
+                "--env",
+                "A=B",
+            ],
+            cwd=temp_root,
+            env=stdio_env,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=5,
+            check=True,
+        )
+        assert stdio_add.stdout == "Added global MCP server 'stdio-added'.\n"
+        assert stdio_add.stderr == ""
+        stdio_added = subprocess.run(
+            [str(binary.resolve()), "mcp", "get", "stdio-added", "--json"],
+            cwd=temp_root,
+            env=stdio_env,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=5,
+            check=True,
+        )
+        stdio_added_json = json.loads(stdio_added.stdout)
+        assert stdio_added_json["transport"]["type"] == "stdio"
+        assert stdio_added_json["transport"]["command"] == "echo"
+        assert stdio_added_json["transport"]["args"] == ["--help", "--env", "A=B"]
+
+        stdio_env_add = subprocess.run(
+            [
+                str(binary.resolve()),
+                "mcp",
+                "add",
+                "stdio-env",
+                "--env",
+                "A=B",
+                "echo",
+                "hi",
+            ],
+            cwd=temp_root,
+            env=stdio_env,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=5,
+            check=True,
+        )
+        assert stdio_env_add.stdout == "Added global MCP server 'stdio-env'.\n"
+        assert stdio_env_add.stderr == ""
+        stdio_env_get = subprocess.run(
+            [str(binary.resolve()), "mcp", "get", "stdio-env", "--json"],
+            cwd=temp_root,
+            env=stdio_env,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=5,
+            check=True,
+        )
+        stdio_env_json = json.loads(stdio_env_get.stdout)
+        assert stdio_env_json["transport"]["command"] == "echo"
+        assert stdio_env_json["transport"]["args"] == ["hi"]
+        stdio_config = (stdio_home / "config.toml").read_text(encoding="utf-8")
+        assert "[mcp_servers.stdio-env.env]" in stdio_config
+        assert 'A = "B"' in stdio_config
+
+        stdio_env_before_name_add = subprocess.run(
+            [
+                str(binary.resolve()),
+                "mcp",
+                "add",
+                "--env",
+                "A=B",
+                "stdio-env-before-name",
+                "echo",
+                "hi",
+            ],
+            cwd=temp_root,
+            env=stdio_env,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=5,
+            check=True,
+        )
+        assert (
+            stdio_env_before_name_add.stdout
+            == "Added global MCP server 'stdio-env-before-name'.\n"
+        )
+        assert stdio_env_before_name_add.stderr == ""
+        stdio_env_before_get = subprocess.run(
+            [str(binary.resolve()), "mcp", "get", "stdio-env-before-name", "--json"],
+            cwd=temp_root,
+            env=stdio_env,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=5,
+            check=True,
+        )
+        stdio_env_before_json = json.loads(stdio_env_before_get.stdout)
+        assert stdio_env_before_json["transport"]["command"] == "echo"
+        assert stdio_env_before_json["transport"]["args"] == ["hi"]
+        stdio_config = (stdio_home / "config.toml").read_text(encoding="utf-8")
+        assert "[mcp_servers.stdio-env-before-name.env]" in stdio_config
+
+        separator_name_add = subprocess.run(
+            [str(binary.resolve()), "mcp", "add", "--", "--env", "echo"],
+            cwd=temp_root,
+            env=stdio_env,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=5,
+            check=True,
+        )
+        assert separator_name_add.stdout == "Added global MCP server '--env'.\n"
+        assert separator_name_add.stderr == ""
+        separator_name_config = (stdio_home / "config.toml").read_text(
+            encoding="utf-8"
+        )
+        assert "[mcp_servers.--env]" in separator_name_config
+        assert 'command = "echo"' in separator_name_config
+
+        missing_separator_command = subprocess.run(
+            [str(binary.resolve()), "mcp", "add", "missing-command", "--"],
+            cwd=temp_root,
+            env=stdio_env,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=5,
+            check=False,
+        )
+        assert missing_separator_command.returncode != 0
+        assert missing_separator_command.stdout == ""
+        assert "MissingMcpCommand" in missing_separator_command.stderr
+        assert "MissingMcpTransport" not in missing_separator_command.stderr
+
+        stdio_url_conflict = subprocess.run(
+            [
+                str(binary.resolve()),
+                "mcp",
+                "add",
+                "stdio-url-conflict",
+                "--url",
+                remote_url,
+                "echo",
+                "--help",
+            ],
+            cwd=temp_root,
+            env=stdio_env,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=5,
+            check=False,
+        )
+        assert stdio_url_conflict.returncode != 0
+        assert "Added global MCP server" not in stdio_url_conflict.stdout
+
+        bad_option_home = temp_root / "bad-option-value-codex-home"
+        bad_option_home.mkdir()
+        bad_option_env = env.copy()
+        bad_option_env["CODEX_HOME"] = str(bad_option_home)
+        for bad_args in (
+            ["mcp", "add", "--url", "--", "bad-url-before"],
+            ["mcp", "add", "bad-url-after", "--url", "--"],
+            [
+                "mcp",
+                "add",
+                "--url",
+                "--bearer-token-env-var",
+                "MCP_TOKEN",
+                "bad-url-option",
+            ],
+            ["mcp", "add", "--env", "--", "bad-env", "echo"],
+            [
+                "mcp",
+                "add",
+                "--bearer-token-env-var",
+                "--url",
+                "bad-bearer",
+                "echo",
+            ],
+        ):
+            bad_option = subprocess.run(
+                [str(binary.resolve()), *bad_args],
+                cwd=temp_root,
+                env=bad_option_env,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                timeout=5,
+                check=False,
+            )
+            assert bad_option.returncode != 0
+            assert bad_option.stdout == ""
+            assert "Added global MCP server" not in bad_option.stdout
+        assert not (bad_option_home / "config.toml").exists()
 
         removed = subprocess.run(
             [str(binary.resolve()), "mcp", "logout", "remote"],
