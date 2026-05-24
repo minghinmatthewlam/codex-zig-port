@@ -251,8 +251,12 @@ Zig TUI help in `src/tui.zig`, and the broader narrative tracker in
 ### Sessions, Threads, Resume, and Fork
 
 - Bring resume/fork/list/read/archive/unarchive/rollback behavior closer to
-  Rust state DB behavior, including active-vs-archived filtering, metadata,
-  cwd filtering, search, pagination, and status.
+  Rust state DB behavior. Local `thread/list` now covers active-vs-archived,
+  provider/source/cwd/search, pagination, status, default interactive source
+  filtering including Rust's `atlas`/`chatgpt` custom interactive sources,
+  Rust structured custom/subagent source metadata from rollout files and local
+  SQLite rows, source response shapes, and relative cwd normalization; remaining
+  work is remote thread-store behavior and deeper state-DB/schema fidelity.
 - Add richer resume/fork picker UI in the TUI, including Rust-like grouping,
   filtering, selected row details, cwd display, and remote/imported session
   handling.
