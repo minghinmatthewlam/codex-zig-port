@@ -70,11 +70,12 @@ command-specific help plus Rust-visible `--json`, `--summary`, `--all`,
 `--no-color`, `--ascii`, `-c/--config`, `--enable`, and `--disable` flags, and
 emits a Rust-shaped JSON report with `schemaVersion`, `generatedAt`,
 `overallStatus`, `codexVersion`, and a check map keyed by diagnostic ID. The
-bounded local checks cover install/update detection, runtime, search mode,
-config load, auth presence, MCP config parsing, sandbox config, network env,
-app-server paths, terminal streams, and state paths. Rust's deeper reachability,
-WebSocket, state DB integrity, background daemon, bundled-search, and detailed
-installation probes remain planned exact-depth parity.
+bounded local checks cover install/update detection, runtime, real `rg`
+readiness probing, config load, auth presence, MCP config parsing, sandbox
+config, proxy and custom-CA network env checks, passive app-server daemon state
+and control-socket reachability, terminal streams, and state paths. Rust's
+deeper provider reachability, WebSocket, state DB integrity, bundled-search
+layout, and detailed installation probes remain planned exact-depth parity.
 
 Current app-server `hooks/list` coverage: user `$CODEX_HOME/config.toml`,
 `$CODEX_HOME/hooks.json`, per-cwd `.codex/config.toml`, and per-cwd
