@@ -113,6 +113,7 @@ pub const CreateTurnOptions = struct {
     external_auth_refresh_callback: ?ExternalAuthRefreshCallback = null,
     output_schema: ?std.json.Value = null,
     input_images: []const []const u8 = &.{},
+    ephemeral_developer_messages: []const []const u8 = &.{},
     mcp_tools: []const mcp_runtime.ToolSpec = &.{},
     include_tools: bool = true,
     feature_overrides: features_cmd.FeatureOverrides = .{},
@@ -290,6 +291,7 @@ pub fn createTurnWithOptions(
     const body = try buildRequestBodyWithOptions(allocator, cfg, history, .{
         .output_schema = options.output_schema,
         .input_images = options.input_images,
+        .ephemeral_developer_messages = options.ephemeral_developer_messages,
         .mcp_tools = options.mcp_tools,
         .include_tools = options.include_tools,
         .feature_overrides = options.feature_overrides,
@@ -666,6 +668,7 @@ pub fn buildRequestBody(
 pub const RequestBodyOptions = struct {
     output_schema: ?std.json.Value = null,
     input_images: []const []const u8 = &.{},
+    ephemeral_developer_messages: []const []const u8 = &.{},
     mcp_tools: []const mcp_runtime.ToolSpec = &.{},
     include_tools: bool = true,
     feature_overrides: features_cmd.FeatureOverrides = .{},
@@ -733,6 +736,9 @@ pub fn buildRequestBodyWithOptions(
                     .role = role,
                     .content = content,
                 });
+                if (image_message_index != null and image_message_index.? == history_index) {
+                    try appendEphemeralDeveloperMessages(allocator, &inputs, &message_contents, options.ephemeral_developer_messages);
+                }
             },
             .function_call => try inputs.append(allocator, .{
                 .type = "function_call",
@@ -1009,6 +1015,30 @@ pub fn buildRequestBodyWithOptions(
         .client_metadata = .{ .@"x-codex-installation-id" = cfg.installation_id },
     };
     return std.json.Stringify.valueAlloc(allocator, req, .{ .emit_null_optional_fields = false });
+}
+
+fn appendEphemeralDeveloperMessages(
+    allocator: std.mem.Allocator,
+    inputs: *std.ArrayList(InputItem),
+    message_contents: *std.ArrayList([]const ContentItem),
+    messages: []const []const u8,
+) !void {
+    for (messages) |message| {
+        const content = try allocator.alloc(ContentItem, 1);
+        var content_tracked = false;
+        errdefer if (!content_tracked) allocator.free(content);
+        content[0] = .{
+            .type = "input_text",
+            .text = message,
+        };
+        try message_contents.append(allocator, content);
+        content_tracked = true;
+        try inputs.append(allocator, .{
+            .type = "message",
+            .role = "developer",
+            .content = content,
+        });
+    }
 }
 
 fn legacyContentWithImages(

@@ -5484,6 +5484,10 @@ def run_turn_start_rpc_smoke(binary: Path) -> None:
                     'model = "gpt-turn-smoke"',
                     "[features]",
                     "goals = true",
+                    "plugins = true",
+                    "",
+                    "[plugins.\"demo@local\"]",
+                    "enabled = true",
                     "",
                     "[permissions.turn-read-deny-profile.filesystem]",
                     '":root" = "read"',
@@ -5842,6 +5846,26 @@ def run_turn_start_rpc_smoke(binary: Path) -> None:
                 local_image_path = codex_home / "local-smoke.png"
                 local_image_path.write_bytes(b"\x89PNG\r\n\x1a\ncodex-zig-smoke")
                 missing_local_image_path = codex_home / "missing-smoke.png"
+                plugin_root = (
+                    codex_home / "plugins" / "cache" / "local" / "demo" / "local"
+                )
+                plugin_manifest_dir = plugin_root / ".codex-plugin"
+                plugin_manifest_dir.mkdir(parents=True)
+                plugin_manifest_dir.joinpath("plugin.json").write_text(
+                    json.dumps(
+                        {
+                            "name": "demo",
+                            "interface": {"displayName": "Demo Plugin"},
+                        }
+                    ),
+                    encoding="utf-8",
+                )
+                plugin_skill_path = plugin_root / "skills" / "search" / "SKILL.md"
+                plugin_skill_path.parent.mkdir(parents=True)
+                plugin_skill_path.write_text(
+                    "# Search\n\nUse the plugin search workflow.",
+                    encoding="utf-8",
+                )
                 skill_path = codex_home / "skills" / "plan-work" / "SKILL.md"
                 skill_path.parent.mkdir(parents=True)
                 skill_body = "# Plan Work\n\nUse the smoke planning workflow."
@@ -5974,6 +5998,21 @@ def run_turn_start_rpc_smoke(binary: Path) -> None:
                 assert request["model"] == "gpt-turn-smoke"
                 request_content = request["input"][0]["content"]
                 model_prompt = request_content[0]["text"]
+                plugin_context = request["input"][1]
+                assert plugin_context["role"] == "developer"
+                plugin_context_text = plugin_context["content"][0]["text"]
+                assert (
+                    "Capabilities from the `Demo Plugin` plugin:"
+                    in plugin_context_text
+                )
+                assert (
+                    "Skills from this plugin are prefixed with `demo:`."
+                    in plugin_context_text
+                )
+                assert (
+                    "Use these plugin-associated capabilities to help solve the task."
+                    in plugin_context_text
+                )
                 missing_placeholder_prefix = (
                     f"Codex could not read the local image at `{missing_local_image_path}`:"
                 )

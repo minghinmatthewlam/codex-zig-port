@@ -555,6 +555,7 @@ pub const TurnOptions = struct {
     workdir: ?[]const u8 = null,
     background_terminal_owner: ?[]const u8 = null,
     subagent_runtime: ?*SubagentRuntime = null,
+    input_mentions: []const input_context.NamedPathInput = &.{},
 };
 
 pub const SubagentRuntimeAgent = struct {
@@ -1083,6 +1084,13 @@ fn optionalJsonStringField(object: std.json.ObjectMap, name: []const u8) ?[]cons
     return value.string;
 }
 
+fn configBytesForCodexHome(allocator: std.mem.Allocator, codex_home: []const u8) ![]const u8 {
+    const config_path = try config.configTomlPath(allocator, codex_home);
+    defer allocator.free(config_path);
+    const bytes = try config.readConfigTomlFile(allocator, config_path);
+    return bytes orelse try allocator.dupe(u8, "");
+}
+
 pub fn runTurn(
     allocator: std.mem.Allocator,
     cfg: config.Config,
@@ -1142,12 +1150,24 @@ pub fn runTurnWithOptions(
         mcp_runtime.Catalog{ .tools = &.{} };
     defer if (load_mcp_tools) mcp_catalog.deinit(allocator);
 
+    const plugin_config_bytes = if (options.input_mentions.len > 0)
+        try configBytesForCodexHome(allocator, cfg.codex_home)
+    else
+        null;
+    defer if (plugin_config_bytes) |bytes| allocator.free(bytes);
+    var plugin_mention_messages = if (plugin_config_bytes) |bytes|
+        try input_context.buildPluginMentionDeveloperMessages(allocator, cfg.codex_home, bytes, options.input_mentions, mcp_catalog.tools)
+    else
+        input_context.DeveloperMessages{};
+    defer plugin_mention_messages.deinit(allocator);
+
     var rounds: usize = 0;
     while (rounds < 8) : (rounds += 1) {
         var stream_context = StreamTextContext{};
         var create_options = api.CreateTurnOptions{};
         create_options.output_schema = options.output_schema;
         create_options.input_images = &.{};
+        create_options.ephemeral_developer_messages = plugin_mention_messages.items;
         create_options.include_tools = options.include_tools;
         create_options.mcp_tools = if (load_mcp_tools) mcp_catalog.tools else &.{};
         create_options.feature_overrides = effective_feature_overrides;
@@ -2157,6 +2177,7 @@ fn subagentChildTurnOptions(allocator: std.mem.Allocator, options: TurnOptions) 
     child_options.mcp_startup_status_callback = null;
     child_options.developer_messages_before_user = &.{};
     child_options.developer_messages_after_user = &.{};
+    child_options.input_mentions = &.{};
     child_options.feature_overrides = try options.feature_overrides.clone(allocator);
     errdefer child_options.feature_overrides.deinit(allocator);
     try child_options.feature_overrides.put(allocator, "multi_agent", false);

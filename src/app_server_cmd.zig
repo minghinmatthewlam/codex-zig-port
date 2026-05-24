@@ -31275,23 +31275,7 @@ const TurnStartInput = struct {
     }
 };
 
-const TurnNamedPathInput = struct {
-    name: []const u8,
-    path: []const u8,
-
-    fn init(allocator: std.mem.Allocator, name: []const u8, path: []const u8) !TurnNamedPathInput {
-        const owned_name = try allocator.dupe(u8, name);
-        errdefer allocator.free(owned_name);
-        const owned_path = try allocator.dupe(u8, path);
-        errdefer allocator.free(owned_path);
-        return .{ .name = owned_name, .path = owned_path };
-    }
-
-    fn deinit(self: TurnNamedPathInput, allocator: std.mem.Allocator) void {
-        allocator.free(self.name);
-        allocator.free(self.path);
-    }
-};
+const TurnNamedPathInput = input_context.NamedPathInput;
 
 const TurnLocalImages = struct {
     data_urls: []const []const u8 = &.{},
@@ -32745,6 +32729,7 @@ fn handleTurnStart(
         .workdir = thread.cwd,
         .background_terminal_owner = thread.id,
         .subagent_runtime = &thread.subagents,
+        .input_mentions = input.mentions,
     }) catch |err| {
         if (err == error.AppServerApprovalCanceled) {
             const completed_at_ms = currentUnixMilliseconds();
