@@ -190,6 +190,8 @@ Zig TUI help in `src/tui.zig`, and the broader narrative tracker in
   app-server plus non-interactive exec/review hook execution now runs enabled
   untrusted/modified hooks for that invocation while preserving disabled hook
   state.
+- Root `help cloud <subcommand>` now delegates to Cloud subcommand help, matching
+  Rust's nested `help` behavior for the implemented Cloud command family.
 - Decide whether unknown bare top-level command names that match Rust
   subcommands but are not implemented should launch the TUI as a prompt or fail
   with a command error now that `doctor` has a real command path.
