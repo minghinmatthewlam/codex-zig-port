@@ -171,11 +171,14 @@ Zig TUI help in `src/tui.zig`, and the broader narrative tracker in
   help, human output, JSON top-level fields, grouped check rows, and
   `--json`, `--summary`, `--all`, `--no-color`, `--ascii`, `-c/--config`,
   `--enable`, and `--disable` parsing, plus real `rg` readiness probing,
-  custom-CA env path validation, and passive app-server daemon mode, pid,
+  custom-CA env path validation, config-backed `log_dir` and `sqlite_home`
+  reporting, read-only runtime SQLite DB integrity probes for state/log/goals,
+  active/archived rollout file stats, and passive app-server daemon mode, pid,
   settings, update-loop path, and control-socket reachability reporting.
   Remaining doctor parity is exact diagnostic depth: Rust's full installation,
-  bundled-search layout, state DB, WebSocket, provider reachability, and richer
-  live background-daemon probes are deeper than the current bounded Zig checks.
+  bundled-search layout, WebSocket, provider reachability, standalone
+  release-cache diagnostics, and richer live background-daemon probes are
+  deeper than the current bounded Zig checks.
 - Root interactive/resume/fork, exec, and review support for
   `--strict-config` is implemented for user `config.toml` unknown fields and
   `-c/--config` unknown override fields, including unknown feature keys and

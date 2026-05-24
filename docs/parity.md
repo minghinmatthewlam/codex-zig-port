@@ -73,9 +73,12 @@ emits a Rust-shaped JSON report with `schemaVersion`, `generatedAt`,
 bounded local checks cover install/update detection, runtime, real `rg`
 readiness probing, config load, auth presence, MCP config parsing, sandbox
 config, proxy and custom-CA network env checks, passive app-server daemon state
-and control-socket reachability, terminal streams, and state paths. Rust's
-deeper provider reachability, WebSocket, state DB integrity, bundled-search
-layout, and detailed installation probes remain planned exact-depth parity.
+and control-socket reachability, terminal streams, state paths, config-backed
+`log_dir`/`sqlite_home` reporting, Rust runtime DB paths for state/log/goals,
+read-only SQLite integrity probes for existing runtime DBs, and active/archived
+rollout file stats. Rust's deeper provider reachability, WebSocket,
+bundled-search layout, detailed installation probes, and standalone
+release-cache diagnostics remain planned exact-depth parity.
 
 Current app-server `hooks/list` coverage: user `$CODEX_HOME/config.toml`,
 `$CODEX_HOME/hooks.json`, per-cwd `.codex/config.toml`, and per-cwd
