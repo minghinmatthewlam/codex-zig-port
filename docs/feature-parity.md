@@ -190,7 +190,9 @@ Zig TUI help in `src/tui.zig`, and the broader narrative tracker in
   `debug prompt-input`; `exec --profile-v2` also works locally. Unsupported
   subcommands reject the flag with the Rust-shaped runtime-scope error, and
   profile-v2 names are validated as Rust-style plain names instead of accepting
-  path-like config filenames.
+  path-like config filenames. Selecting a profile-v2 name that still exists as
+  a legacy `[profiles.NAME]` section in the base user config now rejects like
+  Rust.
 - Root and exec `--dangerously-bypass-hook-trust` parsing is implemented, and
   app-server plus non-interactive exec/review hook execution now runs enabled
   untrusted/modified hooks for that invocation while preserving disabled hook

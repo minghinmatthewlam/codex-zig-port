@@ -123,6 +123,10 @@ pub fn main(init: std.process.Init) !void {
                 "error: invalid --profile-v2 value; pass a plain name such as `work`\n",
                 .{},
             ),
+            error.ProfileV2LegacyProfileConflict => std.debug.print(
+                "error: selected profile-v2 cannot also exist as a legacy [profiles.<name>] section in config.toml\n",
+                .{},
+            ),
             error.InvalidMcpServerTransport => std.debug.print(
                 "error: invalid transport\n",
                 .{},

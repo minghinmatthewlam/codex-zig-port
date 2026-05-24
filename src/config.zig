@@ -1026,6 +1026,7 @@ pub fn loadWithOptions(allocator: std.mem.Allocator, options: LoadOptions) !Conf
     defer if (profile_v2_config_bytes) |bytes| allocator.free(bytes);
 
     const base_config_view = ConfigView{ .bytes = base_config_bytes orelse "" };
+    try rejectProfileV2LegacyProfileConflict(options.profile_v2, base_config_view);
     const config_view = if (profile_v2_config_bytes) |bytes|
         ConfigView{ .bytes = bytes, .fallback = &base_config_view }
     else
@@ -1176,6 +1177,11 @@ pub fn validateProfileV2Name(value: []const u8) !void {
         if (std.ascii.isAlphanumeric(byte) or byte == '_' or byte == '-') continue;
         return error.InvalidProfileV2Name;
     }
+}
+
+fn rejectProfileV2LegacyProfileConflict(profile_v2: ?[]const u8, base_config_view: ConfigView) !void {
+    const profile = profile_v2 orelse return;
+    if (base_config_view.hasProfile(profile)) return error.ProfileV2LegacyProfileConflict;
 }
 
 fn resolveLogDir(allocator: std.mem.Allocator, config_view: ConfigView, codex_home: []const u8) ![]const u8 {
@@ -5561,6 +5567,23 @@ test "profile v2 names must be plain filenames" {
     try std.testing.expectError(error.InvalidProfileV2Name, validateProfileV2Name("../work"));
     try std.testing.expectError(error.InvalidProfileV2Name, validateProfileV2Name("team/work"));
     try std.testing.expectError(error.InvalidProfileV2Name, validateProfileV2Name("team.work"));
+}
+
+test "profile v2 rejects matching legacy profile in base config" {
+    const base = ConfigView{
+        .bytes =
+        \\model = "gpt-main"
+        \\
+        \\[profiles.work]
+        \\model = "gpt-work"
+        \\
+        ,
+    };
+    try std.testing.expectError(
+        error.ProfileV2LegacyProfileConflict,
+        rejectProfileV2LegacyProfileConflict("work", base),
+    );
+    try rejectProfileV2LegacyProfileConflict("dev", base);
 }
 
 test "runtime model_provider override refreshes provider settings" {
