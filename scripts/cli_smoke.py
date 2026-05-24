@@ -2320,6 +2320,142 @@ def run_help_command_smoke(binary: Path) -> None:
         assert nested_plugin.stdout == ""
         assert usage in nested_plugin.stderr
 
+    for argv, usage in [
+        ([str(binary), "help", "mcp", "list"], "codex-zig mcp list"),
+        ([str(binary), "mcp", "help", "list"], "codex-zig mcp list"),
+        ([str(binary), "mcp", "list", "--help"], "codex-zig mcp list"),
+        ([str(binary), "help", "mcp", "get"], "codex-zig mcp get"),
+        ([str(binary), "mcp", "help", "get"], "codex-zig mcp get"),
+        ([str(binary), "mcp", "get", "--help"], "codex-zig mcp get"),
+        ([str(binary), "mcp", "get", "demo", "--help"], "codex-zig mcp get"),
+        ([str(binary), "help", "mcp", "add"], "codex-zig mcp add"),
+        ([str(binary), "mcp", "help", "add"], "codex-zig mcp add"),
+        ([str(binary), "mcp", "add", "--help"], "codex-zig mcp add"),
+        ([str(binary), "mcp", "add", "demo", "--help"], "codex-zig mcp add"),
+        ([str(binary), "mcp", "add", "demo", "--url", "https://example.com", "--help"], "codex-zig mcp add"),
+        ([str(binary), "help", "mcp", "remove"], "codex-zig mcp remove"),
+        ([str(binary), "mcp", "help", "remove"], "codex-zig mcp remove"),
+        ([str(binary), "mcp", "remove", "--help"], "codex-zig mcp remove"),
+        ([str(binary), "mcp", "remove", "demo", "--help"], "codex-zig mcp remove"),
+        ([str(binary), "help", "mcp", "login"], "codex-zig mcp login"),
+        ([str(binary), "mcp", "help", "login"], "codex-zig mcp login"),
+        ([str(binary), "mcp", "login", "--help"], "codex-zig mcp login"),
+        ([str(binary), "mcp", "login", "demo", "--help"], "codex-zig mcp login"),
+        ([str(binary), "mcp", "login", "demo", "--scopes", "read", "--help"], "codex-zig mcp login"),
+        ([str(binary), "help", "mcp", "logout"], "codex-zig mcp logout"),
+        ([str(binary), "mcp", "help", "logout"], "codex-zig mcp logout"),
+        ([str(binary), "mcp", "logout", "--help"], "codex-zig mcp logout"),
+        ([str(binary), "mcp", "logout", "demo", "--help"], "codex-zig mcp logout"),
+        ([str(binary), "help", "mcp", "help"], "Usage: codex-zig mcp help [COMMAND]..."),
+        ([str(binary), "mcp", "help", "help"], "Usage: codex-zig mcp help [COMMAND]..."),
+    ]:
+        nested_mcp = subprocess.run(
+            argv,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=5,
+            check=True,
+        )
+        assert nested_mcp.stdout == ""
+        assert usage in nested_mcp.stderr
+        assert "leaked" not in nested_mcp.stderr
+
+    with tempfile.TemporaryDirectory() as temp_home:
+        Path(temp_home, "config.toml").write_text(
+            "[mcp_servers.bad]\ncommand = 1\n",
+            encoding="utf-8",
+        )
+        malformed_env = os.environ.copy()
+        malformed_env["CODEX_HOME"] = temp_home
+        for argv, usage in [
+            ([str(binary), "mcp", "list", "--help"], "codex-zig mcp list"),
+            ([str(binary), "mcp", "get", "--help"], "codex-zig mcp get"),
+            ([str(binary), "mcp", "get", "demo", "--help"], "codex-zig mcp get"),
+            ([str(binary), "mcp", "add", "--help"], "codex-zig mcp add"),
+            ([str(binary), "mcp", "add", "demo", "--help"], "codex-zig mcp add"),
+            ([str(binary), "mcp", "remove", "--help"], "codex-zig mcp remove"),
+            ([str(binary), "mcp", "remove", "demo", "--help"], "codex-zig mcp remove"),
+            ([str(binary), "mcp", "login", "--help"], "codex-zig mcp login"),
+            ([str(binary), "mcp", "login", "demo", "--help"], "codex-zig mcp login"),
+            ([str(binary), "mcp", "logout", "--help"], "codex-zig mcp logout"),
+            ([str(binary), "mcp", "logout", "demo", "--help"], "codex-zig mcp logout"),
+        ]:
+            malformed_help = subprocess.run(
+                argv,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                env=malformed_env,
+                timeout=5,
+                check=True,
+            )
+            assert malformed_help.stdout == ""
+            assert usage in malformed_help.stderr
+            assert "invalid transport" not in malformed_help.stderr
+            assert "leaked" not in malformed_help.stderr
+
+        malformed_unknown = subprocess.run(
+            [str(binary), "mcp", "nope"],
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            env=malformed_env,
+            timeout=5,
+            check=False,
+        )
+        assert malformed_unknown.returncode != 0
+        assert malformed_unknown.stdout == ""
+        assert "error: unrecognized subcommand 'nope'" in malformed_unknown.stderr
+        assert "Usage: codex-zig mcp [OPTIONS] <COMMAND>" in malformed_unknown.stderr
+        assert "invalid transport" not in malformed_unknown.stderr
+
+        for argv in [
+            [str(binary), "mcp", "list", "--bad", "--help"],
+            [str(binary), "mcp", "get", "demo", "--bad", "--help"],
+            [str(binary), "mcp", "add", "demo", "--bad", "--help"],
+            [str(binary), "mcp", "add", "demo", "extra", "--help"],
+            [str(binary), "mcp", "remove", "demo", "extra", "--help"],
+            [str(binary), "mcp", "login", "demo", "--bad", "--help"],
+            [str(binary), "mcp", "logout", "demo", "extra", "--help"],
+        ]:
+            invalid_before_help = subprocess.run(
+                argv,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                env=malformed_env,
+                timeout=5,
+                check=False,
+            )
+            assert invalid_before_help.returncode != 0
+            assert invalid_before_help.stdout == ""
+            assert "invalid transport" not in invalid_before_help.stderr
+            assert "Usage:\n  codex-zig mcp" not in invalid_before_help.stderr
+
+    with tempfile.TemporaryDirectory() as temp_home:
+        option_value_env = os.environ.copy()
+        option_value_env["CODEX_HOME"] = temp_home
+        for argv in [
+            [str(binary), "mcp", "add", "demo", "--url", "--help"],
+            [str(binary), "mcp", "add", "demo", "--bearer-token-env-var", "--help"],
+            [str(binary), "mcp", "add", "demo", "--env", "--help"],
+            [str(binary), "mcp", "login", "demo", "--scopes", "--help"],
+        ]:
+            missing_option_value = subprocess.run(
+                argv,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                env=option_value_env,
+                timeout=5,
+                check=False,
+            )
+            assert missing_option_value.returncode != 0
+            assert missing_option_value.stdout == ""
+            assert "Usage:" not in missing_option_value.stderr
+            assert "Added global MCP server" not in missing_option_value.stdout
+
     for argv, rejected_subcommand, usage in [
         ([str(binary), "help", "--help"], "--help", "Usage: codex-zig [OPTIONS] [PROMPT]"),
         ([str(binary), "exec", "help", "--help"], "--help", "Usage: codex-zig exec [OPTIONS] [PROMPT]"),
@@ -2347,6 +2483,12 @@ def run_help_command_smoke(binary: Path) -> None:
         ([str(binary), "help", "plugin", "marketplace", "help", "--help"], "--help", "Usage: codex-zig plugin marketplace help [COMMAND]..."),
         ([str(binary), "help", "plugin", "marketplace", "help", "add"], "add", "Usage: codex-zig plugin marketplace help [COMMAND]..."),
         ([str(binary), "plugin", "help", "marketplace", "help", "add"], "add", "Usage: codex-zig plugin marketplace help [COMMAND]..."),
+        ([str(binary), "mcp", "help", "--help"], "--help", "Usage: codex-zig mcp [OPTIONS] <COMMAND>"),
+        ([str(binary), "help", "mcp", "add", "--help"], "--help", "Usage: codex-zig mcp add [OPTIONS] <NAME> (--url <URL> | -- <COMMAND>...)"),
+        ([str(binary), "help", "mcp", "nope"], "nope", "Usage: codex-zig mcp [OPTIONS] <COMMAND>"),
+        ([str(binary), "mcp", "nope"], "nope", "Usage: codex-zig mcp [OPTIONS] <COMMAND>"),
+        ([str(binary), "help", "mcp", "help", "--help"], "--help", "Usage: codex-zig mcp help [COMMAND]..."),
+        ([str(binary), "mcp", "help", "get", "--help"], "--help", "Usage: codex-zig mcp get [OPTIONS] <NAME>"),
     ]:
         rejected = subprocess.run(
             argv,

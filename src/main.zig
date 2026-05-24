@@ -1077,6 +1077,10 @@ fn runHelpCommand(allocator: std.mem.Allocator, args: *std.process.Args.Iterator
         try debug_cmd.printHelpForArgs(targets.items[1..]);
         return;
     }
+    if (std.mem.eql(u8, target, "mcp")) {
+        try mcp_cmd.printHelpForArgs(targets.items[1..]);
+        return;
+    }
     if (std.mem.eql(u8, target, "plugin")) {
         try plugin_cmd.printHelpForArgs(targets.items[1..]);
         return;
@@ -1093,8 +1097,6 @@ fn runHelpCommand(allocator: std.mem.Allocator, args: *std.process.Args.Iterator
         printLogoutHelp();
     } else if (std.mem.eql(u8, target, "doctor")) {
         doctor_cmd.printHelp();
-    } else if (std.mem.eql(u8, target, "mcp")) {
-        mcp_cmd.printHelp();
     } else if (std.mem.eql(u8, target, "mcp-server")) {
         mcp_server_cmd.printHelp();
     } else if (std.mem.eql(u8, target, "app-server")) {

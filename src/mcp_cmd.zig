@@ -278,6 +278,23 @@ fn runArgs(allocator: std.mem.Allocator, args: []const []const u8) !void {
         printHelp();
         return;
     }
+    if (std.mem.eql(u8, args[0], "help")) {
+        try printHelpForArgs(args[1..]);
+        return;
+    }
+
+    const subcommand = args[0];
+    if (mcpHelpUsageForSubcommand(subcommand) == null) {
+        failMcpHelpSubcommand(subcommand, .root);
+        return error.HelpSubcommandInvalid;
+    }
+    switch (try preflightDirectSubcommandHelp(subcommand, args[1..])) {
+        .help => |usage| {
+            printMcpSubcommandHelp(usage);
+            return;
+        },
+        .run => {},
+    }
 
     const codex_home = try resolveCodexHome(allocator);
     defer allocator.free(codex_home);
@@ -287,7 +304,6 @@ fn runArgs(allocator: std.mem.Allocator, args: []const []const u8) !void {
     var servers = try parseServers(allocator, config_bytes orelse "");
     defer servers.deinit(allocator);
 
-    const subcommand = args[0];
     if (std.mem.eql(u8, subcommand, "list")) {
         try loadEffectiveMcpServers(allocator, codex_home, config_bytes orelse "", &servers);
         try runList(allocator, codex_home, config_bytes orelse "", servers, args[1..]);
@@ -305,8 +321,193 @@ fn runArgs(allocator: std.mem.Allocator, args: []const []const u8) !void {
         try loadEffectiveMcpServers(allocator, codex_home, config_bytes orelse "", &servers);
         try runLogout(allocator, codex_home, config_bytes orelse "", servers, args[1..]);
     } else {
-        return error.UnknownMcpSubcommand;
+        failMcpHelpSubcommand(subcommand, .root);
+        return error.HelpSubcommandInvalid;
     }
+}
+
+pub fn printHelpForArgs(args: []const []const u8) !void {
+    if (args.len == 0) {
+        printHelp();
+        return;
+    }
+    const target = args[0];
+    if (isHelpFlag(target)) {
+        failMcpHelpSubcommand(target, .root);
+        return error.HelpSubcommandInvalid;
+    }
+    if (std.mem.eql(u8, target, "help")) {
+        if (args.len > 1) {
+            failMcpHelpSubcommand(args[1], .help_cmd);
+            return error.HelpSubcommandInvalid;
+        }
+        printHelpCommandHelp();
+        return;
+    }
+    const usage = mcpHelpUsageForSubcommand(target) orelse {
+        failMcpHelpSubcommand(target, .root);
+        return error.HelpSubcommandInvalid;
+    };
+    if (args.len > 1) {
+        failMcpHelpSubcommand(args[1], usage);
+        return error.HelpSubcommandInvalid;
+    }
+    printMcpSubcommandHelp(usage);
+}
+
+const McpHelpUsage = enum {
+    root,
+    help_cmd,
+    list_cmd,
+    get_cmd,
+    add_cmd,
+    remove_cmd,
+    login_cmd,
+    logout_cmd,
+};
+
+const DirectMcpHelpPreflight = union(enum) {
+    run,
+    help: McpHelpUsage,
+};
+
+fn mcpHelpUsageForSubcommand(subcommand: []const u8) ?McpHelpUsage {
+    if (std.mem.eql(u8, subcommand, "list")) return .list_cmd;
+    if (std.mem.eql(u8, subcommand, "get")) return .get_cmd;
+    if (std.mem.eql(u8, subcommand, "add")) return .add_cmd;
+    if (std.mem.eql(u8, subcommand, "remove")) return .remove_cmd;
+    if (std.mem.eql(u8, subcommand, "login")) return .login_cmd;
+    if (std.mem.eql(u8, subcommand, "logout")) return .logout_cmd;
+    return null;
+}
+
+fn preflightDirectSubcommandHelp(subcommand: []const u8, args: []const []const u8) !DirectMcpHelpPreflight {
+    if (!hasHelpFlagBeforeCommandSeparator(args)) return .run;
+    if (std.mem.eql(u8, subcommand, "list")) return preflightListHelp(args);
+    if (std.mem.eql(u8, subcommand, "get")) return preflightGetHelp(args);
+    if (std.mem.eql(u8, subcommand, "add")) return preflightAddHelp(args);
+    if (std.mem.eql(u8, subcommand, "remove")) return preflightSingleNameHelp(args, .remove_cmd);
+    if (std.mem.eql(u8, subcommand, "login")) return preflightLoginHelp(args);
+    if (std.mem.eql(u8, subcommand, "logout")) return preflightSingleNameHelp(args, .logout_cmd);
+    return .run;
+}
+
+fn preflightListHelp(args: []const []const u8) !DirectMcpHelpPreflight {
+    for (args) |arg| {
+        if (std.mem.eql(u8, arg, "--")) return .run;
+        if (isHelpFlag(arg)) return .{ .help = .list_cmd };
+        if (std.mem.eql(u8, arg, "--json")) continue;
+        return error.UnknownMcpListOption;
+    }
+    return .run;
+}
+
+fn preflightGetHelp(args: []const []const u8) !DirectMcpHelpPreflight {
+    var saw_name = false;
+    for (args) |arg| {
+        if (std.mem.eql(u8, arg, "--")) return .run;
+        if (isHelpFlag(arg)) return .{ .help = .get_cmd };
+        if (std.mem.eql(u8, arg, "--json")) continue;
+        if (std.mem.startsWith(u8, arg, "-")) return error.UnknownMcpGetOption;
+        if (saw_name) return error.UnexpectedMcpArgument;
+        saw_name = true;
+    }
+    return .run;
+}
+
+fn preflightAddHelp(args: []const []const u8) !DirectMcpHelpPreflight {
+    var saw_name = false;
+    var index: usize = 0;
+    while (index < args.len) : (index += 1) {
+        const arg = args[index];
+        if (std.mem.eql(u8, arg, "--")) return .run;
+        if (isHelpFlag(arg)) return .{ .help = .add_cmd };
+        if (std.mem.eql(u8, arg, "--url") or std.mem.eql(u8, arg, "--bearer-token-env-var") or std.mem.eql(u8, arg, "--env")) {
+            index += 1;
+            if (index >= args.len or isHelpFlag(args[index])) return error.MissingMcpOptionValue;
+            if (std.mem.startsWith(u8, args[index], "-")) return error.UnknownMcpAddOption;
+            continue;
+        }
+        if (std.mem.startsWith(u8, arg, "--url=") or std.mem.startsWith(u8, arg, "--bearer-token-env-var=") or std.mem.startsWith(u8, arg, "--env=")) {
+            continue;
+        }
+        if (std.mem.startsWith(u8, arg, "-")) return error.UnknownMcpAddOption;
+        if (saw_name) return error.UnknownMcpAddOption;
+        saw_name = true;
+    }
+    return .run;
+}
+
+fn preflightLoginHelp(args: []const []const u8) !DirectMcpHelpPreflight {
+    var saw_name = false;
+    var index: usize = 0;
+    while (index < args.len) : (index += 1) {
+        const arg = args[index];
+        if (std.mem.eql(u8, arg, "--")) return .run;
+        if (isHelpFlag(arg)) return .{ .help = .login_cmd };
+        if (std.mem.eql(u8, arg, "--scopes")) {
+            index += 1;
+            if (index >= args.len or isHelpFlag(args[index])) return error.MissingMcpOptionValue;
+            if (std.mem.startsWith(u8, args[index], "-")) return error.UnknownMcpLoginOption;
+            continue;
+        }
+        if (std.mem.startsWith(u8, arg, "--scopes=")) continue;
+        if (std.mem.startsWith(u8, arg, "-")) return error.UnknownMcpLoginOption;
+        if (saw_name) return error.UnexpectedMcpArgument;
+        saw_name = true;
+    }
+    return .run;
+}
+
+fn preflightSingleNameHelp(args: []const []const u8, usage: McpHelpUsage) !DirectMcpHelpPreflight {
+    var saw_name = false;
+    for (args) |arg| {
+        if (std.mem.eql(u8, arg, "--")) return .run;
+        if (isHelpFlag(arg)) return .{ .help = usage };
+        if (std.mem.startsWith(u8, arg, "-")) return error.UnexpectedMcpArgument;
+        if (saw_name) return error.UnexpectedMcpArgument;
+        saw_name = true;
+    }
+    return .run;
+}
+
+fn hasHelpFlagBeforeCommandSeparator(args: []const []const u8) bool {
+    for (args) |arg| {
+        if (std.mem.eql(u8, arg, "--")) return false;
+        if (isHelpFlag(arg)) return true;
+    }
+    return false;
+}
+
+fn printMcpSubcommandHelp(usage: McpHelpUsage) void {
+    switch (usage) {
+        .list_cmd => printListHelp(),
+        .get_cmd => printGetHelp(),
+        .add_cmd => printAddHelp(),
+        .remove_cmd => printRemoveHelp(),
+        .login_cmd => printLoginHelp(),
+        .logout_cmd => printLogoutHelp(),
+        .root => printHelp(),
+        .help_cmd => printHelpCommandHelp(),
+    }
+}
+
+fn failMcpHelpSubcommand(subcommand: []const u8, usage: McpHelpUsage) void {
+    if (builtin.is_test) return;
+    cli_utils.printUnrecognizedSubcommand(subcommand, mcpHelpUsage(usage), usage != .help_cmd);
+}
+
+fn mcpHelpUsage(usage: McpHelpUsage) []const u8 {
+    return switch (usage) {
+        .root => "Usage: codex-zig mcp [OPTIONS] <COMMAND>",
+        .help_cmd => "Usage: codex-zig mcp help [COMMAND]...",
+        .list_cmd => "Usage: codex-zig mcp list [OPTIONS]",
+        .get_cmd => "Usage: codex-zig mcp get [OPTIONS] <NAME>",
+        .add_cmd => "Usage: codex-zig mcp add [OPTIONS] <NAME> (--url <URL> | -- <COMMAND>...)",
+        .remove_cmd => "Usage: codex-zig mcp remove [OPTIONS] <NAME>",
+        .login_cmd => "Usage: codex-zig mcp login [OPTIONS] <NAME>",
+        .logout_cmd => "Usage: codex-zig mcp logout [OPTIONS] <NAME>",
+    };
 }
 
 pub fn loadServers(allocator: std.mem.Allocator, codex_home: []const u8) !McpServers {
@@ -520,6 +721,10 @@ fn appendColumnLine(allocator: std.mem.Allocator, output: *std.ArrayList(u8), ce
 
 fn runGet(allocator: std.mem.Allocator, servers: McpServers, args: []const []const u8) !void {
     if (args.len == 0) return error.MissingMcpServerName;
+    if (isHelpFlag(args[0])) {
+        printGetHelp();
+        return;
+    }
     const name = args[0];
     var json = false;
     for (args[1..]) |arg| {
@@ -551,6 +756,10 @@ fn runAdd(
     args: []const []const u8,
 ) !void {
     if (args.len == 0) return error.MissingMcpServerName;
+    if (isHelpFlag(args[0])) {
+        printAddHelp();
+        return;
+    }
     const name = args[0];
     try validateServerName(name);
 
@@ -569,7 +778,7 @@ fn runAdd(
         }
         if (std.mem.eql(u8, arg, "--url")) {
             index += 1;
-            if (index >= args.len) return error.MissingMcpOptionValue;
+            if (index >= args.len or isHelpFlag(args[index])) return error.MissingMcpOptionValue;
             if (parsed.kind == .stdio) return error.ConflictingMcpTransports;
             parsed.kind = .streamable_http;
             if (parsed.url) |existing| allocator.free(existing);
@@ -585,7 +794,7 @@ fn runAdd(
         }
         if (std.mem.eql(u8, arg, "--bearer-token-env-var")) {
             index += 1;
-            if (index >= args.len) return error.MissingMcpOptionValue;
+            if (index >= args.len or isHelpFlag(args[index])) return error.MissingMcpOptionValue;
             if (parsed.bearer_token_env_var) |existing| allocator.free(existing);
             parsed.bearer_token_env_var = try allocator.dupe(u8, args[index]);
             continue;
@@ -597,7 +806,7 @@ fn runAdd(
         }
         if (std.mem.eql(u8, arg, "--env")) {
             index += 1;
-            if (index >= args.len) return error.MissingMcpOptionValue;
+            if (index >= args.len or isHelpFlag(args[index])) return error.MissingMcpOptionValue;
             try appendEnvPair(allocator, &parsed, args[index]);
             continue;
         }
@@ -653,6 +862,10 @@ fn runRemove(
     args: []const []const u8,
 ) !void {
     if (args.len == 0) return error.MissingMcpServerName;
+    if (containsHelpFlag(args, &.{})) {
+        printRemoveHelp();
+        return;
+    }
     if (args.len > 1) return error.UnexpectedMcpArgument;
     const name = args[0];
     try validateServerName(name);
@@ -691,7 +904,7 @@ fn runLogin(allocator: std.mem.Allocator, codex_home: []const u8, config_bytes: 
         }
         if (std.mem.eql(u8, arg, "--scopes")) {
             index += 1;
-            if (index >= args.len) return error.MissingMcpOptionValue;
+            if (index >= args.len or isHelpFlag(args[index])) return error.MissingMcpOptionValue;
             try replaceMcpOAuthScopesCsv(allocator, &explicit_scopes, args[index]);
             explicit_scopes_present = true;
             continue;
@@ -731,6 +944,10 @@ fn runLogout(
     args: []const []const u8,
 ) !void {
     if (args.len == 0) return error.MissingMcpServerName;
+    if (containsHelpFlag(args, &.{})) {
+        printLogoutHelp();
+        return;
+    }
     if (args.len > 1) return error.UnexpectedMcpArgument;
     const name = args[0];
     try validateServerName(name);
@@ -3925,6 +4142,25 @@ fn isHelpFlag(arg: []const u8) bool {
     return std.mem.eql(u8, arg, "--help") or std.mem.eql(u8, arg, "-h");
 }
 
+fn containsHelpFlag(args: []const []const u8, value_options: []const []const u8) bool {
+    var skip_next = false;
+    for (args) |arg| {
+        if (skip_next) {
+            skip_next = false;
+            continue;
+        }
+        if (std.mem.eql(u8, arg, "--")) return false;
+        if (isHelpFlag(arg)) return true;
+        for (value_options) |option| {
+            if (std.mem.eql(u8, arg, option)) {
+                skip_next = true;
+                break;
+            }
+        }
+    }
+    return false;
+}
+
 pub fn printHelp() void {
     std.debug.print(
         \\Usage:
@@ -3934,6 +4170,19 @@ pub fn printHelp() void {
         \\  codex-zig mcp remove NAME
         \\  codex-zig mcp login NAME [--scopes SCOPE,SCOPE]
         \\  codex-zig mcp logout NAME
+        \\  codex-zig mcp help [COMMAND]
+        \\
+    , .{});
+}
+
+fn printHelpCommandHelp() void {
+    std.debug.print(
+        \\Print this message or the help of the given subcommand(s)
+        \\
+        \\Usage: codex-zig mcp help [COMMAND]...
+        \\
+        \\Arguments:
+        \\  [COMMAND]...  Print help for the subcommand(s)
         \\
     , .{});
 }
@@ -3950,8 +4199,16 @@ fn printAddHelp() void {
     std.debug.print("Usage:\n  codex-zig mcp add NAME (--url URL | -- COMMAND...)\n", .{});
 }
 
+fn printRemoveHelp() void {
+    std.debug.print("Usage:\n  codex-zig mcp remove NAME\n", .{});
+}
+
 fn printLoginHelp() void {
     std.debug.print("Usage:\n  codex-zig mcp login NAME [--scopes SCOPE,SCOPE]\n", .{});
+}
+
+fn printLogoutHelp() void {
+    std.debug.print("Usage:\n  codex-zig mcp logout NAME\n", .{});
 }
 
 test "mcp config parses and renders stdio and http servers" {
