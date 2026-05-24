@@ -1091,7 +1091,12 @@ to the app-server/MCP source, lowercases custom sources while preserving them
 as custom even when they resemble internal source encodings, rejects empty
 sources, and applies the selected source to user-visible `thread/start`,
 history-backed `thread/resume`, `thread/fork`, detached review thread
-responses, and feedback-upload session-source tags.
+responses, feedback-upload session-source tags, and local plugin marketplace
+product restrictions for `plugin/list`, `plugin/read`, and `plugin/install`.
+Built-in app-server sources map to Codex product visibility, while custom
+`chatgpt`, `codex`, and `atlas` session sources map to their matching product
+gates and unknown custom sources cannot see product-restricted marketplace
+entries. Remote marketplace product-restriction query parity remains planned.
 
 Additional app-server fuzzy-file-search runtime coverage: `fuzzyFileSearch` now folds common Latin accents and combining marks for composed and decomposed UTF-8 paths while returning original path character indices in result matches, matching Rust's UTF-32 matcher index contract for multibyte paths. It also honors local `.gitignore` files only when a git context exists, including common file, directory, wildcard, double-star zero-or-more-directory, negation, escaped leading `#`/`!`, escaped-space, escaped wildcard, and bracket character-class/range patterns used by Codex workspaces, while ignoring `.gitignore` files in non-git roots to match Rust's `require_git(true)` behavior. Repository-local `.git/info/exclude` files are honored for ordinary repo roots and worktree-style `.git` files with `gitdir:` plus `commondir` indirection. Global git excludes are honored from `core.excludesFile`, with fallback to XDG git ignore paths, only when a git context exists and below `.git/info/exclude` precedence. Local `.ignore` files are honored regardless of git context, with Rust-compatible precedence over `.gitignore`; `.gitignore` rules also override lower-precedence `.git/info/exclude` rules. Gitignore and git-info-exclude rules stop at nested `.git` repository boundaries while `.ignore` rules continue through those boundaries. Session updates suppress duplicate `sessionUpdated` and `sessionCompleted` notifications when a completed query is submitted again unchanged, cleared session queries emit blank snapshots, empty session ids match Rust's per-method validation behavior for start/update/stop, and concurrent session records keep independent roots and update state. Full `ignore`-crate parity for custom ignore files and remaining pattern grammar, plus broader Unicode normalization, request cancellation, and true async streaming remain planned.
 

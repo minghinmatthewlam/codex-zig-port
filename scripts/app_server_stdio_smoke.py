@@ -4718,6 +4718,194 @@ def run_app_server_session_source_smoke(binary: Path) -> None:
         shutil.rmtree(feedback_home, ignore_errors=True)
 
 
+def run_app_server_plugin_product_restriction_smoke(binary: Path) -> None:
+    root = Path(
+        tempfile.mkdtemp(prefix="codex-zig-app-server-plugin-product-", dir="/tmp")
+    )
+    codex_home = root / "codex-home"
+    repo = root / "repo"
+    marketplace_path = repo / ".agents" / "plugins" / "marketplace.json"
+    try:
+        codex_home.mkdir()
+        repo.joinpath(".agents", "plugins").mkdir(parents=True)
+        codex_home.joinpath("config.toml").write_text(
+            "[features]\nplugins = true\n",
+            encoding="utf-8",
+        )
+        plugins = [
+            ("codex-plugin", ["CODEX"]),
+            ("atlas-plugin", ["ATLAS"]),
+            ("chatgpt-plugin", ["CHATGPT"]),
+            ("unrestricted-plugin", None),
+            ("null-products-plugin", "NULL"),
+            ("empty-products-plugin", []),
+        ]
+        marketplace_plugins = []
+        for plugin_name, products in plugins:
+            plugin_root = repo / "plugins" / plugin_name
+            plugin_root.joinpath(".codex-plugin").mkdir(parents=True)
+            plugin_root.joinpath(".codex-plugin", "plugin.json").write_text(
+                json.dumps(
+                    {
+                        "name": plugin_name,
+                        "version": "1.0.0",
+                        "interface": {"displayName": plugin_name},
+                    }
+                ),
+                encoding="utf-8",
+            )
+            policy = {"authentication": "ON_USE"}
+            if products == "NULL":
+                policy["products"] = None
+            elif products is not None:
+                policy["products"] = products
+            marketplace_plugins.append(
+                {
+                    "name": plugin_name,
+                    "source": {
+                        "source": "local",
+                        "path": f"./plugins/{plugin_name}",
+                    },
+                    "policy": policy,
+                }
+            )
+        marketplace_path.write_text(
+            json.dumps({"name": "product-market", "plugins": marketplace_plugins}),
+            encoding="utf-8",
+        )
+
+        env = os.environ.copy()
+        env["CODEX_HOME"] = str(codex_home)
+        plugin_list_default = request_stdio_app_server(
+            binary,
+            {
+                "jsonrpc": "2.0",
+                "id": "plugin-product-list-default",
+                "method": "plugin/list",
+                "params": {"cwds": [str(repo)], "marketplaceKinds": ["local"]},
+            },
+            env,
+        )
+        default_plugins = [
+            plugin["name"]
+            for plugin in plugin_list_default["result"]["marketplaces"][0]["plugins"]
+        ]
+        assert default_plugins == [
+            "codex-plugin",
+            "unrestricted-plugin",
+            "null-products-plugin",
+        ]
+
+        plugin_list_atlas = request_stdio_app_server(
+            binary,
+            {
+                "jsonrpc": "2.0",
+                "id": "plugin-product-list-atlas",
+                "method": "plugin/list",
+                "params": {"cwds": [str(repo)], "marketplaceKinds": ["local"]},
+            },
+            env,
+            app_server_args=["--session-source=Atlas"],
+        )
+        atlas_plugins = [
+            plugin["name"]
+            for plugin in plugin_list_atlas["result"]["marketplaces"][0]["plugins"]
+        ]
+        assert atlas_plugins == [
+            "atlas-plugin",
+            "unrestricted-plugin",
+            "null-products-plugin",
+        ]
+
+        atlas_read_codex = request_stdio_app_server(
+            binary,
+            {
+                "jsonrpc": "2.0",
+                "id": "plugin-product-read-hidden",
+                "method": "plugin/read",
+                "params": {
+                    "marketplacePath": str(marketplace_path),
+                    "remoteMarketplaceName": None,
+                    "pluginName": "codex-plugin",
+                },
+            },
+            env,
+            app_server_args=["--session-source=Atlas"],
+        )
+        assert atlas_read_codex["id"] == "plugin-product-read-hidden"
+        assert atlas_read_codex["error"]["code"] == -32600
+        assert "was not found" in atlas_read_codex["error"]["message"]
+
+        atlas_read = request_stdio_app_server(
+            binary,
+            {
+                "jsonrpc": "2.0",
+                "id": "plugin-product-read-atlas",
+                "method": "plugin/read",
+                "params": {
+                    "marketplacePath": str(marketplace_path),
+                    "remoteMarketplaceName": None,
+                    "pluginName": "atlas-plugin",
+                },
+            },
+            env,
+            app_server_args=["--session-source=Atlas"],
+        )
+        assert atlas_read["id"] == "plugin-product-read-atlas"
+        assert atlas_read["result"]["plugin"]["summary"]["name"] == "atlas-plugin"
+
+        default_install_chatgpt = request_stdio_app_server(
+            binary,
+            {
+                "jsonrpc": "2.0",
+                "id": "plugin-product-install-hidden",
+                "method": "plugin/install",
+                "params": {
+                    "marketplacePath": str(marketplace_path),
+                    "remoteMarketplaceName": None,
+                    "pluginName": "chatgpt-plugin",
+                },
+            },
+            env,
+        )
+        assert default_install_chatgpt["id"] == "plugin-product-install-hidden"
+        assert default_install_chatgpt["error"]["code"] == -32600
+        assert "not available for install" in default_install_chatgpt["error"]["message"]
+
+        chatgpt_install = request_stdio_app_server(
+            binary,
+            {
+                "jsonrpc": "2.0",
+                "id": "plugin-product-install-chatgpt",
+                "method": "plugin/install",
+                "params": {
+                    "marketplacePath": str(marketplace_path),
+                    "remoteMarketplaceName": None,
+                    "pluginName": "chatgpt-plugin",
+                },
+            },
+            env,
+            app_server_args=["--session-source=ChatGPT"],
+        )
+        assert chatgpt_install["id"] == "plugin-product-install-chatgpt"
+        assert chatgpt_install["result"] == {
+            "authPolicy": "ON_USE",
+            "appsNeedingAuth": [],
+        }
+        assert (
+            codex_home
+            / "plugins"
+            / "cache"
+            / "product-market"
+            / "chatgpt-plugin"
+            / "1.0.0"
+            / ".codex-plugin"
+            / "plugin.json"
+        ).is_file()
+    finally:
+        shutil.rmtree(root, ignore_errors=True)
+
+
 def git(repo: Path, *args: str) -> None:
     subprocess.run(
         ["git", *args],
@@ -55675,6 +55863,8 @@ def main() -> None:
     print("app-server-internal-json-schema-e2e: ok")
     run_app_server_session_source_smoke(binary)
     print("app-server-session-source-e2e: ok")
+    run_app_server_plugin_product_restriction_smoke(binary)
+    print("app-server-plugin-product-restriction-e2e: ok")
     run_flag_compat_smoke(binary)
     print("app-server-flag-compat-e2e: ok")
 

@@ -26,6 +26,12 @@ const disallowed_connector_ids = [_][]const u8{
     "connector_69272cb413a081919685ec3c88d1744e",
 };
 
+pub const ProductRestriction = enum {
+    chatgpt,
+    codex,
+    atlas,
+};
+
 const SourceRender = struct {
     plugin_root: ?[]const u8 = null,
     source_json: []const u8,
@@ -369,7 +375,7 @@ pub fn renderResponse(
     cwds: []const []const u8,
     include_local: bool,
 ) ![]const u8 {
-    return renderResponseWithRemoteMarketplaces(allocator, codex_home, config_bytes, cwds, include_local, null);
+    return renderResponseWithRemoteMarketplacesForProduct(allocator, codex_home, config_bytes, cwds, include_local, .codex, null);
 }
 
 pub fn renderResponseWithRemoteMarketplaces(
@@ -378,6 +384,18 @@ pub fn renderResponseWithRemoteMarketplaces(
     config_bytes: []const u8,
     cwds: []const []const u8,
     include_local: bool,
+    remote_marketplaces_json: ?[]const u8,
+) ![]const u8 {
+    return renderResponseWithRemoteMarketplacesForProduct(allocator, codex_home, config_bytes, cwds, include_local, .codex, remote_marketplaces_json);
+}
+
+pub fn renderResponseWithRemoteMarketplacesForProduct(
+    allocator: std.mem.Allocator,
+    codex_home: []const u8,
+    config_bytes: []const u8,
+    cwds: []const []const u8,
+    include_local: bool,
+    restriction_product: ?ProductRestriction,
     remote_marketplaces_json: ?[]const u8,
 ) ![]const u8 {
     if (!plugin_config.pluginsFeatureEnabled(config_bytes)) {
@@ -404,17 +422,17 @@ pub fn renderResponseWithRemoteMarketplaces(
         const enabled_ids = try plugin_config.enabledPluginIds(allocator, config_bytes);
         defer plugin_config.freeStringList(allocator, enabled_ids);
 
-        try appendMarketplacesForRoot(allocator, codex_home, codex_home, configured_ids, enabled_ids, &seen_plugin_ids, &marketplaces, &marketplace_count, &load_errors, &load_error_count);
+        try appendMarketplacesForRoot(allocator, codex_home, codex_home, configured_ids, enabled_ids, restriction_product, &seen_plugin_ids, &marketplaces, &marketplace_count, &load_errors, &load_error_count);
         const configured_roots = try marketplace_config.configuredMarketplaceRoots(allocator, codex_home, config_bytes);
         defer {
             for (configured_roots) |*root| root.deinit(allocator);
             allocator.free(configured_roots);
         }
         for (configured_roots) |root| {
-            try appendMarketplacesForRoot(allocator, codex_home, root.root, configured_ids, enabled_ids, &seen_plugin_ids, &marketplaces, &marketplace_count, &load_errors, &load_error_count);
+            try appendMarketplacesForRoot(allocator, codex_home, root.root, configured_ids, enabled_ids, restriction_product, &seen_plugin_ids, &marketplaces, &marketplace_count, &load_errors, &load_error_count);
         }
         for (cwds) |cwd| {
-            try appendMarketplacesForRoot(allocator, codex_home, cwd, configured_ids, enabled_ids, &seen_plugin_ids, &marketplaces, &marketplace_count, &load_errors, &load_error_count);
+            try appendMarketplacesForRoot(allocator, codex_home, cwd, configured_ids, enabled_ids, restriction_product, &seen_plugin_ids, &marketplaces, &marketplace_count, &load_errors, &load_error_count);
         }
     }
     if (remote_marketplaces_json) |json| {
@@ -486,6 +504,7 @@ pub fn renderCliResponse(
             &marketplace_count,
             &ignored_load_errors,
             &ignored_load_error_count,
+            .codex,
             null,
         );
     }
@@ -501,6 +520,7 @@ pub fn renderCliResponse(
             root.root,
             configured_ids,
             enabled_ids,
+            .codex,
             &seen_plugin_ids,
             &marketplaces,
             &marketplace_count,
@@ -541,6 +561,17 @@ pub fn renderReadResponse(
     marketplace_path: []const u8,
     requested_plugin_name: []const u8,
 ) ![]const u8 {
+    return renderReadResponseForProduct(allocator, codex_home, config_bytes, marketplace_path, requested_plugin_name, .codex);
+}
+
+pub fn renderReadResponseForProduct(
+    allocator: std.mem.Allocator,
+    codex_home: []const u8,
+    config_bytes: []const u8,
+    marketplace_path: []const u8,
+    requested_plugin_name: []const u8,
+    restriction_product: ?ProductRestriction,
+) ![]const u8 {
     if (!plugin_config.pluginsFeatureEnabled(config_bytes)) return ReadError.PluginsDisabled;
 
     const configured_ids = try plugin_config.configuredPluginIds(allocator, config_bytes);
@@ -563,6 +594,9 @@ pub fn renderReadResponse(
         if (plugin_value != .object) continue;
         const plugin_name = stringField(plugin_value.object, "name") orelse continue;
         if (!std.mem.eql(u8, plugin_name, requested_plugin_name)) continue;
+        if (!policyMatchesProductRestriction(plugin_value.object.get("policy"), restriction_product)) {
+            return ReadError.PluginNotFound;
+        }
 
         const source_value = plugin_value.object.get("source") orelse return ReadError.MissingPluginManifest;
         const source = (try renderPluginSource(allocator, marketplace_path, source_value)) orelse return ReadError.MissingPluginManifest;
@@ -629,6 +663,17 @@ pub fn installLocalPlugin(
     marketplace_path: []const u8,
     requested_plugin_name: []const u8,
 ) !InstallResult {
+    return installLocalPluginForProduct(allocator, codex_home, config_bytes, marketplace_path, requested_plugin_name, .codex);
+}
+
+pub fn installLocalPluginForProduct(
+    allocator: std.mem.Allocator,
+    codex_home: []const u8,
+    config_bytes: []const u8,
+    marketplace_path: []const u8,
+    requested_plugin_name: []const u8,
+    restriction_product: ?ProductRestriction,
+) !InstallResult {
     if (!plugin_config.pluginsFeatureEnabled(config_bytes)) return InstallError.PluginsDisabled;
 
     const bytes = try readFileOptional(allocator, marketplace_path, 1024 * 1024) orelse return InstallError.InvalidMarketplaceFile;
@@ -650,6 +695,9 @@ pub fn installLocalPlugin(
             return InstallError.InvalidPluginId;
         }
         if (std.mem.eql(u8, installPolicy(plugin_value.object.get("policy")), "NOT_AVAILABLE")) {
+            return InstallError.PluginNotAvailable;
+        }
+        if (!policyMatchesProductRestriction(plugin_value.object.get("policy"), restriction_product)) {
             return InstallError.PluginNotAvailable;
         }
 
@@ -702,6 +750,7 @@ fn appendMarketplacesForRoot(
     root: []const u8,
     configured_ids: []const []const u8,
     enabled_ids: []const []const u8,
+    restriction_product: ?ProductRestriction,
     seen_plugin_ids: *std.ArrayList([]const u8),
     marketplaces: *std.ArrayList(u8),
     marketplace_count: *usize,
@@ -717,6 +766,7 @@ fn appendMarketplacesForRoot(
             marketplace_path,
             configured_ids,
             enabled_ids,
+            restriction_product,
             seen_plugin_ids,
             marketplaces,
             marketplace_count,
@@ -737,6 +787,7 @@ fn appendFirstMarketplaceForRoot(
     marketplace_count: *usize,
     load_errors: *std.ArrayList(u8),
     load_error_count: *usize,
+    restriction_product: ?ProductRestriction,
     configured_marketplace_name: ?[]const u8,
 ) !bool {
     for (MARKETPLACE_MANIFEST_RELATIVE_PATHS) |relative_path| {
@@ -763,6 +814,7 @@ fn appendFirstMarketplaceForRoot(
             bytes,
             configured_ids,
             enabled_ids,
+            restriction_product,
             seen_plugin_ids,
             marketplaces,
             marketplace_count,
@@ -782,6 +834,7 @@ fn appendConfiguredMarketplaceFromRoot(
     root: []const u8,
     configured_ids: []const []const u8,
     enabled_ids: []const []const u8,
+    restriction_product: ?ProductRestriction,
     seen_plugin_ids: *std.ArrayList([]const u8),
     marketplaces: *std.ArrayList(u8),
     marketplace_count: *usize,
@@ -799,6 +852,7 @@ fn appendConfiguredMarketplaceFromRoot(
         marketplace_count,
         load_errors,
         load_error_count,
+        restriction_product,
         configured_marketplace_name,
     )) return;
     if (isImplicitSystemMarketplaceRoot(configured_marketplace_name, root)) return;
@@ -839,6 +893,7 @@ fn appendMarketplaceFromFile(
     marketplace_path: []const u8,
     configured_ids: []const []const u8,
     enabled_ids: []const []const u8,
+    restriction_product: ?ProductRestriction,
     seen_plugin_ids: *std.ArrayList([]const u8),
     marketplaces: *std.ArrayList(u8),
     marketplace_count: *usize,
@@ -854,6 +909,7 @@ fn appendMarketplaceFromFile(
         bytes,
         configured_ids,
         enabled_ids,
+        restriction_product,
         seen_plugin_ids,
         marketplaces,
         marketplace_count,
@@ -870,6 +926,7 @@ fn appendMarketplaceFromBytes(
     bytes: []const u8,
     configured_ids: []const []const u8,
     enabled_ids: []const []const u8,
+    restriction_product: ?ProductRestriction,
     seen_plugin_ids: *std.ArrayList([]const u8),
     marketplaces: *std.ArrayList(u8),
     marketplace_count: *usize,
@@ -913,6 +970,7 @@ fn appendMarketplaceFromBytes(
             plugin_value,
             configured_ids,
             enabled_ids,
+            restriction_product,
             seen_plugin_ids,
             &plugins,
             &plugin_count,
@@ -945,6 +1003,7 @@ fn appendPluginFromMarketplaceEntry(
     plugin_value: std.json.Value,
     configured_ids: []const []const u8,
     enabled_ids: []const []const u8,
+    restriction_product: ?ProductRestriction,
     seen_plugin_ids: *std.ArrayList([]const u8),
     plugins: *std.ArrayList(u8),
     plugin_count: *usize,
@@ -954,10 +1013,6 @@ fn appendPluginFromMarketplaceEntry(
     const plugin_name = stringField(object, "name") orelse return;
     if (plugin_name.len == 0 or marketplace_name.len == 0) return;
 
-    const source_value = object.get("source") orelse return;
-    const source = (try renderPluginSource(allocator, marketplace_path, source_value)) orelse return;
-    defer source.deinit(allocator);
-
     const plugin_id = try std.fmt.allocPrint(allocator, "{s}@{s}", .{ plugin_name, marketplace_name });
     errdefer allocator.free(plugin_id);
     if (containsString(seen_plugin_ids.items, plugin_id)) {
@@ -965,6 +1020,11 @@ fn appendPluginFromMarketplaceEntry(
         return;
     }
     try seen_plugin_ids.append(allocator, plugin_id);
+    if (!policyMatchesProductRestriction(object.get("policy"), restriction_product)) return;
+
+    const source_value = object.get("source") orelse return;
+    const source = (try renderPluginSource(allocator, marketplace_path, source_value)) orelse return;
+    defer source.deinit(allocator);
 
     const category = stringField(object, "category");
 
@@ -2708,6 +2768,28 @@ fn installPolicy(policy_value: ?std.json.Value) []const u8 {
     if (std.mem.eql(u8, value, "NOT_AVAILABLE")) return "NOT_AVAILABLE";
     if (std.mem.eql(u8, value, "INSTALLED_BY_DEFAULT")) return "INSTALLED_BY_DEFAULT";
     return "AVAILABLE";
+}
+
+fn policyMatchesProductRestriction(policy_value: ?std.json.Value, restriction_product: ?ProductRestriction) bool {
+    const policy_object = policyObject(policy_value) orelse return true;
+    const products_value = policy_object.get("products") orelse return true;
+    if (products_value == .null) return true;
+    if (products_value != .array) return false;
+    if (products_value.array.items.len == 0) return false;
+    const product = restriction_product orelse return false;
+    for (products_value.array.items) |item| {
+        if (item != .string) return false;
+        if (productRestrictionNameMatches(product, item.string)) return true;
+    }
+    return false;
+}
+
+fn productRestrictionNameMatches(product: ProductRestriction, value: []const u8) bool {
+    return switch (product) {
+        .chatgpt => std.ascii.eqlIgnoreCase(value, "chatgpt"),
+        .codex => std.ascii.eqlIgnoreCase(value, "codex"),
+        .atlas => std.ascii.eqlIgnoreCase(value, "atlas"),
+    };
 }
 
 fn authPolicy(policy_value: ?std.json.Value) []const u8 {

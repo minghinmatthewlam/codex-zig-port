@@ -459,6 +459,22 @@ fn appServerSessionSourceFeedbackTag(source: []const u8) []const u8 {
     return source;
 }
 
+fn pluginProductRestrictionForSessionSource(source: []const u8) ?plugin_list.ProductRestriction {
+    if (std.mem.startsWith(u8, source, "custom:")) {
+        const custom_source = source["custom:".len..];
+        if (std.mem.eql(u8, custom_source, "chatgpt")) return .chatgpt;
+        if (std.mem.eql(u8, custom_source, "codex")) return .codex;
+        if (std.mem.eql(u8, custom_source, "atlas")) return .atlas;
+        return null;
+    }
+    if (std.mem.eql(u8, source, "cli") or
+        std.mem.eql(u8, source, "vscode") or
+        std.mem.eql(u8, source, "exec") or
+        std.mem.eql(u8, source, "mcp") or
+        std.mem.eql(u8, source, "unknown")) return .codex;
+    return null;
+}
+
 test "app-server session-source startup arg matches Rust normalization" {
     const allocator = std.testing.allocator;
 
@@ -484,6 +500,9 @@ test "app-server session-source startup arg matches Rust normalization" {
 
     try std.testing.expectEqualStrings("atlas", appServerSessionSourceFeedbackTag(custom));
     try std.testing.expectEqualStrings("subagent_review", appServerSessionSourceFeedbackTag(reserved_custom));
+    try std.testing.expectEqual(plugin_list.ProductRestriction.atlas, pluginProductRestrictionForSessionSource(custom).?);
+    try std.testing.expectEqual(@as(?plugin_list.ProductRestriction, null), pluginProductRestrictionForSessionSource(reserved_custom));
+    try std.testing.expectEqual(plugin_list.ProductRestriction.codex, pluginProductRestrictionForSessionSource(vscode).?);
 
     try std.testing.expectError(error.InvalidAppServerSessionSource, normalizeAppServerSessionSourceArg(allocator, " \t "));
 }
@@ -46148,10 +46167,10 @@ fn handlePluginMethod(
     params_value: ?std.json.Value,
 ) ![]const u8 {
     if (std.mem.eql(u8, method, "plugin/list")) {
-        return handlePluginList(allocator, id_value, params_value);
+        return handlePluginList(allocator, state, id_value, params_value);
     }
     if (std.mem.eql(u8, method, "plugin/read")) {
-        return handlePluginRead(allocator, id_value, params_value);
+        return handlePluginRead(allocator, state, id_value, params_value);
     }
     if (std.mem.eql(u8, method, "plugin/skill/read")) {
         return handlePluginSkillRead(allocator, id_value, params_value);
@@ -46607,7 +46626,14 @@ fn handlePluginInstall(allocator: std.mem.Allocator, state: *AppServerState, id_
     };
     defer if (config_bytes) |bytes| allocator.free(bytes);
 
-    const install = plugin_list.installLocalPlugin(allocator, codex_home, config_bytes orelse "", marketplace_path, params.plugin_name) catch |err| switch (err) {
+    const install = plugin_list.installLocalPluginForProduct(
+        allocator,
+        codex_home,
+        config_bytes orelse "",
+        marketplace_path,
+        params.plugin_name,
+        pluginProductRestrictionForSessionSource(state.session_source),
+    ) catch |err| switch (err) {
         plugin_list.InstallError.InvalidMarketplaceFile => return renderJsonRpcError(allocator, id_value, -32600, "Invalid request: invalid marketplace file"),
         plugin_list.InstallError.PluginNotFound => {
             const message = try std.fmt.allocPrint(allocator, "Invalid request: plugin `{s}` was not found", .{params.plugin_name});
@@ -46809,7 +46835,7 @@ fn isPluginMarketplaceKind(value: []const u8) bool {
         std.mem.eql(u8, value, "shared-with-me");
 }
 
-fn handlePluginList(allocator: std.mem.Allocator, id_value: std.json.Value, params_value: ?std.json.Value) ![]const u8 {
+fn handlePluginList(allocator: std.mem.Allocator, state: *AppServerState, id_value: std.json.Value, params_value: ?std.json.Value) ![]const u8 {
     const params = parsePluginListParams(allocator, params_value) catch |err| switch (err) {
         error.InvalidPluginListParams => return renderJsonRpcError(allocator, id_value, -32602, "plugin/list params must be an object"),
         error.InvalidPluginListCwds => return renderJsonRpcError(allocator, id_value, -32602, "cwds must be an array of strings or null"),
@@ -46844,7 +46870,15 @@ fn handlePluginList(allocator: std.mem.Allocator, id_value: std.json.Value, para
         }
     }
 
-    const result = plugin_list.renderResponseWithRemoteMarketplaces(allocator, codex_home, raw_config_bytes, params.cwds, params.include_local(), remote_marketplaces_json) catch |err| {
+    const result = plugin_list.renderResponseWithRemoteMarketplacesForProduct(
+        allocator,
+        codex_home,
+        raw_config_bytes,
+        params.cwds,
+        params.include_local(),
+        pluginProductRestrictionForSessionSource(state.session_source),
+        remote_marketplaces_json,
+    ) catch |err| {
         return renderJsonRpcErrorForFailure(allocator, id_value, "plugin/list failed", err);
     };
     defer allocator.free(result);
@@ -46908,7 +46942,7 @@ fn fetchRemotePluginListMarketplaces(
     return remote_plugin.fetchMarketplacesJson(allocator, cfg.chatgpt_base_url, credentials, remote_sources);
 }
 
-fn handlePluginRead(allocator: std.mem.Allocator, id_value: std.json.Value, params_value: ?std.json.Value) ![]const u8 {
+fn handlePluginRead(allocator: std.mem.Allocator, state: *AppServerState, id_value: std.json.Value, params_value: ?std.json.Value) ![]const u8 {
     const params = parsePluginReadParams(params_value) catch |err| switch (err) {
         error.InvalidPluginReadParams => return renderJsonRpcError(allocator, id_value, -32602, "plugin/read params must be an object"),
         error.InvalidPluginReadPluginName => return renderJsonRpcError(allocator, id_value, -32602, "pluginName must be a string"),
@@ -46982,7 +47016,14 @@ fn handlePluginRead(allocator: std.mem.Allocator, id_value: std.json.Value, para
     };
     defer if (config_bytes) |bytes| allocator.free(bytes);
 
-    const result = plugin_list.renderReadResponse(allocator, codex_home, config_bytes orelse "", marketplace_path, params.plugin_name) catch |err| switch (err) {
+    const result = plugin_list.renderReadResponseForProduct(
+        allocator,
+        codex_home,
+        config_bytes orelse "",
+        marketplace_path,
+        params.plugin_name,
+        pluginProductRestrictionForSessionSource(state.session_source),
+    ) catch |err| switch (err) {
         plugin_list.ReadError.InvalidMarketplaceFile => return renderJsonRpcError(allocator, id_value, -32600, "Invalid request: invalid marketplace file"),
         plugin_list.ReadError.PluginNotFound => {
             const message = try std.fmt.allocPrint(allocator, "Invalid request: plugin `{s}` was not found", .{params.plugin_name});
