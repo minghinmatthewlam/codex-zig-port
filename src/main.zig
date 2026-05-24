@@ -1077,6 +1077,10 @@ fn runHelpCommand(allocator: std.mem.Allocator, args: *std.process.Args.Iterator
         try debug_cmd.printHelpForArgs(targets.items[1..]);
         return;
     }
+    if (std.mem.eql(u8, target, "plugin")) {
+        try plugin_cmd.printHelpForArgs(targets.items[1..]);
+        return;
+    }
 
     try requireSingleHelpTarget(targets.items);
     if (isApplyCommand(target)) {
@@ -1095,8 +1099,6 @@ fn runHelpCommand(allocator: std.mem.Allocator, args: *std.process.Args.Iterator
         mcp_server_cmd.printHelp();
     } else if (std.mem.eql(u8, target, "app-server")) {
         app_server_cmd.printHelp();
-    } else if (std.mem.eql(u8, target, "plugin")) {
-        plugin_cmd.printHelp();
     } else if (std.mem.eql(u8, target, "app")) {
         app_cmd.printHelp();
     } else if (std.mem.eql(u8, target, "update")) {

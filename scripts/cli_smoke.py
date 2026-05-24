@@ -2291,6 +2291,35 @@ def run_help_command_smoke(binary: Path) -> None:
         assert nested_debug.stdout == ""
         assert usage in nested_debug.stderr
 
+    for argv, usage in [
+        ([str(binary), "help", "plugin", "add"], "codex-zig plugin add"),
+        ([str(binary), "plugin", "help", "add"], "codex-zig plugin add"),
+        ([str(binary), "help", "plugin", "list"], "codex-zig plugin list"),
+        ([str(binary), "help", "plugin", "remove"], "codex-zig plugin remove"),
+        ([str(binary), "help", "plugin", "help"], "Usage: codex-zig plugin help [COMMAND]..."),
+        ([str(binary), "plugin", "help", "help"], "Usage: codex-zig plugin help [COMMAND]..."),
+        ([str(binary), "help", "plugin", "marketplace"], "codex-zig plugin marketplace <COMMAND>"),
+        ([str(binary), "plugin", "help", "marketplace"], "codex-zig plugin marketplace <COMMAND>"),
+        ([str(binary), "help", "plugin", "marketplace", "add"], "codex-zig plugin marketplace add"),
+        ([str(binary), "plugin", "help", "marketplace", "add"], "codex-zig plugin marketplace add"),
+        ([str(binary), "plugin", "marketplace", "help", "add"], "codex-zig plugin marketplace add"),
+        ([str(binary), "help", "plugin", "marketplace", "list"], "codex-zig plugin marketplace list"),
+        ([str(binary), "help", "plugin", "marketplace", "upgrade"], "codex-zig plugin marketplace upgrade"),
+        ([str(binary), "help", "plugin", "marketplace", "remove"], "codex-zig plugin marketplace remove"),
+        ([str(binary), "help", "plugin", "marketplace", "help"], "Usage: codex-zig plugin marketplace help [COMMAND]..."),
+        ([str(binary), "plugin", "marketplace", "help", "help"], "Usage: codex-zig plugin marketplace help [COMMAND]..."),
+    ]:
+        nested_plugin = subprocess.run(
+            argv,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=5,
+            check=True,
+        )
+        assert nested_plugin.stdout == ""
+        assert usage in nested_plugin.stderr
+
     for argv, rejected_subcommand, usage in [
         ([str(binary), "help", "--help"], "--help", "Usage: codex-zig [OPTIONS] [PROMPT]"),
         ([str(binary), "exec", "help", "--help"], "--help", "Usage: codex-zig exec [OPTIONS] [PROMPT]"),
@@ -2310,6 +2339,14 @@ def run_help_command_smoke(binary: Path) -> None:
         ([str(binary), "help", "debug", "app-server", "help", "--help"], "--help", "Usage: codex-zig debug app-server help [COMMAND]..."),
         ([str(binary), "debug", "app-server", "help", "--help"], "--help", "Usage: codex-zig debug app-server [OPTIONS] <COMMAND>"),
         ([str(binary), "debug", "app-server", "help", "nope"], "nope", "Usage: codex-zig debug app-server [OPTIONS] <COMMAND>"),
+        ([str(binary), "plugin", "help", "--help"], "--help", "Usage: codex-zig plugin [OPTIONS] <COMMAND>"),
+        ([str(binary), "help", "plugin", "add", "--help"], "--help", "Usage: codex-zig plugin add [OPTIONS] <PLUGIN[@MARKETPLACE]>"),
+        ([str(binary), "help", "plugin", "nope"], "nope", "Usage: codex-zig plugin [OPTIONS] <COMMAND>"),
+        ([str(binary), "help", "plugin", "marketplace", "nope"], "nope", "Usage: codex-zig plugin marketplace [OPTIONS] <COMMAND>"),
+        ([str(binary), "plugin", "marketplace", "help", "--help"], "--help", "Usage: codex-zig plugin marketplace [OPTIONS] <COMMAND>"),
+        ([str(binary), "help", "plugin", "marketplace", "help", "--help"], "--help", "Usage: codex-zig plugin marketplace help [COMMAND]..."),
+        ([str(binary), "help", "plugin", "marketplace", "help", "add"], "add", "Usage: codex-zig plugin marketplace help [COMMAND]..."),
+        ([str(binary), "plugin", "help", "marketplace", "help", "add"], "add", "Usage: codex-zig plugin marketplace help [COMMAND]..."),
     ]:
         rejected = subprocess.run(
             argv,

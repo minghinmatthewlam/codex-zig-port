@@ -1,5 +1,7 @@
 const std = @import("std");
+const builtin = @import("builtin");
 
+const cli_utils = @import("cli_utils.zig");
 const config = @import("config.zig");
 const env = @import("env.zig");
 const marketplace_config = @import("marketplace_config.zig");
@@ -24,7 +26,7 @@ pub fn run(allocator: std.mem.Allocator, args: *std.process.Args.Iterator) !void
         return;
     }
     if (std.mem.eql(u8, subcommand, "help")) {
-        try runPluginHelp(args);
+        try runPluginHelp(allocator, args);
         return;
     }
     if (std.mem.eql(u8, subcommand, "marketplace")) {
@@ -85,25 +87,161 @@ const SelectorArgs = struct {
     help: bool = false,
 };
 
-fn runPluginHelp(args: *std.process.Args.Iterator) !void {
-    const target = args.next() orelse {
+fn runPluginHelp(allocator: std.mem.Allocator, args: *std.process.Args.Iterator) !void {
+    var targets = try collectRemainingArgs(allocator, args);
+    defer targets.deinit(allocator);
+    try printHelpForArgs(targets.items);
+}
+
+fn collectRemainingArgs(allocator: std.mem.Allocator, args: *std.process.Args.Iterator) !std.ArrayList([]const u8) {
+    var targets = std.ArrayList([]const u8).empty;
+    errdefer targets.deinit(allocator);
+    while (args.next()) |arg| {
+        try targets.append(allocator, arg);
+    }
+    return targets;
+}
+
+pub fn printHelpForArgs(args: []const []const u8) !void {
+    if (args.len == 0) {
         printHelp();
         return;
-    };
-    if (std.mem.eql(u8, target, "add")) {
-        if (args.next() != null) return error.UnexpectedPluginArgument;
-        printPluginAddHelp();
-    } else if (std.mem.eql(u8, target, "list")) {
-        if (args.next() != null) return error.UnexpectedPluginArgument;
-        printPluginListHelp();
-    } else if (std.mem.eql(u8, target, "marketplace")) {
-        try runMarketplaceHelp(args);
-    } else if (std.mem.eql(u8, target, "remove")) {
-        if (args.next() != null) return error.UnexpectedPluginArgument;
-        printPluginRemoveHelp();
-    } else {
-        return error.UnknownPluginSubcommand;
     }
+    const target = args[0];
+    if (isHelpFlag(target)) {
+        failPluginHelpSubcommand(target, .root);
+        return error.HelpSubcommandInvalid;
+    }
+    if (std.mem.eql(u8, target, "help")) {
+        if (args.len > 1) {
+            failPluginHelpSubcommand(args[1], .help_cmd);
+            return error.HelpSubcommandInvalid;
+        }
+        printPluginHelpCommandHelp();
+        return;
+    }
+    if (std.mem.eql(u8, target, "add")) {
+        if (args.len > 1) {
+            failPluginHelpSubcommand(args[1], .add_cmd);
+            return error.HelpSubcommandInvalid;
+        }
+        printPluginAddHelp();
+        return;
+    }
+    if (std.mem.eql(u8, target, "list")) {
+        if (args.len > 1) {
+            failPluginHelpSubcommand(args[1], .list_cmd);
+            return error.HelpSubcommandInvalid;
+        }
+        printPluginListHelp();
+        return;
+    }
+    if (std.mem.eql(u8, target, "marketplace")) {
+        try printMarketplaceHelpForArgs(args[1..]);
+        return;
+    }
+    if (std.mem.eql(u8, target, "remove")) {
+        if (args.len > 1) {
+            failPluginHelpSubcommand(args[1], .remove_cmd);
+            return error.HelpSubcommandInvalid;
+        }
+        printPluginRemoveHelp();
+        return;
+    }
+    failPluginHelpSubcommand(target, .root);
+    return error.HelpSubcommandInvalid;
+}
+
+fn printMarketplaceHelpForArgs(args: []const []const u8) !void {
+    if (args.len == 0) {
+        printMarketplaceHelp();
+        return;
+    }
+    const target = args[0];
+    if (isHelpFlag(target)) {
+        failPluginHelpSubcommand(target, .marketplace_cmd);
+        return error.HelpSubcommandInvalid;
+    }
+    if (std.mem.eql(u8, target, "help")) {
+        if (args.len > 1) {
+            failPluginHelpSubcommand(args[1], .marketplace_help_cmd);
+            return error.HelpSubcommandInvalid;
+        }
+        printMarketplaceHelpCommandHelp();
+        return;
+    }
+    if (std.mem.eql(u8, target, "add")) {
+        if (args.len > 1) {
+            failPluginHelpSubcommand(args[1], .marketplace_add_cmd);
+            return error.HelpSubcommandInvalid;
+        }
+        printMarketplaceAddHelp();
+        return;
+    }
+    if (std.mem.eql(u8, target, "list")) {
+        if (args.len > 1) {
+            failPluginHelpSubcommand(args[1], .marketplace_list_cmd);
+            return error.HelpSubcommandInvalid;
+        }
+        printMarketplaceListHelp();
+        return;
+    }
+    if (std.mem.eql(u8, target, "upgrade")) {
+        if (args.len > 1) {
+            failPluginHelpSubcommand(args[1], .marketplace_upgrade_cmd);
+            return error.HelpSubcommandInvalid;
+        }
+        printMarketplaceUpgradeHelp();
+        return;
+    }
+    if (std.mem.eql(u8, target, "remove")) {
+        if (args.len > 1) {
+            failPluginHelpSubcommand(args[1], .marketplace_remove_cmd);
+            return error.HelpSubcommandInvalid;
+        }
+        printMarketplaceRemoveHelp();
+        return;
+    }
+    failPluginHelpSubcommand(target, .marketplace_cmd);
+    return error.HelpSubcommandInvalid;
+}
+
+const PluginHelpUsage = enum {
+    root,
+    help_cmd,
+    add_cmd,
+    list_cmd,
+    remove_cmd,
+    marketplace_cmd,
+    marketplace_help_cmd,
+    marketplace_add_cmd,
+    marketplace_list_cmd,
+    marketplace_upgrade_cmd,
+    marketplace_remove_cmd,
+};
+
+fn failPluginHelpSubcommand(subcommand: []const u8, usage: PluginHelpUsage) void {
+    if (builtin.is_test) return;
+    cli_utils.printUnrecognizedSubcommand(subcommand, pluginHelpUsage(usage), switch (usage) {
+        .help_cmd, .marketplace_help_cmd => false,
+        else => true,
+    });
+}
+
+fn pluginHelpUsage(usage: PluginHelpUsage) []const u8 {
+    return switch (usage) {
+        .root => "Usage: codex-zig plugin [OPTIONS] <COMMAND>",
+        .help_cmd => "Usage: codex-zig plugin help [COMMAND]...",
+        .add_cmd => "Usage: codex-zig plugin add [OPTIONS] <PLUGIN[@MARKETPLACE]>",
+        .list_cmd => "Usage: codex-zig plugin list [OPTIONS]",
+        .remove_cmd => "Usage: codex-zig plugin remove [OPTIONS] <PLUGIN[@MARKETPLACE]>",
+        .marketplace_cmd => "Usage: codex-zig plugin marketplace [OPTIONS] <COMMAND>",
+        .marketplace_help_cmd => "Usage: codex-zig plugin marketplace help [COMMAND]...",
+        .marketplace_add_cmd => "Usage: codex-zig plugin marketplace add [OPTIONS] <SOURCE>",
+        .marketplace_list_cmd => "Usage: codex-zig plugin marketplace list [OPTIONS]",
+        .marketplace_upgrade_cmd => "Usage: codex-zig plugin marketplace upgrade [OPTIONS] [MARKETPLACE_NAME]",
+        .marketplace_remove_cmd => "Usage: codex-zig plugin marketplace remove [OPTIONS] <MARKETPLACE_NAME>",
+    };
 }
 
 fn runPluginAdd(allocator: std.mem.Allocator, args: *std.process.Args.Iterator) !void {
@@ -926,6 +1064,18 @@ fn printPluginAddHelp() void {
     , .{});
 }
 
+fn printPluginHelpCommandHelp() void {
+    std.debug.print(
+        \\Print this message or the help of the given subcommand(s)
+        \\
+        \\Usage: codex-zig plugin help [COMMAND]...
+        \\
+        \\Arguments:
+        \\  [COMMAND]...  Print help for the subcommand(s)
+        \\
+    , .{});
+}
+
 fn printPluginListHelp() void {
     std.debug.print(
         \\Usage:
@@ -984,29 +1134,16 @@ fn runMarketplace(allocator: std.mem.Allocator, args: *std.process.Args.Iterator
         return;
     }
     if (std.mem.eql(u8, subcommand, "help")) {
-        try runMarketplaceHelp(args);
+        try runMarketplaceHelp(allocator, args);
         return;
     }
     return error.UnknownPluginMarketplaceSubcommand;
 }
 
-fn runMarketplaceHelp(args: *std.process.Args.Iterator) !void {
-    const target = args.next() orelse {
-        printMarketplaceHelp();
-        return;
-    };
-    if (args.next() != null) return error.UnexpectedPluginMarketplaceArgument;
-    if (std.mem.eql(u8, target, "add")) {
-        printMarketplaceAddHelp();
-    } else if (std.mem.eql(u8, target, "list")) {
-        printMarketplaceListHelp();
-    } else if (std.mem.eql(u8, target, "upgrade")) {
-        printMarketplaceUpgradeHelp();
-    } else if (std.mem.eql(u8, target, "remove")) {
-        printMarketplaceRemoveHelp();
-    } else {
-        return error.UnknownPluginMarketplaceSubcommand;
-    }
+fn runMarketplaceHelp(allocator: std.mem.Allocator, args: *std.process.Args.Iterator) !void {
+    var targets = try collectRemainingArgs(allocator, args);
+    defer targets.deinit(allocator);
+    try printMarketplaceHelpForArgs(targets.items);
 }
 
 fn runMarketplaceAdd(allocator: std.mem.Allocator, args: *std.process.Args.Iterator) !void {
@@ -1251,6 +1388,18 @@ fn printMarketplaceHelp() void {
         \\  list                List marketplace roots currently in scope
         \\  upgrade [NAME]      Upgrade configured Git marketplaces
         \\  remove NAME         Remove a configured marketplace
+        \\
+    , .{});
+}
+
+fn printMarketplaceHelpCommandHelp() void {
+    std.debug.print(
+        \\Print this message or the help of the given subcommand(s)
+        \\
+        \\Usage: codex-zig plugin marketplace help [COMMAND]...
+        \\
+        \\Arguments:
+        \\  [COMMAND]...  Print help for the subcommand(s)
         \\
     , .{});
 }
