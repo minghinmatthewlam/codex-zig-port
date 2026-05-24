@@ -1073,6 +1073,10 @@ fn runHelpCommand(allocator: std.mem.Allocator, args: *std.process.Args.Iterator
         try exec.printHelpForArgs(targets.items[1..]);
         return;
     }
+    if (std.mem.eql(u8, target, "debug")) {
+        try debug_cmd.printHelpForArgs(targets.items[1..]);
+        return;
+    }
 
     try requireSingleHelpTarget(targets.items);
     if (isApplyCommand(target)) {
@@ -1105,8 +1109,6 @@ fn runHelpCommand(allocator: std.mem.Allocator, args: *std.process.Args.Iterator
         remote_control_cmd.printHelp();
     } else if (std.mem.eql(u8, target, "completion")) {
         completion_cmd.printHelp();
-    } else if (std.mem.eql(u8, target, "debug")) {
-        debug_cmd.printHelp();
     } else if (std.mem.eql(u8, target, "execpolicy")) {
         execpolicy_cmd.printHelp();
     } else if (std.mem.eql(u8, target, "features")) {

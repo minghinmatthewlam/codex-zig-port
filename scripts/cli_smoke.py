@@ -2260,6 +2260,37 @@ def run_help_command_smoke(binary: Path) -> None:
     assert root_nested_exec_review.stdout == ""
     assert "codex-zig exec review [OPTIONS] [PROMPT]" in root_nested_exec_review.stderr
 
+    for argv, usage in [
+        ([str(binary), "help", "debug", "prompt-input"], "codex-zig debug prompt-input [OPTIONS] [PROMPT]"),
+        ([str(binary), "debug", "help", "prompt-input"], "codex-zig debug prompt-input [OPTIONS] [PROMPT]"),
+        ([str(binary), "--profile-v2", "work", "debug", "help", "prompt-input"], "codex-zig debug prompt-input [OPTIONS] [PROMPT]"),
+        ([str(binary), "help", "debug", "models"], "codex-zig debug models [--bundled]"),
+        ([str(binary), "--profile-v2", "work", "debug", "models", "--help"], "codex-zig debug models [--bundled]"),
+        ([str(binary), "help", "debug", "app-server"], "codex-zig debug app-server send-message-v2 USER_MESSAGE"),
+        ([str(binary), "debug", "app-server", "help"], "codex-zig debug app-server send-message-v2 USER_MESSAGE"),
+        ([str(binary), "--profile-v2", "work", "debug", "app-server", "help"], "codex-zig debug app-server send-message-v2 USER_MESSAGE"),
+        ([str(binary), "debug", "app-server", "help", "help"], "Usage: codex-zig debug app-server help [COMMAND]..."),
+        ([str(binary), "debug", "app-server", "help", "send-message-v2"], "codex-zig debug app-server send-message-v2 USER_MESSAGE"),
+        ([str(binary), "--profile-v2", "work", "debug", "app-server", "send-message-v2", "--help"], "codex-zig debug app-server send-message-v2 USER_MESSAGE"),
+        ([str(binary), "help", "debug", "app-server", "send-message-v2"], "codex-zig debug app-server send-message-v2 USER_MESSAGE"),
+        ([str(binary), "help", "debug", "help"], "Usage: codex-zig debug help [COMMAND]..."),
+        ([str(binary), "help", "debug", "app-server", "help"], "Usage: codex-zig debug app-server help [COMMAND]..."),
+        ([str(binary), "help", "debug", "trace-reduce"], "codex-zig debug trace-reduce [--output FILE] TRACE_BUNDLE"),
+        ([str(binary), "--profile-v2", "work", "debug", "trace-reduce", "--help"], "codex-zig debug trace-reduce [--output FILE] TRACE_BUNDLE"),
+        ([str(binary), "help", "debug", "clear-memories"], "codex-zig debug clear-memories"),
+        ([str(binary), "--profile-v2", "work", "debug", "clear-memories", "--help"], "codex-zig debug clear-memories"),
+    ]:
+        nested_debug = subprocess.run(
+            argv,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=5,
+            check=True,
+        )
+        assert nested_debug.stdout == ""
+        assert usage in nested_debug.stderr
+
     for argv, rejected_subcommand, usage in [
         ([str(binary), "help", "--help"], "--help", "Usage: codex-zig [OPTIONS] [PROMPT]"),
         ([str(binary), "exec", "help", "--help"], "--help", "Usage: codex-zig exec [OPTIONS] [PROMPT]"),
@@ -2272,6 +2303,13 @@ def run_help_command_smoke(binary: Path) -> None:
         ([str(binary), "sandbox", "help", "help", "--help"], "--help", "Usage: codex-zig sandbox help [COMMAND]..."),
         ([str(binary), "help", "sandbox", "nope"], "nope", "Usage: codex-zig sandbox [OPTIONS] <COMMAND>"),
         ([str(binary), "help", "sandbox", "macos", "--help"], "--help", "Usage: codex-zig sandbox macos [OPTIONS] [COMMAND]..."),
+        ([str(binary), "debug", "help", "--help"], "--help", "Usage: codex-zig debug [OPTIONS] <COMMAND>"),
+        ([str(binary), "help", "debug", "nope"], "nope", "Usage: codex-zig debug [OPTIONS] <COMMAND>"),
+        ([str(binary), "help", "debug", "prompt-input", "--help"], "--help", "Usage: codex-zig debug prompt-input [OPTIONS] [PROMPT]"),
+        ([str(binary), "help", "debug", "app-server", "nope"], "nope", "Usage: codex-zig debug app-server [OPTIONS] <COMMAND>"),
+        ([str(binary), "help", "debug", "app-server", "help", "--help"], "--help", "Usage: codex-zig debug app-server help [COMMAND]..."),
+        ([str(binary), "debug", "app-server", "help", "--help"], "--help", "Usage: codex-zig debug app-server [OPTIONS] <COMMAND>"),
+        ([str(binary), "debug", "app-server", "help", "nope"], "nope", "Usage: codex-zig debug app-server [OPTIONS] <COMMAND>"),
     ]:
         rejected = subprocess.run(
             argv,
@@ -2285,6 +2323,18 @@ def run_help_command_smoke(binary: Path) -> None:
         assert rejected.stdout == ""
         assert f"error: unrecognized subcommand '{rejected_subcommand}'" in rejected.stderr
         assert usage in rejected.stderr
+
+    profile_v2_debug_runtime = subprocess.run(
+        [str(binary), "--profile-v2", "work", "debug", "models"],
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        timeout=5,
+        check=False,
+    )
+    assert profile_v2_debug_runtime.returncode != 0
+    assert profile_v2_debug_runtime.stdout == ""
+    assert "--profile-v2 only applies to runtime commands" in profile_v2_debug_runtime.stderr
 
 
 def run_update_command_smoke(binary: Path) -> None:

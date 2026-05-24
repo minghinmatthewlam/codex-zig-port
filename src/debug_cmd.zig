@@ -1,4 +1,5 @@
 const std = @import("std");
+const builtin = @import("builtin");
 
 const api = @import("api.zig");
 const cli_utils = @import("cli_utils.zig");
@@ -26,10 +27,6 @@ pub fn runWithOptions(allocator: std.mem.Allocator, args: *std.process.Args.Iter
         return;
     }
 
-    if (options.profile_v2 != null and !std.mem.eql(u8, subcommand, "prompt-input")) {
-        return error.ProfileV2UnsupportedCommand;
-    }
-
     if (std.mem.eql(u8, subcommand, "prompt-input")) {
         try runPromptInput(allocator, args, options);
         return;
@@ -42,8 +39,12 @@ pub fn runWithOptions(allocator: std.mem.Allocator, args: *std.process.Args.Iter
         try runAppServerDebug(allocator, args, options);
         return;
     }
+    if (std.mem.eql(u8, subcommand, "help")) {
+        try runDebugHelp(allocator, args);
+        return;
+    }
     if (std.mem.eql(u8, subcommand, "trace-reduce")) {
-        try runTraceReduce(allocator, args);
+        try runTraceReduce(allocator, args, options);
         return;
     }
     if (std.mem.eql(u8, subcommand, "clear-memories")) {
@@ -53,6 +54,137 @@ pub fn runWithOptions(allocator: std.mem.Allocator, args: *std.process.Args.Iter
 
     std.debug.print("unknown debug subcommand: {s}\n", .{subcommand});
     return error.UnknownDebugSubcommand;
+}
+
+fn runDebugHelp(allocator: std.mem.Allocator, args: *std.process.Args.Iterator) !void {
+    var targets = std.ArrayList([]const u8).empty;
+    defer targets.deinit(allocator);
+    while (args.next()) |arg| {
+        try targets.append(allocator, arg);
+    }
+    try printHelpForArgs(targets.items);
+}
+
+pub fn printHelpForArgs(args: []const []const u8) !void {
+    if (args.len == 0) {
+        printHelp();
+        return;
+    }
+    const target = args[0];
+    if (isHelpFlag(target)) {
+        failDebugHelpSubcommand(target, .root);
+        return error.HelpSubcommandInvalid;
+    }
+    if (std.mem.eql(u8, target, "help")) {
+        if (args.len > 1) {
+            failDebugHelpSubcommand(args[1], .help_cmd);
+            return error.HelpSubcommandInvalid;
+        }
+        printDebugHelpCommandHelp();
+        return;
+    }
+    if (std.mem.eql(u8, target, "prompt-input")) {
+        if (args.len > 1) {
+            failDebugHelpSubcommand(args[1], .prompt_input_cmd);
+            return error.HelpSubcommandInvalid;
+        }
+        printPromptInputHelp();
+        return;
+    }
+    if (std.mem.eql(u8, target, "models")) {
+        if (args.len > 1) {
+            failDebugHelpSubcommand(args[1], .models_cmd);
+            return error.HelpSubcommandInvalid;
+        }
+        printModelsHelp();
+        return;
+    }
+    if (std.mem.eql(u8, target, "app-server")) {
+        try printDebugAppServerHelpForArgs(args[1..]);
+        return;
+    }
+    if (std.mem.eql(u8, target, "trace-reduce")) {
+        if (args.len > 1) {
+            failDebugHelpSubcommand(args[1], .trace_reduce_cmd);
+            return error.HelpSubcommandInvalid;
+        }
+        printTraceReduceHelp();
+        return;
+    }
+    if (std.mem.eql(u8, target, "clear-memories")) {
+        if (args.len > 1) {
+            failDebugHelpSubcommand(args[1], .clear_memories_cmd);
+            return error.HelpSubcommandInvalid;
+        }
+        printClearMemoriesHelp();
+        return;
+    }
+    failDebugHelpSubcommand(target, .root);
+    return error.HelpSubcommandInvalid;
+}
+
+fn printDebugAppServerHelpForArgs(args: []const []const u8) !void {
+    if (args.len == 0) {
+        printDebugAppServerHelp();
+        return;
+    }
+    const target = args[0];
+    if (isHelpFlag(target)) {
+        failDebugHelpSubcommand(target, .app_server_cmd);
+        return error.HelpSubcommandInvalid;
+    }
+    if (std.mem.eql(u8, target, "help")) {
+        if (args.len > 1) {
+            failDebugHelpSubcommand(args[1], .app_server_help_cmd);
+            return error.HelpSubcommandInvalid;
+        }
+        printDebugAppServerHelpCommandHelp();
+        return;
+    }
+    if (std.mem.eql(u8, target, "send-message-v2")) {
+        if (args.len > 1) {
+            failDebugHelpSubcommand(args[1], .app_server_send_message_v2_cmd);
+            return error.HelpSubcommandInvalid;
+        }
+        printDebugAppServerSendMessageV2Help();
+        return;
+    }
+    failDebugHelpSubcommand(target, .app_server_cmd);
+    return error.HelpSubcommandInvalid;
+}
+
+const DebugHelpUsage = enum {
+    root,
+    help_cmd,
+    prompt_input_cmd,
+    models_cmd,
+    app_server_cmd,
+    app_server_help_cmd,
+    app_server_send_message_v2_cmd,
+    trace_reduce_cmd,
+    clear_memories_cmd,
+};
+
+fn failDebugHelpSubcommand(subcommand: []const u8, usage: DebugHelpUsage) void {
+    if (builtin.is_test) return;
+    cli_utils.printUnrecognizedSubcommand(subcommand, debugHelpUsage(usage), switch (usage) {
+        .help_cmd, .app_server_help_cmd => false,
+        else => true,
+    });
+}
+
+fn debugHelpUsage(usage: DebugHelpUsage) []const u8 {
+    return switch (usage) {
+        .root => "Usage: codex-zig debug [OPTIONS] <COMMAND>",
+        .help_cmd => "Usage: codex-zig debug help [COMMAND]...",
+        .prompt_input_cmd => "Usage: codex-zig debug prompt-input [OPTIONS] [PROMPT]",
+        .models_cmd => "Usage: codex-zig debug models [OPTIONS]",
+        .app_server_cmd => "Usage: codex-zig debug app-server [OPTIONS] <COMMAND>",
+        .app_server_help_cmd => "Usage: codex-zig debug app-server help [COMMAND]...",
+        .app_server_send_message_v2_cmd => "Usage: codex-zig debug app-server send-message-v2 [OPTIONS] <USER_MESSAGE>",
+        .trace_reduce_cmd => "Usage: codex-zig debug trace-reduce [OPTIONS] <TRACE_BUNDLE>",
+        .clear_memories_cmd => "Usage: codex-zig debug clear-memories [OPTIONS]",
+    };
 }
 
 fn runPromptInput(allocator: std.mem.Allocator, args: *std.process.Args.Iterator, options: Options) !void {
@@ -124,6 +256,8 @@ fn runModels(allocator: std.mem.Allocator, args: *std.process.Args.Iterator, opt
         return error.UnknownDebugModelsOption;
     }
 
+    if (options.profile_v2 != null) return error.ProfileV2UnsupportedCommand;
+
     const rendered = try renderModels(allocator, options, bundled);
     defer allocator.free(rendered);
     try cli_utils.writeStdout(rendered);
@@ -139,6 +273,10 @@ fn runAppServerDebug(allocator: std.mem.Allocator, args: *std.process.Args.Itera
         printDebugAppServerHelp();
         return;
     }
+    if (std.mem.eql(u8, subcommand, "help")) {
+        try runDebugAppServerHelp(allocator, args);
+        return;
+    }
     if (!std.mem.eql(u8, subcommand, "send-message-v2")) {
         return error.UnknownDebugAppServerSubcommand;
     }
@@ -152,8 +290,18 @@ fn runAppServerDebug(allocator: std.mem.Allocator, args: *std.process.Args.Itera
         return;
     }
     if (args.next() != null) return error.UnexpectedDebugAppServerArgument;
+    if (options.profile_v2 != null) return error.ProfileV2UnsupportedCommand;
 
     try runDebugAppServerSendMessageV2(allocator, user_message, options);
+}
+
+fn runDebugAppServerHelp(allocator: std.mem.Allocator, args: *std.process.Args.Iterator) !void {
+    var targets = std.ArrayList([]const u8).empty;
+    defer targets.deinit(allocator);
+    while (args.next()) |arg| {
+        try targets.append(allocator, arg);
+    }
+    try printDebugAppServerHelpForArgs(targets.items);
 }
 
 fn runDebugAppServerSendMessageV2(allocator: std.mem.Allocator, user_message: []const u8, options: Options) !void {
@@ -430,7 +578,7 @@ fn currentEnvironmentMap(allocator: std.mem.Allocator) !std.process.Environ.Map 
     return result;
 }
 
-fn runTraceReduce(allocator: std.mem.Allocator, args: *std.process.Args.Iterator) !void {
+fn runTraceReduce(allocator: std.mem.Allocator, args: *std.process.Args.Iterator, options: Options) !void {
     var trace_bundle: ?[]const u8 = null;
     var output: ?[]const u8 = null;
 
@@ -456,6 +604,7 @@ fn runTraceReduce(allocator: std.mem.Allocator, args: *std.process.Args.Iterator
         printTraceReduceHelp();
         return error.MissingDebugTraceBundle;
     };
+    if (options.profile_v2 != null) return error.ProfileV2UnsupportedCommand;
     const output_path = try trace_reduce.reduceBundleToFile(allocator, bundle, output);
     defer allocator.free(output_path);
     try cli_utils.writeStdout(output_path);
@@ -470,6 +619,8 @@ fn runClearMemories(allocator: std.mem.Allocator, args: *std.process.Args.Iterat
         }
         return error.UnknownDebugClearMemoriesOption;
     }
+
+    if (options.profile_v2 != null) return error.ProfileV2UnsupportedCommand;
 
     var cfg = try config.loadWithOptions(allocator, .{ .profile = options.profile });
     defer cfg.deinit(allocator);
@@ -569,6 +720,18 @@ pub fn printHelp() void {
     , .{});
 }
 
+fn printDebugHelpCommandHelp() void {
+    std.debug.print(
+        \\Print this message or the help of the given subcommand(s)
+        \\
+        \\Usage: codex-zig debug help [COMMAND]...
+        \\
+        \\Arguments:
+        \\  [COMMAND]...  Print help for the subcommand(s)
+        \\
+    , .{});
+}
+
 fn printPromptInputHelp() void {
     std.debug.print(
         \\Usage:
@@ -602,6 +765,18 @@ fn printDebugAppServerHelp() void {
         \\
         \\Subcommands:
         \\  send-message-v2    Send a V2 debug message through the local app-server
+        \\
+    , .{});
+}
+
+fn printDebugAppServerHelpCommandHelp() void {
+    std.debug.print(
+        \\Print this message or the help of the given subcommand(s)
+        \\
+        \\Usage: codex-zig debug app-server help [COMMAND]...
+        \\
+        \\Arguments:
+        \\  [COMMAND]...  Print help for the subcommand(s)
         \\
     , .{});
 }
