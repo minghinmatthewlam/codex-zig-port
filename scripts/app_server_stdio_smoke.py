@@ -451,6 +451,9 @@ class TurnResponsesHandler(BaseHTTPRequestHandler):
             self.server.response_headers.pop(0) if self.server.response_headers else {}
         )
         status_code = self.server.response_statuses.pop(0) if self.server.response_statuses else 200
+        delay_seconds = self.server.response_delays.pop(0) if self.server.response_delays else 0
+        if delay_seconds:
+            time.sleep(delay_seconds)
         self.send_response(status_code)
         self.send_header("Content-Type", "text/event-stream")
         self.send_header("Content-Length", str(len(payload)))
@@ -470,6 +473,7 @@ class TurnResponsesServer(ThreadingHTTPServer):
     response_payloads: list[bytes]
     response_headers: list[dict[str, str]]
     response_statuses: list[int]
+    response_delays: list[float]
 
 
 class McpOAuthDiscoveryHandler(BaseHTTPRequestHandler):
@@ -1009,6 +1013,7 @@ def start_turn_responses_server() -> tuple[TurnResponsesServer, str]:
     server.response_payloads = []
     server.response_headers = []
     server.response_statuses = []
+    server.response_delays = []
     threading.Thread(target=server.serve_forever, daemon=True).start()
     return server, f"http://127.0.0.1:{server.server_port}"
 
@@ -2374,6 +2379,22 @@ def assert_turn_start_rpc_completed(
     assert read_json_line(proc, 5)["method"] == "turn/completed"
     assert_thread_status_notification(read_json_line(proc, 5), thread_id, "idle")
     return response
+
+
+def read_turn_server_request_after_opening(
+    proc: subprocess.Popen[str],
+    thread_id: str,
+    turn_id: str,
+    expected_method: str,
+) -> dict:
+    assert_thread_status_notification(read_json_line(proc, 5), thread_id, "active")
+    started = read_json_line(proc, 5)
+    assert started["method"] == "turn/started"
+    assert started["params"]["threadId"] == thread_id
+    assert started["params"]["turn"]["id"] == turn_id
+    request = read_json_line(proc, 5)
+    assert request["method"] == expected_method
+    return request
 
 
 def exercise_json_rpc(write_line, read_line) -> None:
@@ -6029,6 +6050,71 @@ def run_turn_start_rpc_smoke(binary: Path) -> None:
                 assert thread["cwd"] == str(resolved_cwd)
                 assert_thread_started_notification(read_json_line(proc, 5), thread)
 
+                early_cwd = resolved_cwd / "early-turn-progress"
+                early_cwd.mkdir()
+                write_json_line(
+                    proc,
+                    {
+                        "jsonrpc": "2.0",
+                        "id": "thread-start-for-early-progress",
+                        "method": "thread/start",
+                        "params": {
+                            "cwd": str(early_cwd),
+                            "approvalPolicy": "never",
+                            "sandbox": "danger-full-access",
+                        },
+                    },
+                )
+                early_thread_start = read_json_line(proc, 5)
+                assert early_thread_start["id"] == "thread-start-for-early-progress"
+                early_thread = early_thread_start["result"]["thread"]
+                early_thread_id = early_thread["id"]
+                assert_thread_started_notification(read_json_line(proc, 5), early_thread)
+
+                server.response_delays.append(2.0)
+                early_progress_started_at = time.monotonic()
+                write_json_line(
+                    proc,
+                    {
+                        "jsonrpc": "2.0",
+                        "id": "turn-start-early-progress",
+                        "method": "turn/start",
+                        "params": {
+                            "threadId": early_thread_id,
+                            "input": [{"type": "text", "text": "prove early progress"}],
+                        },
+                    },
+                )
+                early_turn_start = read_json_line(proc, 0.75)
+                assert time.monotonic() - early_progress_started_at < 1.0
+                assert early_turn_start["id"] == "turn-start-early-progress"
+                early_turn_id = early_turn_start["result"]["turn"]["id"]
+                assert early_turn_start["result"]["turn"]["status"] == "inProgress"
+                assert_thread_status_notification(
+                    read_json_line(proc, 0.75), early_thread_id, "active"
+                )
+                early_turn_started = read_json_line(proc, 0.75)
+                assert early_turn_started["method"] == "turn/started"
+                assert early_turn_started["params"]["threadId"] == early_thread_id
+                assert early_turn_started["params"]["turn"]["id"] == early_turn_id
+                early_remaining = read_json_lines_until(
+                    proc,
+                    5,
+                    lambda seen: seen[-1].get("method") == "thread/status/changed"
+                    and seen[-1]["params"]["threadId"] == early_thread_id
+                    and seen[-1]["params"]["status"]["type"] == "idle",
+                )
+                early_remaining_methods = [
+                    message["method"]
+                    for message in early_remaining
+                    if message.get("params", {}).get("threadId") == early_thread_id
+                ]
+                assert "turn/completed" in early_remaining_methods
+                assert "turn/started" not in early_remaining_methods
+                server.request_paths.clear()
+                server.request_headers.clear()
+                server.request_bodies.clear()
+
                 write_json_line(
                     proc,
                     {
@@ -7051,21 +7137,43 @@ def run_turn_start_rpc_smoke(binary: Path) -> None:
                 )
                 failed_turn = read_json_line(proc, 5)
                 assert failed_turn["id"] == "turn-start-provider-failure"
-                assert failed_turn["error"]["code"] == -32603
-                assert "ApiResponseFailed" in failed_turn["error"]["message"]
-                error_notification = read_json_line(proc, 5)
+                assert failed_turn["result"]["turn"]["status"] == "inProgress"
+                failed_turn_id = failed_turn["result"]["turn"]["id"]
+                assert_thread_status_notification(
+                    read_json_line(proc, 5), thread_id, "active"
+                )
+                failed_started = read_json_line(proc, 5)
+                assert failed_started["method"] == "turn/started"
+                assert failed_started["params"]["threadId"] == thread_id
+                assert failed_started["params"]["turn"]["id"] == failed_turn_id
+                failure_messages = read_json_lines_until(
+                    proc,
+                    5,
+                    lambda seen: seen[-1].get("method") == "thread/status/changed"
+                    and seen[-1]["params"]["threadId"] == thread_id
+                    and seen[-1]["params"]["status"]["type"] == "systemError",
+                )
+                error_notifications = [
+                    message for message in failure_messages if message["method"] == "error"
+                ]
+                assert len(error_notifications) == 1
+                error_notification = error_notifications[0]
                 assert error_notification["method"] == "error"
                 error_params = error_notification["params"]
                 assert error_params["threadId"] == thread_id
-                assert isinstance(error_params["turnId"], str)
-                assert error_params["turnId"]
+                assert error_params["turnId"] == failed_turn_id
                 assert error_params["willRetry"] is False
                 assert "ApiResponseFailed" in error_params["error"]["message"]
                 assert error_params["error"]["codexErrorInfo"] is None
                 assert error_params["error"]["additionalDetails"] is None
-                assert_thread_status_notification(
-                    read_json_line(proc, 5), thread_id, "systemError"
-                )
+                failed_completed = [
+                    message
+                    for message in failure_messages
+                    if message["method"] == "turn/completed"
+                ]
+                assert len(failed_completed) == 1
+                assert failed_completed[0]["params"]["turn"]["id"] == failed_turn_id
+                assert failed_completed[0]["params"]["turn"]["status"] == "failed"
                 assert server.request_paths == [
                     "/responses",
                     "/responses",
@@ -10821,9 +10929,13 @@ def run_external_auth_refresh_rpc_smoke(binary: Path) -> None:
                     assert turn_start["result"]["turn"]["id"] == "turn-0"
                     assert turn_start["result"]["turn"]["status"] == "inProgress"
 
-                    refresh_request = read_json_line(proc, 5)
+                    refresh_request = read_turn_server_request_after_opening(
+                        proc,
+                        thread_id,
+                        "turn-0",
+                        "account/chatgptAuthTokens/refresh",
+                    )
                     assert refresh_request["jsonrpc"] == "2.0"
-                    assert refresh_request["method"] == "account/chatgptAuthTokens/refresh"
                     assert refresh_request["params"] == {
                         "reason": "unauthorized",
                         "previousAccountId": initial_account_id,
@@ -11491,8 +11603,12 @@ def run_turn_goal_interrupt_accounting_smoke(binary: Path) -> None:
                 turn_start = read_json_line(proc, 5)
                 assert turn_start["id"] == "turn-start-goal-interrupt"
                 turn_id = turn_start["result"]["turn"]["id"]
-                approval_request = read_json_line(proc, 5)
-                assert approval_request["method"] == "item/commandExecution/requestApproval"
+                approval_request = read_turn_server_request_after_opening(
+                    proc,
+                    thread_id,
+                    turn_id,
+                    "item/commandExecution/requestApproval",
+                )
                 assert approval_request["params"]["threadId"] == thread_id
                 assert approval_request["params"]["turnId"] == turn_id
                 assert approval_request["params"]["itemId"] == "call-goal-approval-interrupt"
@@ -14764,8 +14880,12 @@ def run_turn_command_approval_request_smoke(binary: Path) -> None:
                 accept_turn = read_json_line(proc, 5)
                 assert accept_turn["id"] == "turn-start-approval-accept"
                 accept_turn_id = accept_turn["result"]["turn"]["id"]
-                accept_request = read_json_line(proc, 5)
-                assert accept_request["method"] == "item/commandExecution/requestApproval"
+                accept_request = read_turn_server_request_after_opening(
+                    proc,
+                    thread_id,
+                    accept_turn_id,
+                    "item/commandExecution/requestApproval",
+                )
                 accept_params = accept_request["params"]
                 assert accept_params["threadId"] == thread_id
                 assert accept_params["turnId"] == accept_turn_id
@@ -14857,8 +14977,12 @@ def run_turn_command_approval_request_smoke(binary: Path) -> None:
                 amendment_turn = read_json_line(proc, 5)
                 assert amendment_turn["id"] == "turn-start-approval-amendment"
                 amendment_turn_id = amendment_turn["result"]["turn"]["id"]
-                amendment_request = read_json_line(proc, 5)
-                assert amendment_request["method"] == "item/commandExecution/requestApproval"
+                amendment_request = read_turn_server_request_after_opening(
+                    proc,
+                    thread_id,
+                    amendment_turn_id,
+                    "item/commandExecution/requestApproval",
+                )
                 assert amendment_request["params"]["threadId"] == thread_id
                 assert amendment_request["params"]["turnId"] == amendment_turn_id
                 assert amendment_request["params"]["itemId"] == "call-approval-amendment"
@@ -14949,8 +15073,12 @@ def run_turn_command_approval_request_smoke(binary: Path) -> None:
                 decline_turn = read_json_line(proc, 5)
                 assert decline_turn["id"] == "turn-start-approval-decline"
                 decline_turn_id = decline_turn["result"]["turn"]["id"]
-                decline_request = read_json_line(proc, 5)
-                assert decline_request["method"] == "item/commandExecution/requestApproval"
+                decline_request = read_turn_server_request_after_opening(
+                    proc,
+                    thread_id,
+                    decline_turn_id,
+                    "item/commandExecution/requestApproval",
+                )
                 assert decline_request["params"]["threadId"] == thread_id
                 assert decline_request["params"]["turnId"] == decline_turn_id
                 assert decline_request["params"]["itemId"] == "call-approval-decline"
@@ -15029,8 +15157,12 @@ def run_turn_command_approval_request_smoke(binary: Path) -> None:
                 cancel_turn = read_json_line(proc, 5)
                 assert cancel_turn["id"] == "turn-start-approval-cancel"
                 cancel_turn_id = cancel_turn["result"]["turn"]["id"]
-                cancel_request = read_json_line(proc, 5)
-                assert cancel_request["method"] == "item/commandExecution/requestApproval"
+                cancel_request = read_turn_server_request_after_opening(
+                    proc,
+                    thread_id,
+                    cancel_turn_id,
+                    "item/commandExecution/requestApproval",
+                )
                 assert cancel_request["params"]["threadId"] == thread_id
                 assert cancel_request["params"]["turnId"] == cancel_turn_id
                 assert cancel_request["params"]["itemId"] == "call-approval-cancel"
@@ -15109,8 +15241,12 @@ def run_turn_command_approval_request_smoke(binary: Path) -> None:
                 archive_race_turn = read_json_line(proc, 5)
                 assert archive_race_turn["id"] == "turn-start-approval-archive-race"
                 archive_race_turn_id = archive_race_turn["result"]["turn"]["id"]
-                archive_race_request = read_json_line(proc, 5)
-                assert archive_race_request["method"] == "item/commandExecution/requestApproval"
+                archive_race_request = read_turn_server_request_after_opening(
+                    proc,
+                    thread_id,
+                    archive_race_turn_id,
+                    "item/commandExecution/requestApproval",
+                )
                 assert archive_race_request["params"]["threadId"] == thread_id
                 assert archive_race_request["params"]["turnId"] == archive_race_turn_id
                 assert archive_race_request["params"]["itemId"] == "call-approval-archive-race"
@@ -15202,8 +15338,12 @@ def run_turn_command_approval_request_smoke(binary: Path) -> None:
                 session_first_turn = read_json_line(proc, 5)
                 assert session_first_turn["id"] == "turn-start-approval-session-first"
                 session_first_turn_id = session_first_turn["result"]["turn"]["id"]
-                session_first_request = read_json_line(proc, 5)
-                assert session_first_request["method"] == "item/commandExecution/requestApproval"
+                session_first_request = read_turn_server_request_after_opening(
+                    proc,
+                    thread_id,
+                    session_first_turn_id,
+                    "item/commandExecution/requestApproval",
+                )
                 assert session_first_request["params"]["threadId"] == thread_id
                 assert session_first_request["params"]["turnId"] == session_first_turn_id
                 assert session_first_request["params"]["itemId"] == "call-approval-session-first"
@@ -15360,10 +15500,11 @@ def run_turn_command_approval_request_smoke(binary: Path) -> None:
                 scoped_session_first_turn = read_json_line(proc, 5)
                 assert scoped_session_first_turn["id"] == "turn-start-approval-scope-workspace"
                 scoped_session_first_turn_id = scoped_session_first_turn["result"]["turn"]["id"]
-                scoped_session_first_request = read_json_line(proc, 5)
-                assert (
-                    scoped_session_first_request["method"]
-                    == "item/commandExecution/requestApproval"
+                scoped_session_first_request = read_turn_server_request_after_opening(
+                    proc,
+                    thread_id,
+                    scoped_session_first_turn_id,
+                    "item/commandExecution/requestApproval",
                 )
                 assert scoped_session_first_request["params"]["threadId"] == thread_id
                 assert (
@@ -15459,10 +15600,11 @@ def run_turn_command_approval_request_smoke(binary: Path) -> None:
                 scoped_session_danger_turn = read_json_line(proc, 5)
                 assert scoped_session_danger_turn["id"] == "turn-start-approval-scope-danger"
                 scoped_session_danger_turn_id = scoped_session_danger_turn["result"]["turn"]["id"]
-                scoped_session_danger_request = read_json_line(proc, 5)
-                assert (
-                    scoped_session_danger_request["method"]
-                    == "item/commandExecution/requestApproval"
+                scoped_session_danger_request = read_turn_server_request_after_opening(
+                    proc,
+                    thread_id,
+                    scoped_session_danger_turn_id,
+                    "item/commandExecution/requestApproval",
                 )
                 assert scoped_session_danger_request["params"]["threadId"] == thread_id
                 assert (
@@ -15553,8 +15695,12 @@ def run_turn_command_approval_request_smoke(binary: Path) -> None:
                 interrupt_turn = read_json_line(proc, 5)
                 assert interrupt_turn["id"] == "turn-start-approval-interrupt"
                 interrupt_turn_id = interrupt_turn["result"]["turn"]["id"]
-                interrupt_request = read_json_line(proc, 5)
-                assert interrupt_request["method"] == "item/commandExecution/requestApproval"
+                interrupt_request = read_turn_server_request_after_opening(
+                    proc,
+                    thread_id,
+                    interrupt_turn_id,
+                    "item/commandExecution/requestApproval",
+                )
                 assert interrupt_request["params"]["threadId"] == thread_id
                 assert interrupt_request["params"]["turnId"] == interrupt_turn_id
                 assert interrupt_request["params"]["itemId"] == "call-approval-interrupt"
@@ -15660,8 +15806,12 @@ def run_turn_command_approval_request_smoke(binary: Path) -> None:
                 patch_turn = read_json_line(proc, 5)
                 assert patch_turn["id"] == "turn-start-approval-patch"
                 patch_turn_id = patch_turn["result"]["turn"]["id"]
-                patch_request = read_json_line(proc, 5)
-                assert patch_request["method"] == "item/fileChange/requestApproval"
+                patch_request = read_turn_server_request_after_opening(
+                    proc,
+                    thread_id,
+                    patch_turn_id,
+                    "item/fileChange/requestApproval",
+                )
                 assert patch_request["params"]["threadId"] == thread_id
                 assert patch_request["params"]["turnId"] == patch_turn_id
                 assert patch_request["params"]["itemId"] == "call-approval-patch"
@@ -15856,8 +16006,12 @@ def run_turn_command_approval_request_smoke(binary: Path) -> None:
                 opt_out_turn = read_json_line(proc, 5)
                 assert opt_out_turn["id"] == "turn-start-approval-opt-out"
                 opt_out_turn_id = opt_out_turn["result"]["turn"]["id"]
-                opt_out_request = read_json_line(proc, 5)
-                assert opt_out_request["method"] == "item/commandExecution/requestApproval"
+                opt_out_request = read_turn_server_request_after_opening(
+                    proc,
+                    thread_id,
+                    opt_out_turn_id,
+                    "item/commandExecution/requestApproval",
+                )
                 assert opt_out_request["params"]["threadId"] == thread_id
                 assert opt_out_request["params"]["turnId"] == opt_out_turn_id
                 assert opt_out_request["params"]["itemId"] == "call-approval-opt-out"
@@ -15943,10 +16097,11 @@ def run_turn_command_approval_request_smoke(binary: Path) -> None:
                 failed_after_ack_turn = read_json_line(proc, 5)
                 assert failed_after_ack_turn["id"] == "turn-start-approval-failed-after-ack"
                 failed_after_ack_turn_id = failed_after_ack_turn["result"]["turn"]["id"]
-                failed_after_ack_request = read_json_line(proc, 5)
-                assert (
-                    failed_after_ack_request["method"]
-                    == "item/fileChange/requestApproval"
+                failed_after_ack_request = read_turn_server_request_after_opening(
+                    proc,
+                    thread_id,
+                    failed_after_ack_turn_id,
+                    "item/fileChange/requestApproval",
                 )
                 assert failed_after_ack_request["params"]["threadId"] == thread_id
                 assert failed_after_ack_request["params"]["turnId"] == failed_after_ack_turn_id
@@ -16168,8 +16323,12 @@ def run_turn_request_permissions_smoke(binary: Path) -> None:
                 turn_start = read_json_line(proc, 5)
                 assert turn_start["id"] == "turn-start-request-permissions"
                 turn_id = turn_start["result"]["turn"]["id"]
-                permission_request = read_json_line(proc, 5)
-                assert permission_request["method"] == "item/permissions/requestApproval"
+                permission_request = read_turn_server_request_after_opening(
+                    proc,
+                    thread_id,
+                    turn_id,
+                    "item/permissions/requestApproval",
+                )
                 permission_params = permission_request["params"]
                 assert permission_params["threadId"] == thread_id
                 assert permission_params["turnId"] == turn_id
@@ -16445,8 +16604,12 @@ def run_turn_request_user_input_smoke(binary: Path) -> None:
                 assert turn_start["id"] == "turn-start-request-user-input"
                 assert "result" in turn_start, turn_start
                 turn_id = turn_start["result"]["turn"]["id"]
-                user_input_request = read_json_line(proc, 5)
-                assert user_input_request["method"] == "item/tool/requestUserInput"
+                user_input_request = read_turn_server_request_after_opening(
+                    proc,
+                    thread_id,
+                    turn_id,
+                    "item/tool/requestUserInput",
+                )
                 user_input_params = user_input_request["params"]
                 assert user_input_params["threadId"] == thread_id
                 assert user_input_params["turnId"] == turn_id
@@ -27078,7 +27241,8 @@ def run_user_prompt_submit_hook_model_error_notification_smoke(binary: Path) -> 
             )
             turn_response = read_json_line(proc, 10)
             assert turn_response["id"] == "turn-start-with-model-error-hook"
-            assert "error" in turn_response
+            assert turn_response["result"]["turn"]["status"] == "inProgress"
+            turn_id = turn_response["result"]["turn"]["id"]
             messages = read_json_lines_until(
                 proc,
                 10,
@@ -27096,6 +27260,12 @@ def run_user_prompt_submit_hook_model_error_notification_smoke(binary: Path) -> 
                 "hook/completed",
             ]
             assert "error" in methods
+            assert any(
+                message.get("method") == "turn/completed"
+                and message["params"]["turn"]["id"] == turn_id
+                and message["params"]["turn"]["status"] == "failed"
+                for message in messages
+            )
             hook_completed = next(
                 message for message in messages if message.get("method") == "hook/completed"
             )
@@ -30891,8 +31061,12 @@ def run_mcp_elicitation_smoke(binary: Path) -> None:
             turn_start = read_json_line(proc, 5)
             assert turn_start["id"] == "turn-start-mcp-elicit"
             turn_id = turn_start["result"]["turn"]["id"]
-            turn_request = read_json_line(proc, 5)
-            assert turn_request["method"] == "mcpServer/elicitation/request"
+            turn_request = read_turn_server_request_after_opening(
+                proc,
+                thread_id,
+                turn_id,
+                "mcpServer/elicitation/request",
+            )
             assert turn_request["id"] == "mcp-elicitation-elicitation_docs-2"
             turn_params = turn_request["params"]
             assert turn_params["threadId"] == thread_id

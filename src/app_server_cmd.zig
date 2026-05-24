@@ -32333,12 +32333,15 @@ fn handleReviewStart(
     }
 
     if (!review_progress_sent) {
-        thread.status = .active;
-        try queueThreadStatusChangedNotification(allocator, state, thread.id, .active);
-        try queueTurnNotification(allocator, state, "turn/started", started_notification);
-        started_notification_moved = true;
-        try movePendingHookRuntimeNotifications(allocator, state, &session_start_hooks.notifications);
-        try movePendingHookRuntimeNotifications(allocator, state, &user_prompt_hooks.notifications);
+        try queueTurnStartOpeningNotifications(
+            allocator,
+            state,
+            thread,
+            started_notification,
+            &started_notification_moved,
+            &session_start_hooks.notifications,
+            &user_prompt_hooks.notifications,
+        );
         try queueReviewModeItemNotification(allocator, state, "item/started", thread.id, turn_id, "enteredReviewMode", display_text, "startedAtMs", started_at_ms);
         try queueReviewModeItemNotification(allocator, state, "item/completed", thread.id, turn_id, "enteredReviewMode", display_text, "completedAtMs", completed_at_ms);
     }
@@ -32579,6 +32582,70 @@ fn maybeSendReviewStartProgress(
     started_notification_moved.* = true;
     try queueReviewModeItemNotification(allocator, state, "item/started", thread.id, turn_id, "enteredReviewMode", display_text, "startedAtMs", started_at_ms);
     try queueReviewModeItemNotification(allocator, state, "item/completed", thread.id, turn_id, "enteredReviewMode", display_text, "completedAtMs", currentUnixMilliseconds());
+    try flushPendingNotificationsToTransport(allocator, state, transport);
+    return true;
+}
+
+fn queueTurnStartOpeningNotifications(
+    allocator: std.mem.Allocator,
+    state: *AppServerState,
+    thread: *LoadedThread,
+    started_notification: []const u8,
+    started_notification_moved: *bool,
+    session_start_notifications: *std.ArrayList(HookRuntimeNotification),
+    user_prompt_notifications: *std.ArrayList(HookRuntimeNotification),
+) !void {
+    thread.status = .active;
+    try queueThreadStatusChangedNotification(allocator, state, thread.id, .active);
+    try queueTurnNotification(allocator, state, "turn/started", started_notification);
+    started_notification_moved.* = true;
+    try movePendingHookRuntimeNotifications(allocator, state, session_start_notifications);
+    try movePendingHookRuntimeNotifications(allocator, state, user_prompt_notifications);
+}
+
+fn queueTurnUserMessageItemIfPresent(
+    allocator: std.mem.Allocator,
+    state: *AppServerState,
+    thread: *LoadedThread,
+    turn_id: []const u8,
+    user_item_index: usize,
+    user_content_json: []const u8,
+    started_at_ms: i64,
+    completed_at_ms: i64,
+) !void {
+    if (user_item_index >= thread.transcript.history.items.len) return;
+    const user_item = thread.transcript.history.items[user_item_index];
+    if (user_item.kind != .message or !isHistoryRole(user_item, "user")) return;
+    try queueUserMessageItemNotification(allocator, state, "item/started", thread.id, turn_id, user_item_index, user_content_json, "startedAtMs", started_at_ms);
+    try queueUserMessageItemNotification(allocator, state, "item/completed", thread.id, turn_id, user_item_index, user_content_json, "completedAtMs", completed_at_ms);
+}
+
+fn maybeSendTurnStartProgress(
+    allocator: std.mem.Allocator,
+    state: *AppServerState,
+    thread: *LoadedThread,
+    response_payload: []const u8,
+    turn_start_response_sent: *bool,
+    started_notification: []const u8,
+    started_notification_moved: *bool,
+    session_start_notifications: *std.ArrayList(HookRuntimeNotification),
+    user_prompt_notifications: *std.ArrayList(HookRuntimeNotification),
+) !bool {
+    const transport = state.server_request_transport orelse return false;
+    if (!turn_start_response_sent.*) {
+        try transport.send_payload(transport.ctx, response_payload);
+        turn_start_response_sent.* = true;
+    }
+
+    try queueTurnStartOpeningNotifications(
+        allocator,
+        state,
+        thread,
+        started_notification,
+        started_notification_moved,
+        session_start_notifications,
+        user_prompt_notifications,
+    );
     try flushPendingNotificationsToTransport(allocator, state, transport);
     return true;
 }
@@ -32971,12 +33038,15 @@ fn handleTurnStart(
             try session_store.saveTranscript(allocator, path, &thread.transcript);
         }
 
-        thread.status = .active;
-        try queueThreadStatusChangedNotification(allocator, state, thread.id, .active);
-        try queueTurnNotification(allocator, state, "turn/started", started_notification);
-        started_notification_moved = true;
-        try movePendingHookRuntimeNotifications(allocator, state, &session_start_hooks.notifications);
-        try movePendingHookRuntimeNotifications(allocator, state, &user_prompt_hooks.notifications);
+        try queueTurnStartOpeningNotifications(
+            allocator,
+            state,
+            thread,
+            started_notification,
+            &started_notification_moved,
+            &session_start_hooks.notifications,
+            &user_prompt_hooks.notifications,
+        );
         try queueTurnNotification(allocator, state, "turn/completed", completed_notification);
         completed_notification_moved = true;
         thread.status = .idle;
@@ -33095,6 +33165,18 @@ fn handleTurnStart(
     var effective_writable_roots = try loadedThreadEffectiveWritableRoots(allocator, thread);
     defer effective_writable_roots.deinit(allocator);
 
+    const turn_progress_sent = try maybeSendTurnStartProgress(
+        allocator,
+        state,
+        thread,
+        response_payload,
+        &turn_start_response_sent,
+        started_notification,
+        &started_notification_moved,
+        &session_start_hooks.notifications,
+        &user_prompt_hooks.notifications,
+    );
+
     const answer = session_mod.runTurnWithOptions(allocator, cfg, &credentials, &thread.transcript, prompt_for_turn, .{
         .prompt_for_approval = approval_callback != null,
         .approval_callback = approval_callback,
@@ -33182,19 +33264,18 @@ fn handleTurnStart(
                 try session_store.saveTranscript(allocator, path, &thread.transcript);
             }
 
-            thread.status = .active;
-            try queueThreadStatusChangedNotification(allocator, state, thread.id, .active);
-            try queueTurnNotification(allocator, state, "turn/started", started_notification);
-            started_notification_moved = true;
-            try movePendingHookRuntimeNotifications(allocator, state, &session_start_hooks.notifications);
-            try movePendingHookRuntimeNotifications(allocator, state, &user_prompt_hooks.notifications);
-            if (user_item_index < thread.transcript.history.items.len) {
-                const user_item = thread.transcript.history.items[user_item_index];
-                if (user_item.kind == .message and isHistoryRole(user_item, "user")) {
-                    try queueUserMessageItemNotification(allocator, state, "item/started", thread.id, turn_id, user_item_index, input.user_content_json, "startedAtMs", started_at_ms);
-                    try queueUserMessageItemNotification(allocator, state, "item/completed", thread.id, turn_id, user_item_index, input.user_content_json, "completedAtMs", completed_at_ms);
-                }
+            if (!turn_progress_sent) {
+                try queueTurnStartOpeningNotifications(
+                    allocator,
+                    state,
+                    thread,
+                    started_notification,
+                    &started_notification_moved,
+                    &session_start_hooks.notifications,
+                    &user_prompt_hooks.notifications,
+                );
             }
+            try queueTurnUserMessageItemIfPresent(allocator, state, thread, turn_id, user_item_index, input.user_content_json, started_at_ms, completed_at_ms);
             try movePendingTurnUpdateNotifications(allocator, state, &turn_update_notifications);
             if (goal_accounting_changed) try queueThreadGoalUpdatedNotificationForTurn(allocator, state, thread, turn_id);
             try queueThreadTokenUsageNotificationForTurn(allocator, state, thread, turn_id);
@@ -33210,23 +33291,23 @@ fn handleTurnStart(
 
         const error_message = try std.fmt.allocPrint(allocator, "turn/start failed to run turn: {s}", .{@errorName(err)});
         defer allocator.free(error_message);
-        const should_emit_started = turn_start_response_sent or
+        const should_emit_started = turn_progress_sent or
+            turn_start_response_sent or
             session_start_hooks.notifications.items.len > 0 or
             user_prompt_hooks.notifications.items.len > 0;
         if (should_emit_started) {
-            thread.status = .active;
-            try queueThreadStatusChangedNotification(allocator, state, thread.id, .active);
-            try queueTurnNotification(allocator, state, "turn/started", started_notification);
-            started_notification_moved = true;
-            try movePendingHookRuntimeNotifications(allocator, state, &session_start_hooks.notifications);
-            try movePendingHookRuntimeNotifications(allocator, state, &user_prompt_hooks.notifications);
-            if (user_item_index < thread.transcript.history.items.len) {
-                const user_item = thread.transcript.history.items[user_item_index];
-                if (user_item.kind == .message and isHistoryRole(user_item, "user")) {
-                    try queueUserMessageItemNotification(allocator, state, "item/started", thread.id, turn_id, user_item_index, input.user_content_json, "startedAtMs", started_at_ms);
-                    try queueUserMessageItemNotification(allocator, state, "item/completed", thread.id, turn_id, user_item_index, input.user_content_json, "completedAtMs", currentUnixMilliseconds());
-                }
+            if (!turn_progress_sent) {
+                try queueTurnStartOpeningNotifications(
+                    allocator,
+                    state,
+                    thread,
+                    started_notification,
+                    &started_notification_moved,
+                    &session_start_hooks.notifications,
+                    &user_prompt_hooks.notifications,
+                );
             }
+            try queueTurnUserMessageItemIfPresent(allocator, state, thread, turn_id, user_item_index, input.user_content_json, started_at_ms, currentUnixMilliseconds());
             try movePendingTurnUpdateNotifications(allocator, state, &turn_update_notifications);
         }
         thread.status = .system_error;
@@ -33266,19 +33347,18 @@ fn handleTurnStart(
         try session_store.saveTranscript(allocator, path, &thread.transcript);
     }
 
-    thread.status = .active;
-    try queueThreadStatusChangedNotification(allocator, state, thread.id, .active);
-    try queueTurnNotification(allocator, state, "turn/started", started_notification);
-    started_notification_moved = true;
-    try movePendingHookRuntimeNotifications(allocator, state, &session_start_hooks.notifications);
-    try movePendingHookRuntimeNotifications(allocator, state, &user_prompt_hooks.notifications);
-    if (user_item_index < thread.transcript.history.items.len) {
-        const user_item = thread.transcript.history.items[user_item_index];
-        if (user_item.kind == .message and isHistoryRole(user_item, "user")) {
-            try queueUserMessageItemNotification(allocator, state, "item/started", thread.id, turn_id, user_item_index, input.user_content_json, "startedAtMs", started_at_ms);
-            try queueUserMessageItemNotification(allocator, state, "item/completed", thread.id, turn_id, user_item_index, input.user_content_json, "completedAtMs", currentUnixMilliseconds());
-        }
+    if (!turn_progress_sent) {
+        try queueTurnStartOpeningNotifications(
+            allocator,
+            state,
+            thread,
+            started_notification,
+            &started_notification_moved,
+            &session_start_hooks.notifications,
+            &user_prompt_hooks.notifications,
+        );
     }
+    try queueTurnUserMessageItemIfPresent(allocator, state, thread, turn_id, user_item_index, input.user_content_json, started_at_ms, currentUnixMilliseconds());
     try movePendingTurnUpdateNotifications(allocator, state, &turn_update_notifications);
     if (goal_accounting_changed) try queueThreadGoalUpdatedNotificationForTurn(allocator, state, thread, turn_id);
     try queueThreadTokenUsageNotificationForTurn(allocator, state, thread, turn_id);

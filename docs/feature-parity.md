@@ -37,7 +37,10 @@ Zig TUI help in `src/tui.zig`, and the broader narrative tracker in
 - Implement true active-turn runtime state across interactive TUI and
   app-server loaded threads. Current Zig turn execution is still largely
   synchronous; Rust supports active turn state, interruption, steering, richer
-  lifecycle events, and same-turn control.
+  lifecycle events, and same-turn control. App-server `turn/start` now sends
+  the normal-turn response, active status, and `turn/started` notification
+  before provider completion, but true async turn state and same-turn control
+  remain open.
 - Add robust user interruption and steering behavior in the TUI, including
   queued input while a turn is running, `/compact` interactions, active tool
   interruption, and accurate background-process cleanup.
