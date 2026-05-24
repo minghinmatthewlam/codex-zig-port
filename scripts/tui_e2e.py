@@ -1896,6 +1896,23 @@ def run_unimplemented_command_smoke(
     if "Usage:" not in cloud_alias_help.stderr or "cloud list" not in cloud_alias_help.stderr:
         raise AssertionError(f"expected cloud alias list help:\n{cloud_alias_help.stderr}")
 
+    cloud_root_nested_help = subprocess.run(
+        [str(binary), "help", "cloud", "exec"],
+        cwd=workspace,
+        env=env,
+        text=True,
+        capture_output=True,
+        check=True,
+    )
+    if (
+        "Usage:" not in cloud_root_nested_help.stderr
+        or "cloud exec" not in cloud_root_nested_help.stderr
+        or "cloud list" in cloud_root_nested_help.stderr
+    ):
+        raise AssertionError(
+            f"expected root help to route cloud exec help:\n{cloud_root_nested_help.stderr}"
+        )
+
     cloud_global_help = subprocess.run(
         [str(binary), "cloud", "--enable", "goals", "help", "list"],
         cwd=workspace,

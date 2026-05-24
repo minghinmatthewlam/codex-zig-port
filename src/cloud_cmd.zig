@@ -2408,6 +2408,18 @@ fn printSubcommandHelp(command: []const u8) !void {
     printHelpForCommand(parsed);
 }
 
+pub fn printHelpForArgs(args: []const []const u8) !void {
+    if (args.len == 0) {
+        printHelp();
+        return;
+    }
+    if (args.len == 1) {
+        try printSubcommandHelp(args[0]);
+        return;
+    }
+    return error.UnexpectedCloudHelpArgument;
+}
+
 fn printHelpForCommand(command: Command) void {
     switch (command) {
         .tui => printHelp(),

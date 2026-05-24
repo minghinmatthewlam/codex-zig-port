@@ -636,7 +636,7 @@ fn mainInner(init: std.process.Init) !void {
             return;
         }
         if (std.mem.eql(u8, cmd, "help")) {
-            try runHelpCommand(&args);
+            try runHelpCommand(allocator, &args);
             return;
         }
         if (std.mem.eql(u8, cmd, "mcp-server")) {
@@ -1027,12 +1027,19 @@ fn rejectRemoteModeForSubcommand(
     }
 }
 
-fn runHelpCommand(args: *std.process.Args.Iterator) !void {
-    const target = args.next() orelse {
+fn runHelpCommand(allocator: std.mem.Allocator, args: *std.process.Args.Iterator) !void {
+    var targets = try collectRemainingArgs(allocator, args);
+    defer targets.deinit(allocator);
+
+    const target = if (targets.items.len > 0) targets.items[0] else {
         try printHelp();
         return;
     };
-    if (args.next() != null) return error.UnexpectedHelpArgument;
+    if (isCloudCommand(target)) {
+        try cloud_cmd.printHelpForArgs(targets.items[1..]);
+        return;
+    }
+    try requireSingleHelpTarget(targets.items);
     if (isHelpFlag(target) or std.mem.eql(u8, target, "help")) {
         try printHelp();
     } else if (isExecCommand(target)) {
@@ -1065,8 +1072,6 @@ fn runHelpCommand(args: *std.process.Args.Iterator) !void {
         exec_server_cmd.printHelp();
     } else if (std.mem.eql(u8, target, "remote-control")) {
         remote_control_cmd.printHelp();
-    } else if (isCloudCommand(target)) {
-        cloud_cmd.printHelp();
     } else if (std.mem.eql(u8, target, "completion")) {
         completion_cmd.printHelp();
     } else if (std.mem.eql(u8, target, "sandbox")) {
@@ -1090,6 +1095,10 @@ fn runHelpCommand(args: *std.process.Args.Iterator) !void {
     } else {
         return error.UnknownHelpCommand;
     }
+}
+
+fn requireSingleHelpTarget(targets: []const []const u8) !void {
+    if (targets.len != 1) return error.UnexpectedHelpArgument;
 }
 
 fn joinInitialPrompt(
