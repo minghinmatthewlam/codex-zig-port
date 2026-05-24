@@ -154,6 +154,31 @@ const PathInspection = struct {
     error_name: ?[]const u8 = null,
 };
 
+const CommandProbe = struct {
+    stdout: []const u8,
+    stderr: []const u8,
+    term: std.process.Child.Term,
+
+    fn deinit(self: *const CommandProbe, allocator: std.mem.Allocator) void {
+        allocator.free(self.stdout);
+        allocator.free(self.stderr);
+    }
+
+    fn success(self: CommandProbe) bool {
+        return switch (self.term) {
+            .exited => |code| code == 0,
+            else => false,
+        };
+    }
+};
+
+const AppServerRuntimeStatus = struct {
+    status: Status,
+    summary: []const u8,
+    detail: []const u8,
+    remediation: ?[]const u8 = null,
+};
+
 pub fn runWithOptions(allocator: std.mem.Allocator, args: *std.process.Args.Iterator, options: Options) !void {
     var arena = std.heap.ArenaAllocator.init(allocator);
     defer arena.deinit();
@@ -397,10 +422,38 @@ fn runtimeCheck(allocator: std.mem.Allocator, codex_version: []const u8) !Check 
 }
 
 fn searchCheck(allocator: std.mem.Allocator) !Check {
-    var check = Check.init("runtime.search", "search", .ok, "search uses system PATH");
+    var check = Check.init("runtime.search", "search", .ok, "search is OK (system)");
     try check.addDetail(allocator, "search provider", "system");
     try check.addDetail(allocator, "search command", "rg");
-    try check.addDetail(allocator, "search command readiness", "not probed by Zig doctor");
+    const rg_path = resolveCommandOnPath(allocator, "rg") catch |err| {
+        check.status = .warning;
+        check.summary = "search command could not be verified";
+        try check.addDetailFmt(allocator, "search command readiness", "{s}", .{@errorName(err)});
+        check.remediation = "Install ripgrep or repair the bundled Codex package.";
+        return check;
+    };
+    try check.addDetail(allocator, "search command resolved", rg_path);
+    var probe = runCommandProbe(allocator, &.{ rg_path, "--version" }) catch |err| {
+        check.status = .warning;
+        check.summary = "search command could not be verified";
+        try check.addDetailFmt(allocator, "search command readiness", "{s}", .{@errorName(err)});
+        check.remediation = "Install ripgrep or repair the bundled Codex package.";
+        return check;
+    };
+    defer probe.deinit(allocator);
+
+    if (probe.success()) {
+        try check.addDetail(allocator, "search command readiness", firstNonEmptyLine(probe.stdout) orelse "rg version unknown");
+    } else {
+        check.status = .warning;
+        check.summary = "search command could not be verified";
+        if (firstNonEmptyLine(probe.stderr) orelse firstNonEmptyLine(probe.stdout)) |line| {
+            try check.addDetailFmt(allocator, "search command readiness", "exited with {s}: {s}", .{ try childTermLabel(allocator, probe.term), line });
+        } else {
+            try check.addDetailFmt(allocator, "search command readiness", "exited with {s}", .{try childTermLabel(allocator, probe.term)});
+        }
+        check.remediation = "Install ripgrep or repair the bundled Codex package.";
+    }
     return check;
 }
 
@@ -653,6 +706,11 @@ fn networkCheck(allocator: std.mem.Allocator) !Check {
     }
     var check = Check.init("network.env", "network", .ok, "network-related environment looks readable");
     try check.addDetail(allocator, "proxy env vars", try joinOrNone(allocator, names.items));
+    inline for (&.{ "CODEX_CA_CERTIFICATE", "SSL_CERT_FILE" }) |name| {
+        if (try env.getOwned(allocator, name)) |value| {
+            try recordCustomCaEnvPath(allocator, &check, name, value);
+        }
+    }
     return check;
 }
 
@@ -672,21 +730,17 @@ fn appServerCheck(allocator: std.mem.Allocator, cfg_load: ConfigLoad) !Check {
     const updater_pid_file_inspection = try inspectPath(allocator, updater_pid_file);
     try recordAppServerPathInspection(allocator, &check, "control socket", control_socket_inspection);
     try recordAppServerPathInspection(allocator, &check, "daemon state dir", daemon_dir_inspection);
-    try check.addDetail(allocator, "mode", "ephemeral");
+    try check.addDetail(allocator, "mode", if (settings_file_inspection.health == .ok) "persistent" else "ephemeral");
     try recordAppServerPathInspection(allocator, &check, "pid file", pid_file_inspection);
     try recordAppServerPathInspection(allocator, &check, "settings", settings_file_inspection);
-    const status = if (control_socket_inspection.health == .inaccessible)
-        "unknown (control socket inaccessible)"
-    else if (control_socket_inspection.health == .ok)
-        "control socket present"
-    else if (pid_file_inspection.health == .ok)
-        "pid file present"
-    else
-        "not running";
-    if (std.mem.eql(u8, status, "not running")) {
-        check.summary = "background server is not running";
+
+    const runtime_status = try appServerRuntimeStatus(control_socket, control_socket_inspection.health);
+    if (check.status != .fail) {
+        check.status = runtime_status.status;
+        check.summary = runtime_status.summary;
+        if (runtime_status.remediation) |remediation| check.remediation = remediation;
     }
-    try check.addDetail(allocator, "status", status);
+    try check.addDetail(allocator, "status", runtime_status.detail);
     try recordAppServerPathInspection(allocator, &check, "update-loop pid file", updater_pid_file_inspection);
     return check;
 }
@@ -1075,6 +1129,210 @@ fn inspectPath(allocator: std.mem.Allocator, path: []const u8) !PathInspection {
     };
 }
 
+fn runCommandProbe(allocator: std.mem.Allocator, argv: []const []const u8) !CommandProbe {
+    var io_instance: std.Io.Threaded = .init(allocator, .{});
+    defer io_instance.deinit();
+
+    const result = try std.process.run(allocator, io_instance.io(), .{
+        .argv = argv,
+        .expand_arg0 = .expand,
+        .stdout_limit = .limited(16 * 1024),
+        .stderr_limit = .limited(16 * 1024),
+        .timeout = .{ .duration = .{
+            .raw = std.Io.Duration.fromMilliseconds(5_000),
+            .clock = .awake,
+        } },
+    });
+    errdefer allocator.free(result.stdout);
+    errdefer allocator.free(result.stderr);
+
+    return .{
+        .stdout = result.stdout,
+        .stderr = result.stderr,
+        .term = result.term,
+    };
+}
+
+fn resolveCommandOnPath(allocator: std.mem.Allocator, command: []const u8) ![]const u8 {
+    if (std.mem.indexOfScalar(u8, command, '/') != null) return try allocator.dupe(u8, command);
+    if (builtin.os.tag == .windows and std.mem.indexOfScalar(u8, command, '\\') != null) return try allocator.dupe(u8, command);
+
+    const path_env = try env.getOwned(allocator, "PATH") orelse return error.PathNotSet;
+    defer allocator.free(path_env);
+    var parts = std.mem.splitScalar(u8, path_env, std.fs.path.delimiter);
+    const io = std.Io.Threaded.global_single_threaded.io();
+    while (parts.next()) |raw_dir| {
+        const dir = if (raw_dir.len == 0) "." else raw_dir;
+        if (try resolveCommandInDir(allocator, io, dir, command)) |candidate| return candidate;
+    }
+    return error.FileNotFound;
+}
+
+fn resolveCommandInDir(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    dir: []const u8,
+    command: []const u8,
+) !?[]const u8 {
+    if (try executableFileCandidate(allocator, io, dir, command)) |candidate| return candidate;
+    if (builtin.os.tag == .windows and std.mem.indexOfScalar(u8, command, '.') == null) {
+        inline for (&.{ ".exe", ".cmd", ".bat", ".com" }) |extension| {
+            const with_extension = try std.fmt.allocPrint(allocator, "{s}{s}", .{ command, extension });
+            defer allocator.free(with_extension);
+            if (try executableFileCandidate(allocator, io, dir, with_extension)) |candidate| return candidate;
+        }
+    }
+    return null;
+}
+
+fn executableFileCandidate(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    dir: []const u8,
+    command: []const u8,
+) !?[]const u8 {
+    const candidate = try std.fs.path.join(allocator, &.{ dir, command });
+    const metadata = std.Io.Dir.cwd().statFile(io, candidate, .{}) catch |err| switch (err) {
+        error.AccessDenied, error.PermissionDenied, error.FileNotFound, error.NotDir => {
+            allocator.free(candidate);
+            return null;
+        },
+        else => return err,
+    };
+    if (metadata.kind != .file) {
+        allocator.free(candidate);
+        return null;
+    }
+    std.Io.Dir.cwd().access(io, candidate, .{ .execute = true }) catch |err| switch (err) {
+        error.AccessDenied, error.PermissionDenied, error.FileNotFound => {
+            allocator.free(candidate);
+            return null;
+        },
+        else => return err,
+    };
+    return candidate;
+}
+
+fn firstNonEmptyLine(text: []const u8) ?[]const u8 {
+    var start: usize = 0;
+    while (start < text.len) {
+        const end = std.mem.indexOfScalarPos(u8, text, start, '\n') orelse text.len;
+        const line = std.mem.trim(u8, text[start..end], " \t\r");
+        if (line.len > 0) return line;
+        start = if (end < text.len) end + 1 else text.len;
+    }
+    return null;
+}
+
+fn childTermLabel(allocator: std.mem.Allocator, term: std.process.Child.Term) ![]const u8 {
+    return switch (term) {
+        .exited => |code| std.fmt.allocPrint(allocator, "status {d}", .{code}),
+        .signal => |signal| std.fmt.allocPrint(allocator, "signal {d}", .{@intFromEnum(signal)}),
+        .stopped => |signal| std.fmt.allocPrint(allocator, "stopped {d}", .{@intFromEnum(signal)}),
+        .unknown => |code| std.fmt.allocPrint(allocator, "unknown {d}", .{code}),
+    };
+}
+
+fn recordCustomCaEnvPath(allocator: std.mem.Allocator, check: *Check, name: []const u8, path: []const u8) !void {
+    const io = std.Io.Threaded.global_single_threaded.io();
+    const metadata = std.Io.Dir.cwd().statFile(io, path, .{}) catch |err| {
+        check.status = .warning;
+        check.summary = "custom CA env var points at an unreadable path";
+        try check.addDetailFmt(allocator, name, "{s} ({s})", .{ path, @errorName(err) });
+        check.remediation = "Fix custom CA certificate paths or unset the affected environment variable.";
+        return;
+    };
+
+    if (metadata.kind != .file) {
+        check.status = .warning;
+        check.summary = "custom CA env var does not point at a file";
+        try check.addDetailFmt(allocator, name, "not a file {s}", .{path});
+        check.remediation = "Set the custom CA environment variable to a readable certificate file.";
+        return;
+    }
+
+    var file = std.Io.Dir.cwd().openFile(io, path, .{}) catch |err| {
+        check.status = .warning;
+        check.summary = "custom CA env var points at an unreadable file";
+        try check.addDetailFmt(allocator, name, "{s} ({s})", .{ path, @errorName(err) });
+        check.remediation = "Fix custom CA certificate file permissions or unset the affected environment variable.";
+        return;
+    };
+    defer file.close(io);
+    try check.addDetailFmt(allocator, name, "readable file {s}", .{path});
+}
+
+fn appServerRuntimeStatus(
+    control_socket: []const u8,
+    socket_health: PathHealth,
+) !AppServerRuntimeStatus {
+    return switch (socket_health) {
+        .missing => .{
+            .status = .ok,
+            .summary = "background server is not running",
+            .detail = "not running",
+        },
+        .inaccessible => .{
+            .status = .fail,
+            .summary = "background server paths are not inspectable",
+            .detail = "unknown (control socket inaccessible)",
+            .remediation = "Fix CODEX_HOME permissions or repair the affected app-server path.",
+        },
+        .ok => if (unixSocketConnects(control_socket)) |connects| blk: {
+            if (connects) break :blk .{
+                .status = .ok,
+                .summary = "background server is running",
+                .detail = "running",
+            };
+            break :blk .{
+                .status = .warning,
+                .summary = "background server socket is stale or unreachable",
+                .detail = "stale or unreachable",
+                .remediation = "Run `codex app-server daemon version` for more details.",
+            };
+        } else .{
+            .status = .ok,
+            .summary = "background server status is locally inspectable",
+            .detail = "control socket present",
+        },
+    };
+}
+
+fn unixSocketConnects(socket_path: []const u8) ?bool {
+    if (builtin.os.tag == .windows) return null;
+
+    const Sockaddr = extern union {
+        any: std.posix.sockaddr,
+        un: std.posix.sockaddr.un,
+    };
+
+    const fd = while (true) {
+        const rc = std.posix.system.socket(std.posix.AF.UNIX, std.posix.SOCK.STREAM, 0);
+        switch (std.posix.errno(rc)) {
+            .SUCCESS => break @as(std.posix.fd_t, @intCast(rc)),
+            .INTR => continue,
+            else => return null,
+        }
+    };
+    defer _ = std.c.close(fd);
+
+    var storage = std.mem.zeroes(Sockaddr);
+    if (socket_path.len >= storage.un.path.len) return false;
+    storage.un.family = std.posix.AF.UNIX;
+    @memcpy(storage.un.path[0..socket_path.len], socket_path);
+    storage.un.path[socket_path.len] = 0;
+    const address_len: std.posix.socklen_t = @intCast(@offsetOf(std.posix.sockaddr.un, "path") + socket_path.len + 1);
+
+    while (true) {
+        switch (std.posix.errno(std.posix.system.connect(fd, &storage.any, address_len))) {
+            .SUCCESS => return true,
+            .INTR => continue,
+            .ACCES, .PERM => return false,
+            else => return false,
+        }
+    }
+}
+
 fn currentUnixSeconds() i64 {
     const now = std.Io.Timestamp.now(std.Io.Threaded.global_single_threaded.io(), .real);
     return @intCast(now.toSeconds());
@@ -1269,6 +1527,45 @@ test "doctor app-server status includes daemon metadata" {
     try std.testing.expect(found_pid_file);
     try std.testing.expect(found_settings);
     try std.testing.expect(found_updater_pid);
+}
+
+test "doctor app-server runtime status distinguishes missing and stale sockets" {
+    const missing = try appServerRuntimeStatus("/definitely-missing-codex-zig-doctor.sock", .missing);
+    try std.testing.expectEqual(Status.ok, missing.status);
+    try std.testing.expectEqualStrings("background server is not running", missing.summary);
+    try std.testing.expectEqualStrings("not running", missing.detail);
+
+    const stale = try appServerRuntimeStatus("/definitely-missing-codex-zig-doctor.sock", .ok);
+    try std.testing.expectEqual(Status.warning, stale.status);
+    try std.testing.expectEqualStrings("background server socket is stale or unreachable", stale.summary);
+    try std.testing.expectEqualStrings("stale or unreachable", stale.detail);
+    try std.testing.expect(stale.remediation != null);
+}
+
+test "doctor network check warns for invalid custom CA paths" {
+    const allocator = std.testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    const scratch = arena.allocator();
+
+    var dir = std.testing.tmpDir(.{});
+    defer dir.cleanup();
+    const io = std.Io.Threaded.global_single_threaded.io();
+    const root = try dir.dir.realPathFileAlloc(io, ".", allocator);
+    defer allocator.free(root);
+
+    var check = Check.init("network.env", "network", .ok, "network-related environment looks readable");
+    try recordCustomCaEnvPath(scratch, &check, "SSL_CERT_FILE", root);
+
+    try std.testing.expectEqual(Status.warning, check.status);
+    try std.testing.expectEqualStrings("custom CA env var does not point at a file", check.summary);
+    var found = false;
+    for (check.details.items) |detail| {
+        if (std.mem.eql(u8, detail.key, "SSL_CERT_FILE") and std.mem.indexOf(u8, detail.value, "not a file") != null) {
+            found = true;
+        }
+    }
+    try std.testing.expect(found);
 }
 
 test "doctor auth check uses active ephemeral credentials" {
