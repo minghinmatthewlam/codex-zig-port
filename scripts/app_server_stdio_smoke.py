@@ -5860,6 +5860,57 @@ def run_turn_start_rpc_smoke(binary: Path) -> None:
                     ),
                     encoding="utf-8",
                 )
+                plugin_root.joinpath(".app.json").write_text(
+                    json.dumps(
+                        {
+                            "apps": {
+                                "demo_drive": {
+                                    "name": "Demo Drive",
+                                    "description": "Search demo drive files",
+                                }
+                            }
+                        }
+                    ),
+                    encoding="utf-8",
+                )
+                plugin_apps_mcp_server = codex_home / "plugin_apps_mcp_server.py"
+                plugin_apps_mcp_server.write_text(
+                    "\n".join(
+                        [
+                            "import json",
+                            "import sys",
+                            "for line in sys.stdin:",
+                            "    if not line.strip():",
+                            "        continue",
+                            "    request = json.loads(line)",
+                            "    request_id = request.get('id')",
+                            "    if request_id is None:",
+                            "        continue",
+                            "    method = request.get('method')",
+                            "    if method == 'initialize':",
+                            "        result = {'protocolVersion': '2025-03-26', 'serverInfo': {'name': 'plugin-apps', 'version': '0.1.0'}, 'capabilities': {'tools': {}}}",
+                            "    elif method == 'tools/list':",
+                            "        result = {'tools': [{'name': 'demo_drive_search', 'description': 'Search demo drive files', 'inputSchema': {'type': 'object'}, '_meta': {'connector_id': 'demo_drive', 'connector_name': 'Demo Drive', 'connector_description': 'Search demo drive files'}}]}",
+                            "    else:",
+                            "        result = {}",
+                            "    print(json.dumps({'jsonrpc': '2.0', 'id': request_id, 'result': result}, separators=(',', ':')), flush=True)",
+                        ]
+                    )
+                    + "\n",
+                    encoding="utf-8",
+                )
+                plugin_apps_mcp_config = {
+                    "mcpServers": {
+                        "codex_apps": {
+                            "command": "python3",
+                            "args": [str(plugin_apps_mcp_server)],
+                        }
+                    }
+                }
+                plugin_root.joinpath(".mcp.json").write_text(
+                    json.dumps(plugin_apps_mcp_config),
+                    encoding="utf-8",
+                )
                 plugin_skill_path = plugin_root / "skills" / "search" / "SKILL.md"
                 plugin_skill_path.parent.mkdir(parents=True)
                 plugin_skill_path.write_text(
@@ -5929,12 +5980,26 @@ def run_turn_start_rpc_smoke(binary: Path) -> None:
                 assert_thread_status_notification(
                     read_json_line(proc, 5), thread_id, "active"
                 )
-                started = read_json_line(proc, 5)
+
+                mcp_startup_messages: list[dict] = []
+
+                def read_turn_message(expected_method: str) -> dict:
+                    messages = read_json_lines_until(
+                        proc,
+                        5,
+                        lambda seen: seen[-1].get("method") == expected_method,
+                    )
+                    for message in messages[:-1]:
+                        assert message.get("method") == "mcpServer/startupStatus/updated", messages
+                        mcp_startup_messages.append(message)
+                    return messages[-1]
+
+                started = read_turn_message("turn/started")
                 assert started["method"] == "turn/started"
                 assert started["params"]["threadId"] == thread_id
                 assert started["params"]["turn"]["id"] == "turn-0"
                 assert started["params"]["turn"]["status"] == "inProgress"
-                user_item_started = read_json_line(proc, 5)
+                user_item_started = read_turn_message("item/started")
                 assert user_item_started["method"] == "item/started"
                 assert user_item_started["params"]["threadId"] == thread_id
                 assert user_item_started["params"]["turnId"] == "turn-0"
@@ -5955,13 +6020,19 @@ def run_turn_start_rpc_smoke(binary: Path) -> None:
                         "text_elements": [],
                     },
                 ]
-                user_item_completed = read_json_line(proc, 5)
+                user_item_completed = read_turn_message("item/completed")
                 assert user_item_completed["method"] == "item/completed"
                 assert user_item_completed["params"]["threadId"] == thread_id
                 assert user_item_completed["params"]["turnId"] == "turn-0"
                 assert isinstance(user_item_completed["params"]["completedAtMs"], int)
                 assert user_item_completed["params"]["item"] == user_item
-                agent_item_started = read_json_line(proc, 5)
+                agent_item_started = read_turn_message("item/started")
+                assert_mcp_startup_status_seen(
+                    mcp_startup_messages, "codex_apps", "starting"
+                )
+                assert_mcp_startup_status_seen(
+                    mcp_startup_messages, "codex_apps", "ready"
+                )
                 assert agent_item_started["method"] == "item/started"
                 assert agent_item_started["params"]["threadId"] == thread_id
                 assert agent_item_started["params"]["turnId"] == "turn-0"
@@ -5970,7 +6041,7 @@ def run_turn_start_rpc_smoke(binary: Path) -> None:
                 assert agent_item["type"] == "agentMessage"
                 assert agent_item["id"] == "item-1"
                 assert agent_item["text"] == "app turn reply"
-                agent_delta = read_json_line(proc, 5)
+                agent_delta = read_turn_message("item/agentMessage/delta")
                 assert agent_delta["method"] == "item/agentMessage/delta"
                 assert agent_delta["params"] == {
                     "threadId": thread_id,
@@ -5978,13 +6049,13 @@ def run_turn_start_rpc_smoke(binary: Path) -> None:
                     "itemId": "item-1",
                     "delta": "app turn reply",
                 }
-                agent_item_completed = read_json_line(proc, 5)
+                agent_item_completed = read_turn_message("item/completed")
                 assert agent_item_completed["method"] == "item/completed"
                 assert agent_item_completed["params"]["threadId"] == thread_id
                 assert agent_item_completed["params"]["turnId"] == "turn-0"
                 assert isinstance(agent_item_completed["params"]["completedAtMs"], int)
                 assert agent_item_completed["params"]["item"] == agent_item
-                completed = read_json_line(proc, 5)
+                completed = read_turn_message("turn/completed")
                 assert completed["method"] == "turn/completed"
                 assert completed["params"]["threadId"] == thread_id
                 assert completed["params"]["turn"]["id"] == "turn-0"
@@ -6010,6 +6081,13 @@ def run_turn_start_rpc_smoke(binary: Path) -> None:
                     in plugin_context_text
                 )
                 assert (
+                    "Apps from this plugin available in this session: `Demo Drive`."
+                    in plugin_context_text
+                )
+                assert "mcp__codex_apps__demo_drive_search" in {
+                    tool["name"] for tool in request.get("tools", [])
+                }
+                assert (
                     "Use these plugin-associated capabilities to help solve the task."
                     in plugin_context_text
                 )
@@ -6030,6 +6108,7 @@ def run_turn_start_rpc_smoke(binary: Path) -> None:
                 assert request_content[2]["type"] == "input_image"
                 assert request_content[2]["image_url"].startswith("data:image/png;base64,")
                 assert request_content[2]["detail"] == "auto"
+                plugin_root.joinpath(".mcp.json").unlink(missing_ok=True)
 
                 write_json_line(
                     proc,
@@ -8585,6 +8664,82 @@ def run_turn_start_rpc_smoke(binary: Path) -> None:
                     turn_glob_read_deny_public.read_text(encoding="utf-8")
                     == "glob-public"
                 )
+
+                plugin_root.joinpath(".mcp.json").write_text(
+                    json.dumps(plugin_apps_mcp_config),
+                    encoding="utf-8",
+                )
+                write_json_line(
+                    proc,
+                    {
+                        "jsonrpc": "2.0",
+                        "id": "turn-apps-feature-disable",
+                        "method": "experimentalFeature/enablement/set",
+                        "params": {"enablement": {"apps": False}},
+                    },
+                )
+                apps_disable = read_json_line(proc, 5)
+                assert apps_disable["id"] == "turn-apps-feature-disable"
+                assert apps_disable["result"] == {"enablement": {"apps": False}}
+                write_json_line(
+                    proc,
+                    {
+                        "jsonrpc": "2.0",
+                        "id": "turn-start-apps-disabled",
+                        "method": "turn/start",
+                        "params": {
+                            "threadId": thread_id,
+                            "input": [
+                                {
+                                    "type": "mention",
+                                    "name": "Demo Plugin",
+                                    "path": "plugin://demo@local",
+                                },
+                                {
+                                    "type": "text",
+                                    "text": "apps disabled plugin mention",
+                                },
+                            ],
+                        },
+                    },
+                )
+                apps_disabled_turn = read_json_line(proc, 5)
+                assert apps_disabled_turn["id"] == "turn-start-apps-disabled"
+                apps_disabled_notifications = read_json_lines_until(
+                    proc,
+                    5,
+                    lambda seen: seen[-1].get("method") == "thread/status/changed"
+                    and seen[-1]["params"]["threadId"] == thread_id
+                    and seen[-1]["params"]["status"]["type"] == "idle",
+                )
+                assert any(
+                    message.get("method") == "turn/completed"
+                    for message in apps_disabled_notifications
+                ), apps_disabled_notifications
+                assert not any(
+                    mcp_startup_status_matches(message, "codex_apps", "starting")
+                    or mcp_startup_status_matches(message, "codex_apps", "ready")
+                    or mcp_startup_status_matches(message, "codex_apps", "failed")
+                    for message in apps_disabled_notifications
+                ), apps_disabled_notifications
+                apps_disabled_request = server.request_bodies[-1]
+                apps_disabled_tool_names = {
+                    tool["name"] for tool in apps_disabled_request.get("tools", [])
+                }
+                assert (
+                    "mcp__codex_apps__demo_drive_search"
+                    not in apps_disabled_tool_names
+                )
+                apps_disabled_developer_text = "\n".join(
+                    request_input_texts_by_role(apps_disabled_request).get(
+                        "developer", []
+                    )
+                )
+                assert (
+                    "Capabilities from the `Demo Plugin` plugin:"
+                    in apps_disabled_developer_text
+                )
+                assert "Apps from this plugin available" not in apps_disabled_developer_text
 
             assert proc.stdin is not None
             proc.stdin.close()
