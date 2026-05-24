@@ -115,6 +115,7 @@ pub fn main(init: std.process.Init) !void {
             error.HookStoppedTurn => {},
             error.StrictConfigUnknownField => {},
             error.StrictConfigUnsupportedForSubcommand => {},
+            error.UnexpectedPromptArgument => {},
             error.ProfileV2UnsupportedCommand => std.debug.print(
                 "Error: --profile-v2 only applies to runtime commands: `codex`, `codex exec`, `codex review`, `codex resume`, `codex fork`, and `codex debug prompt-input`.\n",
                 .{},
@@ -208,6 +209,7 @@ fn mainInner(init: std.process.Init) !void {
     defer if (forced_initial_prompt) |prompt| allocator.free(prompt);
     var approval_policy_requested = false;
     var dangerous_bypass_requested = false;
+    var cwd_applied = false;
     var pending_arg: ?[]const u8 = null;
     while (true) {
         const arg = if (pending_arg) |value| arg: {
@@ -442,14 +444,14 @@ fn mainInner(init: std.process.Init) !void {
     }
 
     const should_apply_cwd = if (cmd_opt) |cmd|
-        !isExecCommand(cmd) and
-            !std.mem.eql(u8, cmd, "sandbox") and
-            !isHelpFlag(cmd) and
-            !isVersionFlag(cmd)
+        rootCommandAppliesCwdBeforeDispatch(cmd)
     else
         true;
     if (should_apply_cwd) {
-        if (overrides.cwd) |cwd| try workdir.change(cwd);
+        if (overrides.cwd) |cwd| {
+            try workdir.change(cwd);
+            cwd_applied = true;
+        }
     }
 
     if (forced_initial_prompt) |initial_prompt| {
@@ -613,9 +615,6 @@ fn mainInner(init: std.process.Init) !void {
         if (std.mem.eql(u8, cmd, "app")) {
             try app_cmd.run(allocator, &args);
             return;
-        }
-        if (isRemovedTopLevelCommand(cmd)) {
-            return error.RemovedTopLevelCommand;
         }
         if (std.mem.eql(u8, cmd, "update")) {
             try runUpdateCommand(allocator, &args);
@@ -785,7 +784,37 @@ fn mainInner(init: std.process.Init) !void {
             try runMockSandboxDemo(allocator, overrides.additional_writable_roots);
             return;
         }
-        const initial_prompt = try joinInitialPrompt(allocator, cmd, &args);
+        var prompt_tail = try collectRemainingArgs(allocator, &args);
+        defer prompt_tail.deinit(allocator);
+        const tail_action = try parseRootPromptTail(
+            allocator,
+            prompt_tail.items,
+            &overrides,
+            &runtime_feature_overrides,
+            &additional_writable_roots,
+            &initial_image_files,
+            &root_config_child_args,
+            &approval_policy_requested,
+            &dangerous_bypass_requested,
+        );
+        overrides.additional_writable_roots = additional_writable_roots.items;
+        if (tail_action) |action| {
+            switch (action) {
+                .help => try printHelp(),
+                .version => printVersion(),
+            }
+            return;
+        }
+        if (overrides.strict_config) {
+            if (overrides.unknown_config_override) |field| return config.failStrictConfigUnknownCliOverride(field);
+        }
+        if (!cwd_applied) {
+            if (overrides.cwd) |cwd| {
+                try workdir.change(cwd);
+                cwd_applied = true;
+            }
+        }
+        const initial_prompt = try allocator.dupe(u8, cmd);
         defer allocator.free(initial_prompt);
         try runTuiWithImages(allocator, initial_image_files.items, .{
             .profile = overrides.profile,
@@ -897,7 +926,7 @@ fn isCloudCommand(cmd: []const u8) bool {
     return std.mem.eql(u8, cmd, "cloud") or std.mem.eql(u8, cmd, "cloud-tasks");
 }
 
-fn commandRejectsRootRemote(cmd: []const u8) bool {
+fn isKnownRootCommand(cmd: []const u8) bool {
     return std.mem.eql(u8, cmd, "auth-status") or
         std.mem.eql(u8, cmd, "login") or
         std.mem.eql(u8, cmd, "logout") or
@@ -920,6 +949,9 @@ fn commandRejectsRootRemote(cmd: []const u8) bool {
         std.mem.eql(u8, cmd, "stdio-to-uds") or
         std.mem.eql(u8, cmd, "help") or
         std.mem.eql(u8, cmd, "mcp-server") or
+        std.mem.eql(u8, cmd, "remote-fork") or
+        std.mem.eql(u8, cmd, "resume") or
+        std.mem.eql(u8, cmd, "fork") or
         std.mem.eql(u8, cmd, "sessions") or
         std.mem.eql(u8, cmd, "mock-demo") or
         std.mem.eql(u8, cmd, "mock-apply-patch") or
@@ -927,6 +959,21 @@ fn commandRejectsRootRemote(cmd: []const u8) bool {
         std.mem.eql(u8, cmd, "mock-sandbox-demo") or
         isExecCommand(cmd) or
         isApplyCommand(cmd);
+}
+
+fn rootCommandAppliesCwdBeforeDispatch(cmd: []const u8) bool {
+    return isKnownRootCommand(cmd) and
+        !isHelpFlag(cmd) and
+        !isVersionFlag(cmd) and
+        !isExecCommand(cmd) and
+        !std.mem.eql(u8, cmd, "sandbox");
+}
+
+fn commandRejectsRootRemote(cmd: []const u8) bool {
+    if (std.mem.eql(u8, cmd, "resume")) return false;
+    if (std.mem.eql(u8, cmd, "fork")) return false;
+    if (std.mem.eql(u8, cmd, "remote-fork")) return false;
+    return isKnownRootCommand(cmd);
 }
 
 fn strictConfigUnsupportedSubcommandName(cmd: []const u8) ?[]const u8 {
@@ -961,7 +1008,6 @@ fn strictConfigUnsupportedSubcommandName(cmd: []const u8) ?[]const u8 {
     if (std.mem.eql(u8, cmd, "stdio-to-uds")) return "stdio-to-uds";
     if (std.mem.eql(u8, cmd, "help")) return "help";
     if (isApplyCommand(cmd)) return "apply";
-    if (isRemovedTopLevelCommand(cmd)) return cmd;
     if (std.mem.startsWith(u8, cmd, "mock-")) return cmd;
     return null;
 }
@@ -1002,13 +1048,8 @@ fn profileV2UnsupportedSubcommandName(cmd: []const u8) ?[]const u8 {
     if (std.mem.eql(u8, cmd, "mcp-server")) return "mcp-server";
     if (std.mem.eql(u8, cmd, "sessions")) return "sessions";
     if (isApplyCommand(cmd)) return "apply";
-    if (isRemovedTopLevelCommand(cmd)) return cmd;
     if (std.mem.startsWith(u8, cmd, "mock-")) return cmd;
     return null;
-}
-
-fn isRemovedTopLevelCommand(cmd: []const u8) bool {
-    return std.mem.eql(u8, cmd, "marketplace");
 }
 
 fn rejectRemoteModeForSubcommand(
@@ -1154,12 +1195,261 @@ fn joinInitialPrompt(
     first: []const u8,
     args: *std.process.Args.Iterator,
 ) ![]const u8 {
+    var rest = try collectRemainingArgs(allocator, args);
+    defer rest.deinit(allocator);
+    return joinInitialPromptParts(allocator, first, rest.items);
+}
+
+const RootPromptFlagAction = enum {
+    help,
+    version,
+};
+
+fn parseRootPromptTail(
+    allocator: std.mem.Allocator,
+    tail: []const []const u8,
+    overrides: *CliOverrides,
+    feature_overrides: *features_cmd.FeatureOverrides,
+    additional_writable_roots: *std.ArrayList([]const u8),
+    image_files: *std.ArrayList([]const u8),
+    root_config_child_args: *std.ArrayList([]const u8),
+    approval_policy_requested: *bool,
+    dangerous_bypass_requested: *bool,
+) !?RootPromptFlagAction {
+    var index: usize = 0;
+    while (index < tail.len) : (index += 1) {
+        const arg = tail[index];
+        if (std.mem.eql(u8, arg, "--")) {
+            if (index + 1 < tail.len) return rejectUnexpectedPromptArgument(tail[index + 1]);
+            return null;
+        }
+        if (isHelpFlag(arg)) return .help;
+        if (isVersionFlag(arg)) return .version;
+        if (std.mem.eql(u8, arg, "--profile") or std.mem.eql(u8, arg, "-p")) {
+            overrides.profile = try nextRootPromptOptionValue(tail, &index, error.MissingProfileOptionValue);
+            continue;
+        }
+        if (std.mem.startsWith(u8, arg, "--profile=")) {
+            overrides.profile = arg["--profile=".len..];
+            continue;
+        }
+        if (std.mem.eql(u8, arg, "--profile-v2")) {
+            const value = try nextRootPromptOptionValue(tail, &index, error.MissingProfileOptionValue);
+            try config.validateProfileV2Name(value);
+            overrides.profile_v2 = value;
+            continue;
+        }
+        if (std.mem.startsWith(u8, arg, "--profile-v2=")) {
+            const value = arg["--profile-v2=".len..];
+            try config.validateProfileV2Name(value);
+            overrides.profile_v2 = value;
+            continue;
+        }
+        if (std.mem.eql(u8, arg, "--cd") or std.mem.eql(u8, arg, "-C")) {
+            overrides.cwd = try nextRootPromptOptionValue(tail, &index, error.MissingCdOptionValue);
+            continue;
+        }
+        if (std.mem.startsWith(u8, arg, "--cd=")) {
+            overrides.cwd = arg["--cd=".len..];
+            continue;
+        }
+        if (std.mem.eql(u8, arg, "--add-dir")) {
+            const value = try nextRootPromptOptionValue(tail, &index, error.MissingAddDirOptionValue);
+            try additional_writable_roots.append(allocator, value);
+            continue;
+        }
+        if (std.mem.startsWith(u8, arg, "--add-dir=")) {
+            try additional_writable_roots.append(allocator, arg["--add-dir=".len..]);
+            continue;
+        }
+        if (std.mem.eql(u8, arg, "--config") or std.mem.eql(u8, arg, "-c")) {
+            const raw = try nextRootPromptOptionValue(tail, &index, error.MissingConfigOptionValue);
+            try config.rememberStrictConfigUnknownOverride(allocator, &overrides.unknown_config_override, raw);
+            try config.applyRawConfigOverride(&overrides.runtime, &overrides.profile, raw);
+            try root_config_child_args.append(allocator, arg);
+            try root_config_child_args.append(allocator, raw);
+            continue;
+        }
+        if (std.mem.startsWith(u8, arg, "--config=")) {
+            const raw = arg["--config=".len..];
+            try config.rememberStrictConfigUnknownOverride(allocator, &overrides.unknown_config_override, raw);
+            try config.applyRawConfigOverride(&overrides.runtime, &overrides.profile, raw);
+            try root_config_child_args.append(allocator, arg);
+            continue;
+        }
+        if (std.mem.eql(u8, arg, "--model") or std.mem.eql(u8, arg, "-m")) {
+            overrides.runtime.model = try nextRootPromptOptionValue(tail, &index, error.MissingModelOptionValue);
+            continue;
+        }
+        if (std.mem.startsWith(u8, arg, "--model=")) {
+            overrides.runtime.model = arg["--model=".len..];
+            continue;
+        }
+        if (std.mem.eql(u8, arg, "--image") or std.mem.eql(u8, arg, "-i")) {
+            input_images.appendVariadicFiles(allocator, image_files, tail, &index) catch |err| switch (err) {
+                error.MissingImageValue => return error.MissingImageOptionValue,
+                else => return err,
+            };
+            continue;
+        }
+        if (std.mem.startsWith(u8, arg, "--image=")) {
+            try input_images.appendVariadicFilesAfterValue(allocator, image_files, tail, &index, arg["--image=".len..]);
+            continue;
+        }
+        if (std.mem.eql(u8, arg, "--enable")) {
+            const value = try nextRootPromptOptionValue(tail, &index, error.MissingFeatureName);
+            try features_cmd.putRuntimeToggle(allocator, feature_overrides, value, true);
+            continue;
+        }
+        if (std.mem.startsWith(u8, arg, "--enable=")) {
+            try features_cmd.putRuntimeToggle(allocator, feature_overrides, arg["--enable=".len..], true);
+            continue;
+        }
+        if (std.mem.eql(u8, arg, "--disable")) {
+            const value = try nextRootPromptOptionValue(tail, &index, error.MissingFeatureName);
+            try features_cmd.putRuntimeToggle(allocator, feature_overrides, value, false);
+            continue;
+        }
+        if (std.mem.startsWith(u8, arg, "--disable=")) {
+            try features_cmd.putRuntimeToggle(allocator, feature_overrides, arg["--disable=".len..], false);
+            continue;
+        }
+        if (std.mem.eql(u8, arg, "--oss")) {
+            overrides.oss = true;
+            continue;
+        }
+        if (std.mem.eql(u8, arg, "--local-provider")) {
+            overrides.oss_provider = try nextRootPromptOptionValue(tail, &index, error.MissingLocalProviderOptionValue);
+            continue;
+        }
+        if (std.mem.startsWith(u8, arg, "--local-provider=")) {
+            overrides.oss_provider = arg["--local-provider=".len..];
+            continue;
+        }
+        if (std.mem.eql(u8, arg, "--ask-for-approval") or std.mem.eql(u8, arg, "-a") or std.mem.eql(u8, arg, "--approval-policy")) {
+            if (dangerous_bypass_requested.*) return error.ConflictingCliOptions;
+            const value = try nextRootPromptOptionValue(tail, &index, error.MissingApprovalOptionValue);
+            approval_policy_requested.* = true;
+            overrides.explicit_approval_policy = true;
+            overrides.runtime.approval_policy = try config.ApprovalPolicy.parse(value);
+            continue;
+        }
+        if (std.mem.startsWith(u8, arg, "--ask-for-approval=")) {
+            if (dangerous_bypass_requested.*) return error.ConflictingCliOptions;
+            approval_policy_requested.* = true;
+            overrides.explicit_approval_policy = true;
+            overrides.runtime.approval_policy = try config.ApprovalPolicy.parse(arg["--ask-for-approval=".len..]);
+            continue;
+        }
+        if (std.mem.startsWith(u8, arg, "--approval-policy=")) {
+            if (dangerous_bypass_requested.*) return error.ConflictingCliOptions;
+            approval_policy_requested.* = true;
+            overrides.explicit_approval_policy = true;
+            overrides.runtime.approval_policy = try config.ApprovalPolicy.parse(arg["--approval-policy=".len..]);
+            continue;
+        }
+        if (std.mem.eql(u8, arg, "--sandbox") or std.mem.eql(u8, arg, "-s")) {
+            const value = try nextRootPromptOptionValue(tail, &index, error.MissingSandboxOptionValue);
+            overrides.runtime.sandbox_mode = try config.SandboxMode.parse(value);
+            continue;
+        }
+        if (std.mem.startsWith(u8, arg, "--sandbox=")) {
+            overrides.runtime.sandbox_mode = try config.SandboxMode.parse(arg["--sandbox=".len..]);
+            continue;
+        }
+        if (std.mem.eql(u8, arg, "--dangerously-bypass-approvals-and-sandbox") or std.mem.eql(u8, arg, "--yolo")) {
+            if (approval_policy_requested.*) return error.ConflictingCliOptions;
+            dangerous_bypass_requested.* = true;
+            overrides.runtime.approval_policy = .never;
+            overrides.runtime.sandbox_mode = .danger_full_access;
+            continue;
+        }
+        if (std.mem.eql(u8, arg, "--dangerously-bypass-hook-trust")) {
+            overrides.runtime.bypass_hook_trust = true;
+            continue;
+        }
+        if (std.mem.eql(u8, arg, "--strict-config")) {
+            overrides.strict_config = true;
+            continue;
+        }
+        if (std.mem.eql(u8, arg, "--search")) {
+            overrides.runtime.web_search_mode = .live;
+            continue;
+        }
+        if (std.mem.eql(u8, arg, "--remote")) {
+            overrides.remote = try nextRootPromptOptionValue(tail, &index, error.MissingRemoteOptionValue);
+            continue;
+        }
+        if (std.mem.startsWith(u8, arg, "--remote=")) {
+            overrides.remote = arg["--remote=".len..];
+            continue;
+        }
+        if (std.mem.eql(u8, arg, "--remote-auth-token-env")) {
+            overrides.remote_auth_token_env = try nextRootPromptOptionValue(tail, &index, error.MissingRemoteAuthTokenEnvOptionValue);
+            continue;
+        }
+        if (std.mem.startsWith(u8, arg, "--remote-auth-token-env=")) {
+            overrides.remote_auth_token_env = arg["--remote-auth-token-env=".len..];
+            continue;
+        }
+        if (std.mem.eql(u8, arg, "--remote-control")) {
+            overrides.local_remote_control = true;
+            continue;
+        }
+        if (std.mem.eql(u8, arg, "--remote-control-bind")) {
+            overrides.remote_control_bind = try nextRootPromptOptionValue(tail, &index, error.MissingRemoteControlBindOptionValue);
+            continue;
+        }
+        if (std.mem.startsWith(u8, arg, "--remote-control-bind=")) {
+            overrides.remote_control_bind = arg["--remote-control-bind=".len..];
+            continue;
+        }
+        if (std.mem.eql(u8, arg, "--no-alt-screen")) {
+            overrides.no_alt_screen = true;
+            continue;
+        }
+        return rejectUnexpectedPromptArgument(arg);
+    }
+    return null;
+}
+
+fn nextRootPromptOptionValue(tail: []const []const u8, index: *usize, missing_error: anyerror) ![]const u8 {
+    index.* += 1;
+    if (index.* >= tail.len) return missing_error;
+    const value = tail[index.*];
+    if (isRootPromptOptionValueBoundary(value)) return missing_error;
+    return value;
+}
+
+fn isRootPromptOptionValueBoundary(arg: []const u8) bool {
+    if (std.mem.eql(u8, arg, "--")) return true;
+    return std.mem.startsWith(u8, arg, "-") and !std.mem.eql(u8, arg, "-");
+}
+
+fn rejectUnexpectedPromptArgument(arg: []const u8) error{UnexpectedPromptArgument} {
+    if (!builtin.is_test) {
+        std.debug.print(
+            \\error: unexpected argument '{s}' found
+            \\
+            \\Usage: codex-zig [OPTIONS] [PROMPT]
+            \\       codex-zig [OPTIONS] <COMMAND> [ARGS]
+            \\
+            \\For more information, try '--help'.
+            \\
+        , .{arg});
+    }
+    return error.UnexpectedPromptArgument;
+}
+
+fn joinInitialPromptParts(
+    allocator: std.mem.Allocator,
+    first: []const u8,
+    rest: []const []const u8,
+) ![]const u8 {
     var parts = std.ArrayList([]const u8).empty;
     defer parts.deinit(allocator);
     try parts.append(allocator, first);
-    while (args.next()) |arg| {
-        try parts.append(allocator, arg);
-    }
+    try parts.appendSlice(allocator, rest);
     return cli_utils.joinWithSpaces(allocator, parts.items);
 }
 
@@ -2169,12 +2459,23 @@ test "root remote is only accepted for interactive commands" {
     try std.testing.expect(commandRejectsRootRemote("cloud"));
     try std.testing.expect(commandRejectsRootRemote("cloud-tasks"));
     try std.testing.expect(commandRejectsRootRemote("doctor"));
+    try std.testing.expect(commandRejectsRootRemote("sandbox"));
     try std.testing.expect(commandRejectsRootRemote("update"));
     try std.testing.expect(commandRejectsRootRemote("responses-api-proxy"));
     try std.testing.expect(!commandRejectsRootRemote("resume"));
     try std.testing.expect(!commandRejectsRootRemote("fork"));
     try std.testing.expect(!commandRejectsRootRemote("remote-fork"));
     try std.testing.expect(!commandRejectsRootRemote("write this prompt"));
+}
+
+test "root cwd is deferred for prompt fallback commands" {
+    try std.testing.expect(rootCommandAppliesCwdBeforeDispatch("doctor"));
+    try std.testing.expect(rootCommandAppliesCwdBeforeDispatch("resume"));
+    try std.testing.expect(!rootCommandAppliesCwdBeforeDispatch("exec"));
+    try std.testing.expect(!rootCommandAppliesCwdBeforeDispatch("sandbox"));
+    try std.testing.expect(!rootCommandAppliesCwdBeforeDispatch("--help"));
+    try std.testing.expect(!rootCommandAppliesCwdBeforeDispatch("marketplace"));
+    try std.testing.expect(!rootCommandAppliesCwdBeforeDispatch("prompt-token"));
 }
 
 test "root strict config is rejected for unsupported subcommands" {
@@ -2206,10 +2507,136 @@ test "root profile-v2 is restricted to runtime subcommands" {
     try std.testing.expectEqualStrings("apply", profileV2UnsupportedSubcommandName("apply").?);
 }
 
-test "removed top-level Rust commands are rejected" {
-    try std.testing.expect(isRemovedTopLevelCommand("marketplace"));
-    try std.testing.expect(!isRemovedTopLevelCommand("plugin"));
-    try std.testing.expect(!isRemovedTopLevelCommand("write this prompt"));
+test "root prompt fallback honors trailing global flags" {
+    const allocator = std.testing.allocator;
+    var overrides = CliOverrides{};
+    defer overrides.deinit(allocator);
+    var feature_overrides = features_cmd.FeatureOverrides{};
+    defer feature_overrides.deinit(allocator);
+    var additional_writable_roots = std.ArrayList([]const u8).empty;
+    defer additional_writable_roots.deinit(allocator);
+    var image_files = std.ArrayList([]const u8).empty;
+    defer {
+        for (image_files.items) |path| allocator.free(path);
+        image_files.deinit(allocator);
+    }
+    var root_config_child_args = std.ArrayList([]const u8).empty;
+    defer root_config_child_args.deinit(allocator);
+    var approval_policy_requested = false;
+    var dangerous_bypass_requested = false;
+
+    try std.testing.expectEqual(
+        RootPromptFlagAction.version,
+        (try parseRootPromptTail(
+            allocator,
+            &.{ "--model", "gpt-test", "--version", "--help" },
+            &overrides,
+            &feature_overrides,
+            &additional_writable_roots,
+            &image_files,
+            &root_config_child_args,
+            &approval_policy_requested,
+            &dangerous_bypass_requested,
+        )).?,
+    );
+    try std.testing.expectEqualStrings("gpt-test", overrides.runtime.model.?);
+
+    try std.testing.expectEqual(
+        RootPromptFlagAction.help,
+        (try parseRootPromptTail(
+            allocator,
+            &.{"-h"},
+            &overrides,
+            &feature_overrides,
+            &additional_writable_roots,
+            &image_files,
+            &root_config_child_args,
+            &approval_policy_requested,
+            &dangerous_bypass_requested,
+        )).?,
+    );
+    try std.testing.expect((try parseRootPromptTail(
+        allocator,
+        &.{ "--search", "--add-dir", "/tmp/extra", "-i", "/tmp/image-a.png", "/tmp/image-b.png" },
+        &overrides,
+        &feature_overrides,
+        &additional_writable_roots,
+        &image_files,
+        &root_config_child_args,
+        &approval_policy_requested,
+        &dangerous_bypass_requested,
+    )) == null);
+    try std.testing.expectEqual(config.WebSearchMode.live, overrides.runtime.web_search_mode.?);
+    try std.testing.expectEqualStrings("/tmp/extra", additional_writable_roots.items[0]);
+    try std.testing.expectEqualStrings("/tmp/image-a.png", image_files.items[0]);
+    try std.testing.expectEqualStrings("/tmp/image-b.png", image_files.items[1]);
+
+    try std.testing.expectError(error.UnexpectedPromptArgument, parseRootPromptTail(
+        allocator,
+        &.{ "add", "owner/repo", "--help" },
+        &overrides,
+        &feature_overrides,
+        &additional_writable_roots,
+        &image_files,
+        &root_config_child_args,
+        &approval_policy_requested,
+        &dangerous_bypass_requested,
+    ));
+    try std.testing.expectError(error.UnexpectedPromptArgument, parseRootPromptTail(
+        allocator,
+        &.{"-x"},
+        &overrides,
+        &feature_overrides,
+        &additional_writable_roots,
+        &image_files,
+        &root_config_child_args,
+        &approval_policy_requested,
+        &dangerous_bypass_requested,
+    ));
+    try std.testing.expectError(error.UnexpectedPromptArgument, parseRootPromptTail(
+        allocator,
+        &.{ "--", "--version" },
+        &overrides,
+        &feature_overrides,
+        &additional_writable_roots,
+        &image_files,
+        &root_config_child_args,
+        &approval_policy_requested,
+        &dangerous_bypass_requested,
+    ));
+    try std.testing.expectError(error.MissingCdOptionValue, parseRootPromptTail(
+        allocator,
+        &.{ "--cd", "--help" },
+        &overrides,
+        &feature_overrides,
+        &additional_writable_roots,
+        &image_files,
+        &root_config_child_args,
+        &approval_policy_requested,
+        &dangerous_bypass_requested,
+    ));
+    try std.testing.expectError(error.MissingModelOptionValue, parseRootPromptTail(
+        allocator,
+        &.{ "--model", "--version" },
+        &overrides,
+        &feature_overrides,
+        &additional_writable_roots,
+        &image_files,
+        &root_config_child_args,
+        &approval_policy_requested,
+        &dangerous_bypass_requested,
+    ));
+    try std.testing.expectError(error.MissingRemoteOptionValue, parseRootPromptTail(
+        allocator,
+        &.{ "--remote", "--no-alt-screen" },
+        &overrides,
+        &feature_overrides,
+        &additional_writable_roots,
+        &image_files,
+        &root_config_child_args,
+        &approval_policy_requested,
+        &dangerous_bypass_requested,
+    ));
 }
 
 test "session runtime override merge preserves model controls" {

@@ -205,9 +205,13 @@ Zig TUI help in `src/tui.zig`, and the broader narrative tracker in
   `help cloud <subcommand>` now delegate to nested subcommand help for the
   implemented command families, matching Rust's nested `help` behavior on those
   surfaces.
-- Decide whether unknown bare top-level command names that match Rust
-  subcommands but are not implemented should launch the TUI as a prompt or fail
-  with a command error now that `doctor` has a real command path.
+- Unknown bare top-level names now follow Rust's prompt fallback instead of
+  being treated as removed commands, including stale names such as
+  `marketplace`. The common prompt-like `NAME --help|--version` forms also
+  behave as root global flags before the fallback prompt launches, valid root
+  interactive options after the prompt-like name are consumed as options, and
+  extra bare arguments or unknown flags after a prompt-like name are rejected
+  instead of being joined into a synthetic prompt.
 
 ### App-Server Daemon and Remote Control
 

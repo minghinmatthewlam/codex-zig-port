@@ -8237,8 +8237,7 @@ def run_strict_config_smoke(binary: Path) -> None:
                 str(binary.resolve()),
                 "--strict-config",
                 "--no-alt-screen",
-                "strict",
-                "tui",
+                "strict-tui",
             ],
             cwd=temp_root,
             env=env,
@@ -8257,9 +8256,7 @@ def run_strict_config_smoke(binary: Path) -> None:
                 "--remote",
                 "ws://127.0.0.1:1",
                 "--no-alt-screen",
-                "strict",
-                "remote",
-                "tui",
+                "strict-remote-tui",
             ],
             cwd=temp_root,
             env=env,
@@ -12550,18 +12547,21 @@ def run_full_auto_compat_smoke(binary: Path) -> None:
         shutil.rmtree(temp_root, ignore_errors=True)
 
 
-def run_removed_top_level_command_smoke(binary: Path) -> None:
-    temp_root = Path(tempfile.mkdtemp(prefix="codex-zig-cli-removed-top-level-", dir="/tmp"))
+def run_prompt_global_flag_smoke(binary: Path) -> None:
+    temp_root = Path(tempfile.mkdtemp(prefix="codex-zig-cli-prompt-global-flag-", dir="/tmp"))
     try:
         env = os.environ.copy()
         env["CODEX_HOME"] = str(temp_root / "codex-home")
         env.pop("OPENAI_API_KEY", None)
         env.pop("CODEX_ACCESS_TOKEN", None)
 
-        for args in (
-            ("marketplace", "add", "owner/repo"),
-            ("marketplace", "upgrade", "debug"),
-            ("marketplace", "remove", "debug"),
+        for args, expected in (
+            (("marketplace", "--help"), "Codex Zig"),
+            (("marketplace", "--version"), "codex-zig 0.0.1"),
+            (("prompt-token", "--version", "--help"), "codex-zig 0.0.1"),
+            (("prompt-token", "--help", "--version"), "Codex Zig"),
+            (("prompt-token", "--model", "gpt-5", "--help"), "Codex Zig"),
+            (("prompt-token", "--search", "--version"), "codex-zig 0.0.1"),
         ):
             result = subprocess.run(
                 [str(binary.resolve()), *args],
@@ -12573,9 +12573,105 @@ def run_removed_top_level_command_smoke(binary: Path) -> None:
                 timeout=5,
                 check=False,
             )
-            assert result.returncode != 0
+            assert result.returncode == 0
             assert result.stdout == ""
-            assert "error: RemovedTopLevelCommand" in result.stderr
+            assert expected in result.stderr
+
+        extra_result = subprocess.run(
+            [str(binary.resolve()), "marketplace", "add", "owner/repo", "--help"],
+            cwd=temp_root,
+            env=env,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=5,
+            check=False,
+        )
+        assert extra_result.returncode != 0
+        assert extra_result.stdout == ""
+        assert "unexpected argument 'add' found" in extra_result.stderr
+        assert "Codex Zig" not in extra_result.stderr
+
+        flag_result = subprocess.run(
+            [str(binary.resolve()), "prompt-token", "-x"],
+            cwd=temp_root,
+            env=env,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=5,
+            check=False,
+        )
+        assert flag_result.returncode != 0
+        assert flag_result.stdout == ""
+        assert "unexpected argument '-x' found" in flag_result.stderr
+        assert "Codex Zig" not in flag_result.stderr
+
+        for args, expected_error in (
+            (("prompt-token", "--cd", "--help"), "MissingCdOptionValue"),
+            (("prompt-token", "--model", "--help"), "MissingModelOptionValue"),
+            (("prompt-token", "--image", "--help"), "MissingImageOptionValue"),
+        ):
+            missing_value = subprocess.run(
+                [str(binary.resolve()), *args],
+                cwd=temp_root,
+                env=env,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                timeout=5,
+                check=False,
+            )
+            assert missing_value.returncode != 0
+            assert missing_value.stdout == ""
+            assert expected_error in missing_value.stderr
+            assert "FileNotFound" not in missing_value.stderr
+            assert "Codex Zig" not in missing_value.stderr
+
+        cwd_subdir = temp_root / "subdir"
+        cwd_subdir.mkdir()
+        cwd_result = subprocess.run(
+            [str(binary.resolve()), "-C", "subdir", "prompt-token", "--no-alt-screen"],
+            cwd=temp_root,
+            env=env,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=5,
+            check=False,
+        )
+        assert cwd_result.returncode != 0
+        assert "NoUsableAuth" in cwd_result.stderr
+        assert "FileNotFound" not in cwd_result.stderr
+
+        missing_cwd_help = subprocess.run(
+            [str(binary.resolve()), "-C", "does-not-exist", "prompt-token", "--help"],
+            cwd=temp_root,
+            env=env,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=5,
+            check=False,
+        )
+        assert missing_cwd_help.returncode == 0
+        assert missing_cwd_help.stdout == ""
+        assert "Codex Zig" in missing_cwd_help.stderr
+        assert "FileNotFound" not in missing_cwd_help.stderr
+
+        tail_cwd_result = subprocess.run(
+            [str(binary.resolve()), "-C", "does-not-exist", "prompt-token", "-C", "subdir", "--no-alt-screen"],
+            cwd=temp_root,
+            env=env,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=5,
+            check=False,
+        )
+        assert tail_cwd_result.returncode != 0
+        assert "NoUsableAuth" in tail_cwd_result.stderr
+        assert "FileNotFound" not in tail_cwd_result.stderr
     finally:
         shutil.rmtree(temp_root, ignore_errors=True)
 
@@ -13913,7 +14009,7 @@ def main() -> None:
     run_exec_git_repo_check_smoke(binary)
     run_yolo_approval_conflict_smoke(binary)
     run_full_auto_compat_smoke(binary)
-    run_removed_top_level_command_smoke(binary)
+    run_prompt_global_flag_smoke(binary)
     run_sandbox_permission_profile_smoke(binary)
     run_debug_prompt_input_image_smoke(binary)
     run_debug_models_smoke(binary)
@@ -13958,7 +14054,7 @@ def main() -> None:
     print("cli-exec-git-check-e2e: ok")
     print("cli-yolo-approval-conflict-e2e: ok")
     print("cli-full-auto-compat-e2e: ok")
-    print("cli-removed-top-level-e2e: ok")
+    print("cli-prompt-global-flag-e2e: ok")
     print("cli-sandbox-permission-profile-e2e: ok")
     print("cli-debug-prompt-input-image-e2e: ok")
     print("cli-debug-models-e2e: ok")
