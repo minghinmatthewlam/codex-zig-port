@@ -6,7 +6,9 @@ const cli_utils = @import("cli_utils.zig");
 const config = @import("config.zig");
 const env = @import("env.zig");
 const features_cmd = @import("features_cmd.zig");
+const memory_reset = @import("memory_reset.zig");
 const mcp_cmd = @import("mcp_cmd.zig");
+const sqlite = @import("sqlite.zig");
 const update_cmd = @import("update_cmd.zig");
 
 pub const Options = struct {
@@ -177,6 +179,16 @@ const AppServerRuntimeStatus = struct {
     summary: []const u8,
     detail: []const u8,
     remediation: ?[]const u8 = null,
+};
+
+const RolloutStats = struct {
+    files: u64 = 0,
+    total_bytes: u64 = 0,
+    error_name: ?[]const u8 = null,
+
+    fn averageBytes(self: RolloutStats) u64 {
+        return if (self.files == 0) 0 else self.total_bytes / self.files;
+    }
 };
 
 pub fn runWithOptions(allocator: std.mem.Allocator, args: *std.process.Args.Iterator, options: Options) !void {
@@ -479,6 +491,8 @@ fn configCheck(allocator: std.mem.Allocator, cfg_load: ConfigLoad, args: ParsedA
     try check.addDetail(allocator, "cwd", cfg_load.cwd);
     try check.addDetail(allocator, "model", cfg.model);
     try check.addDetail(allocator, "model provider", cfg.model_provider_id orelse "openai");
+    if (cfg.log_dir) |log_dir| try check.addDetail(allocator, "log dir", log_dir);
+    if (cfg.sqlite_home) |sqlite_home| try check.addDetail(allocator, "sqlite home", sqlite_home);
     try check.addDetail(allocator, "approval policy", cfg.approval_policy.label());
     try check.addDetail(allocator, "sandbox mode", cfg.sandbox_mode.label());
     try check.addDetail(allocator, "web search", if (cfg.web_search_mode) |mode| mode.label() else "default");
@@ -783,17 +797,197 @@ fn terminalCheck(allocator: std.mem.Allocator) !Check {
 
 fn stateCheck(allocator: std.mem.Allocator, cfg_load: ConfigLoad) !Check {
     const home = if (cfg_load.cfg) |cfg| cfg.codex_home else cfg_load.codex_home orelse ".";
-    var check = Check.init("state.paths", "state", .ok, "state paths are inspectable");
+    var check = Check.init("state.paths", "state", .ok, "state paths and databases are inspectable");
     try addStatePathDetail(allocator, &check, "CODEX_HOME", home);
-    try addStatePathDetail(allocator, &check, "sessions dir", try std.fs.path.join(allocator, &.{ home, "sessions" }));
-    try addStatePathDetail(allocator, &check, "log dir", try std.fs.path.join(allocator, &.{ home, "log" }));
-    try addStatePathDetail(allocator, &check, "state DB", try std.fs.path.join(allocator, &.{ home, "state_5.sqlite" }));
+    const log_dir = try doctorLogDir(allocator, cfg_load, home);
+    const sqlite_home = try doctorSqliteHome(allocator, cfg_load, home);
+    try addStatePathDetail(allocator, &check, "log dir", log_dir);
+    try addStatePathDetail(allocator, &check, "sqlite home", sqlite_home);
+    try addRuntimeDbDetail(allocator, &check, "state DB", try runtimeDbPath(allocator, sqlite_home, memory_reset.state_db_filename));
+    try addRuntimeDbDetail(allocator, &check, "log DB", try runtimeDbPath(allocator, sqlite_home, memory_reset.logs_db_filename));
+    try addRuntimeDbDetail(allocator, &check, "goals DB", try resolveGoalsDbPath(allocator, sqlite_home));
+    try addRolloutStatsDetails(allocator, &check, home);
     return check;
+}
+
+fn doctorLogDir(allocator: std.mem.Allocator, cfg_load: ConfigLoad, codex_home: []const u8) ![]const u8 {
+    if (cfg_load.cfg) |cfg| if (cfg.log_dir) |path| return path;
+    return std.fs.path.join(allocator, &.{ codex_home, "log" });
+}
+
+fn doctorSqliteHome(allocator: std.mem.Allocator, cfg_load: ConfigLoad, codex_home: []const u8) ![]const u8 {
+    if (cfg_load.cfg) |cfg| if (cfg.sqlite_home) |path| return path;
+    return config.resolveSqliteHomeEnvOrDefault(allocator, codex_home);
+}
+
+fn runtimeDbPath(allocator: std.mem.Allocator, sqlite_home: []const u8, filename: []const u8) ![]const u8 {
+    return std.fs.path.join(allocator, &.{ sqlite_home, filename });
 }
 
 fn addStatePathDetail(allocator: std.mem.Allocator, check: *Check, key: []const u8, path: []const u8) !void {
     const inspection = try inspectPath(allocator, path);
     try recordStatePathInspection(allocator, check, key, inspection);
+}
+
+fn addRuntimeDbDetail(allocator: std.mem.Allocator, check: *Check, label: []const u8, path: []const u8) !void {
+    const inspection = try inspectPath(allocator, path);
+    try recordStatePathInspection(allocator, check, label, inspection);
+
+    const integrity_key = try std.fmt.allocPrint(allocator, "{s} integrity", .{label});
+    if (inspection.health != .ok) {
+        try check.addDetail(allocator, integrity_key, switch (inspection.health) {
+            .missing => "skipped (missing)",
+            .inaccessible => "skipped (inaccessible)",
+            .ok => unreachable,
+        });
+        return;
+    }
+    if (!pathIsRegularFile(path)) {
+        try check.addDetail(allocator, integrity_key, "skipped (missing)");
+        return;
+    }
+
+    const integrity = sqliteIntegritySummary(allocator, path) catch |err| {
+        check.status = .fail;
+        check.summary = "state database integrity check failed";
+        try check.addDetailFmt(allocator, integrity_key, "{s}", .{@errorName(err)});
+        check.remediation = "Back up CODEX_HOME, then remove or repair the affected SQLite database.";
+        try check.addIssue(allocator, .{
+            .severity = .fail,
+            .cause = try std.fmt.allocPrint(allocator, "{s} integrity check failed", .{label}),
+            .measured = @errorName(err),
+            .expected = "SQLite integrity_check returns ok",
+            .remedy = "Back up CODEX_HOME, then remove or repair the affected SQLite database.",
+            .fields = try allocator.dupe([]const u8, &.{integrity_key}),
+        });
+        return;
+    };
+    try check.addDetail(allocator, integrity_key, integrity);
+    if (!std.mem.eql(u8, integrity, "ok")) {
+        check.status = .fail;
+        check.summary = "state database integrity check failed";
+        check.remediation = "Back up CODEX_HOME, then remove or repair the affected SQLite database.";
+        try check.addIssue(allocator, .{
+            .severity = .fail,
+            .cause = try std.fmt.allocPrint(allocator, "{s} integrity check failed", .{label}),
+            .measured = integrity,
+            .expected = "SQLite integrity_check returns ok",
+            .remedy = "Back up CODEX_HOME, then remove or repair the affected SQLite database.",
+            .fields = try allocator.dupe([]const u8, &.{integrity_key}),
+        });
+    }
+}
+
+fn pathIsRegularFile(path: []const u8) bool {
+    const metadata = std.Io.Dir.cwd().statFile(std.Io.Threaded.global_single_threaded.io(), path, .{}) catch return false;
+    return metadata.kind == .file;
+}
+
+fn sqliteIntegritySummary(allocator: std.mem.Allocator, path: []const u8) ![]const u8 {
+    const db = try sqlite.openReadOnly(allocator, path);
+    defer sqlite.close(db);
+
+    const statement = try sqlite.prepare(allocator, db, "PRAGMA integrity_check");
+    defer sqlite.finalize(statement);
+
+    var rows = std.ArrayList([]const u8).empty;
+    defer {
+        for (rows.items) |row| allocator.free(row);
+        rows.deinit(allocator);
+    }
+    while (true) {
+        switch (sqlite.step(statement)) {
+            sqlite.SQLITE_ROW => try rows.append(allocator, try sqlite.columnTextOwned(allocator, statement, 0)),
+            sqlite.SQLITE_DONE => break,
+            else => return error.SqliteIntegrityCheckFailed,
+        }
+    }
+
+    if (rows.items.len == 1 and std.mem.eql(u8, rows.items[0], "ok")) return allocator.dupe(u8, "ok");
+    return joinOrNone(allocator, rows.items);
+}
+
+fn resolveGoalsDbPath(allocator: std.mem.Allocator, sqlite_home: []const u8) ![]const u8 {
+    return std.fs.path.join(allocator, &.{ sqlite_home, "goals_1.sqlite" });
+}
+
+fn addRolloutStatsDetails(allocator: std.mem.Allocator, check: *Check, codex_home: []const u8) !void {
+    const active_root = try std.fs.path.join(allocator, &.{ codex_home, "sessions" });
+    const archived_root = try std.fs.path.join(allocator, &.{ codex_home, "archived_sessions" });
+    try addRolloutStatsDetail(allocator, check, "active rollout files", active_root);
+    try addRolloutStatsDetail(allocator, check, "archived rollout files", archived_root);
+}
+
+fn addRolloutStatsDetail(allocator: std.mem.Allocator, check: *Check, label: []const u8, root: []const u8) !void {
+    const stats = collectRolloutStats(allocator, root);
+    if (stats.error_name) |err| {
+        try check.addDetailFmt(allocator, label, "scan failed ({s})", .{err});
+        check.status = .fail;
+        check.summary = "state paths are not inspectable";
+        check.remediation = "Fix CODEX_HOME permissions or repair the affected state path.";
+        const cause = try std.fmt.allocPrint(allocator, "{s} could not be scanned", .{label});
+        try check.addIssue(allocator, .{
+            .severity = .fail,
+            .cause = cause,
+            .measured = err,
+            .expected = "readable rollout session tree",
+            .remedy = "Fix CODEX_HOME permissions or repair the affected state path.",
+            .fields = try allocator.dupe([]const u8, &.{label}),
+        });
+    } else {
+        try check.addDetailFmt(allocator, label, "{d} files, {d} total bytes, {d} average bytes", .{
+            stats.files,
+            stats.total_bytes,
+            stats.averageBytes(),
+        });
+    }
+}
+
+fn collectRolloutStats(allocator: std.mem.Allocator, root: []const u8) RolloutStats {
+    var stats = RolloutStats{};
+    collectRolloutStatsInner(allocator, root, &stats);
+    return stats;
+}
+
+fn collectRolloutStatsInner(allocator: std.mem.Allocator, path: []const u8, stats: *RolloutStats) void {
+    if (stats.error_name != null) return;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var dir = std.Io.Dir.cwd().openDir(io, path, .{ .iterate = true }) catch |err| switch (err) {
+        error.FileNotFound => return,
+        else => {
+            stats.error_name = @errorName(err);
+            return;
+        },
+    };
+    defer dir.close(io);
+
+    var iterator = dir.iterate();
+    while (iterator.next(io) catch |err| {
+        stats.error_name = @errorName(err);
+        return;
+    }) |entry| {
+        const child = std.fs.path.join(allocator, &.{ path, entry.name }) catch |err| {
+            stats.error_name = @errorName(err);
+            return;
+        };
+        defer allocator.free(child);
+        const stat = dir.statFile(io, entry.name, .{}) catch |err| {
+            stats.error_name = @errorName(err);
+            return;
+        };
+        switch (stat.kind) {
+            .directory => collectRolloutStatsInner(allocator, child, stats),
+            .file => if (isRolloutFileName(entry.name)) {
+                stats.files += 1;
+                stats.total_bytes +|= stat.size;
+            },
+            else => {},
+        }
+    }
+}
+
+fn isRolloutFileName(name: []const u8) bool {
+    return std.mem.startsWith(u8, name, "rollout-") and std.mem.endsWith(u8, name, ".jsonl");
 }
 
 fn recordStatePathInspection(allocator: std.mem.Allocator, check: *Check, key: []const u8, inspection: PathInspection) !void {
@@ -1468,6 +1662,182 @@ test "doctor state path access errors fail the state check" {
         .health = .inaccessible,
         .error_name = "AccessDenied",
     });
+
+    try std.testing.expectEqual(Status.fail, check.status);
+    try std.testing.expectEqualStrings("state paths are not inspectable", check.summary);
+    try std.testing.expect(check.issues.items.len == 1);
+}
+
+test "doctor runtime DB integrity errors fail state check" {
+    const allocator = std.testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    const scratch = arena.allocator();
+
+    var dir = std.testing.tmpDir(.{});
+    defer dir.cleanup();
+    const io = std.Io.Threaded.global_single_threaded.io();
+    try dir.dir.writeFile(io, .{
+        .sub_path = "state_5.sqlite",
+        .data = "not a sqlite database",
+    });
+    const root = try dir.dir.realPathFileAlloc(io, ".", allocator);
+    defer allocator.free(root);
+    const state_path = try std.fs.path.join(scratch, &.{ root, "state_5.sqlite" });
+
+    var check = Check.init("state.paths", "state", .ok, "state paths and databases are inspectable");
+    try addRuntimeDbDetail(scratch, &check, "state DB", state_path);
+
+    try std.testing.expectEqual(Status.fail, check.status);
+    try std.testing.expectEqualStrings("state database integrity check failed", check.summary);
+    try std.testing.expect(check.issues.items.len == 1);
+    var found_integrity = false;
+    for (check.details.items) |detail| {
+        if (std.mem.eql(u8, detail.key, "state DB integrity")) found_integrity = true;
+    }
+    try std.testing.expect(found_integrity);
+}
+
+test "doctor state check probes configured sqlite home" {
+    const allocator = std.testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    const scratch = arena.allocator();
+
+    var dir = std.testing.tmpDir(.{});
+    defer dir.cleanup();
+    const io = std.Io.Threaded.global_single_threaded.io();
+    try dir.dir.createDirPath(io, "codex-home/log");
+    try dir.dir.createDirPath(io, "sqlite-home");
+    try dir.dir.writeFile(io, .{
+        .sub_path = "sqlite-home/state_5.sqlite",
+        .data = "not a sqlite database",
+    });
+    const root = try dir.dir.realPathFileAlloc(io, ".", allocator);
+    defer allocator.free(root);
+    const codex_home = try std.fs.path.join(scratch, &.{ root, "codex-home" });
+    const log_dir = try std.fs.path.join(scratch, &.{ codex_home, "log" });
+    const sqlite_home = try std.fs.path.join(scratch, &.{ root, "sqlite-home" });
+
+    const cfg = config.Config{
+        .codex_home = codex_home,
+        .log_dir = log_dir,
+        .sqlite_home = sqlite_home,
+        .active_profile = null,
+        .model = "gpt-test",
+        .openai_base_url = "https://api.openai.com/v1",
+        .chatgpt_base_url = "https://chatgpt.com",
+        .oss_provider = null,
+        .installation_id = "test-installation",
+        .approval_policy = .on_request,
+        .sandbox_mode = .workspace_write,
+        .web_search_mode = null,
+        .model_reasoning_effort = null,
+        .service_tier = null,
+        .syntax_theme = null,
+        .personality = null,
+        .tui_status_line = null,
+        .tui_terminal_title = null,
+        .tui_alternate_screen = .auto,
+    };
+
+    const check = try stateCheck(scratch, .{
+        .cfg = cfg,
+        .codex_home = codex_home,
+        .cwd = root,
+    });
+
+    try std.testing.expectEqual(Status.fail, check.status);
+    try std.testing.expectEqualStrings("state database integrity check failed", check.summary);
+    var found_sqlite_home = false;
+    var found_configured_state_db = false;
+    for (check.details.items) |detail| {
+        if (std.mem.eql(u8, detail.key, "sqlite home") and std.mem.indexOf(u8, detail.value, "sqlite-home") != null) {
+            found_sqlite_home = true;
+        }
+        if (std.mem.eql(u8, detail.key, "state DB") and std.mem.indexOf(u8, detail.value, "sqlite-home/state_5.sqlite") != null) {
+            found_configured_state_db = true;
+        }
+    }
+    try std.testing.expect(found_sqlite_home);
+    try std.testing.expect(found_configured_state_db);
+}
+
+test "doctor rollout stats count nested rollout files" {
+    const allocator = std.testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    const scratch = arena.allocator();
+
+    var dir = std.testing.tmpDir(.{});
+    defer dir.cleanup();
+    const io = std.Io.Threaded.global_single_threaded.io();
+    try dir.dir.createDirPath(io, "sessions/2026/05/24");
+    try dir.dir.writeFile(io, .{
+        .sub_path = "sessions/2026/05/24/rollout-one.jsonl",
+        .data = "abc",
+    });
+    try dir.dir.writeFile(io, .{
+        .sub_path = "sessions/2026/05/24/not-rollout.jsonl",
+        .data = "ignored",
+    });
+    const root = try dir.dir.realPathFileAlloc(io, ".", allocator);
+    defer allocator.free(root);
+    const sessions_root = try std.fs.path.join(scratch, &.{ root, "sessions" });
+
+    const stats = collectRolloutStats(scratch, sessions_root);
+    try std.testing.expect(stats.error_name == null);
+    try std.testing.expectEqual(@as(u64, 1), stats.files);
+    try std.testing.expectEqual(@as(u64, 3), stats.total_bytes);
+    try std.testing.expectEqual(@as(u64, 3), stats.averageBytes());
+}
+
+test "doctor rollout stats non-directory root fails state check" {
+    const allocator = std.testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    const scratch = arena.allocator();
+
+    var dir = std.testing.tmpDir(.{});
+    defer dir.cleanup();
+    const io = std.Io.Threaded.global_single_threaded.io();
+    try dir.dir.writeFile(io, .{
+        .sub_path = "sessions",
+        .data = "not a directory",
+    });
+    const root = try dir.dir.realPathFileAlloc(io, ".", allocator);
+    defer allocator.free(root);
+    const sessions_root = try std.fs.path.join(scratch, &.{ root, "sessions" });
+
+    var check = Check.init("state.paths", "state", .ok, "state paths and databases are inspectable");
+    try addRolloutStatsDetail(scratch, &check, "active rollout files", sessions_root);
+
+    try std.testing.expectEqual(Status.fail, check.status);
+    try std.testing.expectEqualStrings("state paths are not inspectable", check.summary);
+    try std.testing.expect(check.issues.items.len == 1);
+}
+
+test "doctor rollout stats scan errors fail state check" {
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
+
+    const allocator = std.testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    const scratch = arena.allocator();
+
+    var dir = std.testing.tmpDir(.{});
+    defer dir.cleanup();
+    const io = std.Io.Threaded.global_single_threaded.io();
+    try dir.dir.createDirPath(io, "sessions/blocked");
+    try dir.dir.setFilePermissions(io, "sessions/blocked", std.Io.File.Permissions.fromMode(0o111), .{});
+    defer dir.dir.setFilePermissions(io, "sessions/blocked", std.Io.File.Permissions.fromMode(0o755), .{}) catch {};
+
+    const root = try dir.dir.realPathFileAlloc(io, ".", allocator);
+    defer allocator.free(root);
+    const sessions_root = try std.fs.path.join(scratch, &.{ root, "sessions" });
+
+    var check = Check.init("state.paths", "state", .ok, "state paths and databases are inspectable");
+    try addRolloutStatsDetail(scratch, &check, "active rollout files", sessions_root);
 
     try std.testing.expectEqual(Status.fail, check.status);
     try std.testing.expectEqualStrings("state paths are not inspectable", check.summary);
