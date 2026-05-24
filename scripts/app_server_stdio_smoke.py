@@ -2506,7 +2506,7 @@ def exercise_json_rpc(write_line, read_line) -> None:
         assert started_thread["status"] == {"type": "idle"}
         assert started_thread["path"] is None
         assert started_thread["cwd"] == thread_cwd_real
-        assert started_thread["source"] == "appServer"
+        assert started_thread["source"] == "vscode"
         assert started_thread["threadSource"] == "user"
         assert started_thread["turns"] == []
         assert start_result["model"] == "gpt-test"
@@ -2773,7 +2773,7 @@ def exercise_json_rpc(write_line, read_line) -> None:
         assert forked_thread["preview"] == started_thread["preview"]
         assert forked_thread["ephemeral"] is True
         assert forked_thread["path"] is None
-        assert forked_thread["source"] == "appServer"
+        assert forked_thread["source"] == "vscode"
         assert forked_thread["threadSource"] == "user"
         assert forked_thread["turns"] == []
         assert fork_result["model"] == "gpt-fork"
@@ -2883,7 +2883,7 @@ def exercise_json_rpc(write_line, read_line) -> None:
             "sortKey": "created_at",
             "sortDirection": "asc",
             "modelProviders": ["mock_provider"],
-            "sourceKinds": ["appServer"],
+            "sourceKinds": ["vscode"],
             "cwd": thread_cwd_real,
         }
         write_line(
@@ -2899,7 +2899,7 @@ def exercise_json_rpc(write_line, read_line) -> None:
         listed_threads = thread_list_loaded["result"]["data"]
         assert {thread["id"] for thread in listed_threads} == {thread_id, forked_thread_id}
         assert all(thread["turns"] == [] for thread in listed_threads)
-        assert all(thread["source"] == "appServer" for thread in listed_threads)
+        assert all(thread["source"] == "vscode" for thread in listed_threads)
         assert all(thread["modelProvider"] == "mock_provider" for thread in listed_threads)
         assert all(thread["cwd"] == thread_cwd_real for thread in listed_threads)
         assert thread_list_loaded["result"]["nextCursor"] is None
@@ -4589,9 +4589,11 @@ def request_stdio_app_server(
     payload: dict,
     env: dict[str, str],
     capabilities: dict | None = None,
+    app_server_args: list[str] | None = None,
 ) -> dict:
+    extra_args = app_server_args or []
     proc = subprocess.Popen(
-        [str(binary), "app-server"],
+        [str(binary), "app-server", *extra_args],
         stdin=subprocess.PIPE,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
@@ -4630,6 +4632,90 @@ def request_stdio_app_server(
         if proc.poll() is None:
             proc.kill()
             proc.wait(timeout=5)
+
+
+def run_app_server_session_source_smoke(binary: Path) -> None:
+    for name, app_server_args, expected_source in [
+        ("default-vscode", [], "vscode"),
+        ("explicit-app-server", ["--session-source", "app-server"], "appServer"),
+        ("custom-atlas", ["--session-source=Atlas"], {"custom": "atlas"}),
+        (
+            "custom-reserved-subagent",
+            ["--session-source=subagent_review"],
+            {"custom": "subagent_review"},
+        ),
+        (
+            "custom-prefixed",
+            ["--session-source=custom:Foo"],
+            {"custom": "custom:foo"},
+        ),
+    ]:
+        codex_home = Path(
+            tempfile.mkdtemp(prefix=f"codex-zig-app-server-session-source-{name}-", dir="/tmp")
+        )
+        try:
+            env = os.environ.copy()
+            env["CODEX_HOME"] = str(codex_home)
+            response = request_stdio_app_server(
+                binary,
+                {
+                    "jsonrpc": "2.0",
+                    "id": f"thread-start-session-source-{name}",
+                    "method": "thread/start",
+                    "params": {
+                        "ephemeral": True,
+                        "approvalPolicy": "never",
+                        "sandbox": "danger-full-access",
+                    },
+                },
+                env,
+                capabilities=EXPERIMENTAL_API_STABLE_GATE_CAPABILITIES,
+                app_server_args=app_server_args,
+            )
+            assert response["id"] == f"thread-start-session-source-{name}"
+            assert response["result"]["thread"]["source"] == expected_source
+        finally:
+            shutil.rmtree(codex_home, ignore_errors=True)
+
+    feedback_home = Path(
+        tempfile.mkdtemp(prefix="codex-zig-app-server-session-source-feedback-", dir="/tmp")
+    )
+    feedback_server, feedback_dsn = start_feedback_envelope_server()
+    try:
+        env = os.environ.copy()
+        env["CODEX_HOME"] = str(feedback_home)
+        env["CODEX_TEST_FEEDBACK_SENTRY_DSN"] = feedback_dsn
+        for proxy_env_key in (
+            "HTTP_PROXY",
+            "http_proxy",
+            "HTTPS_PROXY",
+            "https_proxy",
+            "ALL_PROXY",
+            "all_proxy",
+        ):
+            env.pop(proxy_env_key, None)
+        response = request_stdio_app_server(
+            binary,
+            {
+                "jsonrpc": "2.0",
+                "id": "feedback-session-source-custom",
+                "method": "feedback/upload",
+                "params": {
+                    "classification": "bug",
+                    "includeLogs": False,
+                },
+            },
+            env,
+            app_server_args=["--session-source=subagent_review"],
+        )
+        assert response["id"] == "feedback-session-source-custom"
+        assert response["result"]["threadId"].startswith("no-active-thread-")
+        assert len(feedback_server.request_bodies) == 1
+        assert b'"session_source":"subagent_review"' in feedback_server.request_bodies[0]
+    finally:
+        feedback_server.shutdown()
+        feedback_server.server_close()
+        shutil.rmtree(feedback_home, ignore_errors=True)
 
 
 def git(repo: Path, *args: str) -> None:
@@ -19371,7 +19457,7 @@ def run_thread_resume_rpc_smoke(binary: Path) -> None:
             assert archived_zig_fork_thread["preview"] == "archived fork hello"
             assert archived_zig_fork_thread["ephemeral"] is True
             assert archived_zig_fork_thread["path"] is None
-            assert archived_zig_fork_thread["source"] == "appServer"
+            assert archived_zig_fork_thread["source"] == "vscode"
             assert archived_zig_fork_thread["turns"] == []
             assert_thread_started_notification(
                 read_json_line(proc, 5), archived_zig_fork_thread
@@ -19402,7 +19488,7 @@ def run_thread_resume_rpc_smoke(binary: Path) -> None:
             assert state_db_forked_thread["preview"] == "state db metadata preview"
             assert state_db_forked_thread["ephemeral"] is True
             assert state_db_forked_thread["path"] is None
-            assert state_db_forked_thread["source"] == "appServer"
+            assert state_db_forked_thread["source"] == "vscode"
             assert state_db_forked_thread["modelProvider"] == "state_provider"
             assert state_db_forked_thread["cwd"] == "/state-db-cwd"
             assert state_db_forked_thread["gitInfo"] == {
@@ -20027,7 +20113,7 @@ def run_thread_resume_rpc_smoke(binary: Path) -> None:
             assert fork_by_path_thread["id"] != resume_thread_id
             assert fork_by_path_thread["forkedFromId"] == resume_thread_id
             assert fork_by_path_thread["preview"] == "saved hello"
-            assert fork_by_path_thread["source"] == "appServer"
+            assert fork_by_path_thread["source"] == "vscode"
             assert (
                 fork_by_path_thread["turns"][0]["items"][0]["content"][0]["text"]
                 == "saved hello"
@@ -20122,7 +20208,7 @@ def run_thread_resume_rpc_smoke(binary: Path) -> None:
             assert isinstance(history_thread_id, str)
             assert len(history_thread_id) == 36
             assert history_thread["preview"] == history_text
-            assert history_thread["source"] == "appServer"
+            assert history_thread["source"] == "vscode"
             assert history_thread["path"] is not None
             assert history_thread["turns"][0]["items"][0]["content"][0]["text"] == history_text
             assert history_result["model"] == "gpt-history"
@@ -35290,6 +35376,7 @@ def run_feedback_rpc_smoke(binary: Path) -> None:
         assert b'"surface":"app-server"' in envelope
         assert b'"account_id":"acct_feedback"' in envelope
         assert b'"chatgpt_user_id":"user_feedback"' in envelope
+        assert b'"session_source":"vscode"' in envelope
         assert b'"thread_id":"wrong-thread"' not in envelope
         assert b'"classification":"wrong-classification"' not in envelope
         assert b'"filename":"codex-logs.log"' in envelope
@@ -35421,6 +35508,7 @@ def run_feedback_rpc_smoke(binary: Path) -> None:
         assert b"loaded subtree threadless log\n" in loaded_subtree_envelope
         assert b"loaded parent rollout body\n" in loaded_subtree_envelope
         assert b"loaded child rollout body\n" in loaded_subtree_envelope
+        assert b'"session_source":"vscode"' in loaded_subtree_envelope
         assert (
             f'"filename":"rollout-{parent_thread_id}.jsonl"'.encode()
             in loaded_subtree_envelope
@@ -35450,6 +35538,7 @@ def run_feedback_rpc_smoke(binary: Path) -> None:
         assert len(generated_thread_id) == len("no-active-thread-") + 36
         assert len(server.request_bodies) == 3
         assert b'"level":"info"' in server.request_bodies[2]
+        assert b'"session_source":"vscode"' in server.request_bodies[2]
         assert b'"filename":"codex-logs.log"' not in server.request_bodies[2]
         assert (
             b'"filename":"codex-connectivity-diagnostics.txt"'
@@ -55584,6 +55673,8 @@ def main() -> None:
     print("app-server-json-schema-e2e: ok")
     run_internal_json_schema_smoke(binary)
     print("app-server-internal-json-schema-e2e: ok")
+    run_app_server_session_source_smoke(binary)
+    print("app-server-session-source-e2e: ok")
     run_flag_compat_smoke(binary)
     print("app-server-flag-compat-e2e: ok")
 

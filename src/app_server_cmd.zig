@@ -394,6 +394,12 @@ const AppServerOptions = struct {
     websocket_auth: WebsocketAuthArgs = .{},
     strict_config: bool = false,
     remote_control_enabled: bool = false,
+    session_source: []const u8 = "vscode",
+    session_source_owned: bool = false,
+
+    fn deinit(self: *AppServerOptions, allocator: std.mem.Allocator) void {
+        if (self.session_source_owned) allocator.free(self.session_source);
+    }
 };
 
 pub const InvocationOptions = struct {
@@ -402,7 +408,85 @@ pub const InvocationOptions = struct {
     bypass_hook_trust: bool = false,
     strict_config: bool = false,
     remote_control_enabled: bool = false,
+    session_source: []const u8 = "vscode",
 };
+
+fn setAppServerSessionSource(allocator: std.mem.Allocator, options: *AppServerOptions, raw: []const u8) !void {
+    const normalized = try normalizeAppServerSessionSourceArg(allocator, raw);
+    errdefer allocator.free(normalized);
+    if (options.session_source_owned) allocator.free(options.session_source);
+    options.session_source = normalized;
+    options.session_source_owned = true;
+}
+
+fn normalizeAppServerSessionSourceArg(allocator: std.mem.Allocator, raw: []const u8) ![]const u8 {
+    const trimmed = std.mem.trim(u8, raw, " \t\r\n");
+    if (trimmed.len == 0) return error.InvalidAppServerSessionSource;
+
+    const lowered = try allocator.alloc(u8, trimmed.len);
+    errdefer allocator.free(lowered);
+    for (trimmed, 0..) |byte, index| {
+        lowered[index] = std.ascii.toLower(byte);
+    }
+
+    if (appServerSessionSourceIsMcpAlias(lowered)) {
+        allocator.free(lowered);
+        return allocator.dupe(u8, "mcp");
+    }
+    if (appServerSessionSourceIsKnownBuiltin(lowered)) return lowered;
+
+    const custom = try std.fmt.allocPrint(allocator, "custom:{s}", .{lowered});
+    allocator.free(lowered);
+    return custom;
+}
+
+fn appServerSessionSourceIsMcpAlias(value: []const u8) bool {
+    return std.mem.eql(u8, value, "appserver") or
+        std.mem.eql(u8, value, "app-server") or
+        std.mem.eql(u8, value, "app_server");
+}
+
+fn appServerSessionSourceIsKnownBuiltin(value: []const u8) bool {
+    return std.mem.eql(u8, value, "cli") or
+        std.mem.eql(u8, value, "vscode") or
+        std.mem.eql(u8, value, "exec") or
+        std.mem.eql(u8, value, "mcp") or
+        std.mem.eql(u8, value, "unknown");
+}
+
+fn appServerSessionSourceFeedbackTag(source: []const u8) []const u8 {
+    if (std.mem.startsWith(u8, source, "custom:")) return source["custom:".len..];
+    return source;
+}
+
+test "app-server session-source startup arg matches Rust normalization" {
+    const allocator = std.testing.allocator;
+
+    const vscode = try normalizeAppServerSessionSourceArg(allocator, " VSCode ");
+    defer allocator.free(vscode);
+    try std.testing.expectEqualStrings("vscode", vscode);
+
+    const app_server = try normalizeAppServerSessionSourceArg(allocator, "app-server");
+    defer allocator.free(app_server);
+    try std.testing.expectEqualStrings("mcp", app_server);
+
+    const custom = try normalizeAppServerSessionSourceArg(allocator, " Atlas ");
+    defer allocator.free(custom);
+    try std.testing.expectEqualStrings("custom:atlas", custom);
+
+    const reserved_custom = try normalizeAppServerSessionSourceArg(allocator, "subagent_review");
+    defer allocator.free(reserved_custom);
+    try std.testing.expectEqualStrings("custom:subagent_review", reserved_custom);
+
+    const prefixed_custom = try normalizeAppServerSessionSourceArg(allocator, "custom:Foo");
+    defer allocator.free(prefixed_custom);
+    try std.testing.expectEqualStrings("custom:custom:foo", prefixed_custom);
+
+    try std.testing.expectEqualStrings("atlas", appServerSessionSourceFeedbackTag(custom));
+    try std.testing.expectEqualStrings("subagent_review", appServerSessionSourceFeedbackTag(reserved_custom));
+
+    try std.testing.expectError(error.InvalidAppServerSessionSource, normalizeAppServerSessionSourceArg(allocator, " \t "));
+}
 
 const PendingThreadUnload = struct {
     thread_id: []const u8,
@@ -419,6 +503,7 @@ const AppServerState = struct {
     experimental_api_enabled: bool = false,
     bypass_hook_trust: bool = false,
     remote_control_enabled: bool = false,
+    session_source: []const u8 = "vscode",
     thread_unloading_delay_ms: i64 = THREAD_UNLOADING_DELAY_MS,
     cli_feature_overrides: features_cmd.FeatureOverrides = .{},
     runtime_feature_enablement: features_cmd.FeatureOverrides = .{},
@@ -476,6 +561,7 @@ fn initAppServerState(
         .deferred_command_exec_stdio = deferred_command_exec_stdio,
         .bypass_hook_trust = invocation_options.bypass_hook_trust,
         .remote_control_enabled = invocation_options.remote_control_enabled,
+        .session_source = invocation_options.session_source,
         .thread_unloading_delay_ms = appServerThreadUnloadingDelayMs(allocator),
         .cli_feature_overrides = try invocation_options.feature_overrides.clone(allocator),
     };
@@ -875,6 +961,7 @@ pub fn runWithOptions(
     invocation_options: InvocationOptions,
 ) !void {
     var options = AppServerOptions{};
+    defer options.deinit(allocator);
     var subcommand: ?[]const u8 = null;
     var subcommand_args = std.ArrayList([]const u8).empty;
     defer subcommand_args.deinit(allocator);
@@ -894,6 +981,14 @@ pub fn runWithOptions(
         }
         if (std.mem.startsWith(u8, arg, "--listen=")) {
             options.listen_url = arg["--listen=".len..];
+            continue;
+        }
+        if (std.mem.eql(u8, arg, "--session-source")) {
+            try setAppServerSessionSource(allocator, &options, args.next() orelse return error.MissingAppServerSessionSource);
+            continue;
+        }
+        if (std.mem.startsWith(u8, arg, "--session-source=")) {
+            try setAppServerSessionSource(allocator, &options, arg["--session-source=".len..]);
             continue;
         }
         if (std.mem.eql(u8, arg, "--analytics-default-enabled")) {
@@ -1023,6 +1118,7 @@ pub fn runWithOptions(
     var server_invocation_options = invocation_options;
     server_invocation_options.feature_overrides = server_feature_overrides;
     server_invocation_options.remote_control_enabled = options.remote_control_enabled;
+    server_invocation_options.session_source = options.session_source;
 
     switch (transport) {
         .stdio => {
@@ -31410,7 +31506,7 @@ fn handleReviewStart(
 
     var review_thread_index = thread_index;
     if (delivery == .detached) {
-        var detached_thread = createLoadedThreadForDetachedReview(allocator, cfg, parent_thread) catch |err| {
+        var detached_thread = createLoadedThreadForDetachedReview(allocator, cfg, parent_thread, state.session_source) catch |err| {
             return try renderJsonRpcErrorForFailure(allocator, id_value, "review/start failed to create detached review thread", err);
         };
         var detached_thread_moved = false;
@@ -33334,11 +33430,12 @@ fn createLoadedThreadForDetachedReview(
     allocator: std.mem.Allocator,
     cfg: config.Config,
     source: *const LoadedThread,
+    session_source: []const u8,
 ) !LoadedThread {
     var empty_params = try std.json.ObjectMap.init(allocator, &.{}, &.{});
     defer empty_params.deinit(allocator);
 
-    var thread = try createLoadedThreadFromForkParams(allocator, cfg, empty_params, source);
+    var thread = try createLoadedThreadFromForkParamsWithSource(allocator, cfg, empty_params, source, session_source);
     errdefer thread.deinit(allocator);
     try replaceOwnedString(allocator, &thread.model, cfg.model);
     thread.runtime_overrides.model = true;
@@ -39320,7 +39417,7 @@ fn handleThreadStart(
         return renderJsonRpcError(allocator, id_value, -32603, message);
     }
 
-    var thread = createLoadedThreadFromStartParams(allocator, cfg, params) catch |err| {
+    var thread = createLoadedThreadFromStartParamsWithSource(allocator, cfg, params, state.session_source) catch |err| {
         return renderJsonRpcErrorForFailure(allocator, id_value, "thread/start failed to create thread", err);
     };
     var thread_moved = false;
@@ -39638,7 +39735,7 @@ fn handleThreadResume(
 
     if (object.get("history")) |history| {
         if (history != .null) {
-            var thread = createLoadedThreadFromHistoryParams(allocator, cfg, object, history.array.items) catch |err| switch (err) {
+            var thread = createLoadedThreadFromHistoryParamsWithSource(allocator, cfg, object, history.array.items, state.session_source) catch |err| switch (err) {
                 error.EmptyHistory => return renderJsonRpcError(allocator, id_value, -32600, "history must not be empty"),
                 error.InvalidHistory => return renderJsonRpcError(allocator, id_value, -32602, "history entries must be response items"),
                 else => return renderJsonRpcErrorForFailure(allocator, id_value, "thread/resume failed to create thread from history", err),
@@ -39823,7 +39920,7 @@ fn handleThreadForkWithSource(
     source: *const LoadedThread,
     runtime_requirements: ConfigRequirementsReadRequirements,
 ) ![]const u8 {
-    var thread = createLoadedThreadFromForkParams(allocator, cfg, params, source) catch |err| {
+    var thread = createLoadedThreadFromForkParamsWithSource(allocator, cfg, params, source, state.session_source) catch |err| {
         return renderJsonRpcErrorForFailure(allocator, id_value, "thread/fork failed to create thread", err);
     };
     var thread_moved = false;
@@ -40366,13 +40463,22 @@ fn createLoadedThreadFromStartParams(
     cfg: config.Config,
     params: ?std.json.ObjectMap,
 ) !LoadedThread {
+    return createLoadedThreadFromStartParamsWithSource(allocator, cfg, params, "appServer");
+}
+
+fn createLoadedThreadFromStartParamsWithSource(
+    allocator: std.mem.Allocator,
+    cfg: config.Config,
+    params: ?std.json.ObjectMap,
+    session_source: []const u8,
+) !LoadedThread {
     const thread_id = try generateUuidString(allocator);
     errdefer allocator.free(thread_id);
     const session_id = try allocator.dupe(u8, thread_id);
     errdefer allocator.free(session_id);
     const preview = try allocator.dupe(u8, "");
     errdefer allocator.free(preview);
-    const source = try allocator.dupe(u8, "appServer");
+    const source = try allocator.dupe(u8, session_source);
     errdefer allocator.free(source);
     const cli_version = try allocator.dupe(u8, "0.0.1");
     errdefer allocator.free(cli_version);
@@ -40540,6 +40646,16 @@ fn createLoadedThreadFromHistoryParams(
     params: std.json.ObjectMap,
     history: []const std.json.Value,
 ) !LoadedThread {
+    return createLoadedThreadFromHistoryParamsWithSource(allocator, cfg, params, history, "appServer");
+}
+
+fn createLoadedThreadFromHistoryParamsWithSource(
+    allocator: std.mem.Allocator,
+    cfg: config.Config,
+    params: std.json.ObjectMap,
+    history: []const std.json.Value,
+    session_source: []const u8,
+) !LoadedThread {
     var transcript = try transcriptFromResponseHistory(allocator, history);
     errdefer transcript.deinit(allocator);
 
@@ -40549,7 +40665,7 @@ fn createLoadedThreadFromHistoryParams(
     errdefer allocator.free(session_id);
     const preview = try resumePreview(allocator, &transcript);
     errdefer allocator.free(preview);
-    const source = try allocator.dupe(u8, "appServer");
+    const source = try allocator.dupe(u8, session_source);
     errdefer allocator.free(source);
     const cli_version = try allocator.dupe(u8, "0.0.1");
     errdefer allocator.free(cli_version);
@@ -40913,6 +41029,16 @@ fn createLoadedThreadFromForkParams(
     params: std.json.ObjectMap,
     source: *const LoadedThread,
 ) !LoadedThread {
+    return createLoadedThreadFromForkParamsWithSource(allocator, cfg, params, source, "appServer");
+}
+
+fn createLoadedThreadFromForkParamsWithSource(
+    allocator: std.mem.Allocator,
+    cfg: config.Config,
+    params: std.json.ObjectMap,
+    source: *const LoadedThread,
+    session_source: []const u8,
+) !LoadedThread {
     const thread_id = try generateUuidString(allocator);
     errdefer allocator.free(thread_id);
     const session_id = try allocator.dupe(u8, thread_id);
@@ -40921,7 +41047,7 @@ fn createLoadedThreadFromForkParams(
     errdefer allocator.free(forked_from_id);
     const preview = try allocator.dupe(u8, source.preview);
     errdefer allocator.free(preview);
-    const source_label = try allocator.dupe(u8, "appServer");
+    const source_label = try allocator.dupe(u8, session_source);
     errdefer allocator.free(source_label);
     const cli_version = try allocator.dupe(u8, "0.0.1");
     errdefer allocator.free(cli_version);
@@ -50056,6 +50182,7 @@ fn handleFeedbackUpload(
         .extra_log_files = upload_log_files.items,
         .tags = if (tags_object) |*tags| tags else null,
         .metadata_tags = metadata_tags.items,
+        .session_source = appServerSessionSourceFeedbackTag(state.session_source),
     }) catch |err| {
         return renderJsonRpcErrorForFailure(allocator, id_value, "failed to upload feedback", err);
     };
@@ -66514,6 +66641,7 @@ pub fn remoteRejectionLabel(args: []const []const u8) []const u8 {
 
 fn optionConsumesValue(arg: []const u8) bool {
     return std.mem.eql(u8, arg, "--listen") or
+        std.mem.eql(u8, arg, "--session-source") or
         std.mem.eql(u8, arg, "--ws-auth") or
         std.mem.eql(u8, arg, "--ws-token-file") or
         std.mem.eql(u8, arg, "--ws-token-sha256") or
@@ -66525,6 +66653,7 @@ fn optionConsumesValue(arg: []const u8) bool {
 
 fn optionHasInlineValue(arg: []const u8) bool {
     return std.mem.startsWith(u8, arg, "--listen=") or
+        std.mem.startsWith(u8, arg, "--session-source=") or
         std.mem.startsWith(u8, arg, "--ws-auth=") or
         std.mem.startsWith(u8, arg, "--ws-token-file=") or
         std.mem.startsWith(u8, arg, "--ws-token-sha256=") or
@@ -66586,7 +66715,7 @@ fn daemonCommandLabel(command: DaemonCommand) []const u8 {
 pub fn printHelp() void {
     std.debug.print(
         \\Usage:
-        \\  codex-zig app-server [--strict-config] [--listen URL]
+        \\  codex-zig app-server [--strict-config] [--listen URL] [--session-source SOURCE]
         \\  codex-zig app-server daemon [OPTIONS] <COMMAND>
         \\  codex-zig app-server proxy [--sock SOCKET_PATH]
         \\
@@ -66599,6 +66728,8 @@ pub fn printHelp() void {
         \\Options:
         \\  --strict-config        Error on unknown config fields.
         \\  --listen URL           Transport URL. Defaults to stdio://.
+        \\  --session-source SOURCE
+        \\                          Session source metadata. Defaults to vscode.
         \\  --analytics-default-enabled
         \\                          Accept Rust-compatible app-server analytics default flag.
         \\  --ws-auth MODE         Websocket auth mode: capability-token or signed-bearer-token.
