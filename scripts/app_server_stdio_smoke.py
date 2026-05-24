@@ -28,6 +28,11 @@ from typing import Callable
 
 _OMIT = object()
 _STDOUT_LINE_QUEUES: dict[int, queue.Queue[str]] = {}
+DIRECT_LOOPBACK_OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+
+
+def loopback_urlopen(url_or_request, timeout: float):
+    return DIRECT_LOOPBACK_OPENER.open(url_or_request, timeout=timeout)
 
 
 def stdout_line_queue(proc: subprocess.Popen[str]) -> queue.Queue[str]:
@@ -28727,7 +28732,7 @@ def run_mcp_server_status_rpc_smoke(binary: Path) -> None:
             assert oauth_http_server["id"] == "mcp-oauth-http-server"
             authorization_url = oauth_http_server["result"]["authorizationUrl"]
             assert authorization_url.startswith(f"{discovery_server.base_url}/oauth/authorize?")
-            with urllib.request.urlopen(authorization_url, timeout=5) as response:
+            with loopback_urlopen(authorization_url, timeout=5) as response:
                 assert response.status == 200
                 assert b"MCP login complete" in response.read()
             oauth_completed = read_json_line(oauth_proc, 5)
@@ -28838,7 +28843,7 @@ def run_mcp_server_status_rpc_smoke(binary: Path) -> None:
             assert websocket_authorization_url.startswith(
                 f"{discovery_server.base_url}/oauth/authorize?"
             )
-            with urllib.request.urlopen(websocket_authorization_url, timeout=5) as response:
+            with loopback_urlopen(websocket_authorization_url, timeout=5) as response:
                 assert response.status == 200
                 assert b"MCP login complete" in response.read()
             websocket_completed = websocket.read_json()
@@ -28895,7 +28900,7 @@ def run_mcp_server_status_rpc_smoke(binary: Path) -> None:
                         assert unix_authorization_url.startswith(
                             f"{discovery_server.base_url}/oauth/authorize?"
                         )
-                        with urllib.request.urlopen(unix_authorization_url, timeout=5) as response:
+                        with loopback_urlopen(unix_authorization_url, timeout=5) as response:
                             assert response.status == 200
                             assert b"MCP login complete" in response.read()
                         unix_completed = read_json_line_from_socket(reader)
@@ -31499,7 +31504,8 @@ def run_command_exec_rpc_smoke(binary: Path) -> None:
         network_server, network_url = start_command_exec_network_backend()
         network_probe = (
             "import sys, urllib.request; "
-            "sys.stdout.write(urllib.request.urlopen(sys.argv[1], timeout=2).read().decode())"
+            "opener=urllib.request.build_opener(urllib.request.ProxyHandler({})); "
+            "sys.stdout.write(opener.open(sys.argv[1], timeout=2).read().decode())"
         )
 
         success = request_stdio_app_server(
@@ -43041,7 +43047,7 @@ def run_account_login_browser_callback_rpc_smoke(binary: Path, backend_mode: str
 
             bad_state_url = f"{redirect_uri}?code=ignored&state=wrong-state"
             try:
-                urllib.request.urlopen(bad_state_url, timeout=5)
+                loopback_urlopen(bad_state_url, timeout=5)
                 raise AssertionError("state mismatch callback unexpectedly succeeded")
             except urllib.error.HTTPError as error:
                 assert error.code == 400
@@ -43053,7 +43059,7 @@ def run_account_login_browser_callback_rpc_smoke(binary: Path, backend_mode: str
                 parsed_redirect_uri._replace(path="/success", query="", fragment="")
             )
             try:
-                urllib.request.urlopen(premature_success_url, timeout=5)
+                loopback_urlopen(premature_success_url, timeout=5)
                 raise AssertionError("premature success page unexpectedly completed login")
             except urllib.error.HTTPError as error:
                 assert error.code == 400
@@ -43065,7 +43071,7 @@ def run_account_login_browser_callback_rpc_smoke(binary: Path, backend_mode: str
             deadline = time.monotonic() + 5
             while True:
                 try:
-                    with urllib.request.urlopen(callback_url, timeout=5) as response:
+                    with loopback_urlopen(callback_url, timeout=5) as response:
                         callback_body = response.read().decode("utf-8")
                         success_url = response.geturl()
                     break
@@ -43200,7 +43206,7 @@ def run_account_login_browser_callback_error_rpc_smoke(binary: Path) -> None:
                 state = query["state"][0]
                 callback_url = f"{redirect_uri}?state={urllib.parse.quote(state)}{callback_query_suffix}"
 
-                with urllib.request.urlopen(callback_url, timeout=5) as response:
+                with loopback_urlopen(callback_url, timeout=5) as response:
                     assert response.status == 200
                     callback_body = response.read().decode("utf-8")
 

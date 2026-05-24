@@ -39,6 +39,11 @@ COMPLETION_REQUIRED_VALUES = (
     "read-only workspace-write danger-full-access",
     "lmstudio ollama",
 )
+DIRECT_LOOPBACK_OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+
+
+def loopback_urlopen(url_or_request, timeout: float):
+    return DIRECT_LOOPBACK_OPENER.open(url_or_request, timeout=timeout)
 
 
 def header_value(headers: dict[str, str], name: str) -> Optional[str]:
@@ -6449,7 +6454,7 @@ def run_responses_api_proxy_smoke(binary: Path) -> None:
                     },
                     method="POST",
                 )
-                with urllib.request.urlopen(request, timeout=5) as response:
+                with loopback_urlopen(request, timeout=5) as response:
                     if response.status != 200:
                         raise AssertionError(f"unexpected proxy response status: {response.status}")
                     if response.read() != b'{"ok":true}':
@@ -6491,7 +6496,7 @@ def run_responses_api_proxy_smoke(binary: Path) -> None:
                     method="POST",
                 )
                 stream_start = time.monotonic()
-                with urllib.request.urlopen(stream_request, timeout=5) as response:
+                with loopback_urlopen(stream_request, timeout=5) as response:
                     first = response.read(len(first_chunk))
                     first_elapsed = time.monotonic() - stream_start
                     if first != first_chunk:
@@ -6507,14 +6512,14 @@ def run_responses_api_proxy_smoke(binary: Path) -> None:
                     method="POST",
                 )
                 try:
-                    urllib.request.urlopen(forbidden, timeout=5)
+                    loopback_urlopen(forbidden, timeout=5)
                 except urllib.error.HTTPError as error:
                     if error.code != 403:
                         raise AssertionError(f"unexpected forbidden status: {error.code}")
                 else:
                     raise AssertionError("proxy accepted a non-/v1/responses request")
 
-                with urllib.request.urlopen(f"http://127.0.0.1:{port}/shutdown", timeout=5) as response:
+                with loopback_urlopen(f"http://127.0.0.1:{port}/shutdown", timeout=5) as response:
                     if response.status != 200:
                         raise AssertionError(f"unexpected shutdown status: {response.status}")
                 proxy.wait(timeout=5)
@@ -11740,7 +11745,7 @@ def run_mcp_oauth_login_logout_smoke(binary: Path) -> None:
         stdout_lines: list[str] = []
         authorization_url = read_mcp_oauth_authorization_url(remote_login, stdout_lines)
         assert authorization_url, "".join(stdout_lines)
-        with urllib.request.urlopen(authorization_url, timeout=5) as response:
+        with loopback_urlopen(authorization_url, timeout=5) as response:
             assert b"MCP login complete" in response.read()
         remaining_stdout, remote_login_stderr = remote_login.communicate(timeout=5)
         remote_login_stdout = "".join(stdout_lines) + remaining_stdout
@@ -11780,7 +11785,7 @@ def run_mcp_oauth_login_logout_smoke(binary: Path) -> None:
         )
         assert scoped_authorization_url, "".join(retry_stdout_lines)
         try:
-            urllib.request.urlopen(scoped_authorization_url, timeout=5)
+            loopback_urlopen(scoped_authorization_url, timeout=5)
             raise AssertionError("expected provider scope rejection")
         except urllib.error.HTTPError as error:
             assert error.code == 400
@@ -11789,7 +11794,7 @@ def run_mcp_oauth_login_logout_smoke(binary: Path) -> None:
             retry_login, retry_stdout_lines
         )
         assert retry_authorization_url, "".join(retry_stdout_lines)
-        with urllib.request.urlopen(retry_authorization_url, timeout=5) as response:
+        with loopback_urlopen(retry_authorization_url, timeout=5) as response:
             assert b"MCP login complete" in response.read()
         retry_remaining_stdout, retry_login_stderr = retry_login.communicate(timeout=5)
         retry_login_stdout = "".join(retry_stdout_lines) + retry_remaining_stdout
@@ -11831,7 +11836,7 @@ def run_mcp_oauth_login_logout_smoke(binary: Path) -> None:
             add_login, add_stdout_lines
         )
         assert added_authorization_url, "".join(add_stdout_lines)
-        with urllib.request.urlopen(added_authorization_url, timeout=5) as response:
+        with loopback_urlopen(added_authorization_url, timeout=5) as response:
             assert b"MCP login complete" in response.read()
         add_remaining_stdout, add_login_stderr = add_login.communicate(timeout=5)
         add_login_stdout = "".join(add_stdout_lines) + add_remaining_stdout
@@ -13493,7 +13498,8 @@ def run_sandbox_permission_profile_smoke(binary: Path) -> None:
 
         network_probe = (
             "import urllib.request; "
-            f"print(urllib.request.urlopen({base_url!r}, timeout=2).read().decode().strip())"
+            "opener=urllib.request.build_opener(urllib.request.ProxyHandler({})); "
+            f"print(opener.open({base_url!r}, timeout=2).read().decode().strip())"
         )
         network_allowed = subprocess.run(
             [
