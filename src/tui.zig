@@ -4795,7 +4795,7 @@ fn handleMemories(
             printMemoriesUsage();
             return;
         }
-        try resetMemoriesAndPrint(allocator, cfg.codex_home);
+        try resetMemoriesAndPrint(allocator, cfg.codex_home, cfg.sqlite_home orelse cfg.codex_home);
         return;
     }
 
@@ -4849,8 +4849,8 @@ fn persistMemorySetting(allocator: std.mem.Allocator, codex_home: []const u8, ke
     try config.writeConfigTomlFile(config_path, updated);
 }
 
-fn resetMemoriesAndPrint(allocator: std.mem.Allocator, codex_home: []const u8) !void {
-    const state_path = try memory_reset.resolveStateDbPath(allocator, codex_home);
+fn resetMemoriesAndPrint(allocator: std.mem.Allocator, codex_home: []const u8, sqlite_home: []const u8) !void {
+    const state_path = try memory_reset.resolveStateDbPathForSqliteHome(allocator, sqlite_home);
     defer allocator.free(state_path);
     const state_exists = try memory_reset.stateDbExists(allocator, state_path);
     var cleared_state_db = false;

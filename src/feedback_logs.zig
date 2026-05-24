@@ -7,12 +7,12 @@ const LOG_PARTITION_SIZE_LIMIT_BYTES: usize = 10 * 1024 * 1024;
 
 pub fn queryFeedbackLogsForThreads(
     allocator: std.mem.Allocator,
-    codex_home: []const u8,
+    sqlite_home: []const u8,
     thread_ids: []const []const u8,
 ) ![]const u8 {
     if (thread_ids.len == 0) return allocator.dupe(u8, "");
 
-    const logs_path = try memory_reset.resolveLogsDbPath(allocator, codex_home);
+    const logs_path = try memory_reset.resolveLogsDbPathForSqliteHome(allocator, sqlite_home);
     defer allocator.free(logs_path);
     if (!try memory_reset.stateDbExists(allocator, logs_path)) return allocator.dupe(u8, "");
 

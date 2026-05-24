@@ -1,7 +1,7 @@
 const std = @import("std");
 
 const builtin = @import("builtin");
-const env = @import("env.zig");
+const config = @import("config.zig");
 
 pub const state_db_filename = "state_5.sqlite";
 pub const logs_db_filename = "logs_2.sqlite";
@@ -29,14 +29,22 @@ extern fn sqlite3_exec(
 extern fn sqlite3_free(ptr: ?*anyopaque) void;
 
 pub fn resolveStateDbPath(allocator: std.mem.Allocator, codex_home: []const u8) ![]const u8 {
-    const sqlite_home = try resolveSqliteHome(allocator, codex_home);
+    const sqlite_home = try config.resolveRuntimeSqliteHome(allocator, codex_home);
     defer allocator.free(sqlite_home);
-    return std.fs.path.join(allocator, &.{ sqlite_home, state_db_filename });
+    return resolveStateDbPathForSqliteHome(allocator, sqlite_home);
 }
 
 pub fn resolveLogsDbPath(allocator: std.mem.Allocator, codex_home: []const u8) ![]const u8 {
-    const sqlite_home = try resolveSqliteHome(allocator, codex_home);
+    const sqlite_home = try config.resolveRuntimeSqliteHome(allocator, codex_home);
     defer allocator.free(sqlite_home);
+    return resolveLogsDbPathForSqliteHome(allocator, sqlite_home);
+}
+
+pub fn resolveStateDbPathForSqliteHome(allocator: std.mem.Allocator, sqlite_home: []const u8) ![]const u8 {
+    return std.fs.path.join(allocator, &.{ sqlite_home, state_db_filename });
+}
+
+pub fn resolveLogsDbPathForSqliteHome(allocator: std.mem.Allocator, sqlite_home: []const u8) ![]const u8 {
     return std.fs.path.join(allocator, &.{ sqlite_home, logs_db_filename });
 }
 
@@ -101,21 +109,6 @@ pub fn clearMemoryRootContents(allocator: std.mem.Allocator, root_path: []const 
     }
 }
 
-fn resolveSqliteHome(allocator: std.mem.Allocator, codex_home: []const u8) ![]const u8 {
-    if (try env.getOwned(allocator, "CODEX_SQLITE_HOME")) |raw| {
-        defer allocator.free(raw);
-        const trimmed = std.mem.trim(u8, raw, " \t\r\n");
-        if (trimmed.len > 0) {
-            if (std.fs.path.isAbsolute(trimmed)) return allocator.dupe(u8, trimmed);
-
-            const cwd = try std.Io.Dir.cwd().realPathFileAlloc(std.Io.Threaded.global_single_threaded.io(), ".", allocator);
-            defer allocator.free(cwd);
-            return std.fs.path.join(allocator, &.{ cwd, trimmed });
-        }
-    }
-    return allocator.dupe(u8, codex_home);
-}
-
 fn statPathNoFollow(allocator: std.mem.Allocator, path: []const u8) !?std.c.Stat {
     const path_z = try allocator.dupeZ(u8, path);
     defer allocator.free(path_z);
@@ -170,6 +163,28 @@ test "memory reset creates missing roots" {
     defer memories.close(io);
     var extensions = try dir.dir.openDir(io, "memories_extensions", .{ .iterate = true });
     defer extensions.close(io);
+}
+
+test "state db path honors configured sqlite home" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var dir = std.testing.tmpDir(.{});
+    defer dir.cleanup();
+
+    try dir.dir.createDirPath(io, "sqlite");
+    try dir.dir.writeFile(io, .{
+        .sub_path = "config.toml",
+        .data = "sqlite_home = \"./sqlite\"\n",
+    });
+
+    const codex_home = try dir.dir.realPathFileAlloc(io, ".", allocator);
+    defer allocator.free(codex_home);
+    const state_path = try resolveStateDbPath(allocator, codex_home);
+    defer allocator.free(state_path);
+    const expected = try std.fs.path.join(allocator, &.{ codex_home, "sqlite", state_db_filename });
+    defer allocator.free(expected);
+
+    try std.testing.expectEqualStrings(expected, state_path);
 }
 
 test "memory reset rejects symlinked root" {

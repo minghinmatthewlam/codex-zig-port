@@ -585,6 +585,7 @@ fn mainInner(init: std.process.Init) !void {
         }
         if (std.mem.eql(u8, cmd, "app-server")) {
             try app_server_cmd.runWithOptions(allocator, &args, .{
+                .runtime_overrides = overrides.runtime,
                 .feature_overrides = runtime_feature_overrides,
                 .child_global_args = root_config_child_args.items,
                 .bypass_hook_trust = overrides.runtime.bypass_hook_trust orelse false,

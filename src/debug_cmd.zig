@@ -473,8 +473,9 @@ fn runClearMemories(allocator: std.mem.Allocator, args: *std.process.Args.Iterat
 
     var cfg = try config.loadWithOptions(allocator, .{ .profile = options.profile });
     defer cfg.deinit(allocator);
+    try config.applyRuntimeOverrides(&cfg, allocator, options.runtime_overrides);
 
-    const state_path = try memory_reset.resolveStateDbPath(allocator, cfg.codex_home);
+    const state_path = try memory_reset.resolveStateDbPathForSqliteHome(allocator, cfg.sqlite_home orelse cfg.codex_home);
     defer allocator.free(state_path);
     const state_exists = try memory_reset.stateDbExists(allocator, state_path);
     var cleared_state_db = false;

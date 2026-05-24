@@ -274,8 +274,8 @@ const StateListQueryKind = enum {
     summary,
 };
 
-pub fn listRolloutFiles(allocator: std.mem.Allocator, codex_home: []const u8) ![]session_store.RolloutFile {
-    const state_path = try memory_reset.resolveStateDbPath(allocator, codex_home);
+pub fn listRolloutFiles(allocator: std.mem.Allocator, codex_home: []const u8, sqlite_home: []const u8) ![]session_store.RolloutFile {
+    const state_path = try memory_reset.resolveStateDbPathForSqliteHome(allocator, sqlite_home);
     defer allocator.free(state_path);
     if (!try memory_reset.stateDbExists(allocator, state_path)) return allocator.alloc(session_store.RolloutFile, 0);
 
@@ -409,8 +409,8 @@ pub fn listRolloutFiles(allocator: std.mem.Allocator, codex_home: []const u8) ![
     return files.toOwnedSlice(allocator);
 }
 
-pub fn findRolloutPathByThreadId(allocator: std.mem.Allocator, codex_home: []const u8, thread_id: []const u8) !?[]const u8 {
-    const state_path = try memory_reset.resolveStateDbPath(allocator, codex_home);
+pub fn findRolloutPathByThreadId(allocator: std.mem.Allocator, codex_home: []const u8, sqlite_home: []const u8, thread_id: []const u8) !?[]const u8 {
+    const state_path = try memory_reset.resolveStateDbPathForSqliteHome(allocator, sqlite_home);
     defer allocator.free(state_path);
     if (!try memory_reset.stateDbExists(allocator, state_path)) return null;
 
@@ -441,8 +441,8 @@ const StateMetadataQueryKind = enum {
     summary,
 };
 
-pub fn findThreadMetadataByThreadId(allocator: std.mem.Allocator, codex_home: []const u8, thread_id: []const u8) !?ThreadMetadata {
-    const state_path = try memory_reset.resolveStateDbPath(allocator, codex_home);
+pub fn findThreadMetadataByThreadId(allocator: std.mem.Allocator, sqlite_home: []const u8, thread_id: []const u8) !?ThreadMetadata {
+    const state_path = try memory_reset.resolveStateDbPathForSqliteHome(allocator, sqlite_home);
     defer allocator.free(state_path);
     if (!try memory_reset.stateDbExists(allocator, state_path)) return null;
 
@@ -531,8 +531,8 @@ pub fn findThreadMetadataByThreadId(allocator: std.mem.Allocator, codex_home: []
     }
 }
 
-pub fn stateDbThreadExists(allocator: std.mem.Allocator, codex_home: []const u8, thread_id: []const u8) !bool {
-    const state_path = try memory_reset.resolveStateDbPath(allocator, codex_home);
+pub fn stateDbThreadExists(allocator: std.mem.Allocator, sqlite_home: []const u8, thread_id: []const u8) !bool {
+    const state_path = try memory_reset.resolveStateDbPathForSqliteHome(allocator, sqlite_home);
     defer allocator.free(state_path);
     if (!try memory_reset.stateDbExists(allocator, state_path)) return false;
 
@@ -553,8 +553,8 @@ pub fn stateDbThreadExists(allocator: std.mem.Allocator, codex_home: []const u8,
     };
 }
 
-pub fn findThreadGoalByThreadId(allocator: std.mem.Allocator, codex_home: []const u8, thread_id: []const u8) !?ThreadGoal {
-    const state_path = try memory_reset.resolveStateDbPath(allocator, codex_home);
+pub fn findThreadGoalByThreadId(allocator: std.mem.Allocator, sqlite_home: []const u8, thread_id: []const u8) !?ThreadGoal {
+    const state_path = try memory_reset.resolveStateDbPathForSqliteHome(allocator, sqlite_home);
     defer allocator.free(state_path);
     if (!try memory_reset.stateDbExists(allocator, state_path)) return null;
 
@@ -575,16 +575,16 @@ pub fn findThreadGoalByThreadId(allocator: std.mem.Allocator, codex_home: []cons
     };
 }
 
-pub fn updateThreadTitle(allocator: std.mem.Allocator, codex_home: []const u8, thread_id: []const u8, title: []const u8) !bool {
-    const statement = try prepareStateUpdate(allocator, codex_home, UPDATE_TITLE_QUERY) orelse return false;
+pub fn updateThreadTitle(allocator: std.mem.Allocator, sqlite_home: []const u8, thread_id: []const u8, title: []const u8) !bool {
+    const statement = try prepareStateUpdate(allocator, sqlite_home, UPDATE_TITLE_QUERY) orelse return false;
     errdefer statement.deinit();
     try sqlite.bindText(statement.statement, 1, title);
     try sqlite.bindText(statement.statement, 2, thread_id);
     return try finishStateUpdate(statement);
 }
 
-pub fn updateThreadMemoryMode(allocator: std.mem.Allocator, codex_home: []const u8, thread_id: []const u8, mode: []const u8) !bool {
-    const statement = try prepareStateUpdate(allocator, codex_home, UPDATE_MEMORY_MODE_QUERY) orelse return false;
+pub fn updateThreadMemoryMode(allocator: std.mem.Allocator, sqlite_home: []const u8, thread_id: []const u8, mode: []const u8) !bool {
+    const statement = try prepareStateUpdate(allocator, sqlite_home, UPDATE_MEMORY_MODE_QUERY) orelse return false;
     errdefer statement.deinit();
     try sqlite.bindText(statement.statement, 1, mode);
     try sqlite.bindText(statement.statement, 2, thread_id);
@@ -593,13 +593,13 @@ pub fn updateThreadMemoryMode(allocator: std.mem.Allocator, codex_home: []const 
 
 pub fn updateThreadGitInfo(
     allocator: std.mem.Allocator,
-    codex_home: []const u8,
+    sqlite_home: []const u8,
     thread_id: []const u8,
     sha: ?[]const u8,
     branch: ?[]const u8,
     origin_url: ?[]const u8,
 ) !bool {
-    const statement = try prepareStateUpdate(allocator, codex_home, UPDATE_GIT_INFO_QUERY) orelse return false;
+    const statement = try prepareStateUpdate(allocator, sqlite_home, UPDATE_GIT_INFO_QUERY) orelse return false;
     errdefer statement.deinit();
     try sqlite.bindNullableText(statement.statement, 1, sha);
     try sqlite.bindNullableText(statement.statement, 2, branch);
@@ -610,15 +610,15 @@ pub fn updateThreadGitInfo(
 
 pub fn replaceThreadGoal(
     allocator: std.mem.Allocator,
-    codex_home: []const u8,
+    sqlite_home: []const u8,
     thread_id: []const u8,
     objective: []const u8,
     status: []const u8,
     token_budget: ?i64,
 ) !?ThreadGoal {
-    if (!try stateDbThreadExists(allocator, codex_home, thread_id)) return null;
+    if (!try stateDbThreadExists(allocator, sqlite_home, thread_id)) return null;
 
-    const statement = try prepareStateUpdate(allocator, codex_home, REPLACE_THREAD_GOAL_QUERY) orelse return null;
+    const statement = try prepareStateUpdate(allocator, sqlite_home, REPLACE_THREAD_GOAL_QUERY) orelse return null;
     errdefer statement.deinit();
     const goal_id = try generateUuidString(allocator);
     defer allocator.free(goal_id);
@@ -632,16 +632,16 @@ pub fn replaceThreadGoal(
     try sqlite.bindInt64(statement.statement, 6, now_ms);
     try sqlite.bindInt64(statement.statement, 7, now_ms);
     if (!try finishStateUpdate(statement)) return null;
-    return findThreadGoalByThreadId(allocator, codex_home, thread_id);
+    return findThreadGoalByThreadId(allocator, sqlite_home, thread_id);
 }
 
 pub fn updateThreadGoal(
     allocator: std.mem.Allocator,
-    codex_home: []const u8,
+    sqlite_home: []const u8,
     thread_id: []const u8,
     update: ThreadGoalUpdate,
 ) !?ThreadGoal {
-    var existing = (try findThreadGoalByThreadId(allocator, codex_home, thread_id)) orelse return null;
+    var existing = (try findThreadGoalByThreadId(allocator, sqlite_home, thread_id)) orelse return null;
     if (update.status == null and !update.token_budget_present) return existing;
     defer existing.deinit(allocator);
 
@@ -655,27 +655,27 @@ pub fn updateThreadGoal(
     const token_budget = if (update.token_budget_present) update.token_budget else existing.token_budget;
     status = statusAfterBudgetLimit(status, existing.tokens_used, token_budget);
 
-    const statement = try prepareStateUpdate(allocator, codex_home, UPDATE_THREAD_GOAL_QUERY) orelse return null;
+    const statement = try prepareStateUpdate(allocator, sqlite_home, UPDATE_THREAD_GOAL_QUERY) orelse return null;
     errdefer statement.deinit();
     try sqlite.bindText(statement.statement, 1, stateGoalStatus(status));
     try sqlite.bindNullableInt64(statement.statement, 2, token_budget);
     try sqlite.bindInt64(statement.statement, 3, currentUnixMilliseconds());
     try sqlite.bindText(statement.statement, 4, thread_id);
     if (!try finishStateUpdate(statement)) return null;
-    return findThreadGoalByThreadId(allocator, codex_home, thread_id);
+    return findThreadGoalByThreadId(allocator, sqlite_home, thread_id);
 }
 
 pub fn saveThreadGoalSnapshot(
     allocator: std.mem.Allocator,
-    codex_home: []const u8,
+    sqlite_home: []const u8,
     thread_id: []const u8,
     snapshot: ThreadGoalSnapshot,
     replace_goal_id: bool,
 ) !bool {
-    if (!try stateDbThreadExists(allocator, codex_home, thread_id)) return false;
+    if (!try stateDbThreadExists(allocator, sqlite_home, thread_id)) return false;
 
     const query = if (replace_goal_id) SAVE_REPLACED_THREAD_GOAL_SNAPSHOT_QUERY else SAVE_THREAD_GOAL_SNAPSHOT_QUERY;
-    const statement = try prepareStateUpdate(allocator, codex_home, query) orelse return false;
+    const statement = try prepareStateUpdate(allocator, sqlite_home, query) orelse return false;
     errdefer statement.deinit();
     const goal_id = try generateUuidString(allocator);
     defer allocator.free(goal_id);
@@ -691,15 +691,15 @@ pub fn saveThreadGoalSnapshot(
     return try finishStateUpdate(statement);
 }
 
-pub fn deleteThreadGoal(allocator: std.mem.Allocator, codex_home: []const u8, thread_id: []const u8) !bool {
-    const statement = try prepareStateUpdate(allocator, codex_home, DELETE_THREAD_GOAL_QUERY) orelse return false;
+pub fn deleteThreadGoal(allocator: std.mem.Allocator, sqlite_home: []const u8, thread_id: []const u8) !bool {
+    const statement = try prepareStateUpdate(allocator, sqlite_home, DELETE_THREAD_GOAL_QUERY) orelse return false;
     errdefer statement.deinit();
     try sqlite.bindText(statement.statement, 1, thread_id);
     return try finishStateUpdate(statement);
 }
 
-pub fn markThreadArchived(allocator: std.mem.Allocator, codex_home: []const u8, thread_id: []const u8, rollout_path: []const u8) !bool {
-    const statement = try prepareStateUpdate(allocator, codex_home, UPDATE_ARCHIVE_QUERY) orelse return false;
+pub fn markThreadArchived(allocator: std.mem.Allocator, sqlite_home: []const u8, thread_id: []const u8, rollout_path: []const u8) !bool {
+    const statement = try prepareStateUpdate(allocator, sqlite_home, UPDATE_ARCHIVE_QUERY) orelse return false;
     errdefer statement.deinit();
     const times = try fileModifiedTimes(rollout_path);
     const archived_at_seconds = currentUnixSeconds();
@@ -711,8 +711,8 @@ pub fn markThreadArchived(allocator: std.mem.Allocator, codex_home: []const u8, 
     return try finishStateUpdate(statement);
 }
 
-pub fn markThreadUnarchived(allocator: std.mem.Allocator, codex_home: []const u8, thread_id: []const u8, rollout_path: []const u8) !bool {
-    const statement = try prepareStateUpdate(allocator, codex_home, UPDATE_UNARCHIVE_QUERY) orelse return false;
+pub fn markThreadUnarchived(allocator: std.mem.Allocator, sqlite_home: []const u8, thread_id: []const u8, rollout_path: []const u8) !bool {
+    const statement = try prepareStateUpdate(allocator, sqlite_home, UPDATE_UNARCHIVE_QUERY) orelse return false;
     errdefer statement.deinit();
     const times = try fileModifiedTimes(rollout_path);
     try sqlite.bindText(statement.statement, 1, rollout_path);
@@ -732,8 +732,8 @@ const StateUpdateStatement = struct {
     }
 };
 
-fn prepareStateUpdate(allocator: std.mem.Allocator, codex_home: []const u8, query: []const u8) !?StateUpdateStatement {
-    const state_path = try memory_reset.resolveStateDbPath(allocator, codex_home);
+fn prepareStateUpdate(allocator: std.mem.Allocator, sqlite_home: []const u8, query: []const u8) !?StateUpdateStatement {
+    const state_path = try memory_reset.resolveStateDbPathForSqliteHome(allocator, sqlite_home);
     defer allocator.free(state_path);
     if (!try memory_reset.stateDbExists(allocator, state_path)) return null;
 

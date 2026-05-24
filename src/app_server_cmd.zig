@@ -403,7 +403,12 @@ const AppServerOptions = struct {
     }
 };
 
+fn configSqliteHome(cfg: config.Config) []const u8 {
+    return cfg.sqlite_home orelse cfg.codex_home;
+}
+
 pub const InvocationOptions = struct {
+    runtime_overrides: config.RuntimeOverrides = .{},
     feature_overrides: features_cmd.FeatureOverrides = .{},
     child_global_args: []const []const u8 = &.{},
     bypass_hook_trust: bool = false,
@@ -521,6 +526,7 @@ const AppServerState = struct {
     bypass_hook_trust: bool = false,
     remote_control_enabled: bool = false,
     session_source: []const u8 = "vscode",
+    runtime_overrides: config.RuntimeOverrides = .{},
     thread_unloading_delay_ms: i64 = THREAD_UNLOADING_DELAY_MS,
     cli_feature_overrides: features_cmd.FeatureOverrides = .{},
     runtime_feature_enablement: features_cmd.FeatureOverrides = .{},
@@ -579,11 +585,27 @@ fn initAppServerState(
         .bypass_hook_trust = invocation_options.bypass_hook_trust,
         .remote_control_enabled = invocation_options.remote_control_enabled,
         .session_source = invocation_options.session_source,
+        .runtime_overrides = invocation_options.runtime_overrides,
         .thread_unloading_delay_ms = appServerThreadUnloadingDelayMs(allocator),
         .cli_feature_overrides = try invocation_options.feature_overrides.clone(allocator),
     };
     errdefer state.deinit(allocator);
     return state;
+}
+
+fn loadAppServerConfig(allocator: std.mem.Allocator, state: *const AppServerState) !config.Config {
+    return loadAppServerConfigWithOptions(allocator, state, .{});
+}
+
+fn loadAppServerConfigWithOptions(
+    allocator: std.mem.Allocator,
+    state: *const AppServerState,
+    options: config.LoadOptions,
+) !config.Config {
+    var cfg = try config.loadWithOptions(allocator, options);
+    errdefer cfg.deinit(allocator);
+    try config.applyRuntimeOverrides(&cfg, allocator, state.runtime_overrides);
+    return cfg;
 }
 
 fn appServerThreadUnloadingDelayMs(allocator: std.mem.Allocator) i64 {
@@ -28709,7 +28731,7 @@ fn handleJsonRpcLine(allocator: std.mem.Allocator, state: *AppServerState, line:
         return try handleRemoteControlMethod(allocator, state, id_value.?, method, object.get("params"));
     }
     if (std.mem.eql(u8, method, "memory/reset")) {
-        return try handleMemoryReset(allocator, id_value.?);
+        return try handleMemoryReset(allocator, state, id_value.?);
     }
     if (std.mem.eql(u8, method, "getConversationSummary")) {
         return try handleGetConversationSummary(allocator, state, id_value.?, object.get("params"));
@@ -28944,10 +28966,20 @@ const AppServerRequestUserInputContext = struct {
     turn_start_response_sent: *bool,
 };
 
+const MemoryResetRuntimePaths = struct {
+    codex_home: []const u8,
+    sqlite_home: []const u8,
+
+    fn deinit(self: MemoryResetRuntimePaths, allocator: std.mem.Allocator) void {
+        allocator.free(self.codex_home);
+        allocator.free(self.sqlite_home);
+    }
+};
+
 const AppServerGoalToolContext = struct {
     allocator: std.mem.Allocator,
     state: *AppServerState,
-    codex_home: []const u8,
+    sqlite_home: []const u8,
     thread: *LoadedThread,
     turn_id: []const u8,
     notifications: *std.ArrayList([]const u8),
@@ -29523,7 +29555,7 @@ fn handleAppServerGoalTool(ctx: *anyopaque, call: api.FunctionCall) !tool_runner
 
     if (std.mem.eql(u8, call.name, "get_goal")) {
         if (try refreshLoadedThreadGoalAccountingAndPersistAt(context.allocator, context.thread, currentUnixSeconds())) {
-            _ = try saveLoadedThreadGoalToStateDb(context.allocator, context.codex_home, context.thread, false);
+            _ = try saveLoadedThreadGoalToStateDb(context.allocator, context.sqlite_home, context.thread, false);
         }
         const output = try renderGoalToolResponse(context.allocator, context.thread, .omit);
         defer context.allocator.free(output);
@@ -29548,7 +29580,7 @@ fn handleAppServerGoalTool(ctx: *anyopaque, call: api.FunctionCall) !tool_runner
             return goalToolResult(context.allocator, call.call_id, "goal invalid", message);
         }
         const replaced_goal = try setLoadedThreadGoal(context.allocator, context.thread, object);
-        _ = try saveLoadedThreadGoalToStateDb(context.allocator, context.codex_home, context.thread, replaced_goal);
+        _ = try saveLoadedThreadGoalToStateDb(context.allocator, context.sqlite_home, context.thread, replaced_goal);
         try queueThreadGoalUpdatedTurnNotification(context);
         const output = try renderGoalToolResponse(context.allocator, context.thread, .omit);
         defer context.allocator.free(output);
@@ -29563,7 +29595,7 @@ fn handleAppServerGoalTool(ctx: *anyopaque, call: api.FunctionCall) !tool_runner
             error.MissingThreadGoal => return goalToolResult(context.allocator, call.call_id, "goal rejected", "cannot update goal because this thread has no goal"),
             else => return err,
         };
-        _ = try saveLoadedThreadGoalToStateDb(context.allocator, context.codex_home, context.thread, replaced_goal);
+        _ = try saveLoadedThreadGoalToStateDb(context.allocator, context.sqlite_home, context.thread, replaced_goal);
         try queueThreadGoalUpdatedTurnNotification(context);
         const output = try renderGoalToolResponse(context.allocator, context.thread, .include);
         defer context.allocator.free(output);
@@ -30600,13 +30632,13 @@ fn stringSliceContains(values: []const []const u8, needle: []const u8) bool {
     return false;
 }
 
-fn handleMemoryReset(allocator: std.mem.Allocator, id_value: std.json.Value) ![]const u8 {
-    const codex_home = resolveCodexHome(allocator) catch |err| {
-        return try renderJsonRpcErrorForFailure(allocator, id_value, "failed to resolve CODEX_HOME", err);
+fn handleMemoryReset(allocator: std.mem.Allocator, state: *const AppServerState, id_value: std.json.Value) ![]const u8 {
+    const paths = resolveMemoryResetRuntimePaths(allocator, state) catch |err| {
+        return try renderJsonRpcErrorForFailure(allocator, id_value, "failed to resolve runtime paths", err);
     };
-    defer allocator.free(codex_home);
+    defer paths.deinit(allocator);
 
-    const state_path = memory_reset.resolveStateDbPath(allocator, codex_home) catch |err| {
+    const state_path = memory_reset.resolveStateDbPathForSqliteHome(allocator, paths.sqlite_home) catch |err| {
         return try renderJsonRpcErrorForFailure(allocator, id_value, "failed to resolve state db path", err);
     };
     defer allocator.free(state_path);
@@ -30620,10 +30652,26 @@ fn handleMemoryReset(allocator: std.mem.Allocator, id_value: std.json.Value) ![]
         };
     }
 
-    memory_reset.clearMemoryRootsContents(allocator, codex_home) catch |err| {
+    memory_reset.clearMemoryRootsContents(allocator, paths.codex_home) catch |err| {
         return try renderJsonRpcErrorForFailure(allocator, id_value, "failed to clear memory directories", err);
     };
     return try renderJsonRpcResult(allocator, id_value, "{}");
+}
+
+fn resolveMemoryResetRuntimePaths(allocator: std.mem.Allocator, state: *const AppServerState) !MemoryResetRuntimePaths {
+    const codex_home = try config.resolveCodexHome(allocator);
+    errdefer allocator.free(codex_home);
+
+    const sqlite_home = if (state.runtime_overrides.sqlite_home) |raw|
+        try config.resolveRuntimeOverridePath(allocator, raw)
+    else
+        try config.resolveRuntimeSqliteHome(allocator, codex_home);
+    errdefer allocator.free(sqlite_home);
+
+    return .{
+        .codex_home = codex_home,
+        .sqlite_home = sqlite_home,
+    };
 }
 
 fn handleAppsList(
@@ -31182,7 +31230,7 @@ fn handleGetConversationSummary(
             return renderJsonRpcError(allocator, id_value, -32602, "rolloutPath must be a string");
         }
 
-        var cfg = config.load(allocator) catch |err| {
+        var cfg = loadAppServerConfig(allocator, state) catch |err| {
             return renderJsonRpcErrorForFailure(allocator, id_value, "getConversationSummary failed to load config", err);
         };
         defer cfg.deinit(allocator);
@@ -31203,9 +31251,10 @@ fn handleGetConversationSummary(
         const conversation_id = conversation_id_value.string;
         if (findLoadedThread(state, conversation_id)) |thread| {
             var state_metadata: ?thread_state.ThreadMetadata = null;
-            if (config.resolveCodexHome(allocator)) |codex_home| {
-                defer allocator.free(codex_home);
-                state_metadata = thread_state.findThreadMetadataByThreadId(allocator, codex_home, conversation_id) catch null;
+            if (loadAppServerConfig(allocator, state)) |loaded_cfg| {
+                var loaded_cfg_mut = loaded_cfg;
+                defer loaded_cfg_mut.deinit(allocator);
+                state_metadata = thread_state.findThreadMetadataByThreadId(allocator, configSqliteHome(loaded_cfg_mut), conversation_id) catch null;
             } else |_| {}
             defer if (state_metadata) |*metadata| metadata.deinit(allocator);
 
@@ -31215,17 +31264,17 @@ fn handleGetConversationSummary(
             return renderJsonRpcResult(allocator, id_value, result);
         }
 
-        var cfg = config.load(allocator) catch |err| {
+        var cfg = loadAppServerConfig(allocator, state) catch |err| {
             return renderJsonRpcErrorForFailure(allocator, id_value, "getConversationSummary failed to load config", err);
         };
         defer cfg.deinit(allocator);
 
-        var state_metadata = thread_state.findThreadMetadataByThreadId(allocator, cfg.codex_home, conversation_id) catch |err| {
+        var state_metadata = thread_state.findThreadMetadataByThreadId(allocator, configSqliteHome(cfg), conversation_id) catch |err| {
             return renderJsonRpcErrorForFailure(allocator, id_value, "getConversationSummary failed to load state metadata", err);
         };
         defer if (state_metadata) |*metadata| metadata.deinit(allocator);
 
-        const state_path = thread_state.findRolloutPathByThreadId(allocator, cfg.codex_home, conversation_id) catch |err| {
+        const state_path = thread_state.findRolloutPathByThreadId(allocator, cfg.codex_home, configSqliteHome(cfg), conversation_id) catch |err| {
             return renderJsonRpcErrorForFailure(allocator, id_value, "getConversationSummary failed to resolve state thread path", err);
         };
         defer if (state_path) |path| allocator.free(path);
@@ -31495,7 +31544,7 @@ fn handleReviewStart(
     };
 
     const parent_thread = &state.loaded_threads.items[thread_index];
-    var cfg = loadConfigForLoadedThread(allocator, parent_thread) catch |err| {
+    var cfg = loadConfigForLoadedThread(allocator, state, parent_thread) catch |err| {
         return try renderJsonRpcErrorForFailure(allocator, id_value, "review/start failed to load config", err);
     };
     defer cfg.deinit(allocator);
@@ -31738,7 +31787,7 @@ fn handleReviewStart(
     var goal_tool_context = AppServerGoalToolContext{
         .allocator = allocator,
         .state = state,
-        .codex_home = cfg.codex_home,
+        .sqlite_home = configSqliteHome(cfg),
         .thread = thread,
         .turn_id = turn_id,
         .notifications = &turn_update_notifications,
@@ -32428,7 +32477,7 @@ fn handleTurnStart(
     defer input.deinit(allocator);
 
     const thread = &state.loaded_threads.items[thread_index];
-    var cfg = loadConfigForLoadedThread(allocator, thread) catch |err| {
+    var cfg = loadConfigForLoadedThread(allocator, state, thread) catch |err| {
         return try renderJsonRpcErrorForFailure(allocator, id_value, "turn/start failed to load config", err);
     };
     defer cfg.deinit(allocator);
@@ -32715,7 +32764,7 @@ fn handleTurnStart(
     var goal_tool_context = AppServerGoalToolContext{
         .allocator = allocator,
         .state = state,
-        .codex_home = cfg.codex_home,
+        .sqlite_home = configSqliteHome(cfg),
         .thread = thread,
         .turn_id = turn_id,
         .notifications = &turn_update_notifications,
@@ -32851,7 +32900,7 @@ fn handleTurnStart(
             var completed_notification_moved = false;
             errdefer if (!completed_notification_moved) allocator.free(completed_notification);
 
-            const goal_accounting_changed = try refreshLoadedThreadAfterTurnAndAccountGoal(allocator, cfg.codex_home, thread, prompt_for_turn, completed_at);
+            const goal_accounting_changed = try refreshLoadedThreadAfterTurnAndAccountGoal(allocator, configSqliteHome(cfg), thread, prompt_for_turn, completed_at);
             if (thread.path) |path| {
                 try session_store.saveTranscript(allocator, path, &thread.transcript);
             }
@@ -32905,7 +32954,7 @@ fn handleTurnStart(
         }
         thread.status = .system_error;
         const failed_at = currentUnixSeconds();
-        const goal_accounting_changed = try refreshLoadedThreadAfterTurnAndAccountGoal(allocator, cfg.codex_home, thread, prompt_for_turn, failed_at);
+        const goal_accounting_changed = try refreshLoadedThreadAfterTurnAndAccountGoal(allocator, configSqliteHome(cfg), thread, prompt_for_turn, failed_at);
         if (thread.path) |path| {
             try session_store.saveTranscript(allocator, path, &thread.transcript);
         }
@@ -32935,7 +32984,7 @@ fn handleTurnStart(
     var completed_notification_moved = false;
     errdefer if (!completed_notification_moved) allocator.free(completed_notification);
 
-    const goal_accounting_changed = try refreshLoadedThreadAfterTurnAndAccountGoal(allocator, cfg.codex_home, thread, prompt_for_turn, completed_at);
+    const goal_accounting_changed = try refreshLoadedThreadAfterTurnAndAccountGoal(allocator, configSqliteHome(cfg), thread, prompt_for_turn, completed_at);
     if (thread.path) |path| {
         try session_store.saveTranscript(allocator, path, &thread.transcript);
     }
@@ -35606,7 +35655,7 @@ fn refreshLoadedThreadAfterTurn(allocator: std.mem.Allocator, thread: *LoadedThr
 
 fn refreshLoadedThreadAfterTurnAndAccountGoal(
     allocator: std.mem.Allocator,
-    codex_home: []const u8,
+    sqlite_home: []const u8,
     thread: *LoadedThread,
     prompt: []const u8,
     accounting_at: i64,
@@ -35615,7 +35664,7 @@ fn refreshLoadedThreadAfterTurnAndAccountGoal(
     const goal_accounting_changed = refreshLoadedThreadGoalAccountingAt(thread, accounting_at);
     if (goal_accounting_changed) {
         try syncLoadedThreadGoalToTranscript(allocator, thread);
-        _ = try saveLoadedThreadGoalToStateDb(allocator, codex_home, thread, false);
+        _ = try saveLoadedThreadGoalToStateDb(allocator, sqlite_home, thread, false);
     }
     return goal_accounting_changed;
 }
@@ -35990,9 +36039,9 @@ fn syncLoadedThreadGoalToTranscript(allocator: std.mem.Allocator, thread: *Loade
     });
 }
 
-fn saveLoadedThreadGoalToStateDb(allocator: std.mem.Allocator, codex_home: []const u8, thread: *const LoadedThread, replace_goal_id: bool) !bool {
+fn saveLoadedThreadGoalToStateDb(allocator: std.mem.Allocator, sqlite_home: []const u8, thread: *const LoadedThread, replace_goal_id: bool) !bool {
     const goal = thread.goal orelse return false;
-    return thread_state.saveThreadGoalSnapshot(allocator, codex_home, thread.id, .{
+    return thread_state.saveThreadGoalSnapshot(allocator, sqlite_home, thread.id, .{
         .objective = goal.objective,
         .status = goal.status,
         .token_budget = goal.token_budget,
@@ -36044,8 +36093,8 @@ fn loadedThreadGoalFromStateGoal(allocator: std.mem.Allocator, goal: thread_stat
     };
 }
 
-fn applyStateThreadGoal(allocator: std.mem.Allocator, codex_home: []const u8, thread: *LoadedThread) !void {
-    const state_goal = (try thread_state.findThreadGoalByThreadId(allocator, codex_home, thread.id)) orelse return;
+fn applyStateThreadGoal(allocator: std.mem.Allocator, sqlite_home: []const u8, thread: *LoadedThread) !void {
+    const state_goal = (try thread_state.findThreadGoalByThreadId(allocator, sqlite_home, thread.id)) orelse return;
     defer state_goal.deinit(allocator);
 
     var loaded_goal = try loadedThreadGoalFromStateGoal(allocator, state_goal);
@@ -36183,7 +36232,7 @@ fn handleLoadedThreadCompactStart(
     thread_index: usize,
 ) ![]const u8 {
     const thread = &state.loaded_threads.items[thread_index];
-    var cfg = loadConfigForLoadedThread(allocator, thread) catch |err| {
+    var cfg = loadConfigForLoadedThread(allocator, state, thread) catch |err| {
         return renderJsonRpcErrorForFailure(allocator, id_value, "thread/compact/start failed to load config", err);
     };
     defer cfg.deinit(allocator);
@@ -36271,7 +36320,7 @@ fn handleLoadedThreadCompactStart(
     const goal_accounting_changed = refreshLoadedThreadGoalAccountingAt(thread, completed_at);
     if (goal_accounting_changed) {
         try syncLoadedThreadGoalToTranscript(allocator, thread);
-        _ = try saveLoadedThreadGoalToStateDb(allocator, cfg.codex_home, thread, false);
+        _ = try saveLoadedThreadGoalToStateDb(allocator, configSqliteHome(cfg), thread, false);
     }
     if (thread.path) |path| {
         try session_store.saveTranscript(allocator, path, &thread.transcript);
@@ -38166,7 +38215,7 @@ fn handleThreadMethod(
         if (!isUuidString(thread_id)) {
             return renderInvalidThreadId(allocator, id_value, thread_id);
         }
-        var cfg = config.load(allocator) catch |err| {
+        var cfg = loadAppServerConfig(allocator, state) catch |err| {
             return renderJsonRpcErrorForFailure(allocator, id_value, "thread/archive failed to load config", err);
         };
         defer cfg.deinit(allocator);
@@ -38179,7 +38228,7 @@ fn handleThreadMethod(
             for (owned_archive_thread_ids.items) |owned_id| allocator.free(owned_id);
             owned_archive_thread_ids.deinit(allocator);
         }
-        feedback_state.appendSpawnDescendantThreadIds(allocator, cfg.codex_home, thread_id, &archive_thread_ids, &owned_archive_thread_ids) catch |err| switch (err) {
+        feedback_state.appendSpawnDescendantThreadIds(allocator, configSqliteHome(cfg), thread_id, &archive_thread_ids, &owned_archive_thread_ids) catch |err| switch (err) {
             error.SqlitePrepareFailed => {},
             else => return renderJsonRpcErrorForFailure(allocator, id_value, "thread/archive failed to list spawned descendants", err),
         };
@@ -38189,7 +38238,7 @@ fn handleThreadMethod(
             else => return renderJsonRpcErrorForFailure(allocator, id_value, "thread/archive failed", err),
         };
         defer allocator.free(archived_path);
-        _ = thread_state.markThreadArchived(allocator, cfg.codex_home, thread_id, archived_path) catch {};
+        _ = thread_state.markThreadArchived(allocator, configSqliteHome(cfg), thread_id, archived_path) catch {};
         if (removeLoadedThread(allocator, state, thread_id)) {
             try queueThreadStatusChangedNotification(allocator, state, thread_id, .not_loaded);
         }
@@ -38200,7 +38249,7 @@ fn handleThreadMethod(
             descendant_index -= 1;
             const descendant_id = archive_thread_ids.items[descendant_index];
             const descendant_archived_path = session_store.archiveRollout(allocator, cfg.codex_home, descendant_id) catch continue;
-            _ = thread_state.markThreadArchived(allocator, cfg.codex_home, descendant_id, descendant_archived_path) catch {};
+            _ = thread_state.markThreadArchived(allocator, configSqliteHome(cfg), descendant_id, descendant_archived_path) catch {};
             allocator.free(descendant_archived_path);
             if (removeLoadedThread(allocator, state, descendant_id)) {
                 try queueThreadStatusChangedNotification(allocator, state, descendant_id, .not_loaded);
@@ -38220,7 +38269,7 @@ fn handleThreadMethod(
         if (!isUuidString(thread_id)) {
             return renderInvalidThreadId(allocator, id_value, thread_id);
         }
-        var cfg = config.load(allocator) catch |err| {
+        var cfg = loadAppServerConfig(allocator, state) catch |err| {
             return renderJsonRpcErrorForFailure(allocator, id_value, "thread/unarchive failed to load config", err);
         };
         defer cfg.deinit(allocator);
@@ -38229,7 +38278,7 @@ fn handleThreadMethod(
             else => return renderJsonRpcErrorForFailure(allocator, id_value, "thread/unarchive failed", err),
         };
         defer allocator.free(unarchived_path);
-        _ = thread_state.markThreadUnarchived(allocator, cfg.codex_home, thread_id, unarchived_path) catch {};
+        _ = thread_state.markThreadUnarchived(allocator, configSqliteHome(cfg), thread_id, unarchived_path) catch {};
         var unarchived_thread = createStoredThreadFromPath(allocator, cfg, object, unarchived_path) catch |err| {
             return renderJsonRpcErrorForFailure(allocator, id_value, "thread/unarchive failed to load thread", err);
         };
@@ -38376,11 +38425,11 @@ fn handleThreadMethod(
         const result = try renderThreadReadResponse(allocator, thread, true);
         defer allocator.free(result);
         if (goal_cleared) {
-            var cfg = config.load(allocator) catch |err| {
+            var cfg = loadAppServerConfig(allocator, state) catch |err| {
                 return renderJsonRpcErrorForFailure(allocator, id_value, "thread/rollback failed to load config", err);
             };
             defer cfg.deinit(allocator);
-            _ = thread_state.deleteThreadGoal(allocator, cfg.codex_home, thread.id) catch |err| {
+            _ = thread_state.deleteThreadGoal(allocator, configSqliteHome(cfg), thread.id) catch |err| {
                 return renderJsonRpcErrorForFailure(allocator, id_value, "thread/rollback failed to persist state goal", err);
             };
             try queueThreadGoalClearedNotification(allocator, state, thread.id);
@@ -38391,7 +38440,7 @@ fn handleThreadMethod(
         if (validateThreadListParams(params_value)) |message| {
             return renderJsonRpcError(allocator, id_value, -32602, message);
         }
-        var cfg = config.load(allocator) catch |err| {
+        var cfg = loadAppServerConfig(allocator, state) catch |err| {
             return renderJsonRpcErrorForFailure(allocator, id_value, "thread/list failed to load config", err);
         };
         defer cfg.deinit(allocator);
@@ -38450,7 +38499,7 @@ fn handleThreadMethod(
         if (!isUuidString(thread_id)) {
             return renderInvalidThreadId(allocator, id_value, thread_id);
         }
-        var cfg = config.load(allocator) catch |err| {
+        var cfg = loadAppServerConfig(allocator, state) catch |err| {
             return renderJsonRpcErrorForFailure(allocator, id_value, "thread/name/set failed to load config", err);
         };
         defer cfg.deinit(allocator);
@@ -38470,7 +38519,7 @@ fn handleThreadMethod(
         session_store.appendThreadName(allocator, cfg.codex_home, thread_id, thread_name) catch |err| {
             return renderJsonRpcErrorForFailure(allocator, id_value, "thread/name/set failed", err);
         };
-        _ = thread_state.updateThreadTitle(allocator, cfg.codex_home, thread_id, thread_name) catch |err| {
+        _ = thread_state.updateThreadTitle(allocator, configSqliteHome(cfg), thread_id, thread_name) catch |err| {
             return renderJsonRpcErrorForFailure(allocator, id_value, "thread/name/set failed", err);
         };
         try queueThreadNameUpdatedNotification(allocator, state, thread_id, thread_name);
@@ -38492,7 +38541,7 @@ fn handleThreadMethod(
         if (!isUuidString(thread_id)) {
             return renderInvalidThreadId(allocator, id_value, thread_id);
         }
-        var cfg = config.load(allocator) catch |err| {
+        var cfg = loadAppServerConfig(allocator, state) catch |err| {
             return renderJsonRpcErrorForFailure(allocator, id_value, "thread/goal/set failed to load config", err);
         };
         defer cfg.deinit(allocator);
@@ -38511,7 +38560,7 @@ fn handleThreadMethod(
                 },
                 else => return renderJsonRpcErrorForFailure(allocator, id_value, "thread/goal/set failed", err),
             };
-            _ = saveLoadedThreadGoalToStateDb(allocator, cfg.codex_home, thread, replaced_goal) catch |err| {
+            _ = saveLoadedThreadGoalToStateDb(allocator, configSqliteHome(cfg), thread, replaced_goal) catch |err| {
                 return renderJsonRpcErrorForFailure(allocator, id_value, "thread/goal/set failed to persist state goal", err);
             };
             const result = try renderThreadGoalSetResponse(allocator, thread);
@@ -38519,10 +38568,10 @@ fn handleThreadMethod(
             try queueThreadGoalUpdatedNotification(allocator, state, thread);
             return renderJsonRpcResult(allocator, id_value, result);
         }
-        if (!try thread_state.stateDbThreadExists(allocator, cfg.codex_home, thread_id)) {
+        if (!try thread_state.stateDbThreadExists(allocator, configSqliteHome(cfg), thread_id)) {
             return renderThreadNotFound(allocator, id_value, thread_id);
         }
-        var goal = setStateThreadGoalFromParams(allocator, cfg.codex_home, thread_id, object) catch |err| switch (err) {
+        var goal = setStateThreadGoalFromParams(allocator, configSqliteHome(cfg), thread_id, object) catch |err| switch (err) {
             error.MissingThreadGoal => {
                 const message = try std.fmt.allocPrint(allocator, "cannot update goal for thread {s}: no goal exists", .{thread_id});
                 defer allocator.free(message);
@@ -38549,7 +38598,7 @@ fn handleThreadMethod(
         if (!isUuidString(thread_id)) {
             return renderInvalidThreadId(allocator, id_value, thread_id);
         }
-        var cfg = config.load(allocator) catch |err| {
+        var cfg = loadAppServerConfig(allocator, state) catch |err| {
             return renderJsonRpcErrorForFailure(allocator, id_value, "thread/goal/get failed to load config", err);
         };
         defer cfg.deinit(allocator);
@@ -38563,7 +38612,7 @@ fn handleThreadMethod(
             if (refreshLoadedThreadGoalAccountingAndPersistAt(allocator, thread, currentUnixSeconds()) catch |err| {
                 return renderJsonRpcErrorForFailure(allocator, id_value, "thread/goal/get failed", err);
             }) {
-                _ = saveLoadedThreadGoalToStateDb(allocator, cfg.codex_home, thread, false) catch |err| {
+                _ = saveLoadedThreadGoalToStateDb(allocator, configSqliteHome(cfg), thread, false) catch |err| {
                     return renderJsonRpcErrorForFailure(allocator, id_value, "thread/goal/get failed to persist state goal", err);
                 };
             }
@@ -38571,10 +38620,10 @@ fn handleThreadMethod(
             defer allocator.free(result);
             return renderJsonRpcResult(allocator, id_value, result);
         }
-        if (!try thread_state.stateDbThreadExists(allocator, cfg.codex_home, thread_id)) {
+        if (!try thread_state.stateDbThreadExists(allocator, configSqliteHome(cfg), thread_id)) {
             return renderThreadNotFound(allocator, id_value, thread_id);
         }
-        const goal = thread_state.findThreadGoalByThreadId(allocator, cfg.codex_home, thread_id) catch |err| {
+        const goal = thread_state.findThreadGoalByThreadId(allocator, configSqliteHome(cfg), thread_id) catch |err| {
             return renderJsonRpcErrorForFailure(allocator, id_value, "thread/goal/get failed", err);
         };
         defer if (goal) |value| value.deinit(allocator);
@@ -38595,7 +38644,7 @@ fn handleThreadMethod(
         if (!isUuidString(thread_id)) {
             return renderInvalidThreadId(allocator, id_value, thread_id);
         }
-        var cfg = config.load(allocator) catch |err| {
+        var cfg = loadAppServerConfig(allocator, state) catch |err| {
             return renderJsonRpcErrorForFailure(allocator, id_value, "thread/goal/clear failed to load config", err);
         };
         defer cfg.deinit(allocator);
@@ -38610,17 +38659,17 @@ fn handleThreadMethod(
                 return renderJsonRpcErrorForFailure(allocator, id_value, "thread/goal/clear failed", err);
             };
             if (loaded_cleared) {
-                _ = thread_state.deleteThreadGoal(allocator, cfg.codex_home, thread_id) catch |err| {
+                _ = thread_state.deleteThreadGoal(allocator, configSqliteHome(cfg), thread_id) catch |err| {
                     return renderJsonRpcErrorForFailure(allocator, id_value, "thread/goal/clear failed to persist state goal", err);
                 };
             }
             break :blk loaded_cleared;
         } else blk: {
-            if (!try thread_state.stateDbThreadExists(allocator, cfg.codex_home, thread_id)) {
+            if (!try thread_state.stateDbThreadExists(allocator, configSqliteHome(cfg), thread_id)) {
                 return renderThreadNotFound(allocator, id_value, thread_id);
             }
             var stored_cleared = false;
-            const state_cleared = thread_state.deleteThreadGoal(allocator, cfg.codex_home, thread_id) catch |err| {
+            const state_cleared = thread_state.deleteThreadGoal(allocator, configSqliteHome(cfg), thread_id) catch |err| {
                 return renderJsonRpcErrorForFailure(allocator, id_value, "thread/goal/clear failed", err);
             };
             var stored_thread = createStoredThreadFromParamsIncludingStateDb(allocator, cfg, object) catch |err| switch (err) {
@@ -38665,7 +38714,7 @@ fn handleThreadMethod(
             };
             return renderJsonRpcResult(allocator, id_value, "{}");
         }
-        var cfg = config.load(allocator) catch |err| {
+        var cfg = loadAppServerConfig(allocator, state) catch |err| {
             return renderJsonRpcErrorForFailure(allocator, id_value, "thread/memoryMode/set failed to load config", err);
         };
         defer cfg.deinit(allocator);
@@ -38679,7 +38728,7 @@ fn handleThreadMethod(
         session_store.appendThreadMemoryModeFromTranscript(allocator, stored_path, thread_id, &stored_thread.transcript, mode) catch |err| {
             return renderJsonRpcErrorForFailure(allocator, id_value, "thread/memoryMode/set failed", err);
         };
-        _ = thread_state.updateThreadMemoryMode(allocator, cfg.codex_home, thread_id, mode) catch |err| {
+        _ = thread_state.updateThreadMemoryMode(allocator, configSqliteHome(cfg), thread_id, mode) catch |err| {
             return renderJsonRpcErrorForFailure(allocator, id_value, "thread/memoryMode/set failed", err);
         };
         return renderJsonRpcResult(allocator, id_value, "{}");
@@ -38713,7 +38762,7 @@ fn handleThreadMethod(
             defer allocator.free(result);
             return renderJsonRpcResult(allocator, id_value, result);
         }
-        var cfg = config.load(allocator) catch |err| {
+        var cfg = loadAppServerConfig(allocator, state) catch |err| {
             return renderJsonRpcErrorForFailure(allocator, id_value, "thread/metadata/update failed to load config", err);
         };
         defer cfg.deinit(allocator);
@@ -38739,7 +38788,7 @@ fn handleThreadMethod(
         session_store.appendThreadGitInfoFromTranscript(allocator, stored_path, thread_id, &stored_thread.transcript, stored_thread.git_sha, stored_thread.git_branch, stored_thread.git_origin_url, stored_thread.transcript.memory_mode) catch |err| {
             return renderJsonRpcErrorForFailure(allocator, id_value, "thread/metadata/update failed", err);
         };
-        _ = thread_state.updateThreadGitInfo(allocator, cfg.codex_home, thread_id, stored_thread.git_sha, stored_thread.git_branch, stored_thread.git_origin_url) catch |err| {
+        _ = thread_state.updateThreadGitInfo(allocator, configSqliteHome(cfg), thread_id, stored_thread.git_sha, stored_thread.git_branch, stored_thread.git_origin_url) catch |err| {
             return renderJsonRpcErrorForFailure(allocator, id_value, "thread/metadata/update failed", err);
         };
         const result = try renderStoredThreadReadResponse(allocator, &stored_thread, false);
@@ -38769,7 +38818,7 @@ fn handleThreadMethod(
             defer allocator.free(result);
             return renderJsonRpcResult(allocator, id_value, result);
         }
-        var cfg = config.load(allocator) catch |err| {
+        var cfg = loadAppServerConfig(allocator, state) catch |err| {
             return renderJsonRpcErrorForFailure(allocator, id_value, "thread/read failed to load config", err);
         };
         defer cfg.deinit(allocator);
@@ -38812,7 +38861,7 @@ fn handleThreadMethod(
             defer allocator.free(result);
             return renderJsonRpcResult(allocator, id_value, result);
         }
-        var cfg = config.load(allocator) catch |err| {
+        var cfg = loadAppServerConfig(allocator, state) catch |err| {
             return renderJsonRpcErrorForFailure(allocator, id_value, "thread/turns/list failed to load config", err);
         };
         defer cfg.deinit(allocator);
@@ -39052,12 +39101,16 @@ fn threadRequestConfigParamPresent(params: ?std.json.ObjectMap, name: []const u8
     return value.object.get(name) != null;
 }
 
-fn loadConfigForThreadRequest(allocator: std.mem.Allocator, request_config: ThreadRequestConfigOverrides) !config.Config {
-    return config.loadWithOptions(allocator, .{ .profile = request_config.profile });
+fn loadConfigForThreadRequest(
+    allocator: std.mem.Allocator,
+    state: *const AppServerState,
+    request_config: ThreadRequestConfigOverrides,
+) !config.Config {
+    return loadAppServerConfigWithOptions(allocator, state, .{ .profile = request_config.profile });
 }
 
-fn loadConfigForLoadedThread(allocator: std.mem.Allocator, thread: *const LoadedThread) !config.Config {
-    return config.loadWithOptions(allocator, .{ .profile = thread.active_profile });
+fn loadConfigForLoadedThread(allocator: std.mem.Allocator, state: *const AppServerState, thread: *const LoadedThread) !config.Config {
+    return loadAppServerConfigWithOptions(allocator, state, .{ .profile = thread.active_profile });
 }
 
 fn applyRuntimeScalarRequirementsToConfigWithRequirements(
@@ -39399,7 +39452,7 @@ fn handleThreadStart(
         error.InvalidThreadRequestConfig => return renderJsonRpcError(allocator, id_value, -32602, "invalid thread config override"),
     };
 
-    var cfg = loadConfigForThreadRequest(allocator, request_config) catch |err| {
+    var cfg = loadConfigForThreadRequest(allocator, state, request_config) catch |err| {
         return renderJsonRpcErrorForFailure(allocator, id_value, "thread/start failed to load config", err);
     };
     defer cfg.deinit(allocator);
@@ -39732,7 +39785,7 @@ fn handleThreadResume(
     const request_config = threadRequestConfigFromParams(object) catch |err| switch (err) {
         error.InvalidThreadRequestConfig => return renderJsonRpcError(allocator, id_value, -32602, "invalid thread config override"),
     };
-    var cfg = loadConfigForThreadRequest(allocator, request_config) catch |err| {
+    var cfg = loadConfigForThreadRequest(allocator, state, request_config) catch |err| {
         return renderJsonRpcErrorForFailure(allocator, id_value, "thread/resume failed to load config", err);
     };
     defer cfg.deinit(allocator);
@@ -39797,7 +39850,7 @@ fn handleThreadResume(
         }
     }
 
-    const resume_path_raw = try threadResumePathIncludingStateDb(allocator, cfg.codex_home, object);
+    const resume_path_raw = try threadResumePathIncludingStateDb(allocator, cfg.codex_home, configSqliteHome(cfg), object);
     defer allocator.free(resume_path_raw);
 
     var transcript = session_store.loadTranscript(allocator, resume_path_raw) catch |err| switch (err) {
@@ -39820,7 +39873,7 @@ fn handleThreadResume(
     applyRuntimeScalarRequirementsToLoadedThreadWithRequirements(allocator, &thread, runtime_requirements) catch |err| {
         return renderJsonRpcErrorForFailure(allocator, id_value, "thread/resume failed to apply runtime requirements", err);
     };
-    applyStateResumeMetadata(allocator, cfg.codex_home, object, &thread) catch |err| {
+    applyStateResumeMetadata(allocator, configSqliteHome(cfg), object, &thread) catch |err| {
         return renderJsonRpcErrorForFailure(allocator, id_value, "thread/resume failed to apply state metadata", err);
     };
 
@@ -39873,7 +39926,7 @@ fn handleThreadFork(
         error.InvalidThreadRequestConfig => return renderJsonRpcError(allocator, id_value, -32602, "invalid thread config override"),
     };
 
-    var cfg = loadConfigForThreadRequest(allocator, request_config) catch |err| {
+    var cfg = loadConfigForThreadRequest(allocator, state, request_config) catch |err| {
         return renderJsonRpcErrorForFailure(allocator, id_value, "thread/fork failed to load config", err);
     };
     defer cfg.deinit(allocator);
@@ -40217,7 +40270,7 @@ fn threadTargetIsLast(target: []const u8) bool {
     return std.ascii.eqlIgnoreCase(trimmed, "last");
 }
 
-fn threadResumePathIncludingStateDb(allocator: std.mem.Allocator, codex_home: []const u8, params: std.json.ObjectMap) ![]const u8 {
+fn threadResumePathIncludingStateDb(allocator: std.mem.Allocator, codex_home: []const u8, sqlite_home: []const u8, params: std.json.ObjectMap) ![]const u8 {
     const path = try threadResumePath(allocator, codex_home, params);
     errdefer allocator.free(path);
     if (optionalStringParam(params, "path") != null) return path;
@@ -40226,7 +40279,7 @@ fn threadResumePathIncludingStateDb(allocator: std.mem.Allocator, codex_home: []
     _ = std.Io.Dir.cwd().statFile(io, path, .{ .follow_symlinks = true }) catch |err| switch (err) {
         error.FileNotFound => {
             const thread_id = requiredThreadIdParam(params) catch return error.InvalidThreadParams;
-            const state_path = (try thread_state.findRolloutPathByThreadId(allocator, codex_home, thread_id)) orelse return path;
+            const state_path = (try thread_state.findRolloutPathByThreadId(allocator, codex_home, sqlite_home, thread_id)) orelse return path;
             allocator.free(path);
             return state_path;
         },
@@ -40296,14 +40349,14 @@ fn createStateDbStoredThreadFromParams(
     params: std.json.ObjectMap,
 ) !LoadedThread {
     const thread_id = requiredThreadIdParam(params) catch return error.InvalidThreadParams;
-    const state_path = (try thread_state.findRolloutPathByThreadId(allocator, cfg.codex_home, thread_id)) orelse return error.FileNotFound;
+    const state_path = (try thread_state.findRolloutPathByThreadId(allocator, cfg.codex_home, configSqliteHome(cfg), thread_id)) orelse return error.FileNotFound;
     defer allocator.free(state_path);
     var thread = try createStoredThreadFromPath(allocator, cfg, params, state_path);
     errdefer thread.deinit(allocator);
-    const metadata = try thread_state.findThreadMetadataByThreadId(allocator, cfg.codex_home, thread_id);
+    const metadata = try thread_state.findThreadMetadataByThreadId(allocator, configSqliteHome(cfg), thread_id);
     defer if (metadata) |value| value.deinit(allocator);
     if (metadata) |value| try applyStateThreadMetadata(allocator, &thread, value);
-    try applyStateThreadGoal(allocator, cfg.codex_home, &thread);
+    try applyStateThreadGoal(allocator, configSqliteHome(cfg), &thread);
     return thread;
 }
 
@@ -40345,11 +40398,11 @@ fn applyStateThreadMetadata(allocator: std.mem.Allocator, thread: *LoadedThread,
 
 fn applyStateResumeMetadata(
     allocator: std.mem.Allocator,
-    codex_home: []const u8,
+    sqlite_home: []const u8,
     params: std.json.ObjectMap,
     thread: *LoadedThread,
 ) !void {
-    const metadata = try thread_state.findThreadMetadataByThreadId(allocator, codex_home, thread.id);
+    const metadata = try thread_state.findThreadMetadataByThreadId(allocator, sqlite_home, thread.id);
     defer if (metadata) |value| value.deinit(allocator);
     if (metadata) |value| {
         try applyStateThreadMetadataWithOptions(allocator, thread, value, .{
@@ -40357,7 +40410,7 @@ fn applyStateResumeMetadata(
             .apply_cwd = optionalStringParam(params, "cwd") == null,
         });
     }
-    try applyStateThreadGoal(allocator, codex_home, thread);
+    try applyStateThreadGoal(allocator, sqlite_home, thread);
 }
 
 fn applyStateThreadMetadataWithOptions(
@@ -42143,7 +42196,7 @@ fn renderThreadListResult(
     defer if (fallback_model_provider) |value| allocator.free(value);
     const default_model_provider = fallback_model_provider orelse "openai";
     if (state_db_only) {
-        const rollout_files = try thread_state.listRolloutFiles(allocator, cfg.codex_home);
+        const rollout_files = try thread_state.listRolloutFiles(allocator, cfg.codex_home, configSqliteHome(cfg));
         defer session_store.freeRolloutFiles(allocator, rollout_files);
         try appendSavedThreadListItems(allocator, &threads, &match_context, rollout_files, default_model_provider, false, state, thread_names);
     } else {
@@ -43947,7 +44000,7 @@ fn queueThreadGoalClearedNotification(allocator: std.mem.Allocator, state: *AppS
 
 fn setStateThreadGoalFromParams(
     allocator: std.mem.Allocator,
-    codex_home: []const u8,
+    sqlite_home: []const u8,
     thread_id: []const u8,
     object: std.json.ObjectMap,
 ) !thread_state.ThreadGoal {
@@ -43956,11 +44009,11 @@ fn setStateThreadGoalFromParams(
     const token_budget = loadedThreadGoalTokenBudget(object);
 
     if (objective) |value| {
-        const existing = try thread_state.findThreadGoalByThreadId(allocator, codex_home, thread_id);
+        const existing = try thread_state.findThreadGoalByThreadId(allocator, sqlite_home, thread_id);
         defer if (existing) |goal| goal.deinit(allocator);
         if (existing) |goal| {
             if (std.mem.eql(u8, goal.objective, value) and !std.mem.eql(u8, goal.status, "complete")) {
-                return (try thread_state.updateThreadGoal(allocator, codex_home, thread_id, .{
+                return (try thread_state.updateThreadGoal(allocator, sqlite_home, thread_id, .{
                     .status = status orelse "active",
                     .token_budget_present = token_budget.present,
                     .token_budget = token_budget.value,
@@ -43969,7 +44022,7 @@ fn setStateThreadGoalFromParams(
         }
         return (try thread_state.replaceThreadGoal(
             allocator,
-            codex_home,
+            sqlite_home,
             thread_id,
             value,
             status orelse "active",
@@ -43977,10 +44030,10 @@ fn setStateThreadGoalFromParams(
         )) orelse error.MissingThreadGoal;
     }
 
-    const existing_for_update = try thread_state.findThreadGoalByThreadId(allocator, codex_home, thread_id);
+    const existing_for_update = try thread_state.findThreadGoalByThreadId(allocator, sqlite_home, thread_id);
     defer if (existing_for_update) |goal| goal.deinit(allocator);
     if (existing_for_update == null) return error.MissingThreadGoal;
-    return (try thread_state.updateThreadGoal(allocator, codex_home, thread_id, .{
+    return (try thread_state.updateThreadGoal(allocator, sqlite_home, thread_id, .{
         .status = status,
         .token_budget_present = token_budget.present,
         .token_budget = token_budget.value,
@@ -50168,7 +50221,7 @@ fn handleFeedbackUpload(
     defer metadata_tags.deinit(allocator);
     var feedback_credentials: ?auth_mod.Credentials = null;
     defer if (feedback_credentials) |*credentials| credentials.deinit(allocator);
-    if (config.loadWithOptions(allocator, .{})) |cfg| {
+    if (loadAppServerConfigWithOptions(allocator, state, .{})) |cfg| {
         var loaded_cfg = cfg;
         defer loaded_cfg.deinit(allocator);
         feedback_credentials = auth_mod.loadCliAuthNoRefreshForConfig(allocator, &loaded_cfg) catch |err| switch (err) {
@@ -50202,20 +50255,20 @@ fn handleFeedbackUpload(
         for (owned_feedback_thread_ids.items) |owned| allocator.free(owned);
         owned_feedback_thread_ids.deinit(allocator);
     }
-    var feedback_codex_home: ?[]const u8 = null;
-    defer if (feedback_codex_home) |codex_home| allocator.free(codex_home);
+    var feedback_cfg: ?config.Config = null;
+    defer if (feedback_cfg) |*cfg| cfg.deinit(allocator);
     if (include_logs.bool) {
         try appendFeedbackThreadIds(allocator, state, thread_id.?, &feedback_thread_ids);
 
-        feedback_codex_home = resolveCodexHome(allocator) catch |err| switch (err) {
+        feedback_cfg = loadAppServerConfig(allocator, state) catch |err| switch (err) {
             error.OutOfMemory => return err,
             else => null,
         };
-        if (feedback_codex_home) |codex_home| {
+        if (feedback_cfg) |cfg| {
             if (!std.mem.startsWith(u8, thread_id.?, "no-active-thread-")) {
                 feedback_state.appendSpawnDescendantThreadIds(
                     allocator,
-                    codex_home,
+                    configSqliteHome(cfg),
                     thread_id.?,
                     &feedback_thread_ids,
                     &owned_feedback_thread_ids,
@@ -50230,8 +50283,8 @@ fn handleFeedbackUpload(
     var sqlite_log_bytes: ?[]const u8 = null;
     defer if (sqlite_log_bytes) |bytes| allocator.free(bytes);
     if (include_logs.bool and feedback_thread_ids.items.len > 0) {
-        if (feedback_codex_home) |codex_home| {
-            sqlite_log_bytes = feedback_logs.queryFeedbackLogsForThreads(allocator, codex_home, feedback_thread_ids.items) catch |err| switch (err) {
+        if (feedback_cfg) |cfg| {
+            sqlite_log_bytes = feedback_logs.queryFeedbackLogsForThreads(allocator, configSqliteHome(cfg), feedback_thread_ids.items) catch |err| switch (err) {
                 error.OutOfMemory => return err,
                 else => null,
             };
@@ -50257,7 +50310,8 @@ fn handleFeedbackUpload(
             state,
             thread_id.?,
             feedback_thread_ids.items,
-            feedback_codex_home,
+            if (feedback_cfg) |cfg| cfg.codex_home else null,
+            if (feedback_cfg) |cfg| configSqliteHome(cfg) else null,
             &upload_log_files,
             &owned_upload_log_files,
         );
@@ -50311,6 +50365,7 @@ fn appendFeedbackThreadRolloutPaths(
     root_thread_id: []const u8,
     thread_ids: []const []const u8,
     codex_home: ?[]const u8,
+    sqlite_home: ?[]const u8,
     upload_log_files: *std.ArrayList([]const u8),
     owned_upload_log_files: *std.ArrayList([]const u8),
 ) !void {
@@ -50325,7 +50380,7 @@ fn appendFeedbackThreadRolloutPaths(
         }
 
         if (codex_home) |home| {
-            const path = feedback_state.findRolloutPathByThreadId(allocator, home, thread_id) catch |err| switch (err) {
+            const path = feedback_state.findRolloutPathByThreadId(allocator, sqlite_home orelse home, thread_id) catch |err| switch (err) {
                 error.OutOfMemory => return err,
                 else => null,
             };
@@ -56657,7 +56712,7 @@ fn reloadLoadedThreadRuntimeConfig(allocator: std.mem.Allocator, state: *AppServ
     defer runtime_requirements.deinit(allocator);
 
     for (state.loaded_threads.items) |*thread| {
-        var cfg = loadConfigForLoadedThread(allocator, thread) catch |err| switch (err) {
+        var cfg = loadConfigForLoadedThread(allocator, state, thread) catch |err| switch (err) {
             error.OutOfMemory => return err,
             else => continue,
         };
@@ -57430,7 +57485,7 @@ fn handleConfigRead(
         }
     }
 
-    var cfg = config.loadWithOptions(allocator, .{}) catch |err| {
+    var cfg = loadAppServerConfigWithOptions(allocator, state, .{}) catch |err| {
         return renderJsonRpcErrorForFailure(allocator, id_value, "config/read failed to load config", err);
     };
     defer cfg.deinit(allocator);

@@ -27,12 +27,12 @@ const ROLLOUT_PATH_QUERY =
 
 pub fn appendSpawnDescendantThreadIds(
     allocator: std.mem.Allocator,
-    codex_home: []const u8,
+    sqlite_home: []const u8,
     root_thread_id: []const u8,
     thread_ids: *std.ArrayList([]const u8),
     owned_thread_ids: *std.ArrayList([]const u8),
 ) !void {
-    const state_path = try memory_reset.resolveStateDbPath(allocator, codex_home);
+    const state_path = try memory_reset.resolveStateDbPathForSqliteHome(allocator, sqlite_home);
     defer allocator.free(state_path);
     if (!try memory_reset.stateDbExists(allocator, state_path)) return;
 
@@ -69,10 +69,10 @@ pub fn appendSpawnDescendantThreadIds(
 
 pub fn findRolloutPathByThreadId(
     allocator: std.mem.Allocator,
-    codex_home: []const u8,
+    sqlite_home: []const u8,
     thread_id: []const u8,
 ) !?[]const u8 {
-    const state_path = try memory_reset.resolveStateDbPath(allocator, codex_home);
+    const state_path = try memory_reset.resolveStateDbPathForSqliteHome(allocator, sqlite_home);
     defer allocator.free(state_path);
     if (!try memory_reset.stateDbExists(allocator, state_path)) return null;
 

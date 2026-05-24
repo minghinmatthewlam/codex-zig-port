@@ -493,6 +493,10 @@ fn renderRawConfigOverride(allocator: std.mem.Allocator, key: []const u8, value:
 fn cloneConfig(allocator: std.mem.Allocator, source: config.Config) !config.Config {
     const codex_home = try allocator.dupe(u8, source.codex_home);
     errdefer allocator.free(codex_home);
+    const log_dir = if (source.log_dir) |value| try allocator.dupe(u8, value) else null;
+    errdefer if (log_dir) |value| allocator.free(value);
+    const sqlite_home = if (source.sqlite_home) |value| try allocator.dupe(u8, value) else null;
+    errdefer if (sqlite_home) |value| allocator.free(value);
     const active_profile = if (source.active_profile) |value| try allocator.dupe(u8, value) else null;
     errdefer if (active_profile) |value| allocator.free(value);
     const model = try allocator.dupe(u8, source.model);
@@ -540,6 +544,8 @@ fn cloneConfig(allocator: std.mem.Allocator, source: config.Config) !config.Conf
 
     return .{
         .codex_home = codex_home,
+        .log_dir = log_dir,
+        .sqlite_home = sqlite_home,
         .ignore_user_config = source.ignore_user_config,
         .active_profile = active_profile,
         .model = model,
