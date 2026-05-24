@@ -188,7 +188,9 @@ Zig TUI help in `src/tui.zig`, and the broader narrative tracker in
 - Root runtime surfaces now support `--profile-v2 <CONFIG_PROFILE_V2>` for
   interactive runs, `exec`, `review`, `resume`, `fork`, and
   `debug prompt-input`; `exec --profile-v2` also works locally. Unsupported
-  subcommands reject the flag with the Rust-shaped runtime-scope error.
+  subcommands reject the flag with the Rust-shaped runtime-scope error, and
+  profile-v2 names are validated as Rust-style plain names instead of accepting
+  path-like config filenames.
 - Root and exec `--dangerously-bypass-hook-trust` parsing is implemented, and
   app-server plus non-interactive exec/review hook execution now runs enabled
   untrusted/modified hooks for that invocation while preserving disabled hook

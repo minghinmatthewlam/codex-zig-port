@@ -1008,6 +1008,8 @@ pub fn loadFeedbackEnabled(allocator: std.mem.Allocator) !bool {
 }
 
 pub fn loadWithOptions(allocator: std.mem.Allocator, options: LoadOptions) !Config {
+    if (options.profile_v2) |profile_v2| try validateProfileV2Name(profile_v2);
+
     const codex_home = try resolveCodexHome(allocator);
     errdefer allocator.free(codex_home);
 
@@ -1166,6 +1168,14 @@ pub fn resolveCodexHome(allocator: std.mem.Allocator) ![]const u8 {
     const home = (try env.getOwned(allocator, "HOME")) orelse return error.MissingHome;
     defer allocator.free(home);
     return std.fs.path.join(allocator, &.{ home, ".codex" });
+}
+
+pub fn validateProfileV2Name(value: []const u8) !void {
+    if (value.len == 0) return error.InvalidProfileV2Name;
+    for (value) |byte| {
+        if (std.ascii.isAlphanumeric(byte) or byte == '_' or byte == '-') continue;
+        return error.InvalidProfileV2Name;
+    }
 }
 
 fn resolveLogDir(allocator: std.mem.Allocator, config_view: ConfigView, codex_home: []const u8) ![]const u8 {
@@ -5540,6 +5550,17 @@ test "runtime path overrides resolve relative to current working directory" {
 
     try std.testing.expectEqualStrings(expected_log_dir, cfg.log_dir.?);
     try std.testing.expectEqualStrings(expected_sqlite_home, cfg.sqlite_home.?);
+}
+
+test "profile v2 names must be plain filenames" {
+    try validateProfileV2Name("work");
+    try validateProfileV2Name("team-1");
+    try validateProfileV2Name("team_1");
+
+    try std.testing.expectError(error.InvalidProfileV2Name, validateProfileV2Name(""));
+    try std.testing.expectError(error.InvalidProfileV2Name, validateProfileV2Name("../work"));
+    try std.testing.expectError(error.InvalidProfileV2Name, validateProfileV2Name("team/work"));
+    try std.testing.expectError(error.InvalidProfileV2Name, validateProfileV2Name("team.work"));
 }
 
 test "runtime model_provider override refreshes provider settings" {

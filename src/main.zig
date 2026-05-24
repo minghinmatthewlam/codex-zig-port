@@ -119,6 +119,10 @@ pub fn main(init: std.process.Init) !void {
                 "Error: --profile-v2 only applies to runtime commands: `codex`, `codex exec`, `codex review`, `codex resume`, `codex fork`, and `codex debug prompt-input`.\n",
                 .{},
             ),
+            error.InvalidProfileV2Name => std.debug.print(
+                "error: invalid --profile-v2 value; pass a plain name such as `work`\n",
+                .{},
+            ),
             error.InvalidMcpServerTransport => std.debug.print(
                 "error: invalid transport\n",
                 .{},
@@ -214,11 +218,15 @@ fn mainInner(init: std.process.Init) !void {
             continue;
         }
         if (std.mem.eql(u8, arg, "--profile-v2")) {
-            overrides.profile_v2 = args.next() orelse return error.MissingProfileOptionValue;
+            const value = args.next() orelse return error.MissingProfileOptionValue;
+            try config.validateProfileV2Name(value);
+            overrides.profile_v2 = value;
             continue;
         }
         if (std.mem.startsWith(u8, arg, "--profile-v2=")) {
-            overrides.profile_v2 = arg["--profile-v2=".len..];
+            const value = arg["--profile-v2=".len..];
+            try config.validateProfileV2Name(value);
+            overrides.profile_v2 = value;
             continue;
         }
         if (std.mem.eql(u8, arg, "--cd") or std.mem.eql(u8, arg, "-C")) {
@@ -1296,11 +1304,14 @@ fn parseSessionCommandArgs(allocator: std.mem.Allocator, args: []const []const u
         if (!end_options and std.mem.eql(u8, arg, "--profile-v2")) {
             if (index + 1 >= args.len) return error.MissingProfileOptionValue;
             index += 1;
+            try config.validateProfileV2Name(args[index]);
             parsed.profile_v2 = args[index];
             continue;
         }
         if (!end_options and std.mem.startsWith(u8, arg, "--profile-v2=")) {
-            parsed.profile_v2 = arg["--profile-v2=".len..];
+            const value = arg["--profile-v2=".len..];
+            try config.validateProfileV2Name(value);
+            parsed.profile_v2 = value;
             continue;
         }
         if (!end_options and (std.mem.eql(u8, arg, "--config") or std.mem.eql(u8, arg, "-c"))) {
@@ -1954,6 +1965,12 @@ test "session command flags parse resume compatibility options" {
     try std.testing.expectEqualStrings("team", parsed.profile_v2.?);
     try std.testing.expect(parsed.strict_config);
     try std.testing.expect(parsed.target == null);
+}
+
+test "session command flags reject path-like profile v2 names" {
+    const allocator = std.testing.allocator;
+    const argv = [_][]const u8{ "--profile-v2", "../team" };
+    try std.testing.expectError(error.InvalidProfileV2Name, parseSessionCommandArgs(allocator, argv[0..], true));
 }
 
 test "session command flags parse remote compatibility options" {

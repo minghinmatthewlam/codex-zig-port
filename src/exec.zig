@@ -541,11 +541,14 @@ fn parseArgs(allocator: std.mem.Allocator, args: []const []const u8) !ExecArgs {
         if (!end_options and std.mem.eql(u8, arg, "--profile-v2")) {
             index += 1;
             if (index >= args.len) return error.MissingExecOptionValue;
+            try config.validateProfileV2Name(args[index]);
             parsed.profile_v2 = args[index];
             continue;
         }
         if (!end_options and std.mem.startsWith(u8, arg, "--profile-v2=")) {
-            parsed.profile_v2 = arg["--profile-v2=".len..];
+            const value = arg["--profile-v2=".len..];
+            try config.validateProfileV2Name(value);
+            parsed.profile_v2 = value;
             continue;
         }
         if (!end_options and (std.mem.eql(u8, arg, "--json") or std.mem.eql(u8, arg, "--experimental-json"))) {
@@ -971,6 +974,12 @@ test "exec args parse output schema" {
 
     try std.testing.expectEqualStrings("schema.json", parsed.output_schema_file.?);
     try std.testing.expectEqualStrings("say json", parsed.prompt.?);
+}
+
+test "exec args reject path-like profile v2 names" {
+    const allocator = std.testing.allocator;
+    const argv = [_][]const u8{ "--profile-v2=../team", "say", "hello" };
+    try std.testing.expectError(error.InvalidProfileV2Name, parseArgs(allocator, argv[0..]));
 }
 
 test "exec args parse runtime feature toggles" {
