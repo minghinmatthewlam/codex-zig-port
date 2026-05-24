@@ -209,14 +209,18 @@ Zig TUI help in `src/tui.zig`, and the broader narrative tracker in
   safe no-daemon behavior plus live PID-backed daemon lifecycle when the
   managed standalone Codex path exists: `start`, `restart`, `stop`, and
   `version` spawn, probe, report, and terminate a real Unix-socket app-server.
-  `bootstrap` still reports the missing managed standalone install when absent,
-  and `enable-remote-control` / `disable-remote-control` write
+  `bootstrap` reports the missing managed standalone install when absent, and
+  when the managed path exists it writes daemon settings, replaces the managed
+  app-server, starts the hidden PID-backed updater loop, supports
+  `--remote-control`, and returns Rust-shaped `bootstrapped` JSON with
+  `autoUpdateEnabled`, daemon path/version, socket path, CLI version, and
+  running app-server version. `enable-remote-control` / `disable-remote-control` write
   `app-server-daemon/settings.json`, report running managed daemon metadata,
   and restart the managed daemon when the setting changes. Daemon command
   `-c/--config` and `--enable`/`--disable` options are forwarded into newly
   spawned managed app-server processes and preserved across setting-change
-  restarts of that managed process. Remaining daemon parity is managed
-  bootstrap/update-loop behavior.
+  restarts of that managed process. Remaining daemon exact-depth parity is the
+  updater loop's live standalone installer refresh/reexec behavior.
 - `codex remote-control start` now drives the managed daemon path when the
   standalone managed install exists: it enables the daemon remote-control
   setting, starts or reuses the PID-backed app-server, sends

@@ -8076,6 +8076,20 @@ def run_app_server_daemon_smoke(binary: Path) -> None:
                 if str(expected_managed) in line and " app-server " in line
             ]
 
+        def managed_app_server_process_lines() -> list[str]:
+            return [
+                line
+                for line in managed_process_lines()
+                if " app-server daemon pid-update-loop" not in line
+            ]
+
+        def managed_updater_process_lines() -> list[str]:
+            return [
+                line
+                for line in managed_process_lines()
+                if " app-server daemon pid-update-loop" in line
+            ]
+
         def terminate_managed_processes() -> None:
             pids: list[int] = []
             for line in managed_process_lines():
@@ -8368,7 +8382,7 @@ def run_app_server_daemon_smoke(binary: Path) -> None:
                 started_payloads = [payload for payload in race_payloads if payload["status"] == "started"]
                 assert len(started_payloads) == 1
                 race_pid = started_payloads[0]["pid"]
-                lines = managed_process_lines()
+                lines = managed_app_server_process_lines()
                 assert len(lines) == 1, lines
                 assert str(race_pid) in lines[0]
             finally:
@@ -8433,6 +8447,57 @@ def run_app_server_daemon_smoke(binary: Path) -> None:
                 check=True,
             )
             assert json.loads(root_feature_stop.stdout)["status"] == "stopped"
+
+            bootstrap = subprocess.run(
+                [str(binary.resolve()), "app-server", "daemon", "bootstrap", "--remote-control"],
+                cwd=temp_root,
+                env=env,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                timeout=25,
+                check=True,
+            )
+            assert bootstrap.stderr == ""
+            bootstrap_payload = json.loads(bootstrap.stdout)
+            assert bootstrap_payload["status"] == "bootstrapped"
+            assert bootstrap_payload["backend"] == "pid"
+            assert bootstrap_payload["autoUpdateEnabled"] is True
+            assert bootstrap_payload["remoteControlEnabled"] is True
+            assert bootstrap_payload["managedCodexPath"] == str(expected_managed)
+            assert bootstrap_payload["managedCodexVersion"] == "0.0.1"
+            assert bootstrap_payload["socketPath"] == str(expected_socket)
+            assert bootstrap_payload["cliVersion"] == "0.0.1"
+            assert bootstrap_payload["appServerVersion"] == "0.0.1"
+            assert json.loads(settings_path.read_text(encoding="utf-8")) == {
+                "remoteControlEnabled": True
+            }
+            assert (expected_home / "app-server-daemon" / "app-server-updater.pid").is_file()
+            assert len(managed_app_server_process_lines()) == 1
+            assert len(managed_updater_process_lines()) == 1
+            bootstrap_stop = subprocess.run(
+                [str(binary.resolve()), "app-server", "daemon", "stop"],
+                cwd=temp_root,
+                env=env,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                timeout=15,
+                check=True,
+            )
+            assert json.loads(bootstrap_stop.stdout)["status"] == "stopped"
+            terminate_managed_processes()
+            bootstrap_reset = subprocess.run(
+                [str(binary.resolve()), "app-server", "daemon", "disable-remote-control"],
+                cwd=temp_root,
+                env=env,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                timeout=15,
+                check=True,
+            )
+            assert json.loads(bootstrap_reset.stdout)["status"] == "disabled"
 
             managed_start = subprocess.run(
                 [str(binary.resolve()), "app-server", "daemon", "start", "--enable", "goals"],
@@ -8568,14 +8633,11 @@ def run_app_server_daemon_smoke(binary: Path) -> None:
             assert managed_disable_running_payload["backend"] == "pid"
             assert managed_disable_running_payload["remoteControlEnabled"] is False
             assert managed_disable_running_payload["appServerVersion"] == "0.0.1"
+            assert managed_updater_process_lines() == []
 
             remote_control_start_json = subprocess.run(
                 [
                     str(binary.resolve()),
-                    "--enable",
-                    "goals",
-                    "-c",
-                    'model="o3"',
                     "remote-control",
                     "--json",
                     "start",
@@ -8595,8 +8657,10 @@ def run_app_server_daemon_smoke(binary: Path) -> None:
             assert remote_control_start_payload["serverName"]
             assert remote_control_start_payload["environmentId"] is None
             assert remote_control_start_payload["timedOut"] is True
-            assert remote_control_start_payload["daemon"]["status"] == "alreadyRunning"
+            assert remote_control_start_payload["daemon"]["status"] == "bootstrapped"
             assert remote_control_start_payload["daemon"]["backend"] == "pid"
+            assert remote_control_start_payload["daemon"]["autoUpdateEnabled"] is True
+            assert remote_control_start_payload["daemon"]["remoteControlEnabled"] is True
             assert remote_control_start_payload["daemon"]["managedCodexPath"] == str(
                 expected_managed
             )
@@ -8619,8 +8683,6 @@ def run_app_server_daemon_smoke(binary: Path) -> None:
             assert remote_start_pid_record["childGlobalArgs"] == [
                 "--enable",
                 "goals",
-                "-c",
-                'model="o3"',
             ]
             feature_response_after_remote_start = managed_app_server_request(
                 "experimentalFeature/list", {}, 4
@@ -8631,6 +8693,7 @@ def run_app_server_daemon_smoke(binary: Path) -> None:
                 if feature["name"] == "goals"
             )
             assert goals_feature_after_remote_start["enabled"] is True
+            assert len(managed_updater_process_lines()) == 1
 
             remote_control_start_human = subprocess.run(
                 [str(binary.resolve()), "remote-control", "start"],
@@ -8784,6 +8847,7 @@ def run_app_server_daemon_smoke(binary: Path) -> None:
                 stderr=subprocess.PIPE,
                 timeout=15,
             )
+            terminate_managed_processes()
 
         live_server = subprocess.Popen(
             [str(binary.resolve()), "app-server", "--listen", "unix://"],

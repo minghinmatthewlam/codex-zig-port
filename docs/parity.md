@@ -784,6 +784,10 @@ the Rust-visible `bootstrap`, `start`, `restart`, `enable-remote-control`,
 `disable-remote-control`, `stop`, and `version` command family. Current
 behavior covers safe no-daemon and no-managed-install surfaces plus live
 managed lifecycle when `$CODEX_HOME/packages/standalone/current/codex` exists:
+`bootstrap` writes daemon settings, replaces the managed app-server, starts the
+hidden PID-backed updater loop, supports `--remote-control`, and reports
+Rust-shaped `bootstrapped` JSON with `autoUpdateEnabled`, daemon path/version,
+socket path, CLI version, and running app-server version;
 `start` spawns a detached PID-backed `app-server --listen unix://`, writes
 `app-server.pid`, waits for the control socket, and reports Rust-shaped
 `started` JSON with `backend`, `pid`, `managedCodexVersion`, and
@@ -802,8 +806,9 @@ serialized by the daemon operation lock plus PID reservation lock. Top-level
 `remote-control start` enables the daemon remote-control setting, starts or
 reuses the PID-backed managed app-server, sends `remoteControl/enable` over the
 control socket, and prints Rust-shaped JSON or human readiness output with
-daemon app-server path/version details. Managed bootstrap/update-loop behavior
-and the full Rust websocket/cloud remote-control backend remain planned.
+daemon app-server path/version details. The updater loop's live standalone
+installer refresh/reexec behavior and the full Rust websocket/cloud
+remote-control backend remain planned.
 
 The high-level `app/list` summary in the table above is expanded by the
 detailed app-list note below: authenticated ChatGPT connector directory page
