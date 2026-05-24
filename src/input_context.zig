@@ -2,6 +2,7 @@ const std = @import("std");
 
 const mcp_runtime = @import("mcp_runtime.zig");
 const plugin_config = @import("plugin_config.zig");
+const plugin_list = @import("plugin_list.zig");
 const skills_list = @import("skills_list.zig");
 
 pub const NamedPathInput = struct {
@@ -51,6 +52,7 @@ pub fn buildPluginMentionDeveloperMessages(
     config_bytes: []const u8,
     mentions: []const NamedPathInput,
     mcp_tools: []const mcp_runtime.ToolSpec,
+    apps_enabled: bool,
 ) !DeveloperMessages {
     if (mentions.len == 0 or !plugin_config.pluginsFeatureEnabled(config_bytes)) return .{};
 
@@ -74,7 +76,12 @@ pub fn buildPluginMentionDeveloperMessages(
         const has_skills = try pluginHasEnabledSkills(allocator, plugin_root, skill_name_prefix, config_bytes);
         const mcp_server_names = try pluginMcpServerNamesFromTools(allocator, plugin_id, mcp_tools);
         defer freeStringList(allocator, mcp_server_names);
-        if (try renderExplicitPluginInstructions(allocator, display_name, skill_name_prefix, has_skills, mcp_server_names)) |message| {
+        const app_names = if (apps_enabled)
+            try plugin_list.pluginAssociatedAppDisplayNames(allocator, plugin_root, plugin_id, display_name, config_bytes, mcp_tools)
+        else
+            &.{};
+        defer freeStringList(allocator, app_names);
+        if (try renderExplicitPluginInstructions(allocator, display_name, skill_name_prefix, has_skills, mcp_server_names, app_names)) |message| {
             try messages.append(allocator, message);
         }
     }
@@ -120,6 +127,7 @@ fn pluginMcpServerNamesFromTools(
         names.deinit(allocator);
     }
     for (mcp_tools) |tool| {
+        if (std.mem.eql(u8, tool.server_name, "codex_apps")) continue;
         const tool_plugin_id = tool.plugin_id orelse continue;
         if (!std.mem.eql(u8, tool_plugin_id, plugin_id)) continue;
         try appendUniqueString(allocator, &names, tool.server_name);
@@ -134,8 +142,9 @@ fn renderExplicitPluginInstructions(
     skill_name_prefix: []const u8,
     has_skills: bool,
     mcp_server_names: []const []const u8,
+    app_names: []const []const u8,
 ) !?[]const u8 {
-    if (!has_skills and mcp_server_names.len == 0) return null;
+    if (!has_skills and mcp_server_names.len == 0 and app_names.len == 0) return null;
 
     var out = std.ArrayList(u8).empty;
     errdefer out.deinit(allocator);
@@ -148,6 +157,14 @@ fn renderExplicitPluginInstructions(
         for (mcp_server_names, 0..) |server_name, index| {
             if (index > 0) try out.appendSlice(allocator, ", ");
             try out.print(allocator, "`{s}`", .{server_name});
+        }
+        try out.append(allocator, '.');
+    }
+    if (app_names.len > 0) {
+        try out.appendSlice(allocator, "\n- Apps from this plugin available in this session: ");
+        for (app_names, 0..) |app_name, index| {
+            if (index > 0) try out.appendSlice(allocator, ", ");
+            try out.print(allocator, "`{s}`", .{app_name});
         }
         try out.append(allocator, '.');
     }
@@ -378,6 +395,17 @@ test "plugin mention developer messages describe enabled plugin capabilities" {
         ,
     });
     try dir.dir.writeFile(io, .{
+        .sub_path = "codex-home/plugins/cache/local/demo/local/.app.json",
+        .data =
+        \\{
+        \\  "apps": {
+        \\    "demo_drive": {"name": "Demo Drive"},
+        \\    "demo_archive": {"name": "Demo Archive"}
+        \\  }
+        \\}
+        ,
+    });
+    try dir.dir.writeFile(io, .{
         .sub_path = "codex-home/plugins/cache/local/demo/local/skills/search/SKILL.md",
         .data = "# Search\n\nUse plugin search.",
     });
@@ -392,6 +420,9 @@ test "plugin mention developer messages describe enabled plugin capabilities" {
         \\
         \\[plugins."demo@local"]
         \\enabled = true
+        \\
+        \\[apps.demo_archive]
+        \\enabled = false
     ;
     const mentions = [_]NamedPathInput{.{ .name = "Demo Plugin", .path = "plugin://demo@local" }};
     const tools = [_]mcp_runtime.ToolSpec{
@@ -405,6 +436,30 @@ test "plugin mention developer messages describe enabled plugin capabilities" {
             .plugin_display_name = "Demo Plugin",
         },
         .{
+            .server_name = "codex_apps",
+            .raw_tool_name = "demo_calendar_search",
+            .callable_name = "mcp__codex_apps__demo_calendar_search",
+            .description = "Search demo calendar.",
+            .input_schema_json = "{\"type\":\"object\"}",
+            .plugin_id = "demo@local",
+            .plugin_display_name = "Demo Plugin",
+            .connector_id = "demo_calendar",
+            .connector_name = "Demo Calendar",
+            .namespace_description = "Demo calendar events",
+        },
+        .{
+            .server_name = "codex_apps",
+            .raw_tool_name = "rival_calendar_search",
+            .callable_name = "mcp__codex_apps__rival_calendar_search",
+            .description = "Search rival calendar.",
+            .input_schema_json = "{\"type\":\"object\"}",
+            .plugin_id = "rival@local",
+            .plugin_display_name = "Demo Plugin",
+            .connector_id = "rival_calendar",
+            .connector_name = "Rival Calendar",
+            .namespace_description = "Rival calendar events",
+        },
+        .{
             .server_name = "other",
             .raw_tool_name = "ignored",
             .callable_name = "mcp__other__ignored",
@@ -413,14 +468,23 @@ test "plugin mention developer messages describe enabled plugin capabilities" {
         },
     };
 
-    const messages = try buildPluginMentionDeveloperMessages(allocator, codex_home, config_bytes, mentions[0..], tools[0..]);
+    const messages = try buildPluginMentionDeveloperMessages(allocator, codex_home, config_bytes, mentions[0..], tools[0..], true);
     defer messages.deinit(allocator);
 
     try std.testing.expectEqual(@as(usize, 1), messages.items.len);
     try std.testing.expect(std.mem.indexOf(u8, messages.items[0], "Capabilities from the `Demo Plugin` plugin:") != null);
     try std.testing.expect(std.mem.indexOf(u8, messages.items[0], "Skills from this plugin are prefixed with `demo:`.") != null);
     try std.testing.expect(std.mem.indexOf(u8, messages.items[0], "MCP servers from this plugin available in this session: `plugin_docs`.") != null);
+    try std.testing.expect(std.mem.indexOf(u8, messages.items[0], "Apps from this plugin available in this session: `Demo Calendar`.") != null);
+    try std.testing.expect(std.mem.indexOf(u8, messages.items[0], "Demo Drive") == null);
+    try std.testing.expect(std.mem.indexOf(u8, messages.items[0], "Demo Archive") == null);
+    try std.testing.expect(std.mem.indexOf(u8, messages.items[0], "Rival Calendar") == null);
     try std.testing.expect(std.mem.indexOf(u8, messages.items[0], "Use these plugin-associated capabilities to help solve the task.") != null);
+
+    const app_disabled_messages = try buildPluginMentionDeveloperMessages(allocator, codex_home, config_bytes, mentions[0..], tools[0..], false);
+    defer app_disabled_messages.deinit(allocator);
+    try std.testing.expectEqual(@as(usize, 1), app_disabled_messages.items.len);
+    try std.testing.expect(std.mem.indexOf(u8, app_disabled_messages.items[0], "Apps from this plugin") == null);
 }
 
 test "plugin mention developer messages ignore disabled and non-plugin mentions" {
@@ -451,7 +515,7 @@ test "plugin mention developer messages ignore disabled and non-plugin mentions"
         .{ .name = "Drive", .path = "app://drive" },
     };
 
-    const messages = try buildPluginMentionDeveloperMessages(allocator, codex_home, disabled_config, mentions[0..], &.{});
+    const messages = try buildPluginMentionDeveloperMessages(allocator, codex_home, disabled_config, mentions[0..], &.{}, true);
     defer messages.deinit(allocator);
 
     try std.testing.expectEqual(@as(usize, 0), messages.items.len);

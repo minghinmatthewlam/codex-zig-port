@@ -1091,6 +1091,25 @@ fn configBytesForCodexHome(allocator: std.mem.Allocator, codex_home: []const u8)
     return bytes orelse try allocator.dupe(u8, "");
 }
 
+fn effectiveTurnFeatureEnabled(
+    allocator: std.mem.Allocator,
+    codex_home: []const u8,
+    profile: ?[]const u8,
+    runtime_overrides: features_cmd.FeatureOverrides,
+    key: []const u8,
+) !bool {
+    if (runtime_overrides.get(key)) |enabled| return enabled;
+
+    var config_overrides = try features_cmd.loadFeatureOverridesForProfile(allocator, codex_home, profile);
+    defer config_overrides.deinit(allocator);
+    if (config_overrides.get(key)) |enabled| return enabled;
+
+    for (features_cmd.FeatureSpec.all) |feature| {
+        if (std.mem.eql(u8, feature.key, key)) return feature.default_enabled;
+    }
+    return false;
+}
+
 pub fn runTurn(
     allocator: std.mem.Allocator,
     cfg: config.Config,
@@ -1141,14 +1160,27 @@ pub fn runTurnWithOptions(
     const subagent_runtime = options.subagent_runtime;
 
     const load_mcp_tools = options.include_tools and mcpToolsEnabled(options);
+    const turn_apps_enabled = if (load_mcp_tools or options.input_mentions.len > 0)
+        try effectiveTurnFeatureEnabled(allocator, cfg.codex_home, cfg.active_profile, options.feature_overrides, "apps")
+    else
+        false;
+    const skipped_mcp_server_names: []const []const u8 = if (turn_apps_enabled) &.{} else &.{"codex_apps"};
     var mcp_catalog = if (load_mcp_tools)
         try mcp_runtime.loadCatalogWithOptions(allocator, cfg.codex_home, .{
             .startup_status_callback = options.mcp_startup_status_callback,
             .elicitation_callback = options.mcp_elicitation_callback,
+            .skip_server_names = skipped_mcp_server_names,
         })
     else
         mcp_runtime.Catalog{ .tools = &.{} };
     defer if (load_mcp_tools) mcp_catalog.deinit(allocator);
+
+    var filtered_mcp_tools = std.ArrayList(mcp_runtime.ToolSpec).empty;
+    defer filtered_mcp_tools.deinit(allocator);
+    if (load_mcp_tools) {
+        try appendTurnMcpToolsForFeatures(allocator, &filtered_mcp_tools, mcp_catalog.tools, turn_apps_enabled);
+    }
+    const turn_mcp_catalog = mcp_runtime.Catalog{ .tools = if (load_mcp_tools) filtered_mcp_tools.items else &.{} };
 
     const plugin_config_bytes = if (options.input_mentions.len > 0)
         try configBytesForCodexHome(allocator, cfg.codex_home)
@@ -1156,7 +1188,7 @@ pub fn runTurnWithOptions(
         null;
     defer if (plugin_config_bytes) |bytes| allocator.free(bytes);
     var plugin_mention_messages = if (plugin_config_bytes) |bytes|
-        try input_context.buildPluginMentionDeveloperMessages(allocator, cfg.codex_home, bytes, options.input_mentions, mcp_catalog.tools)
+        try input_context.buildPluginMentionDeveloperMessages(allocator, cfg.codex_home, bytes, options.input_mentions, turn_mcp_catalog.tools, turn_apps_enabled)
     else
         input_context.DeveloperMessages{};
     defer plugin_mention_messages.deinit(allocator);
@@ -1169,7 +1201,7 @@ pub fn runTurnWithOptions(
         create_options.input_images = &.{};
         create_options.ephemeral_developer_messages = plugin_mention_messages.items;
         create_options.include_tools = options.include_tools;
-        create_options.mcp_tools = if (load_mcp_tools) mcp_catalog.tools else &.{};
+        create_options.mcp_tools = turn_mcp_catalog.tools;
         create_options.feature_overrides = effective_feature_overrides;
         create_options.external_auth_refresh_callback = options.external_auth_refresh_callback;
         if (options.stream_text and !options.json_events and !options.plan_mode) {
@@ -1273,7 +1305,7 @@ pub fn runTurnWithOptions(
             var tool_result = if (call.kind == .tool_search)
                 try runToolSearchCall(
                     allocator,
-                    toolSearchMcpTools(cfg, options, mcp_catalog),
+                    toolSearchMcpTools(cfg, options, turn_mcp_catalog),
                     effective_feature_overrides,
                     call,
                 )
@@ -1323,7 +1355,7 @@ pub fn runTurnWithOptions(
                 try runToolCall(
                     allocator,
                     cfg,
-                    mcp_catalog,
+                    turn_mcp_catalog,
                     call,
                     transcript,
                     options,
@@ -2711,6 +2743,18 @@ fn toolSearchMcpTools(
     return mcp_catalog.tools;
 }
 
+fn appendTurnMcpToolsForFeatures(
+    allocator: std.mem.Allocator,
+    out: *std.ArrayList(mcp_runtime.ToolSpec),
+    mcp_tools: []const mcp_runtime.ToolSpec,
+    apps_enabled: bool,
+) !void {
+    for (mcp_tools) |tool| {
+        if (!apps_enabled and std.mem.eql(u8, tool.server_name, "codex_apps")) continue;
+        try out.append(allocator, tool);
+    }
+}
+
 fn appendToolSearchSubagentV1Matches(
     allocator: std.mem.Allocator,
     matches: *std.ArrayList(ToolSearchMatch),
@@ -3830,6 +3874,40 @@ test "toolSearchMcpTools only includes mcp tools when deferred" {
     try std.testing.expectEqual(@as(usize, 0), toolSearchMcpTools(unsupported_cfg, .{
         .feature_overrides = feature_overrides,
     }, catalog).len);
+}
+
+test "appendTurnMcpToolsForFeatures gates codex app tools" {
+    const allocator = std.testing.allocator;
+    var mcp_tools = [_]mcp_runtime.ToolSpec{
+        .{
+            .server_name = "codex_apps",
+            .raw_tool_name = "drive_search",
+            .callable_name = "mcp__codex_apps__drive_search",
+            .description = "Search Drive",
+            .input_schema_json = "{\"type\":\"object\"}",
+            .connector_id = "drive",
+        },
+        .{
+            .server_name = "demo",
+            .raw_tool_name = "echo",
+            .callable_name = "mcp__demo__echo",
+            .description = "Echo",
+            .input_schema_json = "{\"type\":\"object\"}",
+        },
+    };
+
+    var disabled = std.ArrayList(mcp_runtime.ToolSpec).empty;
+    defer disabled.deinit(allocator);
+    try appendTurnMcpToolsForFeatures(allocator, &disabled, mcp_tools[0..], false);
+    try std.testing.expectEqual(@as(usize, 1), disabled.items.len);
+    try std.testing.expectEqualStrings("demo", disabled.items[0].server_name);
+
+    var enabled = std.ArrayList(mcp_runtime.ToolSpec).empty;
+    defer enabled.deinit(allocator);
+    try appendTurnMcpToolsForFeatures(allocator, &enabled, mcp_tools[0..], true);
+    try std.testing.expectEqual(@as(usize, 2), enabled.items.len);
+    try std.testing.expectEqualStrings("codex_apps", enabled.items[0].server_name);
+    try std.testing.expectEqualStrings("demo", enabled.items[1].server_name);
 }
 
 test "runToolSearchCall returns multi_agent_v1 namespace tools" {

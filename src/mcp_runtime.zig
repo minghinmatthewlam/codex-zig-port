@@ -80,6 +80,7 @@ pub const LoadCatalogOptions = struct {
     elicitation_callback: ?ElicitationCallback = null,
     server_filter: ServerFilter = .all,
     server_name_filter: ?[]const u8 = null,
+    skip_server_names: []const []const u8 = &.{},
 };
 
 pub const CallOutput = struct {
@@ -250,6 +251,7 @@ pub fn loadCatalogWithOptions(
 
     for (servers.items.items) |server| {
         if (!server.enabled) continue;
+        if (stringListContains(options.skip_server_names, server.name)) continue;
         if (options.server_name_filter) |server_name_filter| {
             if (!std.mem.eql(u8, server.name, server_name_filter)) continue;
         }
@@ -800,6 +802,13 @@ fn normalizedRequiredString(
 
 fn mcpServerNameLessThan(_: void, lhs: mcp_cmd.McpServer, rhs: mcp_cmd.McpServer) bool {
     return std.mem.lessThan(u8, lhs.name, rhs.name);
+}
+
+fn stringListContains(values: []const []const u8, needle: []const u8) bool {
+    for (values) |value| {
+        if (std.mem.eql(u8, value, needle)) return true;
+    }
+    return false;
 }
 
 pub fn callToolByName(
@@ -2615,6 +2624,54 @@ test "mcp canonical tool names sanitize server and tool" {
     const name = try canonicalToolName(allocator, "server.one", "tool-two");
     defer allocator.free(name);
     try std.testing.expectEqualStrings("mcp__server_one__tool_two", name);
+}
+
+test "mcp catalog loading skips configured server names before startup" {
+    const allocator = std.testing.allocator;
+    var dir = std.testing.tmpDir(.{});
+    defer dir.cleanup();
+    const io = std.Io.Threaded.global_single_threaded.io();
+
+    try dir.dir.writeFile(io, .{
+        .sub_path = "config.toml",
+        .data =
+        \\[mcp_servers.codex_apps]
+        \\command = "/path/to/missing/codex-apps-mcp"
+        ,
+    });
+    const codex_home = try dir.dir.realPathFileAlloc(io, ".", allocator);
+    defer allocator.free(codex_home);
+
+    const Capture = struct {
+        saw_status: bool = false,
+
+        fn onStartupStatus(
+            ctx: *anyopaque,
+            server_name: []const u8,
+            status: StartupStatus,
+            error_message: ?[]const u8,
+        ) !void {
+            _ = status;
+            _ = error_message;
+            const capture: *@This() = @ptrCast(@alignCast(ctx));
+            if (std.mem.eql(u8, server_name, "codex_apps")) {
+                capture.saw_status = true;
+            }
+        }
+    };
+
+    var capture = Capture{};
+    var catalog = try loadCatalogWithOptions(allocator, codex_home, .{
+        .skip_server_names = &.{"codex_apps"},
+        .startup_status_callback = .{
+            .ctx = &capture,
+            .on_startup_status = Capture.onStartupStatus,
+        },
+    });
+    defer catalog.deinit(allocator);
+
+    try std.testing.expectEqual(@as(usize, 0), catalog.tools.len);
+    try std.testing.expect(!capture.saw_status);
 }
 
 test "mcp codex apps URL strips default codex backend segment" {

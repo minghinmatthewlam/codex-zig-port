@@ -93,6 +93,7 @@ const AppListEntry = struct {
     install_url: ?[]const u8,
     is_accessible: bool = false,
     is_enabled: bool,
+    plugin_ids: std.ArrayList([]const u8),
     plugin_display_names: std.ArrayList([]const u8),
 
     fn deinit(self: *AppListEntry, allocator: std.mem.Allocator) void {
@@ -106,6 +107,8 @@ const AppListEntry = struct {
         if (self.app_metadata_json) |value| allocator.free(value);
         if (self.labels_json) |value| allocator.free(value);
         if (self.install_url) |value| allocator.free(value);
+        for (self.plugin_ids.items) |value| allocator.free(value);
+        self.plugin_ids.deinit(allocator);
         for (self.plugin_display_names.items) |value| allocator.free(value);
         self.plugin_display_names.deinit(allocator);
     }
@@ -120,6 +123,47 @@ const AppListEntryFields = struct {
     labels_json: ?[]const u8 = null,
     is_accessible: bool = false,
 };
+
+pub fn pluginAssociatedAppDisplayNames(
+    allocator: std.mem.Allocator,
+    plugin_root: []const u8,
+    plugin_id: []const u8,
+    plugin_display_name: []const u8,
+    config_bytes: []const u8,
+    accessible_tools: []const mcp_runtime.ToolSpec,
+) ![]const []const u8 {
+    var apps = std.ArrayList(AppListEntry).empty;
+    defer {
+        for (apps.items) |*app| app.deinit(allocator);
+        apps.deinit(allocator);
+    }
+
+    _ = try collectAppsFromPluginRoot(allocator, config_bytes, plugin_root, plugin_id, plugin_display_name, &apps);
+    var plugin_accessible_tools = std.ArrayList(mcp_runtime.ToolSpec).empty;
+    defer plugin_accessible_tools.deinit(allocator);
+    for (accessible_tools) |tool| {
+        const tool_plugin_id = normalizedRemoteDirectoryString(tool.plugin_id) orelse continue;
+        if (!std.mem.eql(u8, tool_plugin_id, plugin_id)) continue;
+        try plugin_accessible_tools.append(allocator, tool);
+    }
+    try collectAccessibleAppsFromMcpTools(allocator, config_bytes, plugin_accessible_tools.items, false, &.{}, &apps);
+
+    var names = std.ArrayList([]const u8).empty;
+    errdefer {
+        for (names.items) |name| allocator.free(name);
+        names.deinit(allocator);
+    }
+
+    for (apps.items) |app| {
+        if (!app.is_accessible) continue;
+        if (!app.is_enabled) continue;
+        if (!containsString(app.plugin_ids.items, plugin_id)) continue;
+        try appendUniqueOwnedString(allocator, &names, app.name);
+    }
+
+    std.mem.sort([]const u8, names.items, {}, appListStringLessThan);
+    return names.toOwnedSlice(allocator);
+}
 
 pub const AppRequirements = struct {
     disabled_ids: []const []const u8,
@@ -1606,7 +1650,7 @@ fn collectAppsFromEnabledPluginCache(
             }
             const manifest_value = if (manifest_parse) |parsed| parsed.value else null;
             const display_name = pluginDisplayName(manifest_value, parts.name);
-            added = (try collectAppsFromPluginRoot(allocator, config_bytes, plugin_root, display_name, apps)) or added;
+            added = (try collectAppsFromPluginRoot(allocator, config_bytes, plugin_root, plugin_id, display_name, apps)) or added;
         }
         if (added) {
             try appendSeenPluginId(allocator, seen_plugin_ids, plugin_id);
@@ -1696,7 +1740,7 @@ fn collectAppsFromMarketplaceEntry(
     const manifest_value = if (manifest_parse) |parsed| parsed.value else null;
     const display_name = pluginDisplayName(manifest_value, plugin_name);
 
-    _ = try collectAppsFromPluginRoot(allocator, config_bytes, plugin_root, display_name, apps);
+    _ = try collectAppsFromPluginRoot(allocator, config_bytes, plugin_root, plugin_id, display_name, apps);
 }
 
 fn collectAppsFromRemoteDirectoryPage(
@@ -1740,6 +1784,7 @@ fn collectAppsFromRemoteDirectoryPage(
             description,
             install_url,
             "",
+            "",
             appEnabledFromConfig(config_bytes, app_id),
             .{
                 .logo_url = normalizedRemoteDirectoryString(stringFieldAlias(object, "logoUrl", "logo_url")),
@@ -1776,6 +1821,8 @@ fn collectAccessibleAppsFromMcpTools(
         const description = normalizedRemoteDirectoryString(tool.namespace_description);
         const install_url = try remoteDirectoryInstallUrl(allocator, name, app_id);
         defer allocator.free(install_url);
+        const plugin_id = normalizedRemoteDirectoryString(tool.plugin_id) orelse "";
+        const plugin_display_name = normalizedRemoteDirectoryString(tool.plugin_display_name) orelse "";
         try upsertAppListEntry(
             allocator,
             apps,
@@ -1783,7 +1830,8 @@ fn collectAccessibleAppsFromMcpTools(
             name,
             description,
             install_url,
-            "",
+            plugin_id,
+            plugin_display_name,
             appEnabledFromConfig(config_bytes, app_id),
             .{ .is_accessible = true },
         );
@@ -1816,6 +1864,7 @@ fn collectAppsFromPluginRoot(
     allocator: std.mem.Allocator,
     config_bytes: []const u8,
     plugin_root: []const u8,
+    plugin_id: []const u8,
     plugin_display_name: []const u8,
     apps: *std.ArrayList(AppListEntry),
 ) !bool {
@@ -1843,7 +1892,7 @@ fn collectAppsFromPluginRoot(
         const default_install_url = try std.fmt.allocPrint(allocator, "https://chatgpt.com/apps/{s}/{s}", .{ app_id, app_id });
         defer allocator.free(default_install_url);
         const install_url = raw_install_url orelse default_install_url;
-        try upsertAppListEntry(allocator, apps, app_id, name, description, install_url, plugin_display_name, appEnabledFromConfig(config_bytes, app_id), .{});
+        try upsertAppListEntry(allocator, apps, app_id, name, description, install_url, plugin_id, plugin_display_name, appEnabledFromConfig(config_bytes, app_id), .{});
         added = true;
     }
     return added;
@@ -1861,6 +1910,7 @@ fn upsertAppListEntry(
     name: []const u8,
     description: ?[]const u8,
     install_url: ?[]const u8,
+    plugin_id: []const u8,
     plugin_display_name: []const u8,
     is_enabled: bool,
     fields: AppListEntryFields,
@@ -1898,6 +1948,7 @@ fn upsertAppListEntry(
         }
         app.is_accessible = app.is_accessible or fields.is_accessible;
         app.is_enabled = app.is_enabled and is_enabled;
+        try appendUniquePluginId(allocator, &app.plugin_ids, plugin_id);
         try appendUniquePluginDisplayName(allocator, &app.plugin_display_names, plugin_display_name);
         return;
     }
@@ -1936,6 +1987,7 @@ fn upsertAppListEntry(
         .install_url = owned_install_url,
         .is_accessible = fields.is_accessible,
         .is_enabled = is_enabled,
+        .plugin_ids = .empty,
         .plugin_display_names = .empty,
     };
     owned_id = null;
@@ -1949,8 +2001,18 @@ fn upsertAppListEntry(
     owned_app_metadata_json = null;
     owned_labels_json = null;
     errdefer app.deinit(allocator);
+    try appendUniquePluginId(allocator, &app.plugin_ids, plugin_id);
     try appendUniquePluginDisplayName(allocator, &app.plugin_display_names, plugin_display_name);
     try apps.append(allocator, app);
+}
+
+fn appendUniquePluginId(allocator: std.mem.Allocator, ids: *std.ArrayList([]const u8), value: []const u8) !void {
+    if (value.len == 0) return;
+    if (containsString(ids.items, value)) return;
+    var owned: ?[]const u8 = try allocator.dupe(u8, value);
+    errdefer if (owned) |id| allocator.free(id);
+    try ids.append(allocator, owned.?);
+    owned = null;
 }
 
 fn appendUniquePluginDisplayName(allocator: std.mem.Allocator, names: *std.ArrayList([]const u8), value: []const u8) !void {
@@ -3151,6 +3213,7 @@ test "apps list merges accessible codex apps tools" {
             .connector_id = "drive",
             .connector_name = "Drive Search",
             .namespace_description = "Accessible Drive",
+            .plugin_display_name = "Drive Plugin",
         },
         .{
             .server_name = "codex_apps",
@@ -3206,6 +3269,7 @@ test "apps list merges accessible codex apps tools" {
     try std.testing.expect(std.mem.indexOf(u8, rendered, "\"name\":\"Drive Search\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, rendered, "\"description\":\"Search Drive\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, rendered, "\"logoUrl\":\"https://example.com/drive.png\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rendered, "\"pluginDisplayNames\":[\"Drive Plugin\"]") != null);
     try std.testing.expect(std.mem.indexOf(u8, rendered, "\"id\":\"orphan\"") == null);
     try std.testing.expect(std.mem.indexOf(u8, rendered, "\"id\":\"ignored\"") == null);
     try std.testing.expect(std.mem.indexOf(u8, rendered, "connector_openai_internal") == null);
@@ -3266,6 +3330,7 @@ test "apps list marks plugin-only app accessible after directory load" {
         "plugin_drive",
         null,
         "https://chatgpt.com/apps/plugin_drive/plugin_drive",
+        "plugin@local",
         "Plugin Source",
         true,
         .{},
@@ -3278,9 +3343,11 @@ test "apps list marks plugin-only app accessible after directory load" {
             .callable_name = "mcp__codex_apps__plugin_drive_search",
             .description = "Search plugin drive",
             .input_schema_json = "{\"type\":\"object\"}",
+            .plugin_id = "plugin@local",
             .connector_id = "plugin_drive",
             .connector_name = "Plugin Drive",
             .namespace_description = "Plugin drive files",
+            .plugin_display_name = "Plugin Source",
         },
     };
 
@@ -3297,6 +3364,84 @@ test "apps list marks plugin-only app accessible after directory load" {
     try std.testing.expect(apps.items[0].is_accessible);
     try std.testing.expectEqualStrings("Plugin Drive", apps.items[0].name);
     try std.testing.expectEqualStrings("Plugin drive files", apps.items[0].description.?);
+    try std.testing.expectEqual(@as(usize, 1), apps.items[0].plugin_ids.items.len);
+    try std.testing.expectEqualStrings("plugin@local", apps.items[0].plugin_ids.items[0]);
+    try std.testing.expectEqual(@as(usize, 1), apps.items[0].plugin_display_names.items.len);
+    try std.testing.expectEqualStrings("Plugin Source", apps.items[0].plugin_display_names.items[0]);
+}
+
+test "plugin associated app names require matching accessible tool plugin id" {
+    const allocator = std.testing.allocator;
+    var dir = std.testing.tmpDir(.{});
+    defer dir.cleanup();
+    const io = std.Io.Threaded.global_single_threaded.io();
+
+    try dir.dir.writeFile(io, .{
+        .sub_path = ".app.json",
+        .data =
+        \\{
+        \\  "apps": {
+        \\    "shared_drive": {"name": "Shared Drive"},
+        \\    "owned_docs": {"name": "Owned Docs"}
+        \\  }
+        \\}
+        ,
+    });
+    const plugin_root = try dir.dir.realPathFileAlloc(io, ".", allocator);
+    defer allocator.free(plugin_root);
+
+    const accessible_tools = [_]mcp_runtime.ToolSpec{
+        .{
+            .server_name = "codex_apps",
+            .raw_tool_name = "shared_drive_search",
+            .callable_name = "mcp__codex_apps__shared_drive_search",
+            .description = "Search rival drive",
+            .input_schema_json = "{\"type\":\"object\"}",
+            .plugin_id = "rival@local",
+            .plugin_display_name = "Rival Plugin",
+            .connector_id = "shared_drive",
+            .connector_name = "Rival Drive",
+            .namespace_description = "Rival files",
+        },
+        .{
+            .server_name = "codex_apps",
+            .raw_tool_name = "global_drive_search",
+            .callable_name = "mcp__codex_apps__global_drive_search",
+            .description = "Search global drive",
+            .input_schema_json = "{\"type\":\"object\"}",
+            .connector_id = "shared_drive",
+            .connector_name = "Global Drive",
+            .namespace_description = "Global files",
+        },
+        .{
+            .server_name = "codex_apps",
+            .raw_tool_name = "owned_docs_search",
+            .callable_name = "mcp__codex_apps__owned_docs_search",
+            .description = "Search owned docs",
+            .input_schema_json = "{\"type\":\"object\"}",
+            .plugin_id = "demo@local",
+            .plugin_display_name = "Demo Plugin",
+            .connector_id = "owned_docs",
+            .connector_name = "Owned Docs",
+            .namespace_description = "Owned docs",
+        },
+    };
+
+    const names = try pluginAssociatedAppDisplayNames(
+        allocator,
+        plugin_root,
+        "demo@local",
+        "Demo Plugin",
+        "",
+        accessible_tools[0..],
+    );
+    defer {
+        for (names) |name| allocator.free(name);
+        allocator.free(names);
+    }
+
+    try std.testing.expectEqual(@as(usize, 1), names.len);
+    try std.testing.expectEqualStrings("Owned Docs", names[0]);
 }
 
 test "apps list filters blocked ids from plugin app metadata" {
@@ -3327,10 +3472,11 @@ test "apps list filters blocked ids from plugin app metadata" {
         apps.deinit(allocator);
     }
 
-    const added = try collectAppsFromPluginRoot(allocator, "", plugin_root, "Plugin Source", &apps);
+    const added = try collectAppsFromPluginRoot(allocator, "", plugin_root, "plugin@local", "Plugin Source", &apps);
     try std.testing.expect(added);
     try std.testing.expectEqual(@as(usize, 1), apps.items.len);
     try std.testing.expectEqualStrings("drive", apps.items[0].id);
+    try std.testing.expectEqualStrings("plugin@local", apps.items[0].plugin_ids.items[0]);
 
     var summaries = std.ArrayList(u8).empty;
     defer summaries.deinit(allocator);

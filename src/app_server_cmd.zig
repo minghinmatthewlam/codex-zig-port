@@ -44383,6 +44383,7 @@ fn effectiveAppServerTurnFeatureOverrides(
 ) !features_cmd.FeatureOverrides {
     var overrides = features_cmd.FeatureOverrides{};
     errdefer overrides.deinit(allocator);
+    try overrides.put(allocator, "apps", try appServerFeatureEnabledForProfile(allocator, state, thread.active_profile, "apps"));
     if (!thread.ephemeral and try appServerFeatureEnabledForProfile(allocator, state, thread.active_profile, "goals")) {
         try overrides.put(allocator, "goal_tools", true);
     }
