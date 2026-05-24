@@ -13,6 +13,8 @@ const INSTALLATION_ID_PERMISSIONS: std.Io.File.Permissions = @enumFromInt(0o644)
 
 pub const Config = struct {
     codex_home: []const u8,
+    log_dir: ?[]const u8 = null,
+    sqlite_home: ?[]const u8 = null,
     ignore_user_config: bool = false,
     active_profile: ?[]const u8,
     model: []const u8,
@@ -58,6 +60,8 @@ pub const Config = struct {
 
     pub fn deinit(self: *Config, allocator: std.mem.Allocator) void {
         allocator.free(self.codex_home);
+        if (self.log_dir) |value| allocator.free(value);
+        if (self.sqlite_home) |value| allocator.free(value);
         if (self.active_profile) |value| allocator.free(value);
         allocator.free(self.model);
         if (self.review_model) |value| allocator.free(value);
@@ -192,6 +196,8 @@ pub const RuntimeOverrides = struct {
     review_model: ?[]const u8 = null,
     model_context_window: ?i64 = null,
     model_auto_compact_token_limit: ?i64 = null,
+    log_dir: ?[]const u8 = null,
+    sqlite_home: ?[]const u8 = null,
     model_provider_id: ?[]const u8 = null,
     openai_base_url: ?[]const u8 = null,
     chatgpt_base_url: ?[]const u8 = null,
@@ -218,6 +224,8 @@ pub fn mergeRuntimeOverrides(base: RuntimeOverrides, overrides: RuntimeOverrides
     if (overrides.review_model) |value| merged.review_model = value;
     if (overrides.model_context_window) |value| merged.model_context_window = value;
     if (overrides.model_auto_compact_token_limit) |value| merged.model_auto_compact_token_limit = value;
+    if (overrides.log_dir) |value| merged.log_dir = value;
+    if (overrides.sqlite_home) |value| merged.sqlite_home = value;
     if (overrides.model_provider_id) |value| merged.model_provider_id = value;
     if (overrides.openai_base_url) |value| merged.openai_base_url = value;
     if (overrides.chatgpt_base_url) |value| merged.chatgpt_base_url = value;
@@ -356,6 +364,16 @@ pub fn applyRuntimeOverrides(
     }
     if (overrides.model_auto_compact_token_limit) |value| {
         cfg.model_auto_compact_token_limit = value;
+    }
+    if (overrides.log_dir) |value| {
+        const next_log_dir = try resolvePathRelativeToCwdWithHomeExpansion(allocator, value);
+        if (cfg.log_dir) |existing| allocator.free(existing);
+        cfg.log_dir = next_log_dir;
+    }
+    if (overrides.sqlite_home) |value| {
+        const next_sqlite_home = try resolvePathRelativeToCwdWithHomeExpansion(allocator, value);
+        if (cfg.sqlite_home) |existing| allocator.free(existing);
+        cfg.sqlite_home = next_sqlite_home;
     }
     if (overrides.model_provider_id) |model_provider_id| {
         try applyModelProviderOverride(cfg, allocator, model_provider_id);
@@ -509,6 +527,10 @@ pub fn applyRawConfigOverride(
         runtime_overrides.model_context_window = std.fmt.parseInt(i64, value, 10) catch return error.InvalidConfigOverride;
     } else if (std.mem.eql(u8, key, "model_auto_compact_token_limit")) {
         runtime_overrides.model_auto_compact_token_limit = std.fmt.parseInt(i64, value, 10) catch return error.InvalidConfigOverride;
+    } else if (std.mem.eql(u8, key, "log_dir")) {
+        runtime_overrides.log_dir = value;
+    } else if (std.mem.eql(u8, key, "sqlite_home")) {
+        runtime_overrides.sqlite_home = value;
     } else if (std.mem.eql(u8, key, "model_provider")) {
         runtime_overrides.model_provider_id = value;
     } else if (std.mem.eql(u8, key, "openai_base_url")) {
@@ -1007,6 +1029,11 @@ pub fn loadWithOptions(allocator: std.mem.Allocator, options: LoadOptions) !Conf
     else
         base_config_view;
 
+    const log_dir = try resolveLogDir(allocator, config_view, codex_home);
+    errdefer allocator.free(log_dir);
+    const sqlite_home = try resolveSqliteHome(allocator, config_view, codex_home);
+    errdefer allocator.free(sqlite_home);
+
     const active_profile = try resolveActiveProfile(allocator, config_view, options.profile);
     errdefer if (active_profile) |profile| allocator.free(profile);
     if (active_profile) |profile| {
@@ -1084,6 +1111,8 @@ pub fn loadWithOptions(allocator: std.mem.Allocator, options: LoadOptions) !Conf
 
     return .{
         .codex_home = codex_home,
+        .log_dir = log_dir,
+        .sqlite_home = sqlite_home,
         .ignore_user_config = options.ignore_user_config,
         .active_profile = active_profile,
         .model = model,
@@ -1137,6 +1166,82 @@ pub fn resolveCodexHome(allocator: std.mem.Allocator) ![]const u8 {
     const home = (try env.getOwned(allocator, "HOME")) orelse return error.MissingHome;
     defer allocator.free(home);
     return std.fs.path.join(allocator, &.{ home, ".codex" });
+}
+
+fn resolveLogDir(allocator: std.mem.Allocator, config_view: ConfigView, codex_home: []const u8) ![]const u8 {
+    if (try config_view.getTopLevelString(allocator, "log_dir")) |raw| {
+        defer allocator.free(raw);
+        return resolvePathRelativeToBaseWithHomeExpansion(allocator, raw, codex_home);
+    }
+    return std.fs.path.join(allocator, &.{ codex_home, "log" });
+}
+
+fn resolveSqliteHome(allocator: std.mem.Allocator, config_view: ConfigView, codex_home: []const u8) ![]const u8 {
+    if (try config_view.getTopLevelString(allocator, "sqlite_home")) |raw| {
+        defer allocator.free(raw);
+        return resolvePathRelativeToBaseWithHomeExpansion(allocator, raw, codex_home);
+    }
+    return resolveSqliteHomeEnvOrDefault(allocator, codex_home);
+}
+
+pub fn resolveRuntimeSqliteHome(allocator: std.mem.Allocator, codex_home: []const u8) ![]const u8 {
+    const config_bytes = try readConfigToml(allocator, codex_home);
+    defer if (config_bytes) |bytes| allocator.free(bytes);
+    const config_view = ConfigView{ .bytes = config_bytes orelse "" };
+    return resolveSqliteHome(allocator, config_view, codex_home);
+}
+
+pub fn resolveSqliteHomeEnvOrDefault(allocator: std.mem.Allocator, codex_home: []const u8) ![]const u8 {
+    if (try env.getOwned(allocator, "CODEX_SQLITE_HOME")) |raw| {
+        defer allocator.free(raw);
+        const trimmed = std.mem.trim(u8, raw, " \t\r\n");
+        if (trimmed.len > 0) return resolvePathRelativeToCwd(allocator, trimmed);
+    }
+    return allocator.dupe(u8, codex_home);
+}
+
+fn resolvePathRelativeToBaseWithHomeExpansion(allocator: std.mem.Allocator, raw: []const u8, base: []const u8) ![]const u8 {
+    const trimmed = std.mem.trim(u8, raw, " \t\r\n");
+    if (trimmed.len == 0) return error.EmptyConfigPath;
+    const expanded = try expandHomePath(allocator, trimmed);
+    defer allocator.free(expanded);
+    if (std.fs.path.isAbsolute(expanded)) return std.fs.path.resolve(allocator, &.{expanded});
+    return std.fs.path.resolve(allocator, &.{ base, expanded });
+}
+
+fn expandHomePath(allocator: std.mem.Allocator, path: []const u8) ![]const u8 {
+    if (std.mem.eql(u8, path, "~")) {
+        const home = (try env.getOwned(allocator, "HOME")) orelse return error.MissingHome;
+        return home;
+    }
+    if (std.mem.startsWith(u8, path, "~/")) {
+        const home = (try env.getOwned(allocator, "HOME")) orelse return error.MissingHome;
+        defer allocator.free(home);
+        const rest = std.mem.trimStart(u8, path[2..], "/");
+        if (rest.len == 0) return allocator.dupe(u8, home);
+        return std.fs.path.join(allocator, &.{ home, rest });
+    }
+    return allocator.dupe(u8, path);
+}
+
+fn resolvePathRelativeToCwdWithHomeExpansion(allocator: std.mem.Allocator, raw: []const u8) ![]const u8 {
+    const cwd = try std.Io.Dir.cwd().realPathFileAlloc(std.Io.Threaded.global_single_threaded.io(), ".", allocator);
+    defer allocator.free(cwd);
+    return resolvePathRelativeToBaseWithHomeExpansion(allocator, raw, cwd);
+}
+
+pub fn resolveRuntimeOverridePath(allocator: std.mem.Allocator, raw: []const u8) ![]const u8 {
+    return resolvePathRelativeToCwdWithHomeExpansion(allocator, raw);
+}
+
+fn resolvePathRelativeToCwd(allocator: std.mem.Allocator, raw: []const u8) ![]const u8 {
+    const trimmed = std.mem.trim(u8, raw, " \t\r\n");
+    if (trimmed.len == 0) return error.EmptyConfigPath;
+    if (std.fs.path.isAbsolute(trimmed)) return allocator.dupe(u8, trimmed);
+
+    const cwd = try std.Io.Dir.cwd().realPathFileAlloc(std.Io.Threaded.global_single_threaded.io(), ".", allocator);
+    defer allocator.free(cwd);
+    return std.fs.path.join(allocator, &.{ cwd, trimmed });
 }
 
 pub fn resolveInstallationId(allocator: std.mem.Allocator, codex_home: []const u8) ![]const u8 {
@@ -4986,6 +5091,8 @@ test "raw cli config overrides map supported fields" {
     try applyRawConfigOverride(&runtime, &profile, "review_model=gpt-review");
     try applyRawConfigOverride(&runtime, &profile, "model_context_window=128000");
     try applyRawConfigOverride(&runtime, &profile, "model_auto_compact_token_limit=96000");
+    try applyRawConfigOverride(&runtime, &profile, "log_dir=./run-log");
+    try applyRawConfigOverride(&runtime, &profile, "sqlite_home=./run-state");
     try applyRawConfigOverride(&runtime, &profile, "model_provider=mock-provider");
     try applyRawConfigOverride(&runtime, &profile, "openai_base_url='http://127.0.0.1:1'");
     try applyRawConfigOverride(&runtime, &profile, "chatgpt_base_url=http://127.0.0.1:2");
@@ -5010,6 +5117,8 @@ test "raw cli config overrides map supported fields" {
     try std.testing.expectEqualStrings("gpt-review", runtime.review_model.?);
     try std.testing.expectEqual(@as(i64, 128000), runtime.model_context_window.?);
     try std.testing.expectEqual(@as(i64, 96000), runtime.model_auto_compact_token_limit.?);
+    try std.testing.expectEqualStrings("./run-log", runtime.log_dir.?);
+    try std.testing.expectEqualStrings("./run-state", runtime.sqlite_home.?);
     try std.testing.expectEqualStrings("mock-provider", runtime.model_provider_id.?);
     try std.testing.expectEqualStrings("http://127.0.0.1:1", runtime.openai_base_url.?);
     try std.testing.expectEqualStrings("http://127.0.0.1:2", runtime.chatgpt_base_url.?);
@@ -5320,6 +5429,117 @@ test "profile v2 config view falls back to base config" {
     const base_url = (try overlay.getModelProviderString(allocator, "base", "base_url")).?;
     defer allocator.free(base_url);
     try std.testing.expectEqualStrings("http://base.example/v1", base_url);
+}
+
+test "runtime path config keys resolve against config base" {
+    const allocator = std.testing.allocator;
+    const absolute_view = ConfigView{
+        .bytes =
+        \\log_dir = "/tmp/custom-log"
+        \\sqlite_home = "/tmp/custom-sqlite"
+        \\
+        ,
+    };
+
+    const absolute_log_dir = try resolveLogDir(allocator, absolute_view, "/tmp/codex-home");
+    defer allocator.free(absolute_log_dir);
+    const absolute_sqlite_home = try resolveSqliteHome(allocator, absolute_view, "/tmp/codex-home");
+    defer allocator.free(absolute_sqlite_home);
+
+    try std.testing.expectEqualStrings("/tmp/custom-log", absolute_log_dir);
+    try std.testing.expectEqualStrings("/tmp/custom-sqlite", absolute_sqlite_home);
+
+    const relative_view = ConfigView{
+        .bytes =
+        \\log_dir = "relative-log"
+        \\sqlite_home = "relative-sqlite"
+        \\
+        ,
+    };
+    const relative_log_dir = try resolveLogDir(allocator, relative_view, "/tmp/codex-home");
+    defer allocator.free(relative_log_dir);
+    const relative_sqlite_home = try resolveSqliteHome(allocator, relative_view, "/tmp/codex-home");
+    defer allocator.free(relative_sqlite_home);
+
+    try std.testing.expectEqualStrings("/tmp/codex-home/relative-log", relative_log_dir);
+    try std.testing.expectEqualStrings("/tmp/codex-home/relative-sqlite", relative_sqlite_home);
+}
+
+test "runtime path config keys expand home directory" {
+    const allocator = std.testing.allocator;
+    const home = (try env.getOwned(allocator, "HOME")) orelse return;
+    defer allocator.free(home);
+    const view = ConfigView{
+        .bytes =
+        \\log_dir = "~/codex-log"
+        \\sqlite_home = "~//codex-sqlite"
+        \\
+        ,
+    };
+
+    const log_dir = try resolveLogDir(allocator, view, "/tmp/codex-home");
+    defer allocator.free(log_dir);
+    const sqlite_home = try resolveSqliteHome(allocator, view, "/tmp/codex-home");
+    defer allocator.free(sqlite_home);
+    const expected_log_dir = try std.fs.path.join(allocator, &.{ home, "codex-log" });
+    defer allocator.free(expected_log_dir);
+    const expected_sqlite_home = try std.fs.path.join(allocator, &.{ home, "codex-sqlite" });
+    defer allocator.free(expected_sqlite_home);
+
+    try std.testing.expectEqualStrings(expected_log_dir, log_dir);
+    try std.testing.expectEqualStrings(expected_sqlite_home, sqlite_home);
+}
+
+test "runtime log path default uses codex home" {
+    const allocator = std.testing.allocator;
+    const view = ConfigView{ .bytes = "" };
+
+    const log_dir = try resolveLogDir(allocator, view, "/tmp/codex-home");
+    defer allocator.free(log_dir);
+
+    try std.testing.expectEqualStrings("/tmp/codex-home/log", log_dir);
+}
+
+test "runtime path overrides resolve relative to current working directory" {
+    const allocator = std.testing.allocator;
+    var cfg = Config{
+        .codex_home = try allocator.dupe(u8, "/tmp/codex-zig-test"),
+        .active_profile = null,
+        .model = try allocator.dupe(u8, "gpt-test"),
+        .model_provider_id = try allocator.dupe(u8, "openai"),
+        .model_provider_requires_openai_auth = true,
+        .openai_base_url = try allocator.dupe(u8, "https://api.openai.com/v1"),
+        .chatgpt_base_url = try allocator.dupe(u8, "https://chatgpt.com/backend-api/codex"),
+        .oss_provider = null,
+        .installation_id = try allocator.dupe(u8, "install"),
+        .approval_policy = .on_request,
+        .approvals_reviewer = .user,
+        .sandbox_mode = .workspace_write,
+        .web_search_mode = null,
+        .model_reasoning_effort = null,
+        .service_tier = null,
+        .syntax_theme = null,
+        .personality = null,
+        .tui_status_line = null,
+        .tui_terminal_title = null,
+        .tui_alternate_screen = .auto,
+    };
+    defer cfg.deinit(allocator);
+
+    try applyRuntimeOverrides(&cfg, allocator, .{
+        .log_dir = "./run-log",
+        .sqlite_home = "run-state",
+    });
+
+    const cwd = try std.Io.Dir.cwd().realPathFileAlloc(std.Io.Threaded.global_single_threaded.io(), ".", allocator);
+    defer allocator.free(cwd);
+    const expected_log_dir = try std.fs.path.resolve(allocator, &.{ cwd, "run-log" });
+    defer allocator.free(expected_log_dir);
+    const expected_sqlite_home = try std.fs.path.resolve(allocator, &.{ cwd, "run-state" });
+    defer allocator.free(expected_sqlite_home);
+
+    try std.testing.expectEqualStrings(expected_log_dir, cfg.log_dir.?);
+    try std.testing.expectEqualStrings(expected_sqlite_home, cfg.sqlite_home.?);
 }
 
 test "runtime model_provider override refreshes provider settings" {
