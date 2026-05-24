@@ -736,24 +736,30 @@ fn appendColumnLine(allocator: std.mem.Allocator, output: *std.ArrayList(u8), ce
 }
 
 fn runGet(allocator: std.mem.Allocator, servers: McpServers, args: []const []const u8) !void {
-    if (args.len == 0) return error.MissingMcpServerName;
-    if (isHelpFlag(args[0])) {
-        printGetHelp();
-        return;
-    }
-    const name = args[0];
+    var name: ?[]const u8 = null;
     var json = false;
-    for (args[1..]) |arg| {
-        if (std.mem.eql(u8, arg, "--json")) {
+    var positional_only = false;
+    for (args) |arg| {
+        if (!positional_only and std.mem.eql(u8, arg, "--")) {
+            positional_only = true;
+            continue;
+        }
+        if (!positional_only and std.mem.eql(u8, arg, "--json")) {
             json = true;
-        } else if (isHelpFlag(arg)) {
+            continue;
+        }
+        if (!positional_only and isHelpFlag(arg)) {
             printGetHelp();
             return;
-        } else {
+        }
+        if (!positional_only and std.mem.startsWith(u8, arg, "-")) {
             return error.UnknownMcpGetOption;
         }
+        if (name != null) return error.UnexpectedMcpArgument;
+        name = arg;
     }
-    const server = servers.get(name) orelse return error.McpServerNotFound;
+    const resolved_name = name orelse return error.MissingMcpServerName;
+    const server = servers.get(resolved_name) orelse return error.McpServerNotFound;
     if (json) {
         const rendered = try renderJsonServer(allocator, server.*);
         defer allocator.free(rendered);
@@ -762,6 +768,21 @@ fn runGet(allocator: std.mem.Allocator, servers: McpServers, args: []const []con
         return;
     }
     try printServer(allocator, server.*);
+}
+
+fn parseSingleMcpName(args: []const []const u8) ![]const u8 {
+    var name: ?[]const u8 = null;
+    var positional_only = false;
+    for (args) |arg| {
+        if (!positional_only and std.mem.eql(u8, arg, "--")) {
+            positional_only = true;
+            continue;
+        }
+        if (!positional_only and std.mem.startsWith(u8, arg, "-")) return error.UnexpectedMcpArgument;
+        if (name != null) return error.UnexpectedMcpArgument;
+        name = arg;
+    }
+    return name orelse error.MissingMcpServerName;
 }
 
 fn runAdd(
@@ -895,13 +916,11 @@ fn runRemove(
     servers: *McpServers,
     args: []const []const u8,
 ) !void {
-    if (args.len == 0) return error.MissingMcpServerName;
     if (containsHelpFlag(args, &.{})) {
         printRemoveHelp();
         return;
     }
-    if (args.len > 1) return error.UnexpectedMcpArgument;
-    const name = args[0];
+    const name = try parseSingleMcpName(args);
     try validateServerName(name);
     const removed = servers.remove(allocator, name);
     if (removed) try writeServersConfig(allocator, codex_home, original_config, servers.*);
@@ -914,14 +933,7 @@ fn runRemove(
 }
 
 fn runLogin(allocator: std.mem.Allocator, codex_home: []const u8, config_bytes: []const u8, servers: McpServers, args: []const []const u8) !void {
-    if (args.len == 0) return error.MissingMcpServerName;
-    if (isHelpFlag(args[0])) {
-        printLoginHelp();
-        return;
-    }
-    const name = args[0];
-    try validateServerName(name);
-
+    var name: ?[]const u8 = null;
     var explicit_scopes = std.ArrayList([]const u8).empty;
     defer {
         for (explicit_scopes.items) |scope| allocator.free(scope);
@@ -929,14 +941,19 @@ fn runLogin(allocator: std.mem.Allocator, codex_home: []const u8, config_bytes: 
     }
     var explicit_scopes_present = false;
 
-    var index: usize = 1;
+    var positional_only = false;
+    var index: usize = 0;
     while (index < args.len) : (index += 1) {
         const arg = args[index];
-        if (isHelpFlag(arg)) {
+        if (!positional_only and std.mem.eql(u8, arg, "--")) {
+            positional_only = true;
+            continue;
+        }
+        if (!positional_only and isHelpFlag(arg)) {
             printLoginHelp();
             return;
         }
-        if (std.mem.eql(u8, arg, "--scopes")) {
+        if (!positional_only and std.mem.eql(u8, arg, "--scopes")) {
             index += 1;
             if (index >= args.len or isMissingOptionValueToken(args[index])) return error.MissingMcpOptionValue;
             if (std.mem.startsWith(u8, args[index], "-")) return error.UnknownMcpLoginOption;
@@ -944,16 +961,21 @@ fn runLogin(allocator: std.mem.Allocator, codex_home: []const u8, config_bytes: 
             explicit_scopes_present = true;
             continue;
         }
-        if (std.mem.startsWith(u8, arg, "--scopes=")) {
+        if (!positional_only and std.mem.startsWith(u8, arg, "--scopes=")) {
             try replaceMcpOAuthScopesCsv(allocator, &explicit_scopes, arg["--scopes=".len..]);
             explicit_scopes_present = true;
             continue;
         }
-        return error.UnknownMcpLoginOption;
+        if (!positional_only and std.mem.startsWith(u8, arg, "-")) return error.UnknownMcpLoginOption;
+        if (name != null) return error.UnexpectedMcpArgument;
+        name = arg;
     }
 
-    const server = servers.get(name) orelse {
-        const message = try std.fmt.allocPrint(allocator, "No MCP server named '{s}' found.\n", .{name});
+    const resolved_name = name orelse return error.MissingMcpServerName;
+    try validateServerName(resolved_name);
+
+    const server = servers.get(resolved_name) orelse {
+        const message = try std.fmt.allocPrint(allocator, "No MCP server named '{s}' found.\n", .{resolved_name});
         defer allocator.free(message);
         try cli_utils.writeStderr(message);
         return error.McpServerNotFound;
@@ -966,7 +988,7 @@ fn runLogin(allocator: std.mem.Allocator, codex_home: []const u8, config_bytes: 
     const resolved_scopes = if (explicit_scopes_present) explicit_scopes.items else server.scopes.items;
     const discover_when_empty = !explicit_scopes_present and !server.scopes_configured;
     try performMcpOAuthLogin(allocator, codex_home, config_bytes, server.*, resolved_scopes, discover_when_empty);
-    const message = try std.fmt.allocPrint(allocator, "Successfully logged in to MCP server '{s}'.\n", .{name});
+    const message = try std.fmt.allocPrint(allocator, "Successfully logged in to MCP server '{s}'.\n", .{resolved_name});
     defer allocator.free(message);
     try cli_utils.writeStdout(message);
 }
@@ -978,13 +1000,11 @@ fn runLogout(
     servers: McpServers,
     args: []const []const u8,
 ) !void {
-    if (args.len == 0) return error.MissingMcpServerName;
     if (containsHelpFlag(args, &.{})) {
         printLogoutHelp();
         return;
     }
-    if (args.len > 1) return error.UnexpectedMcpArgument;
-    const name = args[0];
+    const name = try parseSingleMcpName(args);
     try validateServerName(name);
 
     const server = servers.get(name) orelse return error.McpServerNotFound;

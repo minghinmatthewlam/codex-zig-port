@@ -12047,6 +12047,85 @@ def run_mcp_oauth_login_logout_smoke(binary: Path) -> None:
         assert "[mcp_servers.--env]" in separator_name_config
         assert 'command = "echo"' in separator_name_config
 
+        get_json_before_name = subprocess.run(
+            [str(binary.resolve()), "mcp", "get", "--json", "stdio-added"],
+            cwd=temp_root,
+            env=stdio_env,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=5,
+            check=True,
+        )
+        assert json.loads(get_json_before_name.stdout)["name"] == "stdio-added"
+        assert get_json_before_name.stderr == ""
+
+        get_separator_name = subprocess.run(
+            [str(binary.resolve()), "mcp", "get", "--json", "--", "--env"],
+            cwd=temp_root,
+            env=stdio_env,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=5,
+            check=True,
+        )
+        get_separator_json = json.loads(get_separator_name.stdout)
+        assert get_separator_json["name"] == "--env"
+        assert get_separator_json["transport"]["command"] == "echo"
+
+        login_scopes_before_name = subprocess.run(
+            [
+                str(binary.resolve()),
+                "mcp",
+                "login",
+                "--scopes",
+                "read,write",
+                "stdio-added",
+            ],
+            cwd=temp_root,
+            env=stdio_env,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=5,
+            check=False,
+        )
+        assert login_scopes_before_name.returncode != 0
+        assert "OAuth login is only supported" in login_scopes_before_name.stderr
+        assert "UnknownMcpLoginOption" not in login_scopes_before_name.stderr
+
+        logout_separator_name = subprocess.run(
+            [str(binary.resolve()), "mcp", "logout", "--", "--env"],
+            cwd=temp_root,
+            env=stdio_env,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=5,
+            check=False,
+        )
+        assert logout_separator_name.returncode != 0
+        assert "McpOAuthLogoutRequiresHttp" in logout_separator_name.stderr
+        assert "UnexpectedMcpArgument" not in logout_separator_name.stderr
+
+        remove_separator_name = subprocess.run(
+            [str(binary.resolve()), "mcp", "remove", "--", "--env"],
+            cwd=temp_root,
+            env=stdio_env,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=5,
+            check=True,
+        )
+        assert remove_separator_name.stdout == "Removed global MCP server '--env'.\n"
+        assert remove_separator_name.stderr == ""
+        separator_name_config = (stdio_home / "config.toml").read_text(
+            encoding="utf-8"
+        )
+        assert "[mcp_servers.--env]" not in separator_name_config
+
         missing_separator_command = subprocess.run(
             [str(binary.resolve()), "mcp", "add", "missing-command", "--"],
             cwd=temp_root,
