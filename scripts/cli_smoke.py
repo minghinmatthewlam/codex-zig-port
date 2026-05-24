@@ -2213,6 +2213,31 @@ def run_completion_snapshot_smoke(binary: Path) -> None:
         assert value in all_completion_text, f"expected {value!r} in completion snapshots"
 
 
+def run_help_command_smoke(binary: Path) -> None:
+    root_help_help = subprocess.run(
+        [str(binary), "help", "help"],
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        timeout=5,
+        check=True,
+    )
+    assert root_help_help.stdout == ""
+    assert "Print this message or the help of the given subcommand(s)" in root_help_help.stderr
+    assert "Usage: codex-zig help [COMMAND]..." in root_help_help.stderr
+
+    exec_help_help = subprocess.run(
+        [str(binary), "exec", "help", "help"],
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        timeout=5,
+        check=True,
+    )
+    assert exec_help_help.stdout == ""
+    assert "Usage: codex-zig exec help [COMMAND]..." in exec_help_help.stderr
+
+
 def run_update_command_smoke(binary: Path) -> None:
     help_result = subprocess.run(
         [str(binary), "help", "update"],
@@ -13241,6 +13266,7 @@ def run_debug_trace_reduce_smoke(binary: Path) -> None:
 def main() -> None:
     binary = Path(sys.argv[1]) if len(sys.argv) > 1 else Path("zig-out/bin/codex-zig")
     run_completion_snapshot_smoke(binary)
+    run_help_command_smoke(binary)
     run_update_command_smoke(binary)
     run_remote_control_command_smoke(binary)
     run_exec_server_stdio_smoke(binary)

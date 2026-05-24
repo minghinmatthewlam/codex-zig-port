@@ -1057,8 +1057,10 @@ fn runHelpCommand(allocator: std.mem.Allocator, args: *std.process.Args.Iterator
         return;
     }
     try requireSingleHelpTarget(targets.items);
-    if (isHelpFlag(target) or std.mem.eql(u8, target, "help")) {
+    if (isHelpFlag(target)) {
         try printHelp();
+    } else if (std.mem.eql(u8, target, "help")) {
+        printHelpCommandHelp();
     } else if (isExecCommand(target)) {
         exec.printHelp();
     } else if (isApplyCommand(target)) {
@@ -1636,6 +1638,18 @@ fn printHelp() !void {
 
 fn printVersion() void {
     std.debug.print("codex-zig {s}\n", .{version});
+}
+
+fn printHelpCommandHelp() void {
+    std.debug.print(
+        \\Print this message or the help of the given subcommand(s)
+        \\
+        \\Usage: codex-zig help [COMMAND]...
+        \\
+        \\Arguments:
+        \\  [COMMAND]...  Print help for the subcommand(s)
+        \\
+    , .{});
 }
 
 fn printAuthStatusHelp() void {

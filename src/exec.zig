@@ -923,11 +923,10 @@ fn printHelpCommandHelp() void {
     std.debug.print(
         \\Print this message or the help of the given subcommand(s)
         \\
-        \\Usage:
-        \\  codex-zig exec help [COMMAND]
+        \\Usage: codex-zig exec help [COMMAND]...
         \\
         \\Arguments:
-        \\  [COMMAND]               Print help for the subcommand
+        \\  [COMMAND]...  Print help for the subcommand(s)
         \\
     , .{});
 }
