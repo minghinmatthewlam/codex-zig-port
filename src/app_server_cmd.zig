@@ -40290,8 +40290,10 @@ fn applyStateThreadMetadataWithOptions(
         if (metadata.created_at_ms) |value| thread.created_at = @divFloor(value, 1000);
         if (metadata.updated_at_ms) |value| thread.updated_at = @divFloor(value, 1000);
         if (metadata.source) |source| {
-            try replaceOwnedString(allocator, &thread.source, source);
-            try thread.transcript.setSource(allocator, source);
+            const normalized_source = try session_store.normalizeSessionSourceText(allocator, source);
+            defer allocator.free(normalized_source);
+            try replaceOwnedString(allocator, &thread.source, normalized_source);
+            try thread.transcript.setSource(allocator, normalized_source);
         }
         if (metadata.thread_source) |thread_source| {
             try replaceOptionalOwnedString(allocator, &thread.thread_source, thread_source);
@@ -41758,6 +41760,45 @@ const ThreadListSortContext = struct {
     direction: ThreadListSortDirection,
 };
 
+const ThreadListSourceKind = enum {
+    cli,
+    vscode,
+    exec,
+    app_server,
+    sub_agent,
+    sub_agent_review,
+    sub_agent_compact,
+    sub_agent_thread_spawn,
+    sub_agent_other,
+    unknown,
+    other,
+};
+
+const ThreadListMatchContext = struct {
+    params: std.json.ObjectMap,
+    cwd_filters: ?[][]const u8 = null,
+    source_kinds: ?[]ThreadListSourceKind = null,
+
+    fn init(allocator: std.mem.Allocator, params: std.json.ObjectMap) !ThreadListMatchContext {
+        const cwd_filters = try parseThreadListCwdFilters(allocator, params.get("cwd"));
+        errdefer freeThreadListCwdFilters(allocator, cwd_filters);
+
+        const source_kinds = try parseThreadListSourceKinds(allocator, params.get("sourceKinds"));
+        errdefer if (source_kinds) |values| allocator.free(values);
+
+        return .{
+            .params = params,
+            .cwd_filters = cwd_filters,
+            .source_kinds = source_kinds,
+        };
+    }
+
+    fn deinit(self: *ThreadListMatchContext, allocator: std.mem.Allocator) void {
+        freeThreadListCwdFilters(allocator, self.cwd_filters);
+        if (self.source_kinds) |values| allocator.free(values);
+    }
+};
+
 const SavedThreadListItem = struct {
     id: []const u8,
     session_id: []const u8,
@@ -41811,7 +41852,7 @@ const SavedThreadListItem = struct {
         const cli_version = try allocator.dupe(u8, stateThreadStringOrFallback(file.cli_version, summary.cli_version orelse "0.0.1"));
         errdefer allocator.free(cli_version);
         const source_value = if (file.state_lifecycle_loaded) file.source orelse summary.source orelse "cli" else summary.source orelse "cli";
-        const source = try allocator.dupe(u8, source_value);
+        const source = try session_store.normalizeSessionSourceText(allocator, source_value);
         errdefer allocator.free(source);
         const thread_source_value = if (file.state_lifecycle_loaded) file.thread_source else summary.thread_source;
         const thread_source = if (thread_source_value) |value| try allocator.dupe(u8, value) else null;
@@ -41942,6 +41983,9 @@ fn renderThreadListResult(
     params_value: std.json.Value,
 ) ![]const u8 {
     const params = params_value.object;
+    var match_context = try ThreadListMatchContext.init(allocator, params);
+    defer match_context.deinit(allocator);
+
     var threads = std.ArrayList(ThreadListItem).empty;
     defer {
         for (threads.items) |*thread| thread.deinit(allocator);
@@ -41958,12 +42002,12 @@ fn renderThreadListResult(
     if (state_db_only) {
         const rollout_files = try thread_state.listRolloutFiles(allocator, cfg.codex_home);
         defer session_store.freeRolloutFiles(allocator, rollout_files);
-        try appendSavedThreadListItems(allocator, &threads, params, rollout_files, default_model_provider, false, state, thread_names);
+        try appendSavedThreadListItems(allocator, &threads, &match_context, rollout_files, default_model_provider, false, state, thread_names);
     } else {
         if (!archived) {
             for (state.loaded_threads.items) |*thread| {
                 const item = ThreadListItem{ .loaded = thread };
-                if (threadListItemMatchesParams(item, params, default_model_provider)) {
+                if (try threadListItemMatchesParams(allocator, item, &match_context, default_model_provider)) {
                     try threads.append(allocator, item);
                 }
             }
@@ -41971,7 +42015,7 @@ fn renderThreadListResult(
 
         const rollout_files = try session_store.listRolloutFiles(allocator, cfg.codex_home, archived);
         defer session_store.freeRolloutFiles(allocator, rollout_files);
-        try appendSavedThreadListItems(allocator, &threads, params, rollout_files, default_model_provider, !archived, state, thread_names);
+        try appendSavedThreadListItems(allocator, &threads, &match_context, rollout_files, default_model_provider, !archived, state, thread_names);
     }
 
     const sort_context = threadListSortContext(params);
@@ -42028,13 +42072,18 @@ fn renderThreadListResult(
     return result.toOwnedSlice(allocator);
 }
 
-fn threadListItemMatchesParams(thread: ThreadListItem, params: std.json.ObjectMap, default_model_provider: []const u8) bool {
-    const archived = optionalBoolParam(params, "archived") orelse false;
+fn threadListItemMatchesParams(
+    allocator: std.mem.Allocator,
+    thread: ThreadListItem,
+    context: *const ThreadListMatchContext,
+    default_model_provider: []const u8,
+) !bool {
+    const archived = optionalBoolParam(context.params, "archived") orelse false;
     if (threadListItemArchived(thread) != archived) return false;
-    if (!threadListModelProviderMatches(params.get("modelProviders"), threadListItemModelProvider(thread), default_model_provider)) return false;
-    if (!jsonStringArrayContainsOrEmpty(params.get("sourceKinds"), threadListItemSource(thread))) return false;
-    if (!threadListCwdMatches(params.get("cwd"), threadListItemCwd(thread))) return false;
-    if (optionalStringParam(params, "searchTerm")) |search| {
+    if (!threadListModelProviderMatches(context.params.get("modelProviders"), threadListItemModelProvider(thread), default_model_provider)) return false;
+    if (!threadListSourceKindMatches(context, thread)) return false;
+    if (!try threadListCwdMatches(allocator, context, threadListItemCwd(thread))) return false;
+    if (optionalStringParam(context.params, "searchTerm")) |search| {
         if (search.len > 0 and !threadListItemMatchesSearchTerm(thread, search)) return false;
     }
     return true;
@@ -42043,7 +42092,7 @@ fn threadListItemMatchesParams(thread: ThreadListItem, params: std.json.ObjectMa
 fn appendSavedThreadListItems(
     allocator: std.mem.Allocator,
     threads: *std.ArrayList(ThreadListItem),
-    params: std.json.ObjectMap,
+    context: *const ThreadListMatchContext,
     rollout_files: []session_store.RolloutFile,
     fallback_model_provider: []const u8,
     dedupe_loaded: bool,
@@ -42061,7 +42110,7 @@ fn appendSavedThreadListItems(
         var saved_moved = false;
         errdefer if (!saved_moved) saved.deinit(allocator);
         const item = ThreadListItem{ .saved = saved };
-        if (threadListItemMatchesParams(item, params, fallback_model_provider)) {
+        if (try threadListItemMatchesParams(allocator, item, context, fallback_model_provider)) {
             try threads.append(allocator, item);
             saved_moved = true;
         } else {
@@ -42080,25 +42129,389 @@ fn threadListModelProviderMatches(value: ?std.json.Value, candidate: []const u8,
     return false;
 }
 
-fn jsonStringArrayContainsOrEmpty(value: ?std.json.Value, candidate: []const u8) bool {
-    const actual = value orelse return true;
-    if (actual == .null) return true;
-    if (actual.array.items.len == 0) return true;
-    for (actual.array.items) |item| {
-        if (std.mem.eql(u8, item.string, candidate)) return true;
+fn parseThreadListSourceKinds(allocator: std.mem.Allocator, value: ?std.json.Value) !?[]ThreadListSourceKind {
+    const actual = value orelse return null;
+    if (actual == .null) return null;
+    if (actual.array.items.len == 0) return null;
+
+    const kinds = try allocator.alloc(ThreadListSourceKind, actual.array.items.len);
+    errdefer allocator.free(kinds);
+    for (actual.array.items, 0..) |item, index| {
+        kinds[index] = threadListSourceKindFromParam(item.string);
+    }
+    return kinds;
+}
+
+fn threadListSourceKindFromParam(value: []const u8) ThreadListSourceKind {
+    if (std.mem.eql(u8, value, "cli")) return .cli;
+    if (std.mem.eql(u8, value, "vscode")) return .vscode;
+    if (std.mem.eql(u8, value, "exec")) return .exec;
+    if (std.mem.eql(u8, value, "appServer")) return .app_server;
+    if (std.mem.eql(u8, value, "subAgent")) return .sub_agent;
+    if (std.mem.eql(u8, value, "subAgentReview")) return .sub_agent_review;
+    if (std.mem.eql(u8, value, "subAgentCompact")) return .sub_agent_compact;
+    if (std.mem.eql(u8, value, "subAgentThreadSpawn")) return .sub_agent_thread_spawn;
+    if (std.mem.eql(u8, value, "subAgentOther")) return .sub_agent_other;
+    return .unknown;
+}
+
+fn threadListSourceKindMatches(context: *const ThreadListMatchContext, thread: ThreadListItem) bool {
+    if (context.source_kinds) |kinds| {
+        for (kinds) |kind| {
+            if (threadListItemMatchesSourceKind(thread, kind)) return true;
+        }
+        return false;
+    }
+    return threadListItemMatchesDefaultInteractiveSource(thread);
+}
+
+fn threadListItemMatchesDefaultInteractiveSource(thread: ThreadListItem) bool {
+    const source = threadListItemSource(thread);
+    const kind = threadListItemSourceKind(thread);
+    return kind == .cli or kind == .vscode or threadListSourceIsDefaultInteractiveCustom(source);
+}
+
+fn threadListItemMatchesSourceKind(thread: ThreadListItem, expected: ThreadListSourceKind) bool {
+    const actual = threadListItemSourceKind(thread);
+    if (expected == .sub_agent) return threadListSourceKindIsSubAgent(actual);
+    return actual == expected;
+}
+
+fn threadListItemSourceKind(thread: ThreadListItem) ThreadListSourceKind {
+    const source = threadListItemSource(thread);
+
+    if (threadListTextEqualsAny(source, &.{ "subagent_review", "subAgentReview", "sub_agent_review" })) return .sub_agent_review;
+    if (threadListTextEqualsAny(source, &.{ "subagent_compact", "subAgentCompact", "sub_agent_compact" })) return .sub_agent_compact;
+    if (threadListTextEqualsAny(source, &.{ "threadSpawn", "thread_spawn" }) or threadListTextStartsWithAny(source, &.{ "subagent_thread_spawn", "subAgentThreadSpawn", "sub_agent_thread_spawn" })) return .sub_agent_thread_spawn;
+    if (threadListTextEqualsAny(source, &.{ "subAgentOther", "sub_agent_other", "subagent_other" }) or std.mem.startsWith(u8, source, "subagent_other:")) return .sub_agent_other;
+    if (threadListTextLooksSubAgent(source)) {
+        if (std.mem.eql(u8, source, "subagent_memory_consolidation")) return .sub_agent;
+        return .sub_agent_other;
+    }
+    if (std.mem.eql(u8, source, "cli")) return .cli;
+    if (std.mem.eql(u8, source, "vscode")) return .vscode;
+    if (std.mem.eql(u8, source, "exec")) return .exec;
+    if (threadListTextEqualsAny(source, &.{ "appServer", "mcp", "appserver", "app-server", "app_server" })) return .app_server;
+    if (std.mem.eql(u8, source, "unknown")) return .unknown;
+    return .other;
+}
+
+fn threadListSourceKindIsSubAgent(kind: ThreadListSourceKind) bool {
+    return switch (kind) {
+        .sub_agent, .sub_agent_review, .sub_agent_compact, .sub_agent_thread_spawn, .sub_agent_other => true,
+        else => false,
+    };
+}
+
+fn threadListTextLooksSubAgent(value: []const u8) bool {
+    return threadListTextEqualsAny(value, &.{ "subAgent", "sub_agent" }) or threadListTextStartsWithAny(value, &.{ "subagent_", "subAgent", "sub_agent_" });
+}
+
+fn threadListSourceIsDefaultInteractiveCustom(value: []const u8) bool {
+    return threadListTextEqualsAny(value, &.{
+        "atlas",
+        "chatgpt",
+        "custom:atlas",
+        "custom:chatgpt",
+        "{\"custom\":\"atlas\"}",
+        "{\"custom\":\"chatgpt\"}",
+    });
+}
+
+fn threadListTextEqualsAny(value: []const u8, needles: []const []const u8) bool {
+    for (needles) |needle| {
+        if (std.mem.eql(u8, value, needle)) return true;
     }
     return false;
 }
 
-fn threadListCwdMatches(value: ?std.json.Value, cwd: []const u8) bool {
-    const actual = value orelse return true;
-    if (actual == .null) return true;
-    if (actual == .string) return std.mem.eql(u8, actual.string, cwd);
-    if (actual.array.items.len == 0) return false;
-    for (actual.array.items) |item| {
-        if (std.mem.eql(u8, item.string, cwd)) return true;
+fn threadListTextStartsWithAny(value: []const u8, prefixes: []const []const u8) bool {
+    for (prefixes) |prefix| {
+        if (std.mem.startsWith(u8, value, prefix)) return true;
     }
     return false;
+}
+
+fn parseThreadListCwdFilters(allocator: std.mem.Allocator, value: ?std.json.Value) !?[][]const u8 {
+    const actual = value orelse return null;
+    if (actual == .null) return null;
+    if (actual == .string) {
+        const filters = try allocator.alloc([]const u8, 1);
+        errdefer allocator.free(filters);
+        filters[0] = try normalizeThreadListCwdFilter(allocator, actual.string);
+        return filters;
+    }
+
+    const filters = try allocator.alloc([]const u8, actual.array.items.len);
+    errdefer allocator.free(filters);
+    var normalized_count: usize = 0;
+    errdefer {
+        for (filters[0..normalized_count]) |filter| allocator.free(filter);
+    }
+    for (actual.array.items, 0..) |item, index| {
+        filters[index] = try normalizeThreadListCwdFilter(allocator, item.string);
+        normalized_count += 1;
+    }
+    return filters;
+}
+
+fn normalizeThreadListCwdFilter(allocator: std.mem.Allocator, raw: []const u8) ![]const u8 {
+    if (std.fs.path.isAbsolute(raw)) return std.fs.path.resolve(allocator, &.{raw});
+    const io = std.Io.Threaded.global_single_threaded.io();
+    const process_cwd = try std.Io.Dir.cwd().realPathFileAlloc(io, ".", allocator);
+    defer allocator.free(process_cwd);
+    return std.fs.path.resolve(allocator, &.{ process_cwd, raw });
+}
+
+fn freeThreadListCwdFilters(allocator: std.mem.Allocator, filters: ?[][]const u8) void {
+    const values = filters orelse return;
+    for (values) |filter| allocator.free(filter);
+    allocator.free(values);
+}
+
+fn threadListCwdMatches(allocator: std.mem.Allocator, context: *const ThreadListMatchContext, cwd: []const u8) !bool {
+    const filters = context.cwd_filters orelse return true;
+    if (filters.len == 0 or cwd.len == 0) return false;
+    const normalized_cwd = try std.fs.path.resolve(allocator, &.{cwd});
+    defer allocator.free(normalized_cwd);
+    for (filters) |filter| {
+        if (std.mem.eql(u8, filter, normalized_cwd)) return true;
+    }
+    return false;
+}
+
+fn saveThreadListTestTranscript(
+    allocator: std.mem.Allocator,
+    codex_home: []const u8,
+    id: []const u8,
+    source: []const u8,
+    thread_source: ?[]const u8,
+    model_provider: []const u8,
+    cwd: []const u8,
+    title: []const u8,
+    prompt: []const u8,
+) !void {
+    const path = try session_store.createSessionPathForId(allocator, codex_home, id);
+    defer allocator.free(path);
+
+    var transcript = session_mod.Transcript{};
+    defer transcript.deinit(allocator);
+    try transcript.setId(allocator, id);
+    try transcript.setSource(allocator, source);
+    if (thread_source) |value| try transcript.setThreadSource(allocator, value);
+    try transcript.setModelProvider(allocator, model_provider);
+    try transcript.setCwd(allocator, cwd);
+    try transcript.setCliVersion(allocator, "0.0.1");
+    try transcript.setTitle(allocator, title);
+    try transcript.appendUserMessage(allocator, prompt);
+
+    try session_store.saveTranscript(allocator, path, &transcript);
+    try session_store.appendThreadMemoryModeFromTranscript(allocator, path, id, &transcript, "enabled");
+}
+
+fn saveThreadListTestTranscriptWithSourceJson(
+    allocator: std.mem.Allocator,
+    codex_home: []const u8,
+    id: []const u8,
+    source_json: []const u8,
+    thread_source: ?[]const u8,
+    model_provider: []const u8,
+    cwd: []const u8,
+    prompt: []const u8,
+) !void {
+    const path = try session_store.createSessionPathForId(allocator, codex_home, id);
+    defer allocator.free(path);
+
+    var out = std.ArrayList(u8).empty;
+    defer out.deinit(allocator);
+    try out.appendSlice(allocator, "{\"type\":\"session_meta\",\"payload\":{\"id\":");
+    try appendJsonString(allocator, &out, id);
+    try out.appendSlice(allocator, ",\"timestamp\":\"2025-02-02T09:00:00Z\",\"cwd\":");
+    try appendJsonString(allocator, &out, cwd);
+    try out.appendSlice(allocator, ",\"originator\":\"codex\",\"cli_version\":\"0.0.0\",\"source\":");
+    try out.appendSlice(allocator, source_json);
+    if (thread_source) |value| {
+        try out.appendSlice(allocator, ",\"thread_source\":");
+        try appendJsonString(allocator, &out, value);
+    }
+    try out.appendSlice(allocator, ",\"model_provider\":");
+    try appendJsonString(allocator, &out, model_provider);
+    try out.appendSlice(allocator, "}}\n{\"type\":\"response_item\",\"payload\":{\"type\":\"message\",\"role\":\"user\",\"content\":[{\"type\":\"input_text\",\"text\":");
+    try appendJsonString(allocator, &out, prompt);
+    try out.appendSlice(allocator, "}]}}\n");
+
+    try std.Io.Dir.cwd().writeFile(std.Io.Threaded.global_single_threaded.io(), .{
+        .sub_path = path,
+        .data = out.items,
+    });
+}
+
+test "thread/list sourceKinds default to interactive sessions" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var dir = std.testing.tmpDir(.{});
+    defer dir.cleanup();
+    const codex_home = try dir.dir.realPathFileAlloc(io, ".", allocator);
+    defer allocator.free(codex_home);
+
+    var cfg = try testAppServerConfig(allocator, "gpt-5.5");
+    defer cfg.deinit(allocator);
+    try replaceConfigOwnedString(allocator, &cfg.codex_home, codex_home);
+
+    const cli_id = "11111111-1111-4111-8111-111111111111";
+    const cli_thread_source_subagent_id = "22222222-2222-4222-8222-222222222222";
+    const subagent_source_id = "33333333-3333-4333-8333-333333333333";
+    const subagent_spawn_source_id = "34343434-3434-4434-8434-343434343434";
+    const subagent_other_source_id = "36363636-3636-4636-8636-363636363636";
+    const custom_atlas_source_id = "55555555-5555-4555-8555-555555555555";
+    try saveThreadListTestTranscript(allocator, codex_home, cli_id, "cli", "user", "openai", codex_home, "CLI thread", "interactive prompt");
+    try saveThreadListTestTranscript(allocator, codex_home, cli_thread_source_subagent_id, "cli", "subagent", "openai", codex_home, "CLI thread source subagent", "cli subagent prompt");
+    try saveThreadListTestTranscriptWithSourceJson(allocator, codex_home, subagent_source_id, "{\"subagent\":\"review\"}", "user", "openai", codex_home, "subagent source prompt");
+    try saveThreadListTestTranscriptWithSourceJson(allocator, codex_home, subagent_spawn_source_id, "{\"subagent\":{\"thread_spawn\":{\"parent_thread_id\":\"77777777-7777-4777-8777-777777777777\",\"depth\":2,\"agent_path\":null,\"agent_nickname\":\"Scout\",\"agent_role\":\"reviewer\"}}}", "user", "openai", codex_home, "subagent spawn prompt");
+    try saveThreadListTestTranscriptWithSourceJson(allocator, codex_home, subagent_other_source_id, "{\"subagent\":{\"other\":\"debug\"}}", "user", "openai", codex_home, "subagent other prompt");
+    try saveThreadListTestTranscriptWithSourceJson(allocator, codex_home, custom_atlas_source_id, "{\"custom\":\"atlas\"}", "user", "openai", codex_home, "atlas source prompt");
+
+    var state = AppServerState{};
+    defer state.deinit(allocator);
+    var start_params = try std.json.parseFromSlice(std.json.Value, allocator, "{\"ephemeral\":true}", .{});
+    defer start_params.deinit();
+    var loaded_thread = try createLoadedThreadFromStartParams(allocator, cfg, start_params.value.object);
+    var loaded_thread_moved = false;
+    errdefer if (!loaded_thread_moved) loaded_thread.deinit(allocator);
+    const app_server_id = loaded_thread.id;
+    try state.loaded_threads.append(allocator, loaded_thread);
+    loaded_thread_moved = true;
+
+    var default_params = try std.json.parseFromSlice(std.json.Value, allocator, "{\"limit\":10}", .{});
+    defer default_params.deinit();
+    const default_result = try renderThreadListResult(allocator, &state, cfg, default_params.value);
+    defer allocator.free(default_result);
+    try std.testing.expect(std.mem.indexOf(u8, default_result, cli_id) != null);
+    try std.testing.expect(std.mem.indexOf(u8, default_result, cli_thread_source_subagent_id) != null);
+    try std.testing.expect(std.mem.indexOf(u8, default_result, custom_atlas_source_id) != null);
+    try std.testing.expect(std.mem.indexOf(u8, default_result, "\"source\":{\"custom\":\"atlas\"}") != null);
+    try std.testing.expect(std.mem.indexOf(u8, default_result, subagent_source_id) == null);
+    try std.testing.expect(std.mem.indexOf(u8, default_result, subagent_spawn_source_id) == null);
+    try std.testing.expect(std.mem.indexOf(u8, default_result, subagent_other_source_id) == null);
+    try std.testing.expect(std.mem.indexOf(u8, default_result, app_server_id) == null);
+
+    var empty_source_params = try std.json.parseFromSlice(std.json.Value, allocator, "{\"limit\":10,\"sourceKinds\":[]}", .{});
+    defer empty_source_params.deinit();
+    const empty_source_result = try renderThreadListResult(allocator, &state, cfg, empty_source_params.value);
+    defer allocator.free(empty_source_result);
+    try std.testing.expect(std.mem.indexOf(u8, empty_source_result, cli_id) != null);
+    try std.testing.expect(std.mem.indexOf(u8, empty_source_result, cli_thread_source_subagent_id) != null);
+    try std.testing.expect(std.mem.indexOf(u8, empty_source_result, custom_atlas_source_id) != null);
+    try std.testing.expect(std.mem.indexOf(u8, empty_source_result, subagent_source_id) == null);
+    try std.testing.expect(std.mem.indexOf(u8, empty_source_result, subagent_spawn_source_id) == null);
+    try std.testing.expect(std.mem.indexOf(u8, empty_source_result, subagent_other_source_id) == null);
+    try std.testing.expect(std.mem.indexOf(u8, empty_source_result, app_server_id) == null);
+
+    var app_server_params = try std.json.parseFromSlice(std.json.Value, allocator, "{\"limit\":10,\"sourceKinds\":[\"appServer\"]}", .{});
+    defer app_server_params.deinit();
+    const app_server_result = try renderThreadListResult(allocator, &state, cfg, app_server_params.value);
+    defer allocator.free(app_server_result);
+    try std.testing.expect(std.mem.indexOf(u8, app_server_result, app_server_id) != null);
+    try std.testing.expect(std.mem.indexOf(u8, app_server_result, cli_id) == null);
+    try std.testing.expect(std.mem.indexOf(u8, app_server_result, cli_thread_source_subagent_id) == null);
+    try std.testing.expect(std.mem.indexOf(u8, app_server_result, custom_atlas_source_id) == null);
+    try std.testing.expect(std.mem.indexOf(u8, app_server_result, subagent_source_id) == null);
+    try std.testing.expect(std.mem.indexOf(u8, app_server_result, subagent_spawn_source_id) == null);
+    try std.testing.expect(std.mem.indexOf(u8, app_server_result, subagent_other_source_id) == null);
+
+    var cli_params = try std.json.parseFromSlice(std.json.Value, allocator, "{\"limit\":10,\"sourceKinds\":[\"cli\"]}", .{});
+    defer cli_params.deinit();
+    const cli_result = try renderThreadListResult(allocator, &state, cfg, cli_params.value);
+    defer allocator.free(cli_result);
+    try std.testing.expect(std.mem.indexOf(u8, cli_result, cli_id) != null);
+    try std.testing.expect(std.mem.indexOf(u8, cli_result, cli_thread_source_subagent_id) != null);
+    try std.testing.expect(std.mem.indexOf(u8, cli_result, custom_atlas_source_id) == null);
+    try std.testing.expect(std.mem.indexOf(u8, cli_result, subagent_source_id) == null);
+    try std.testing.expect(std.mem.indexOf(u8, cli_result, subagent_spawn_source_id) == null);
+    try std.testing.expect(std.mem.indexOf(u8, cli_result, subagent_other_source_id) == null);
+    try std.testing.expect(std.mem.indexOf(u8, cli_result, app_server_id) == null);
+
+    var subagent_params = try std.json.parseFromSlice(std.json.Value, allocator, "{\"limit\":10,\"sourceKinds\":[\"subAgent\"]}", .{});
+    defer subagent_params.deinit();
+    const subagent_result = try renderThreadListResult(allocator, &state, cfg, subagent_params.value);
+    defer allocator.free(subagent_result);
+    try std.testing.expect(std.mem.indexOf(u8, subagent_result, subagent_source_id) != null);
+    try std.testing.expect(std.mem.indexOf(u8, subagent_result, subagent_spawn_source_id) != null);
+    try std.testing.expect(std.mem.indexOf(u8, subagent_result, subagent_other_source_id) != null);
+    try std.testing.expect(std.mem.indexOf(u8, subagent_result, "\"source\":{\"subAgent\":\"review\"}") != null);
+    try std.testing.expect(std.mem.indexOf(u8, subagent_result, cli_id) == null);
+    try std.testing.expect(std.mem.indexOf(u8, subagent_result, cli_thread_source_subagent_id) == null);
+    try std.testing.expect(std.mem.indexOf(u8, subagent_result, custom_atlas_source_id) == null);
+    try std.testing.expect(std.mem.indexOf(u8, subagent_result, app_server_id) == null);
+
+    var spawn_params = try std.json.parseFromSlice(std.json.Value, allocator, "{\"limit\":10,\"sourceKinds\":[\"subAgentThreadSpawn\"]}", .{});
+    defer spawn_params.deinit();
+    const spawn_result = try renderThreadListResult(allocator, &state, cfg, spawn_params.value);
+    defer allocator.free(spawn_result);
+    try std.testing.expect(std.mem.indexOf(u8, spawn_result, subagent_spawn_source_id) != null);
+    try std.testing.expect(std.mem.indexOf(u8, spawn_result, "\"source\":{\"subAgent\":{\"thread_spawn\":{\"parent_thread_id\":\"77777777-7777-4777-8777-777777777777\",\"depth\":2,\"agent_path\":null,\"agent_nickname\":\"Scout\",\"agent_role\":\"reviewer\"}}}") != null);
+    try std.testing.expect(std.mem.indexOf(u8, spawn_result, subagent_source_id) == null);
+    try std.testing.expect(std.mem.indexOf(u8, spawn_result, subagent_other_source_id) == null);
+
+    var other_subagent_params = try std.json.parseFromSlice(std.json.Value, allocator, "{\"limit\":10,\"sourceKinds\":[\"subAgentOther\"]}", .{});
+    defer other_subagent_params.deinit();
+    const other_subagent_result = try renderThreadListResult(allocator, &state, cfg, other_subagent_params.value);
+    defer allocator.free(other_subagent_result);
+    try std.testing.expect(std.mem.indexOf(u8, other_subagent_result, subagent_other_source_id) != null);
+    try std.testing.expect(std.mem.indexOf(u8, other_subagent_result, "\"source\":{\"subAgent\":{\"other\":\"debug\"}}") != null);
+    try std.testing.expect(std.mem.indexOf(u8, other_subagent_result, subagent_source_id) == null);
+    try std.testing.expect(std.mem.indexOf(u8, other_subagent_result, subagent_spawn_source_id) == null);
+}
+
+test "thread source renderers normalize Rust state DB JSON source strings" {
+    const allocator = std.testing.allocator;
+
+    var thread_source = std.ArrayList(u8).empty;
+    defer thread_source.deinit(allocator);
+    try appendThreadSourceJson(allocator, &thread_source, "{\"subagent\":\"review\"}");
+    try std.testing.expectEqualStrings("{\"subAgent\":\"review\"}", thread_source.items);
+
+    var summary_source = std.ArrayList(u8).empty;
+    defer summary_source.deinit(allocator);
+    try appendConversationSummarySourceJson(allocator, &summary_source, "{\"custom\":\"atlas\"}");
+    try std.testing.expectEqualStrings("{\"custom\":\"atlas\"}", summary_source.items);
+}
+
+test "thread/list cwd filter resolves relative paths" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var dir = std.testing.tmpDir(.{});
+    defer dir.cleanup();
+    const codex_home = try dir.dir.realPathFileAlloc(io, ".", allocator);
+    defer allocator.free(codex_home);
+
+    var cfg = try testAppServerConfig(allocator, "gpt-5.5");
+    defer cfg.deinit(allocator);
+    try replaceConfigOwnedString(allocator, &cfg.codex_home, codex_home);
+
+    const process_cwd = try std.Io.Dir.cwd().realPathFileAlloc(io, ".", allocator);
+    defer allocator.free(process_cwd);
+    const relative_cwd = "thread-list-relative-cwd";
+    const absolute_cwd = try std.fs.path.resolve(allocator, &.{ process_cwd, relative_cwd });
+    defer allocator.free(absolute_cwd);
+
+    const cli_id = "44444444-4444-4444-8444-444444444444";
+    try saveThreadListTestTranscript(allocator, codex_home, cli_id, "cli", "user", "openai", absolute_cwd, "Relative cwd thread", "cwd prompt");
+
+    var state = AppServerState{};
+    defer state.deinit(allocator);
+
+    var relative_params = try std.json.parseFromSlice(std.json.Value, allocator, "{\"limit\":10,\"sourceKinds\":[\"cli\"],\"cwd\":\"thread-list-relative-cwd\"}", .{});
+    defer relative_params.deinit();
+    const relative_result = try renderThreadListResult(allocator, &state, cfg, relative_params.value);
+    defer allocator.free(relative_result);
+    try std.testing.expect(std.mem.indexOf(u8, relative_result, cli_id) != null);
+
+    var other_params = try std.json.parseFromSlice(std.json.Value, allocator, "{\"limit\":10,\"sourceKinds\":[\"cli\"],\"cwd\":\"other-thread-list-relative-cwd\"}", .{});
+    defer other_params.deinit();
+    const other_result = try renderThreadListResult(allocator, &state, cfg, other_params.value);
+    defer allocator.free(other_result);
+    try std.testing.expect(std.mem.indexOf(u8, other_result, cli_id) == null);
 }
 
 fn threadListItemMatchesSearchTerm(thread: ThreadListItem, search: []const u8) bool {
@@ -42601,21 +43014,56 @@ fn renderConversationSummaryResponse(allocator: std.mem.Allocator, summary: Conv
 }
 
 fn appendConversationSummarySourceJson(allocator: std.mem.Allocator, out: *std.ArrayList(u8), source: []const u8) !void {
-    if (std.mem.eql(u8, source, "cli") or
-        std.mem.eql(u8, source, "vscode") or
-        std.mem.eql(u8, source, "exec") or
-        std.mem.eql(u8, source, "mcp") or
-        std.mem.eql(u8, source, "unknown"))
+    const normalized_source = try session_store.normalizeSessionSourceText(allocator, source);
+    defer allocator.free(normalized_source);
+
+    if (std.mem.eql(u8, normalized_source, "cli") or
+        std.mem.eql(u8, normalized_source, "vscode") or
+        std.mem.eql(u8, normalized_source, "exec") or
+        std.mem.eql(u8, normalized_source, "unknown"))
     {
-        try appendJsonString(allocator, out, source);
+        try appendJsonString(allocator, out, normalized_source);
         return;
     }
-    if (std.mem.eql(u8, source, "memory_consolidation")) {
+    if (threadListTextEqualsAny(normalized_source, &.{ "mcp", "appServer", "appserver", "app-server", "app_server" })) {
+        try appendJsonString(allocator, out, "mcp");
+        return;
+    }
+    if (std.mem.eql(u8, normalized_source, "memory_consolidation") or std.mem.eql(u8, normalized_source, "internal_memory_consolidation")) {
         try out.appendSlice(allocator, "{\"internal\":\"memory_consolidation\"}");
         return;
     }
+    if (std.mem.startsWith(u8, normalized_source, "internal_")) {
+        try out.appendSlice(allocator, "{\"internal\":");
+        try appendJsonString(allocator, out, normalized_source["internal_".len..]);
+        try out.appendSlice(allocator, "}");
+        return;
+    }
+    if (std.mem.eql(u8, normalized_source, "subagent_review")) return out.appendSlice(allocator, "{\"subagent\":\"review\"}");
+    if (std.mem.eql(u8, normalized_source, "subagent_compact")) return out.appendSlice(allocator, "{\"subagent\":\"compact\"}");
+    if (std.mem.eql(u8, normalized_source, "subagent_memory_consolidation")) return out.appendSlice(allocator, "{\"subagent\":\"memory_consolidation\"}");
+    if (std.mem.startsWith(u8, normalized_source, "subagent_thread_spawn:")) {
+        try out.appendSlice(allocator, "{\"subagent\":{\"thread_spawn\":");
+        try out.appendSlice(allocator, normalized_source["subagent_thread_spawn:".len..]);
+        try out.appendSlice(allocator, "}}");
+        return;
+    }
+    if (std.mem.eql(u8, normalized_source, "subagent_thread_spawn")) return out.appendSlice(allocator, "{\"subagent\":{\"other\":\"thread_spawn\"}}");
+    if (std.mem.startsWith(u8, normalized_source, "subagent_other:")) {
+        try out.appendSlice(allocator, "{\"subagent\":{\"other\":");
+        try appendJsonString(allocator, out, normalized_source["subagent_other:".len..]);
+        try out.appendSlice(allocator, "}}");
+        return;
+    }
+    if (std.mem.eql(u8, normalized_source, "subagent_other")) return out.appendSlice(allocator, "{\"subagent\":{\"other\":\"unknown\"}}");
+    if (std.mem.startsWith(u8, normalized_source, "custom:")) {
+        try out.appendSlice(allocator, "{\"custom\":");
+        try appendJsonString(allocator, out, normalized_source["custom:".len..]);
+        try out.appendSlice(allocator, "}");
+        return;
+    }
     try out.appendSlice(allocator, "{\"custom\":");
-    try appendJsonString(allocator, out, source);
+    try appendJsonString(allocator, out, normalized_source);
     try out.appendSlice(allocator, "}");
 }
 
@@ -43751,7 +44199,7 @@ fn appendLoadedThreadJson(
     try result.appendSlice(allocator, ",\"cliVersion\":");
     try appendJsonString(allocator, result, thread.cli_version);
     try result.appendSlice(allocator, ",\"source\":");
-    try appendJsonString(allocator, result, thread.source);
+    try appendThreadSourceJson(allocator, result, thread.source);
     try result.appendSlice(allocator, ",\"threadSource\":");
     try appendOptionalJsonString(allocator, result, thread.thread_source);
     try result.appendSlice(allocator, ",\"agentNickname\":");
@@ -43811,7 +44259,7 @@ fn appendSavedThreadListItemJson(allocator: std.mem.Allocator, result: *std.Arra
     try result.appendSlice(allocator, ",\"cliVersion\":");
     try appendJsonString(allocator, result, thread.cli_version);
     try result.appendSlice(allocator, ",\"source\":");
-    try appendJsonString(allocator, result, thread.source);
+    try appendThreadSourceJson(allocator, result, thread.source);
     try result.appendSlice(allocator, ",\"threadSource\":");
     try appendOptionalJsonString(allocator, result, thread.thread_source);
     try result.appendSlice(allocator, ",\"agentNickname\":");
@@ -43837,6 +44285,51 @@ fn appendLoadedThreadGitInfoJson(allocator: std.mem.Allocator, result: *std.Arra
     try result.appendSlice(allocator, ",\"originUrl\":");
     try appendOptionalJsonString(allocator, result, thread.git_origin_url);
     try result.append(allocator, '}');
+}
+
+fn appendThreadSourceJson(allocator: std.mem.Allocator, result: *std.ArrayList(u8), source: []const u8) !void {
+    const normalized_source = try session_store.normalizeSessionSourceText(allocator, source);
+    defer allocator.free(normalized_source);
+
+    if (std.mem.eql(u8, normalized_source, "cli")) return appendJsonString(allocator, result, "cli");
+    if (std.mem.eql(u8, normalized_source, "vscode")) return appendJsonString(allocator, result, "vscode");
+    if (std.mem.eql(u8, normalized_source, "exec")) return appendJsonString(allocator, result, "exec");
+    if (threadListTextEqualsAny(normalized_source, &.{ "appServer", "mcp", "appserver", "app-server", "app_server" })) {
+        return appendJsonString(allocator, result, "appServer");
+    }
+    if (std.mem.eql(u8, normalized_source, "subagent_review")) return result.appendSlice(allocator, "{\"subAgent\":\"review\"}");
+    if (std.mem.eql(u8, normalized_source, "subagent_compact")) return result.appendSlice(allocator, "{\"subAgent\":\"compact\"}");
+    if (std.mem.eql(u8, normalized_source, "subagent_memory_consolidation")) return result.appendSlice(allocator, "{\"subAgent\":\"memory_consolidation\"}");
+    if (std.mem.startsWith(u8, normalized_source, "subagent_thread_spawn:")) {
+        try result.appendSlice(allocator, "{\"subAgent\":{\"thread_spawn\":");
+        try result.appendSlice(allocator, normalized_source["subagent_thread_spawn:".len..]);
+        try result.appendSlice(allocator, "}}");
+        return;
+    }
+    if (std.mem.eql(u8, normalized_source, "subagent_thread_spawn")) return result.appendSlice(allocator, "{\"subAgent\":{\"other\":\"thread_spawn\"}}");
+    if (std.mem.startsWith(u8, normalized_source, "subagent_other:")) {
+        try result.appendSlice(allocator, "{\"subAgent\":{\"other\":");
+        try appendJsonString(allocator, result, normalized_source["subagent_other:".len..]);
+        try result.appendSlice(allocator, "}}");
+        return;
+    }
+    if (std.mem.eql(u8, normalized_source, "subagent_other")) return result.appendSlice(allocator, "{\"subAgent\":{\"other\":\"unknown\"}}");
+    if (std.mem.startsWith(u8, normalized_source, "internal_") or std.mem.eql(u8, normalized_source, "memory_consolidation")) {
+        return appendJsonString(allocator, result, "unknown");
+    }
+    if (std.mem.startsWith(u8, normalized_source, "custom:")) {
+        try result.appendSlice(allocator, "{\"custom\":");
+        try appendJsonString(allocator, result, normalized_source["custom:".len..]);
+        try result.append(allocator, '}');
+        return;
+    }
+    if (normalized_source.len > 0) {
+        try result.appendSlice(allocator, "{\"custom\":");
+        try appendJsonString(allocator, result, normalized_source);
+        try result.append(allocator, '}');
+        return;
+    }
+    return appendJsonString(allocator, result, "unknown");
 }
 
 fn appendSavedThreadListGitInfoJson(allocator: std.mem.Allocator, result: *std.ArrayList(u8), thread: SavedThreadListItem) !void {

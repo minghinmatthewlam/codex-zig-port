@@ -817,7 +817,7 @@ fn applyRolloutSessionMeta(
 
     if (jsonStringField(object, "id")) |value| try transcript.setId(allocator, value);
     if (jsonStringField(object, "forked_from_id")) |value| try transcript.setForkedFromId(allocator, value);
-    if (jsonStringField(object, "source")) |value| try transcript.setSource(allocator, value);
+    try applyRolloutSessionSource(allocator, transcript, object.get("source"));
     if (jsonStringField(object, "thread_source")) |value| try transcript.setThreadSource(allocator, value);
     if (jsonStringField(object, "model_provider")) |value| try transcript.setModelProvider(allocator, value);
     if (jsonStringField(object, "openai_base_url")) |value| try transcript.setOpenaiBaseUrl(allocator, value);
@@ -955,6 +955,80 @@ fn normalizeGoalStatus(status: []const u8) ?[]const u8 {
     if (std.mem.eql(u8, status, "budget_limited")) return "budgetLimited";
     if (std.mem.eql(u8, status, "complete")) return status;
     return null;
+}
+
+fn applyRolloutSessionSource(
+    allocator: std.mem.Allocator,
+    transcript: *session.Transcript,
+    maybe_source: ?std.json.Value,
+) !void {
+    const source = maybe_source orelse return;
+    const canonical = try normalizeSessionSourceValue(allocator, source);
+    defer allocator.free(canonical);
+    try transcript.setSource(allocator, canonical);
+}
+
+pub fn normalizeSessionSourceText(allocator: std.mem.Allocator, raw: []const u8) ![]const u8 {
+    var parsed = std.json.parseFromSlice(std.json.Value, allocator, raw, .{}) catch |err| switch (err) {
+        error.OutOfMemory => return error.OutOfMemory,
+        else => return allocator.dupe(u8, raw),
+    };
+    defer parsed.deinit();
+    return normalizeSessionSourceValue(allocator, parsed.value);
+}
+
+pub fn normalizeSessionSourceValue(allocator: std.mem.Allocator, source: std.json.Value) ![]const u8 {
+    switch (source) {
+        .string => |value| return allocator.dupe(u8, value),
+        .object => |object| {
+            if (object.get("subagent") orelse object.get("subAgent")) |subagent| {
+                return normalizeSessionSubAgentSourceValue(allocator, subagent);
+            }
+            if (object.get("custom")) |custom| {
+                if (custom == .string) {
+                    return std.fmt.allocPrint(allocator, "custom:{s}", .{custom.string});
+                }
+            }
+            if (object.get("internal")) |internal| {
+                if (internal == .string) {
+                    return std.fmt.allocPrint(allocator, "internal_{s}", .{internal.string});
+                }
+            }
+            return allocator.dupe(u8, "unknown");
+        },
+        else => return allocator.dupe(u8, "unknown"),
+    }
+}
+
+fn normalizeSessionSubAgentSourceValue(
+    allocator: std.mem.Allocator,
+    source: std.json.Value,
+) ![]const u8 {
+    switch (source) {
+        .string => |value| {
+            if (std.mem.eql(u8, value, "review")) {
+                return allocator.dupe(u8, "subagent_review");
+            } else if (std.mem.eql(u8, value, "compact")) {
+                return allocator.dupe(u8, "subagent_compact");
+            } else if (std.mem.eql(u8, value, "memory_consolidation")) {
+                return allocator.dupe(u8, "subagent_memory_consolidation");
+            } else {
+                return std.fmt.allocPrint(allocator, "subagent_other:{s}", .{value});
+            }
+        },
+        .object => |object| {
+            if (object.get("thread_spawn") orelse object.get("threadSpawn")) |thread_spawn| {
+                const payload = try std.json.Stringify.valueAlloc(allocator, thread_spawn, .{});
+                defer allocator.free(payload);
+                return std.fmt.allocPrint(allocator, "subagent_thread_spawn:{s}", .{payload});
+            }
+            if (object.get("other")) |other| {
+                if (other == .string) return std.fmt.allocPrint(allocator, "subagent_other:{s}", .{other.string});
+            }
+            return allocator.dupe(u8, "subagent_other");
+        },
+        else => return allocator.dupe(u8, "subagent_other"),
+    }
 }
 
 test "session store normalizes all Rust goal statuses" {
@@ -1900,6 +1974,56 @@ test "thread list summary skips developer-only preview context" {
     var summary = try loadThreadListSummary(allocator, path, "001-developer-context");
     defer summary.deinit(allocator);
     try std.testing.expectEqualStrings("visible prompt", summary.preview);
+}
+
+test "thread list summary parses Rust structured session source" {
+    const allocator = std.testing.allocator;
+    var dir = std.testing.tmpDir(.{});
+    defer dir.cleanup();
+
+    const root = try dir.dir.realPathFileAlloc(std.Io.Threaded.global_single_threaded.io(), ".", allocator);
+    defer allocator.free(root);
+    const path = try std.fs.path.join(allocator, &.{ root, "rollout-2025-02-02T09-00-00-33333333-3333-4333-8333-333333333333.jsonl" });
+    defer allocator.free(path);
+
+    try std.Io.Dir.cwd().writeFile(std.Io.Threaded.global_single_threaded.io(), .{
+        .sub_path = path,
+        .data =
+        \\{"timestamp":"2025-02-02T09:00:00Z","type":"session_meta","payload":{"meta":{"id":"33333333-3333-4333-8333-333333333333","timestamp":"2025-02-02T09:00:00Z","cwd":"/repo","originator":"codex","cli_version":"0.0.0","source":{"subagent":"review"},"thread_source":"user","model_provider":"mock_provider"}}}
+        \\{"timestamp":"2025-02-02T09:00:00Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"review prompt"}]}}
+        \\
+        ,
+    });
+
+    var summary = try loadThreadListSummary(allocator, path, "33333333-3333-4333-8333-333333333333");
+    defer summary.deinit(allocator);
+    try std.testing.expectEqualStrings("subagent_review", summary.source.?);
+    try std.testing.expectEqualStrings("user", summary.thread_source.?);
+    try std.testing.expectEqualStrings("review prompt", summary.preview);
+}
+
+test "session source normalization parses Rust state DB source strings" {
+    const allocator = std.testing.allocator;
+
+    const custom = try normalizeSessionSourceText(allocator, "{\"custom\":\"atlas\"}");
+    defer allocator.free(custom);
+    try std.testing.expectEqualStrings("custom:atlas", custom);
+
+    const review = try normalizeSessionSourceText(allocator, "{\"subagent\":\"review\"}");
+    defer allocator.free(review);
+    try std.testing.expectEqualStrings("subagent_review", review);
+
+    const other = try normalizeSessionSourceText(allocator, "{\"subagent\":{\"other\":\"debug\"}}");
+    defer allocator.free(other);
+    try std.testing.expectEqualStrings("subagent_other:debug", other);
+
+    const spawn = try normalizeSessionSourceText(allocator, "{\"subagent\":{\"thread_spawn\":{\"parent_thread_id\":\"34343434-3434-4434-8434-343434343434\",\"depth\":1,\"agent_path\":null,\"agent_nickname\":\"Scout\",\"agent_role\":\"reviewer\"}}}");
+    defer allocator.free(spawn);
+    try std.testing.expectEqualStrings("subagent_thread_spawn:{\"parent_thread_id\":\"34343434-3434-4434-8434-343434343434\",\"depth\":1,\"agent_path\":null,\"agent_nickname\":\"Scout\",\"agent_role\":\"reviewer\"}", spawn);
+
+    const plain = try normalizeSessionSourceText(allocator, "cli");
+    defer allocator.free(plain);
+    try std.testing.expectEqualStrings("cli", plain);
 }
 
 test "list sessions tolerates large untitled transcript lines" {

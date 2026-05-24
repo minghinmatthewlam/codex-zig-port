@@ -17413,6 +17413,100 @@ def run_thread_resume_rpc_smoke(binary: Path) -> None:
             ),
             encoding="utf-8",
         )
+        rust_subagent_thread_id = "34343434-3434-4434-8434-343434343434"
+        rust_subagent_rollout_path = (
+            sessions_dir / f"rollout-{rust_subagent_thread_id}.jsonl"
+        )
+        rust_subagent_rollout_path.write_text(
+            "\n".join(
+                [
+                    json.dumps(
+                        {
+                            "timestamp": "2025-01-05T12:00:00Z",
+                            "type": "session_meta",
+                            "payload": {
+                                "meta": {
+                                    "id": rust_subagent_thread_id,
+                                    "timestamp": "2025-01-05T12:00:00Z",
+                                    "cwd": "/",
+                                    "originator": "codex",
+                                    "cli_version": "0.0.0",
+                                    "source": {"subagent": "review"},
+                                    "thread_source": "user",
+                                    "model_provider": "mock_provider",
+                                }
+                            },
+                        },
+                        separators=(",", ":"),
+                    ),
+                    json.dumps(
+                        {
+                            "timestamp": "2025-01-05T12:00:00Z",
+                            "type": "response_item",
+                            "payload": {
+                                "type": "message",
+                                "role": "user",
+                                "content": [
+                                    {
+                                        "type": "input_text",
+                                        "text": "rust subagent saved hello",
+                                    }
+                                ],
+                            },
+                        },
+                        separators=(",", ":"),
+                    ),
+                    "",
+                ]
+            ),
+            encoding="utf-8",
+        )
+        rust_custom_thread_id = "35353535-3535-4535-8535-353535353535"
+        rust_custom_rollout_path = sessions_dir / f"rollout-{rust_custom_thread_id}.jsonl"
+        rust_custom_rollout_path.write_text(
+            "\n".join(
+                [
+                    json.dumps(
+                        {
+                            "timestamp": "2025-01-05T12:00:00Z",
+                            "type": "session_meta",
+                            "payload": {
+                                "meta": {
+                                    "id": rust_custom_thread_id,
+                                    "timestamp": "2025-01-05T12:00:00Z",
+                                    "cwd": "/",
+                                    "originator": "codex",
+                                    "cli_version": "0.0.0",
+                                    "source": {"custom": "atlas"},
+                                    "thread_source": "user",
+                                    "model_provider": "mock_provider",
+                                }
+                            },
+                        },
+                        separators=(",", ":"),
+                    ),
+                    json.dumps(
+                        {
+                            "timestamp": "2025-01-05T12:00:00Z",
+                            "type": "response_item",
+                            "payload": {
+                                "type": "message",
+                                "role": "user",
+                                "content": [
+                                    {
+                                        "type": "input_text",
+                                        "text": "rust atlas saved hello",
+                                    }
+                                ],
+                            },
+                        },
+                        separators=(",", ":"),
+                    ),
+                    "",
+                ]
+            ),
+            encoding="utf-8",
+        )
         state_db_thread_id = "44444444-4444-4444-8444-444444444444"
         state_db_rollouts_dir = codex_home / "state-rollouts"
         state_db_rollouts_dir.mkdir()
@@ -17531,6 +17625,7 @@ def run_thread_resume_rpc_smoke(binary: Path) -> None:
             codex_home,
             [
                 (appserver_thread_id, appserver_rollout_path),
+                (rust_subagent_thread_id, rust_subagent_rollout_path),
                 (state_db_thread_id, state_db_rollout_path),
                 (archived_state_db_thread_id, archived_state_db_rollout_path),
             ],
@@ -17560,6 +17655,31 @@ def run_thread_resume_rpc_smoke(binary: Path) -> None:
                     1736077800000,
                     1736077805000,
                     appserver_thread_id,
+                ),
+            )
+            db.execute(
+                """
+                UPDATE threads
+                SET source = ?,
+                    model_provider = ?,
+                    cwd = ?,
+                    first_user_message = ?,
+                    created_at = ?,
+                    updated_at = ?,
+                    created_at_ms = ?,
+                    updated_at_ms = ?
+                WHERE id = ?
+                """,
+                (
+                    '{"subagent":"review"}',
+                    "mock_provider",
+                    "/",
+                    "rust subagent saved hello",
+                    1736078100,
+                    1736078105,
+                    1736078100000,
+                    1736078105000,
+                    rust_subagent_thread_id,
                 ),
             )
             db.execute(
@@ -17707,6 +17827,133 @@ def run_thread_resume_rpc_smoke(binary: Path) -> None:
                 proc,
                 {
                     "jsonrpc": "2.0",
+                    "id": "thread-list-default-skips-rust-subagent-source",
+                    "method": "thread/list",
+                    "params": {
+                        "modelProviders": ["mock_provider"],
+                        "searchTerm": "rust subagent saved",
+                    },
+                },
+            )
+            default_subagent_source_list = read_json_line(proc, 5)
+            assert (
+                default_subagent_source_list["id"]
+                == "thread-list-default-skips-rust-subagent-source"
+            )
+            assert default_subagent_source_list["result"]["data"] == []
+
+            write_json_line(
+                proc,
+                {
+                    "jsonrpc": "2.0",
+                    "id": "thread-list-rust-subagent-source-kind",
+                    "method": "thread/list",
+                    "params": {
+                        "modelProviders": ["mock_provider"],
+                        "sourceKinds": ["subAgentReview"],
+                        "cwd": "/",
+                        "searchTerm": "rust subagent saved",
+                    },
+                },
+            )
+            rust_subagent_source_list = read_json_line(proc, 5)
+            assert rust_subagent_source_list["id"] == "thread-list-rust-subagent-source-kind"
+            rust_subagent_threads = rust_subagent_source_list["result"]["data"]
+            assert len(rust_subagent_threads) == 1
+            assert rust_subagent_threads[0]["id"] == rust_subagent_thread_id
+            assert rust_subagent_threads[0]["source"] == {"subAgent": "review"}
+
+            write_json_line(
+                proc,
+                {
+                    "jsonrpc": "2.0",
+                    "id": "thread-list-default-includes-rust-custom-source",
+                    "method": "thread/list",
+                    "params": {
+                        "modelProviders": ["mock_provider"],
+                        "searchTerm": "rust atlas saved",
+                    },
+                },
+            )
+            default_custom_source_list = read_json_line(proc, 5)
+            assert (
+                default_custom_source_list["id"]
+                == "thread-list-default-includes-rust-custom-source"
+            )
+            custom_source_threads = default_custom_source_list["result"]["data"]
+            assert len(custom_source_threads) == 1
+            assert custom_source_threads[0]["id"] == rust_custom_thread_id
+            assert custom_source_threads[0]["source"] == {"custom": "atlas"}
+
+            write_json_line(
+                proc,
+                {
+                    "jsonrpc": "2.0",
+                    "id": "thread-list-cli-skips-rust-custom-source",
+                    "method": "thread/list",
+                    "params": {
+                        "modelProviders": ["mock_provider"],
+                        "sourceKinds": ["cli"],
+                        "searchTerm": "rust atlas saved",
+                    },
+                },
+            )
+            cli_custom_source_list = read_json_line(proc, 5)
+            assert cli_custom_source_list["id"] == "thread-list-cli-skips-rust-custom-source"
+            assert cli_custom_source_list["result"]["data"] == []
+
+            write_json_line(
+                proc,
+                {
+                    "jsonrpc": "2.0",
+                    "id": "summary-rust-subagent-source",
+                    "method": "getConversationSummary",
+                    "params": {"rolloutPath": str(rust_subagent_rollout_path)},
+                },
+            )
+            rust_subagent_summary = read_json_line(proc, 5)
+            assert rust_subagent_summary["id"] == "summary-rust-subagent-source"
+            assert rust_subagent_summary["result"]["summary"]["source"] == {
+                "subagent": "review"
+            }
+
+            write_json_line(
+                proc,
+                {
+                    "jsonrpc": "2.0",
+                    "id": "summary-state-db-rust-subagent-source",
+                    "method": "getConversationSummary",
+                    "params": {"conversationId": rust_subagent_thread_id},
+                },
+            )
+            state_db_rust_subagent_summary = read_json_line(proc, 5)
+            assert (
+                state_db_rust_subagent_summary["id"]
+                == "summary-state-db-rust-subagent-source"
+            )
+            assert state_db_rust_subagent_summary["result"]["summary"]["source"] == {
+                "subagent": "review"
+            }
+
+            write_json_line(
+                proc,
+                {
+                    "jsonrpc": "2.0",
+                    "id": "summary-rust-custom-source",
+                    "method": "getConversationSummary",
+                    "params": {"rolloutPath": str(rust_custom_rollout_path)},
+                },
+            )
+            rust_custom_summary = read_json_line(proc, 5)
+            assert rust_custom_summary["id"] == "summary-rust-custom-source"
+            assert rust_custom_summary["result"]["summary"]["source"] == {
+                "custom": "atlas"
+            }
+
+            write_json_line(
+                proc,
+                {
+                    "jsonrpc": "2.0",
                     "id": "thread-list-state-db-appserver-rollout",
                     "method": "thread/list",
                     "params": {
@@ -17731,6 +17978,32 @@ def run_thread_resume_rpc_smoke(binary: Path) -> None:
             )
             assert state_db_appserver_thread["source"] == "appServer"
             assert state_db_appserver_thread["turns"] == []
+
+            write_json_line(
+                proc,
+                {
+                    "jsonrpc": "2.0",
+                    "id": "thread-list-state-db-rust-subagent-source",
+                    "method": "thread/list",
+                    "params": {
+                        "modelProviders": ["mock_provider"],
+                        "sourceKinds": ["subAgentReview"],
+                        "cwd": "/",
+                        "searchTerm": "rust subagent saved",
+                        "useStateDbOnly": True,
+                    },
+                },
+            )
+            state_db_subagent_list = read_json_line(proc, 5)
+            assert (
+                state_db_subagent_list["id"]
+                == "thread-list-state-db-rust-subagent-source"
+            )
+            state_db_subagent_threads = state_db_subagent_list["result"]["data"]
+            assert len(state_db_subagent_threads) == 1
+            assert state_db_subagent_threads[0]["id"] == rust_subagent_thread_id
+            assert state_db_subagent_threads[0]["source"] == {"subAgent": "review"}
+            assert state_db_subagent_threads[0]["preview"] == "rust subagent saved hello"
 
             write_json_line(
                 proc,
@@ -17798,6 +18071,25 @@ def run_thread_resume_rpc_smoke(binary: Path) -> None:
                 proc,
                 {
                     "jsonrpc": "2.0",
+                    "id": "thread-list-default-source-filter",
+                    "method": "thread/list",
+                    "params": {
+                        "useStateDbOnly": True,
+                        "modelProviders": [],
+                    },
+                },
+            )
+            default_source_filter = read_json_line(proc, 5)
+            assert default_source_filter["id"] == "thread-list-default-source-filter"
+            assert [
+                thread["id"] for thread in default_source_filter["result"]["data"]
+            ] == [state_db_thread_id]
+            assert default_source_filter["result"]["nextCursor"] is None
+
+            write_json_line(
+                proc,
+                {
+                    "jsonrpc": "2.0",
                     "id": "thread-list-state-db-page-one",
                     "method": "thread/list",
                     "params": {
@@ -17805,6 +18097,7 @@ def run_thread_resume_rpc_smoke(binary: Path) -> None:
                         "sortKey": "created_at",
                         "sortDirection": "desc",
                         "modelProviders": [],
+                        "sourceKinds": ["cli", "appServer"],
                         "limit": 1,
                     },
                 },
@@ -17830,6 +18123,7 @@ def run_thread_resume_rpc_smoke(binary: Path) -> None:
                     "params": {
                         "useStateDbOnly": True,
                         "modelProviders": [],
+                        "sourceKinds": ["cli", "appServer"],
                         "limit": 0,
                     },
                 },
@@ -17854,6 +18148,7 @@ def run_thread_resume_rpc_smoke(binary: Path) -> None:
                         "sortDirection": "desc",
                         "cursor": state_db_page_one_result["nextCursor"],
                         "modelProviders": [],
+                        "sourceKinds": ["cli", "appServer"],
                         "limit": 1,
                     },
                 },
