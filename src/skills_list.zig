@@ -372,29 +372,7 @@ fn appendPluginSkillRoots(allocator: std.mem.Allocator, roots: *std.ArrayList(Ro
 }
 
 fn pluginSkillNamePrefix(allocator: std.mem.Allocator, plugin_root: []const u8, plugin_id: []const u8) ![]const u8 {
-    if (try pluginManifestName(allocator, plugin_root, ".codex-plugin")) |name| return name;
-    if (try pluginManifestName(allocator, plugin_root, ".claude-plugin")) |name| return name;
-    const parts = plugin_config.splitPluginId(plugin_id) orelse return allocator.dupe(u8, plugin_id);
-    return allocator.dupe(u8, parts.name);
-}
-
-fn pluginManifestName(allocator: std.mem.Allocator, plugin_root: []const u8, manifest_dir: []const u8) !?[]const u8 {
-    const manifest_path = try std.fs.path.join(allocator, &.{ plugin_root, manifest_dir, "plugin.json" });
-    defer allocator.free(manifest_path);
-    const bytes = std.Io.Dir.cwd().readFileAlloc(std.Io.Threaded.global_single_threaded.io(), manifest_path, allocator, .limited(1024 * 256)) catch |err| switch (err) {
-        error.OutOfMemory => return err,
-        else => return null,
-    };
-    defer allocator.free(bytes);
-
-    var parsed = std.json.parseFromSlice(std.json.Value, allocator, bytes, .{}) catch return null;
-    defer parsed.deinit();
-    if (parsed.value != .object) return null;
-    const value = parsed.value.object.get("name") orelse return null;
-    if (value != .string) return null;
-    const name = std.mem.trim(u8, value.string, " \t\r\n");
-    if (name.len == 0) return null;
-    return try allocator.dupe(u8, name);
+    return plugin_config.pluginSkillNamePrefixForRoot(allocator, plugin_root, plugin_id);
 }
 
 fn resolveCodexHome(allocator: std.mem.Allocator) ![]const u8 {

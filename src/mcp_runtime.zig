@@ -14,6 +14,8 @@ pub const ToolSpec = struct {
     callable_name: []const u8,
     description: []const u8,
     input_schema_json: []const u8,
+    plugin_id: ?[]const u8 = null,
+    plugin_display_name: ?[]const u8 = null,
     connector_id: ?[]const u8 = null,
     connector_name: ?[]const u8 = null,
     namespace_description: ?[]const u8 = null,
@@ -24,6 +26,8 @@ pub const ToolSpec = struct {
         allocator.free(self.callable_name);
         allocator.free(self.description);
         allocator.free(self.input_schema_json);
+        if (self.plugin_id) |value| allocator.free(value);
+        if (self.plugin_display_name) |value| allocator.free(value);
         if (self.connector_id) |value| allocator.free(value);
         if (self.connector_name) |value| allocator.free(value);
         if (self.namespace_description) |value| allocator.free(value);
@@ -976,6 +980,10 @@ fn appendToolSpecsFromToolsValue(
         const description_copy = try allocator.dupe(u8, description);
         errdefer allocator.free(description_copy);
 
+        const plugin_id = if (server.plugin_id) |value| try allocator.dupe(u8, value) else null;
+        errdefer if (plugin_id) |value| allocator.free(value);
+        const plugin_display_name = if (server.plugin_display_name) |value| try allocator.dupe(u8, value) else null;
+        errdefer if (plugin_display_name) |value| allocator.free(value);
         var connector_id: ?[]const u8 = null;
         errdefer if (connector_id) |value| allocator.free(value);
         var connector_name: ?[]const u8 = null;
@@ -994,6 +1002,8 @@ fn appendToolSpecsFromToolsValue(
             .callable_name = callable_name,
             .description = description_copy,
             .input_schema_json = input_schema_json,
+            .plugin_id = plugin_id,
+            .plugin_display_name = plugin_display_name,
             .connector_id = connector_id,
             .connector_name = connector_name,
             .namespace_description = namespace_description,
@@ -2677,6 +2687,39 @@ test "mcp connector metadata is ignored for non codex apps servers" {
     try std.testing.expect(specs.items[0].connector_id == null);
     try std.testing.expect(specs.items[0].connector_name == null);
     try std.testing.expect(specs.items[0].namespace_description == null);
+}
+
+test "mcp tool specs carry plugin provenance from plugin servers" {
+    const allocator = std.testing.allocator;
+    var parsed = try std.json.parseFromSlice(
+        std.json.Value,
+        allocator,
+        \\{"tools":[{"name":"search","description":"Search plugin docs","inputSchema":{"type":"object"}}]}
+    ,
+        .{},
+    );
+    defer parsed.deinit();
+
+    var specs = std.ArrayList(ToolSpec).empty;
+    defer {
+        for (specs.items) |spec| spec.deinit(allocator);
+        specs.deinit(allocator);
+    }
+    try appendToolSpecsFromToolsValue(
+        allocator,
+        .{
+            .name = "plugin_docs",
+            .kind = .stdio,
+            .plugin_id = "demo@local",
+            .plugin_display_name = "Demo Plugin",
+        },
+        parsed.value.object.get("tools").?,
+        &specs,
+    );
+
+    try std.testing.expectEqual(@as(usize, 1), specs.items.len);
+    try std.testing.expectEqualStrings("demo@local", specs.items[0].plugin_id.?);
+    try std.testing.expectEqualStrings("Demo Plugin", specs.items[0].plugin_display_name.?);
 }
 
 test "mcp call result renders text content" {

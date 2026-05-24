@@ -52,6 +52,8 @@ pub const KeyValue = struct {
 pub const McpServer = struct {
     name: []const u8,
     kind: ServerKind = .unknown,
+    plugin_id: ?[]const u8 = null,
+    plugin_display_name: ?[]const u8 = null,
     command: ?[]const u8 = null,
     cwd: ?[]const u8 = null,
     url: ?[]const u8 = null,
@@ -74,6 +76,8 @@ pub const McpServer = struct {
 
     pub fn deinit(self: *McpServer, allocator: std.mem.Allocator) void {
         allocator.free(self.name);
+        if (self.plugin_id) |value| allocator.free(value);
+        if (self.plugin_display_name) |value| allocator.free(value);
         if (self.command) |value| allocator.free(value);
         if (self.cwd) |value| allocator.free(value);
         if (self.url) |value| allocator.free(value);
@@ -1523,6 +1527,8 @@ fn cloneMcpServer(allocator: std.mem.Allocator, server: McpServer) !McpServer {
         .kind = server.kind,
     };
     errdefer cloned.deinit(allocator);
+    if (server.plugin_id) |value| cloned.plugin_id = try allocator.dupe(u8, value);
+    if (server.plugin_display_name) |value| cloned.plugin_display_name = try allocator.dupe(u8, value);
     if (server.command) |value| cloned.command = try allocator.dupe(u8, value);
     if (server.cwd) |value| cloned.cwd = try allocator.dupe(u8, value);
     if (server.url) |value| cloned.url = try allocator.dupe(u8, value);
@@ -2492,6 +2498,9 @@ fn appendPluginMcpFile(
         break :blk wrapped.object;
     } else parsed.value.object;
 
+    const plugin_display_name = try plugin_config.pluginDisplayNameForRoot(allocator, plugin_root, plugin_id);
+    defer allocator.free(plugin_display_name);
+
     var iterator = server_map.iterator();
     while (iterator.next()) |entry| {
         const name = entry.key_ptr.*;
@@ -2503,6 +2512,16 @@ fn appendPluginMcpFile(
             errdefer {
                 owned.deinit(allocator);
             }
+            owned.plugin_id = try allocator.dupe(u8, plugin_id);
+            errdefer if (owned.plugin_id) |owned_plugin_id| {
+                allocator.free(owned_plugin_id);
+                owned.plugin_id = null;
+            };
+            owned.plugin_display_name = try allocator.dupe(u8, plugin_display_name);
+            errdefer if (owned.plugin_display_name) |owned_display_name| {
+                allocator.free(owned_display_name);
+                owned.plugin_display_name = null;
+            };
             applyPluginMcpRequirements(plugin_id, &owned, requirements);
             try servers.items.append(allocator, owned);
         }
@@ -4336,7 +4355,11 @@ test "mcp config loads enabled plugin mcp servers" {
     const allocator = std.testing.allocator;
     var dir = std.testing.tmpDir(.{});
     defer dir.cleanup();
-    try dir.dir.createDirPath(std.Io.Threaded.global_single_threaded.io(), "plugins/cache/test/sample/local");
+    try dir.dir.createDirPath(std.Io.Threaded.global_single_threaded.io(), "plugins/cache/test/sample/local/.codex-plugin");
+    try dir.dir.writeFile(std.Io.Threaded.global_single_threaded.io(), .{
+        .sub_path = "plugins/cache/test/sample/local/.codex-plugin/plugin.json",
+        .data = "{\"name\":\"sample\",\"interface\":{\"displayName\":\"Sample Plugin\"}}",
+    });
     try dir.dir.writeFile(std.Io.Threaded.global_single_threaded.io(), .{
         .sub_path = "config.toml",
         .data =
@@ -4378,6 +4401,8 @@ test "mcp config loads enabled plugin mcp servers" {
     try std.testing.expectEqual(@as(usize, 3), servers.items.items.len);
     try std.testing.expectEqualStrings("docs-server", servers.get("docs").?.command.?);
     try std.testing.expectEqualStrings("plugin-mcp", servers.get("plugin_docs").?.command.?);
+    try std.testing.expectEqualStrings("sample@test", servers.get("plugin_docs").?.plugin_id.?);
+    try std.testing.expectEqualStrings("Sample Plugin", servers.get("plugin_docs").?.plugin_display_name.?);
     try std.testing.expectEqualStrings("--stdio", servers.get("plugin_docs").?.args.items[0]);
     try std.testing.expectEqualStrings("PLUGIN_TOKEN", servers.get("plugin_docs").?.env_vars.items[0].key);
     try std.testing.expectEqualStrings("abc", servers.get("plugin_docs").?.env_vars.items[0].value);

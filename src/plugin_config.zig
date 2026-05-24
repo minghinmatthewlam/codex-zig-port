@@ -132,6 +132,64 @@ pub fn localPluginDataRoot(allocator: std.mem.Allocator, codex_home: []const u8,
     return try std.fs.path.join(allocator, &.{ codex_home, "plugins", "data", leaf });
 }
 
+pub fn pluginDisplayNameForRoot(allocator: std.mem.Allocator, plugin_root: []const u8, plugin_id: []const u8) ![]const u8 {
+    if (try pluginManifestDisplayName(allocator, plugin_root, ".codex-plugin")) |name| return name;
+    if (try pluginManifestDisplayName(allocator, plugin_root, ".claude-plugin")) |name| return name;
+    return pluginSkillNamePrefixForRoot(allocator, plugin_root, plugin_id);
+}
+
+pub fn pluginSkillNamePrefixForRoot(allocator: std.mem.Allocator, plugin_root: []const u8, plugin_id: []const u8) ![]const u8 {
+    if (try pluginManifestName(allocator, plugin_root, ".codex-plugin")) |name| return name;
+    if (try pluginManifestName(allocator, plugin_root, ".claude-plugin")) |name| return name;
+    const parts = splitPluginId(plugin_id) orelse return allocator.dupe(u8, plugin_id);
+    return allocator.dupe(u8, parts.name);
+}
+
+fn pluginManifestDisplayName(allocator: std.mem.Allocator, plugin_root: []const u8, manifest_dir: []const u8) !?[]const u8 {
+    const manifest_path = try std.fs.path.join(allocator, &.{ plugin_root, manifest_dir, "plugin.json" });
+    defer allocator.free(manifest_path);
+    const bytes = std.Io.Dir.cwd().readFileAlloc(std.Io.Threaded.global_single_threaded.io(), manifest_path, allocator, .limited(1024 * 256)) catch |err| switch (err) {
+        error.OutOfMemory => return err,
+        else => return null,
+    };
+    defer allocator.free(bytes);
+
+    var parsed = std.json.parseFromSlice(std.json.Value, allocator, bytes, .{}) catch return null;
+    defer parsed.deinit();
+    if (parsed.value != .object) return null;
+    if (parsed.value.object.get("interface")) |interface_value| {
+        if (interface_value == .object) {
+            if (trimmedJsonString(interface_value.object, "displayName")) |value| return try allocator.dupe(u8, value);
+        }
+    }
+    if (trimmedJsonString(parsed.value.object, "name")) |value| return try allocator.dupe(u8, value);
+    return null;
+}
+
+fn pluginManifestName(allocator: std.mem.Allocator, plugin_root: []const u8, manifest_dir: []const u8) !?[]const u8 {
+    const manifest_path = try std.fs.path.join(allocator, &.{ plugin_root, manifest_dir, "plugin.json" });
+    defer allocator.free(manifest_path);
+    const bytes = std.Io.Dir.cwd().readFileAlloc(std.Io.Threaded.global_single_threaded.io(), manifest_path, allocator, .limited(1024 * 256)) catch |err| switch (err) {
+        error.OutOfMemory => return err,
+        else => return null,
+    };
+    defer allocator.free(bytes);
+
+    var parsed = std.json.parseFromSlice(std.json.Value, allocator, bytes, .{}) catch return null;
+    defer parsed.deinit();
+    if (parsed.value != .object) return null;
+    if (trimmedJsonString(parsed.value.object, "name")) |value| return try allocator.dupe(u8, value);
+    return null;
+}
+
+fn trimmedJsonString(object: std.json.ObjectMap, field: []const u8) ?[]const u8 {
+    const value = object.get(field) orelse return null;
+    if (value != .string) return null;
+    const trimmed = std.mem.trim(u8, value.string, " \t\r\n");
+    if (trimmed.len == 0) return null;
+    return trimmed;
+}
+
 fn activePluginVersion(allocator: std.mem.Allocator, plugin_base_root: []const u8) !?[]const u8 {
     const io = std.Io.Threaded.global_single_threaded.io();
     var dir = (if (std.fs.path.isAbsolute(plugin_base_root))
