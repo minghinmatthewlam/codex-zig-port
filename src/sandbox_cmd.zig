@@ -3,6 +3,7 @@ const builtin = @import("builtin");
 
 const cli_utils = @import("cli_utils.zig");
 const config = @import("config.zig");
+const features_cmd = @import("features_cmd.zig");
 const sandbox = @import("sandbox.zig");
 const workdir = @import("workdir.zig");
 
@@ -18,6 +19,9 @@ const SandboxKind = enum {
 
 const SandboxArgs = struct {
     help: bool = false,
+    profile_override: ?[]const u8 = null,
+    runtime_overrides: config.RuntimeOverrides = .{},
+    feature_overrides: features_cmd.FeatureOverrides = .{},
     mode: ?config.SandboxMode = null,
     permissions_profile: ?[]const u8 = null,
     include_managed_config: bool = false,
@@ -28,6 +32,8 @@ const SandboxArgs = struct {
     command: []const []const u8 = &.{},
 
     fn deinit(self: SandboxArgs, allocator: std.mem.Allocator) void {
+        var feature_overrides = self.feature_overrides;
+        feature_overrides.deinit(allocator);
         if (self.permissions_profile) |profile| allocator.free(profile);
         for (self.allow_unix_sockets.items) |path| allocator.free(path);
         var sockets = self.allow_unix_sockets;
@@ -37,6 +43,16 @@ const SandboxArgs = struct {
         var roots = self.additional_writable_roots;
         roots.deinit(allocator);
         if (self.command.len > 0) allocator.free(self.command);
+    }
+};
+
+const SandboxRootOptions = struct {
+    profile_override: ?[]const u8 = null,
+    runtime_overrides: config.RuntimeOverrides = .{},
+    feature_overrides: features_cmd.FeatureOverrides = .{},
+
+    fn deinit(self: *SandboxRootOptions, allocator: std.mem.Allocator) void {
+        self.feature_overrides.deinit(allocator);
     }
 };
 
@@ -59,18 +75,32 @@ pub fn runWithOptions(allocator: std.mem.Allocator, args: *std.process.Args.Iter
         return error.MissingSandboxSubcommand;
     }
 
-    const subcommand = raw_args.items[0];
-    if (isHelpFlag(subcommand)) {
-        printHelp();
-        return;
-    }
-    const kind = parseSandboxKind(subcommand) orelse return error.UnknownSandboxSubcommand;
+    var root_options = SandboxRootOptions{};
+    defer root_options.deinit(allocator);
+    var root_index: usize = 0;
+    const kind = while (root_index < raw_args.items.len) : (root_index += 1) {
+        const subcommand = raw_args.items[root_index];
+        if (isHelpFlag(subcommand)) {
+            printHelp();
+            return;
+        }
+        if (std.mem.eql(u8, subcommand, "help")) {
+            try printHelpForArgs(raw_args.items[root_index + 1 ..]);
+            return;
+        }
+        if (try parseSandboxRootOption(allocator, raw_args.items, &root_index, &root_options)) {
+            continue;
+        }
+        break parseSandboxKind(subcommand) orelse return error.UnknownSandboxSubcommand;
+    } else {
+        return error.MissingSandboxSubcommand;
+    };
 
-    var parsed = try parseSandboxArgs(allocator, raw_args.items[1..]);
+    var parsed = try parseSandboxArgs(allocator, raw_args.items[root_index + 1 ..]);
     defer parsed.deinit(allocator);
 
     if (parsed.help) {
-        printMacosHelp();
+        printSandboxKindHelp(kind);
         return;
     }
     if (parsed.command.len == 0) return error.MissingSandboxCommand;
@@ -85,11 +115,15 @@ pub fn runWithOptions(allocator: std.mem.Allocator, args: *std.process.Args.Iter
     const allow_unix_sockets = try sandbox.resolveUnixSocketPathsAgainst(allocator, original_cwd, parsed.allow_unix_sockets.items);
     defer sandbox.freeResolvedPaths(allocator, allow_unix_sockets);
 
-    var cfg = try config.loadWithOptions(allocator, .{ .profile = options.profile });
+    const effective_profile = parsed.profile_override orelse root_options.profile_override orelse options.profile;
+    var runtime_overrides = config.mergeRuntimeOverrides(options.runtime_overrides, root_options.runtime_overrides);
+    runtime_overrides = config.mergeRuntimeOverrides(runtime_overrides, parsed.runtime_overrides);
+
+    var cfg = try config.loadWithOptions(allocator, .{ .profile = effective_profile });
     defer cfg.deinit(allocator);
     var sandbox_profile: ?config.SandboxPermissionProfile = null;
     defer if (sandbox_profile) |*profile| profile.deinit(allocator);
-    try config.applyRuntimeOverrides(&cfg, allocator, options.runtime_overrides);
+    try config.applyRuntimeOverrides(&cfg, allocator, runtime_overrides);
     if (parsed.mode) |mode| cfg.sandbox_mode = mode;
     if (parsed.permissions_profile) |profile| {
         sandbox_profile = try config.loadSandboxPermissionProfileWithOptions(allocator, profile, .{
@@ -125,6 +159,86 @@ pub fn runWithOptions(allocator: std.mem.Allocator, args: *std.process.Args.Iter
     try runCommand(allocator, parsed.command, cfg.sandbox_mode, additional_writable_roots, include_cwd_write_root, network_enabled, read_denied_roots, read_denied_globs, allow_unix_sockets, parsed.log_denials);
 }
 
+fn parseSandboxRootOption(
+    allocator: std.mem.Allocator,
+    args: []const []const u8,
+    index: *usize,
+    parsed: *SandboxRootOptions,
+) !bool {
+    return parseSandboxConfigFeatureOption(
+        allocator,
+        args,
+        index,
+        &parsed.profile_override,
+        &parsed.runtime_overrides,
+        &parsed.feature_overrides,
+    );
+}
+
+fn parseSandboxConfigFeatureOption(
+    allocator: std.mem.Allocator,
+    args: []const []const u8,
+    index: *usize,
+    profile_override: *?[]const u8,
+    runtime_overrides: *config.RuntimeOverrides,
+    feature_overrides: *features_cmd.FeatureOverrides,
+) !bool {
+    const arg = args[index.*];
+    if (std.mem.eql(u8, arg, "--config") or std.mem.eql(u8, arg, "-c")) {
+        index.* += 1;
+        if (index.* >= args.len) return error.MissingConfigOptionValue;
+        if (std.mem.eql(u8, args[index.*], "--")) return error.MissingConfigOptionValue;
+        try config.applyRawConfigOverride(runtime_overrides, profile_override, args[index.*]);
+        return true;
+    }
+    if (std.mem.startsWith(u8, arg, "--config=")) {
+        try config.applyRawConfigOverride(runtime_overrides, profile_override, arg["--config=".len..]);
+        return true;
+    }
+    if (std.mem.eql(u8, arg, "--enable")) {
+        index.* += 1;
+        if (index.* >= args.len) return error.MissingFeatureName;
+        if (std.mem.eql(u8, args[index.*], "--")) return error.MissingFeatureName;
+        try features_cmd.putRuntimeToggle(allocator, feature_overrides, args[index.*], true);
+        return true;
+    }
+    if (std.mem.startsWith(u8, arg, "--enable=")) {
+        try features_cmd.putRuntimeToggle(allocator, feature_overrides, arg["--enable=".len..], true);
+        return true;
+    }
+    if (std.mem.eql(u8, arg, "--disable")) {
+        index.* += 1;
+        if (index.* >= args.len) return error.MissingFeatureName;
+        if (std.mem.eql(u8, args[index.*], "--")) return error.MissingFeatureName;
+        try features_cmd.putRuntimeToggle(allocator, feature_overrides, args[index.*], false);
+        return true;
+    }
+    if (std.mem.startsWith(u8, arg, "--disable=")) {
+        try features_cmd.putRuntimeToggle(allocator, feature_overrides, arg["--disable=".len..], false);
+        return true;
+    }
+    return false;
+}
+
+pub fn printHelpForArgs(args: []const []const u8) !void {
+    if (args.len == 0) {
+        printHelp();
+        return;
+    }
+    if (args.len != 1) return error.UnexpectedHelpArgument;
+    const target = args[0];
+    if (isHelpFlag(target)) {
+        printHelp();
+        return;
+    }
+    if (std.mem.eql(u8, target, "help")) {
+        printSandboxHelpSubcommandHelp();
+        return;
+    }
+    const kind = parseSandboxKind(target) orelse return error.UnknownSandboxSubcommand;
+    printSandboxKindHelp(kind);
+}
+
 fn parseSandboxKind(subcommand: []const u8) ?SandboxKind {
     if (std.mem.eql(u8, subcommand, "macos") or std.mem.eql(u8, subcommand, "seatbelt")) return .macos;
     if (std.mem.eql(u8, subcommand, "linux") or std.mem.eql(u8, subcommand, "landlock")) return .linux;
@@ -146,6 +260,16 @@ fn parseSandboxArgs(allocator: std.mem.Allocator, args: []const []const u8) !San
         }
         if (!end_options and isHelpFlag(arg)) {
             parsed.help = true;
+            continue;
+        }
+        if (!end_options and try parseSandboxConfigFeatureOption(
+            allocator,
+            args,
+            &index,
+            &parsed.profile_override,
+            &parsed.runtime_overrides,
+            &parsed.feature_overrides,
+        )) {
             continue;
         }
         if (!end_options and std.mem.eql(u8, arg, "--permissions-profile")) {
@@ -1104,34 +1228,125 @@ fn isHelpFlag(arg: []const u8) bool {
 
 pub fn printHelp() void {
     std.debug.print(
-        \\Usage:
-        \\  codex-zig sandbox macos [OPTIONS] -- COMMAND [ARGS...]
-        \\  codex-zig sandbox seatbelt [OPTIONS] -- COMMAND [ARGS...]
+        \\Run commands within a Codex-provided sandbox
         \\
-        \\Subcommands:
-        \\  macos, seatbelt  Run a command under macOS Seatbelt
-        \\  linux, landlock  Recognized Rust-compatible Linux sandbox command
-        \\  windows          Recognized Rust-compatible Windows sandbox command
+        \\Usage: codex-zig sandbox [OPTIONS] <COMMAND>
+        \\
+        \\Commands:
+        \\  macos    Run a command under Seatbelt (macOS only) [aliases: seatbelt]
+        \\  linux    Run a command under the Linux sandbox (bubblewrap by default) [aliases: landlock]
+        \\  windows  Run a command under Windows restricted token (Windows only)
+        \\  help     Print this message or the help of the given subcommand(s)
+        \\
+        \\Options:
+        \\  -c, --config <key=value>
+        \\          Override a configuration value that would otherwise be loaded from `~/.codex/config.toml`
+        \\      --enable <FEATURE>
+        \\          Enable a feature (repeatable). Equivalent to `-c features.<name>=true`
+        \\      --disable <FEATURE>
+        \\          Disable a feature (repeatable). Equivalent to `-c features.<name>=false`
+        \\  -h, --help
+        \\          Print help
+        \\
+    , .{});
+}
+
+fn printSandboxKindHelp(kind: SandboxKind) void {
+    switch (kind) {
+        .macos => printMacosHelp(),
+        .linux => printLinuxHelp(),
+        .windows => printWindowsHelp(),
+    }
+}
+
+fn printSandboxHelpSubcommandHelp() void {
+    std.debug.print(
+        \\Print this message or the help of the given subcommand(s)
+        \\
+        \\Usage: codex-zig sandbox help [COMMAND]...
+        \\
+        \\Arguments:
+        \\  [COMMAND]...  Print help for the subcommand(s)
         \\
     , .{});
 }
 
 fn printMacosHelp() void {
     std.debug.print(
-        \\Usage:
-        \\  codex-zig sandbox macos [OPTIONS] -- COMMAND [ARGS...]
+        \\Run a command under Seatbelt (macOS only)
+        \\
+        \\Usage: codex-zig sandbox macos [OPTIONS] [COMMAND]...
+        \\
+        \\Arguments:
+        \\  [COMMAND]...
+        \\          Full command args to run under seatbelt
         \\
         \\Options:
+        \\  -c, --config <key=value>
+        \\                      Override a configuration value that would otherwise be loaded from `~/.codex/config.toml`
         \\  --permissions-profile NAME
-        \\                      Apply :read-only, :workspace, :danger-no-sandbox, or a supported custom [permissions] profile
+        \\                      Named permissions profile to apply from the active configuration stack (:read-only, :workspace, :danger-no-sandbox, or a supported custom [permissions] profile)
+        \\  -C, --cd DIR        Working directory used for profile resolution and command execution
+        \\  --enable FEATURE    Enable a feature (repeatable). Equivalent to `-c features.<name>=true`
+        \\  --disable FEATURE   Disable a feature (repeatable). Equivalent to `-c features.<name>=false`
         \\  --include-managed-config
-        \\                      Recognize managed config with --permissions-profile
+        \\                      Include managed requirements while resolving an explicit permissions profile
         \\  --allow-unix-socket PATH
-        \\                      Allow AF_UNIX bind/connect operations rooted at PATH
+        \\                      Allow the sandboxed command to bind/connect AF_UNIX sockets rooted at PATH
         \\  --log-denials      Print a macOS sandbox denial summary after the command exits
         \\  -s, --sandbox MODE  read-only, workspace-write, or danger-full-access
-        \\  -C, --cd DIR        Profile working root; requires --permissions-profile
         \\  --add-dir DIR       Allow workspace-write command to write DIR
+        \\  -h, --help          Print help
+        \\
+    , .{});
+}
+
+fn printLinuxHelp() void {
+    std.debug.print(
+        \\Run a command under the Linux sandbox (bubblewrap by default)
+        \\
+        \\Usage: codex-zig sandbox linux [OPTIONS] [COMMAND]...
+        \\
+        \\Arguments:
+        \\  [COMMAND]...
+        \\          Full command args to run under the Linux sandbox
+        \\
+        \\Options:
+        \\  -c, --config <key=value>
+        \\                      Override a configuration value that would otherwise be loaded from `~/.codex/config.toml`
+        \\  --permissions-profile NAME
+        \\                      Named permissions profile to apply from the active configuration stack
+        \\  -C, --cd DIR        Working directory used for profile resolution and command execution
+        \\  --enable FEATURE    Enable a feature (repeatable). Equivalent to `-c features.<name>=true`
+        \\  --disable FEATURE   Disable a feature (repeatable). Equivalent to `-c features.<name>=false`
+        \\  --include-managed-config
+        \\                      Include managed requirements while resolving an explicit permissions profile
+        \\  -h, --help          Print help
+        \\
+    , .{});
+}
+
+fn printWindowsHelp() void {
+    std.debug.print(
+        \\Run a command under Windows restricted token (Windows only)
+        \\
+        \\Usage: codex-zig sandbox windows [OPTIONS] [COMMAND]...
+        \\
+        \\Arguments:
+        \\  [COMMAND]...
+        \\          Full command args to run under Windows restricted token sandbox
+        \\
+        \\Options:
+        \\  -c, --config <key=value>
+        \\                      Override a configuration value that would otherwise be loaded from `~/.codex/config.toml`
+        \\  --permissions-profile NAME
+        \\                      Named permissions profile to apply from the active configuration stack
+        \\  -C, --cd DIR        Working directory used for profile resolution and command execution
+        \\  --enable FEATURE    Enable a feature (repeatable). Equivalent to `-c features.<name>=true`
+        \\  --disable FEATURE   Disable a feature (repeatable). Equivalent to `-c features.<name>=false`
+        \\  --include-managed-config
+        \\                      Include managed requirements while resolving an explicit permissions profile
+        \\  -h, --help          Print help
         \\
     , .{});
 }
@@ -1208,6 +1423,48 @@ test "sandbox macos args parse help" {
     defer parsed.deinit(allocator);
 
     try std.testing.expect(parsed.help);
+}
+
+test "sandbox args parse Rust config and feature controls" {
+    const allocator = std.testing.allocator;
+    const argv = [_][]const u8{ "-c", "sandbox_mode=\"danger-full-access\"", "--enable", "goals", "--disable=shell_tool", "--", "/bin/echo", "ok" };
+    const parsed = try parseSandboxArgs(allocator, argv[0..]);
+    defer parsed.deinit(allocator);
+
+    try std.testing.expectEqual(config.SandboxMode.danger_full_access, parsed.runtime_overrides.sandbox_mode.?);
+    try std.testing.expectEqual(true, parsed.feature_overrides.get("goals").?);
+    try std.testing.expectEqual(false, parsed.feature_overrides.get("shell_tool").?);
+    try std.testing.expectEqualStrings("/bin/echo", parsed.command[0]);
+}
+
+test "sandbox root options parse Rust config and feature controls" {
+    const allocator = std.testing.allocator;
+    const argv = [_][]const u8{ "--config=sandbox_mode=\"workspace-write\"", "--enable", "goals", "--disable=shell_tool", "macos" };
+    var parsed = SandboxRootOptions{};
+    defer parsed.deinit(allocator);
+
+    var index: usize = 0;
+    try std.testing.expect(try parseSandboxRootOption(allocator, argv[0..], &index, &parsed));
+    try std.testing.expectEqual(config.SandboxMode.workspace_write, parsed.runtime_overrides.sandbox_mode.?);
+    index += 1;
+    try std.testing.expect(try parseSandboxRootOption(allocator, argv[0..], &index, &parsed));
+    try std.testing.expectEqual(true, parsed.feature_overrides.get("goals").?);
+    index += 1;
+    try std.testing.expect(try parseSandboxRootOption(allocator, argv[0..], &index, &parsed));
+    try std.testing.expectEqual(false, parsed.feature_overrides.get("shell_tool").?);
+    index += 1;
+    try std.testing.expect(!try parseSandboxRootOption(allocator, argv[0..], &index, &parsed));
+}
+
+test "sandbox value options reject option terminator as missing value" {
+    const allocator = std.testing.allocator;
+    const missing_config = [_][]const u8{ "-c", "--", "/bin/echo", "ok" };
+    const missing_enable = [_][]const u8{ "--enable", "--", "/bin/echo", "ok" };
+    const missing_disable = [_][]const u8{ "--disable", "--", "/bin/echo", "ok" };
+
+    try std.testing.expectError(error.MissingConfigOptionValue, parseSandboxArgs(allocator, missing_config[0..]));
+    try std.testing.expectError(error.MissingFeatureName, parseSandboxArgs(allocator, missing_enable[0..]));
+    try std.testing.expectError(error.MissingFeatureName, parseSandboxArgs(allocator, missing_disable[0..]));
 }
 
 test "sandbox kind recognizes Rust platform aliases" {

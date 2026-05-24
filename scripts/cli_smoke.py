@@ -11976,6 +11976,176 @@ def run_sandbox_permission_profile_smoke(binary: Path) -> None:
         assert "--allow-unix-socket PATH" in help_result.stderr
         assert "--log-denials" in help_result.stderr
 
+        root_help_result = subprocess.run(
+            [str(binary.resolve()), "sandbox", "--help"],
+            cwd=temp_root,
+            env=env,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=5,
+            check=True,
+        )
+        assert "Run commands within a Codex-provided sandbox" in root_help_result.stderr
+        assert "Usage: codex-zig sandbox [OPTIONS] <COMMAND>" in root_help_result.stderr
+        assert "-c, --config <key=value>" in root_help_result.stderr
+        assert "--enable <FEATURE>" in root_help_result.stderr
+
+        linux_help_result = subprocess.run(
+            [str(binary.resolve()), "sandbox", "linux", "--help"],
+            cwd=temp_root,
+            env=env,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=5,
+            check=True,
+        )
+        assert "Run a command under the Linux sandbox" in linux_help_result.stderr
+        assert "Usage: codex-zig sandbox linux [OPTIONS] [COMMAND]..." in linux_help_result.stderr
+        assert "--permissions-profile NAME" in linux_help_result.stderr
+        assert "--allow-unix-socket PATH" not in linux_help_result.stderr
+
+        windows_help_result = subprocess.run(
+            [str(binary.resolve()), "sandbox", "windows", "--help"],
+            cwd=temp_root,
+            env=env,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=5,
+            check=True,
+        )
+        assert "Run a command under Windows restricted token" in windows_help_result.stderr
+        assert "Usage: codex-zig sandbox windows [OPTIONS] [COMMAND]..." in windows_help_result.stderr
+
+        nested_help_result = subprocess.run(
+            [str(binary.resolve()), "sandbox", "help", "linux"],
+            cwd=temp_root,
+            env=env,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=5,
+            check=True,
+        )
+        assert "Run a command under the Linux sandbox" in nested_help_result.stderr
+
+        nested_help_help_result = subprocess.run(
+            [str(binary.resolve()), "sandbox", "help", "help"],
+            cwd=temp_root,
+            env=env,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=5,
+            check=True,
+        )
+        assert "Usage: codex-zig sandbox help [COMMAND]..." in nested_help_help_result.stderr
+
+        root_nested_help_result = subprocess.run(
+            [str(binary.resolve()), "help", "sandbox", "linux"],
+            cwd=temp_root,
+            env=env,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=5,
+            check=True,
+        )
+        assert "Run a command under the Linux sandbox" in root_nested_help_result.stderr
+
+        root_nested_help_help_result = subprocess.run(
+            [str(binary.resolve()), "help", "sandbox", "help"],
+            cwd=temp_root,
+            env=env,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=5,
+            check=True,
+        )
+        assert "Usage: codex-zig sandbox help [COMMAND]..." in root_nested_help_help_result.stderr
+
+        root_config_before_subcommand = subprocess.run(
+            [
+                str(binary.resolve()),
+                "sandbox",
+                "-c",
+                "sandbox_mode=\"danger-full-access\"",
+                "macos",
+                "--",
+                "/bin/echo",
+                "ok",
+            ],
+            cwd=temp_root,
+            env=env,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=5,
+            check=True,
+        )
+        assert root_config_before_subcommand.stdout == "ok\n"
+
+        config_after_subcommand = subprocess.run(
+            [
+                str(binary.resolve()),
+                "sandbox",
+                "macos",
+                "-c",
+                "sandbox_mode=\"danger-full-access\"",
+                "--",
+                "/bin/echo",
+                "ok",
+            ],
+            cwd=temp_root,
+            env=env,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=5,
+            check=True,
+        )
+        assert config_after_subcommand.stdout == "ok\n"
+
+        feature_before_subcommand = subprocess.run(
+            [str(binary.resolve()), "sandbox", "--enable", "goals", "macos", "--", "/bin/echo", "ok"],
+            cwd=temp_root,
+            env=env,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=5,
+            check=True,
+        )
+        assert feature_before_subcommand.stdout == "ok\n"
+
+        feature_after_subcommand = subprocess.run(
+            [str(binary.resolve()), "sandbox", "macos", "--disable", "goals", "--", "/bin/echo", "ok"],
+            cwd=temp_root,
+            env=env,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=5,
+            check=True,
+        )
+        assert feature_after_subcommand.stdout == "ok\n"
+
+        unknown_feature = subprocess.run(
+            [str(binary.resolve()), "sandbox", "--enable", "not_a_feature", "macos", "--", "/bin/echo", "ok"],
+            cwd=temp_root,
+            env=env,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=5,
+            check=False,
+        )
+        assert unknown_feature.returncode != 0
+        assert "error: UnknownFeature" in unknown_feature.stderr
+
         denials_logged = subprocess.run(
             [
                 str(binary.resolve()),

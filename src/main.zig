@@ -1052,6 +1052,10 @@ fn runHelpCommand(allocator: std.mem.Allocator, args: *std.process.Args.Iterator
         try cloud_cmd.printHelpForArgs(targets.items[1..]);
         return;
     }
+    if (std.mem.eql(u8, target, "sandbox")) {
+        try sandbox_cmd.printHelpForArgs(targets.items[1..]);
+        return;
+    }
     try requireSingleHelpTarget(targets.items);
     if (isHelpFlag(target) or std.mem.eql(u8, target, "help")) {
         try printHelp();
@@ -1087,8 +1091,6 @@ fn runHelpCommand(allocator: std.mem.Allocator, args: *std.process.Args.Iterator
         remote_control_cmd.printHelp();
     } else if (std.mem.eql(u8, target, "completion")) {
         completion_cmd.printHelp();
-    } else if (std.mem.eql(u8, target, "sandbox")) {
-        sandbox_cmd.printHelp();
     } else if (std.mem.eql(u8, target, "debug")) {
         debug_cmd.printHelp();
     } else if (std.mem.eql(u8, target, "execpolicy")) {
