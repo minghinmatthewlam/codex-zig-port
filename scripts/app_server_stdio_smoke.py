@@ -4754,6 +4754,30 @@ def run_app_server_plugin_product_restriction_smoke(binary: Path) -> None:
                 ),
                 encoding="utf-8",
             )
+            if plugin_name in {"codex-plugin", "chatgpt-plugin"}:
+                for skill_name, skill_products in [
+                    ("shared-skill", None),
+                    ("codex-skill", ["CODEX"]),
+                    ("chatgpt-skill", ["CHATGPT"]),
+                ]:
+                    skill_root = plugin_root / "skills" / skill_name
+                    skill_root.mkdir(parents=True)
+                    skill_root.joinpath("SKILL.md").write_text(
+                        f"---\nname: {skill_name}\ndescription: {skill_name} description\n---\n",
+                        encoding="utf-8",
+                    )
+                    if skill_products is not None:
+                        skill_root.joinpath("agents").mkdir()
+                        policy_text = (
+                            "policy: { products: [CHATGPT] } # chat only\n"
+                            if skill_products == ["CHATGPT"]
+                            else "policy: # product access\n  products: # allowed products\n"
+                            + "".join(f"    - {product}\n" for product in skill_products)
+                        )
+                        skill_root.joinpath("agents", "openai.yaml").write_text(
+                            policy_text,
+                            encoding="utf-8",
+                        )
             policy = {"authentication": "ON_USE"}
             if products == "NULL":
                 policy["products"] = None
@@ -4853,6 +4877,91 @@ def run_app_server_plugin_product_restriction_smoke(binary: Path) -> None:
         )
         assert atlas_read["id"] == "plugin-product-read-atlas"
         assert atlas_read["result"]["plugin"]["summary"]["name"] == "atlas-plugin"
+
+        default_read = request_stdio_app_server(
+            binary,
+            {
+                "jsonrpc": "2.0",
+                "id": "plugin-product-read-codex-skills",
+                "method": "plugin/read",
+                "params": {
+                    "marketplacePath": str(marketplace_path),
+                    "remoteMarketplaceName": None,
+                    "pluginName": "codex-plugin",
+                },
+            },
+            env,
+        )
+        default_skill_names = sorted(
+            skill["name"] for skill in default_read["result"]["plugin"]["skills"]
+        )
+        assert default_skill_names == [
+            "codex-plugin:codex-skill",
+            "codex-plugin:shared-skill",
+        ]
+
+        chatgpt_read = request_stdio_app_server(
+            binary,
+            {
+                "jsonrpc": "2.0",
+                "id": "plugin-product-read-chatgpt-skills",
+                "method": "plugin/read",
+                "params": {
+                    "marketplacePath": str(marketplace_path),
+                    "remoteMarketplaceName": None,
+                    "pluginName": "chatgpt-plugin",
+                },
+            },
+            env,
+            app_server_args=["--session-source=ChatGPT"],
+        )
+        chatgpt_skill_names = sorted(
+            skill["name"] for skill in chatgpt_read["result"]["plugin"]["skills"]
+        )
+        assert chatgpt_skill_names == [
+            "chatgpt-plugin:chatgpt-skill",
+            "chatgpt-plugin:shared-skill",
+        ]
+
+        default_install_codex = request_stdio_app_server(
+            binary,
+            {
+                "jsonrpc": "2.0",
+                "id": "plugin-product-install-codex",
+                "method": "plugin/install",
+                "params": {
+                    "marketplacePath": str(marketplace_path),
+                    "remoteMarketplaceName": None,
+                    "pluginName": "codex-plugin",
+                },
+            },
+            env,
+        )
+        assert default_install_codex["id"] == "plugin-product-install-codex"
+        assert default_install_codex["result"] == {
+            "authPolicy": "ON_USE",
+            "appsNeedingAuth": [],
+        }
+
+        skills_list_default = request_stdio_app_server(
+            binary,
+            {
+                "jsonrpc": "2.0",
+                "id": "plugin-product-skills-list-default",
+                "method": "skills/list",
+                "params": {"cwds": [str(repo)], "forceReload": True},
+            },
+            env,
+        )
+        listed_skill_names = sorted(
+            skill["name"]
+            for skill in skills_list_default["result"]["data"][0]["skills"]
+            if skill["name"].startswith("codex-plugin:")
+        )
+        assert listed_skill_names == [
+            "codex-plugin:codex-skill",
+            "codex-plugin:shared-skill",
+        ]
 
         default_install_chatgpt = request_stdio_app_server(
             binary,

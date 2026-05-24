@@ -32,6 +32,7 @@ const model_catalog = @import("model_catalog.zig");
 const plugin_config = @import("plugin_config.zig");
 const plugin_list = @import("plugin_list.zig");
 const plan_tool = @import("plan_tool.zig");
+const product_restriction = @import("product_restriction.zig");
 const remote_plugin = @import("remote_plugin.zig");
 const review_output_mod = @import("review_output.zig");
 const review_prompt = @import("review_prompt.zig");
@@ -462,10 +463,7 @@ fn appServerSessionSourceFeedbackTag(source: []const u8) []const u8 {
 fn pluginProductRestrictionForSessionSource(source: []const u8) ?plugin_list.ProductRestriction {
     if (std.mem.startsWith(u8, source, "custom:")) {
         const custom_source = source["custom:".len..];
-        if (std.mem.eql(u8, custom_source, "chatgpt")) return .chatgpt;
-        if (std.mem.eql(u8, custom_source, "codex")) return .codex;
-        if (std.mem.eql(u8, custom_source, "atlas")) return .atlas;
-        return null;
+        return product_restriction.fromSessionSourceName(custom_source);
     }
     if (std.mem.eql(u8, source, "cli") or
         std.mem.eql(u8, source, "vscode") or
@@ -47200,7 +47198,12 @@ fn handleSkillsList(allocator: std.mem.Allocator, state: *AppServerState, id_val
         }
     }
 
-    var listed = skills_list.list(allocator, request_cwds.values, params.extra_roots_by_cwd) catch |err| {
+    var listed = skills_list.listForProduct(
+        allocator,
+        request_cwds.values,
+        params.extra_roots_by_cwd,
+        pluginProductRestrictionForSessionSource(state.session_source),
+    ) catch |err| {
         return renderJsonRpcErrorForFailure(allocator, id_value, "skills/list failed", err);
     };
     defer listed.deinit(allocator);

@@ -4,6 +4,7 @@ const config = @import("config.zig");
 const marketplace_config = @import("marketplace_config.zig");
 const mcp_runtime = @import("mcp_runtime.zig");
 const plugin_config = @import("plugin_config.zig");
+const product_restriction = @import("product_restriction.zig");
 const skills_list = @import("skills_list.zig");
 
 pub const MARKETPLACE_MANIFEST_RELATIVE_PATHS = [_][]const u8{
@@ -26,11 +27,7 @@ const disallowed_connector_ids = [_][]const u8{
     "connector_69272cb413a081919685ec3c88d1744e",
 };
 
-pub const ProductRestriction = enum {
-    chatgpt,
-    codex,
-    atlas,
-};
+pub const ProductRestriction = product_restriction.Product;
 
 const SourceRender = struct {
     plugin_root: ?[]const u8 = null,
@@ -642,7 +639,7 @@ pub fn renderReadResponseForProduct(
         try out.appendSlice(allocator, ",\"description\":");
         try appendOptionalStringJson(allocator, &out, stringField(manifest_parse.value.object, "description"));
         try out.appendSlice(allocator, ",\"skills\":");
-        try appendPluginSkillsJson(allocator, &out, plugin_root, manifest_parse.value.object, config_bytes);
+        try appendPluginSkillsJson(allocator, &out, plugin_root, manifest_parse.value.object, config_bytes, restriction_product);
         try out.appendSlice(allocator, ",\"hooks\":");
         try appendPluginHooksJson(allocator, &out, plugin_root, plugin_id);
         try out.appendSlice(allocator, ",\"apps\":");
@@ -1524,9 +1521,10 @@ fn appendPluginSkillsJson(
     plugin_root: []const u8,
     manifest_object: std.json.ObjectMap,
     config_bytes: []const u8,
+    restriction_product: ?ProductRestriction,
 ) !void {
     const prefix = pluginNamePrefix(manifest_object, plugin_root);
-    var result = try skills_list.listPluginSkills(allocator, plugin_root, prefix, config_bytes);
+    var result = try skills_list.listPluginSkillsForProduct(allocator, plugin_root, prefix, config_bytes, restriction_product);
     defer result.deinit(allocator);
 
     try out.appendSlice(allocator, "[");
@@ -2785,11 +2783,7 @@ fn policyMatchesProductRestriction(policy_value: ?std.json.Value, restriction_pr
 }
 
 fn productRestrictionNameMatches(product: ProductRestriction, value: []const u8) bool {
-    return switch (product) {
-        .chatgpt => std.ascii.eqlIgnoreCase(value, "chatgpt"),
-        .codex => std.ascii.eqlIgnoreCase(value, "codex"),
-        .atlas => std.ascii.eqlIgnoreCase(value, "atlas"),
-    };
+    return product_restriction.nameMatches(product, value);
 }
 
 fn authPolicy(policy_value: ?std.json.Value) []const u8 {

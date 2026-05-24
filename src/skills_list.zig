@@ -3,6 +3,7 @@ const std = @import("std");
 const config = @import("config.zig");
 const env = @import("env.zig");
 const plugin_config = @import("plugin_config.zig");
+const product_restriction = @import("product_restriction.zig");
 
 pub const ExtraRootsForCwd = struct {
     cwd: []const u8,
@@ -165,6 +166,7 @@ const SkillFrontmatter = struct {
 const SkillFileMetadata = struct {
     interface: ?SkillInterface = null,
     dependencies: ?SkillDependencies = null,
+    product_allowed: bool = true,
 
     fn deinit(self: SkillFileMetadata, allocator: std.mem.Allocator) void {
         if (self.interface) |value| value.deinit(allocator);
@@ -200,6 +202,15 @@ pub fn list(
     cwd_inputs: []const []const u8,
     extra_roots_by_cwd: []const ExtraRootsForCwd,
 ) !Result {
+    return listForProduct(allocator, cwd_inputs, extra_roots_by_cwd, .codex);
+}
+
+pub fn listForProduct(
+    allocator: std.mem.Allocator,
+    cwd_inputs: []const []const u8,
+    extra_roots_by_cwd: []const ExtraRootsForCwd,
+    restriction_product: ?product_restriction.Product,
+) !Result {
     const resolved_cwds = if (cwd_inputs.len == 0)
         try defaultCwdList(allocator)
     else
@@ -216,7 +227,7 @@ pub fn list(
     }
 
     for (resolved_cwds) |cwd| {
-        const entry = try listForCwd(allocator, cwd, extra_roots_by_cwd, skill_config_rules);
+        const entry = try listForCwd(allocator, cwd, extra_roots_by_cwd, skill_config_rules, restriction_product);
         try entries.append(allocator, entry);
     }
 
@@ -228,6 +239,16 @@ pub fn listPluginSkills(
     plugin_root: []const u8,
     skill_name_prefix: []const u8,
     config_bytes: []const u8,
+) !PluginSkillsResult {
+    return listPluginSkillsForProduct(allocator, plugin_root, skill_name_prefix, config_bytes, .codex);
+}
+
+pub fn listPluginSkillsForProduct(
+    allocator: std.mem.Allocator,
+    plugin_root: []const u8,
+    skill_name_prefix: []const u8,
+    config_bytes: []const u8,
+    restriction_product: ?product_restriction.Product,
 ) !PluginSkillsResult {
     var skills = std.ArrayList(Skill).empty;
     errdefer {
@@ -251,6 +272,7 @@ pub fn listPluginSkills(
             .scope = "user",
             .skill_name_prefix = prefix,
         },
+        restriction_product,
         &skills,
         &errors,
     );
@@ -295,6 +317,7 @@ fn listForCwd(
     cwd: []const u8,
     extra_roots_by_cwd: []const ExtraRootsForCwd,
     skill_config_rules: SkillConfigRules,
+    restriction_product: ?product_restriction.Product,
 ) !Entry {
     var skills = std.ArrayList(Skill).empty;
     errdefer {
@@ -322,7 +345,7 @@ fn listForCwd(
     try appendExtraSkillRoots(allocator, &roots, cwd, extra_roots_by_cwd);
 
     for (roots.items) |root| {
-        try scanSkillRoot(allocator, root, &skills, &errors);
+        try scanSkillRoot(allocator, root, restriction_product, &skills, &errors);
     }
     applySkillConfigRules(skills.items, skill_config_rules);
 
@@ -400,10 +423,11 @@ fn appendExtraSkillRoots(
 fn scanSkillRoot(
     allocator: std.mem.Allocator,
     root: Root,
+    restriction_product: ?product_restriction.Product,
     skills: *std.ArrayList(Skill),
     errors: *std.ArrayList(SkillError),
 ) !void {
-    try scanSkillDirectoryIfPresent(allocator, root.path, root.scope, root.skill_name_prefix, skills, errors);
+    try scanSkillDirectoryIfPresent(allocator, root.path, root.scope, root.skill_name_prefix, restriction_product, skills, errors);
 
     var dir = std.Io.Dir.openDirAbsolute(std.Io.Threaded.global_single_threaded.io(), root.path, .{ .iterate = true }) catch |err| switch (err) {
         error.FileNotFound, error.NotDir => return,
@@ -420,7 +444,7 @@ fn scanSkillRoot(
         if (entry.kind != .directory) continue;
         const child = try std.fs.path.join(allocator, &.{ root.path, entry.name });
         defer allocator.free(child);
-        try scanSkillDirectoryIfPresent(allocator, child, root.scope, root.skill_name_prefix, skills, errors);
+        try scanSkillDirectoryIfPresent(allocator, child, root.scope, root.skill_name_prefix, restriction_product, skills, errors);
     }
 }
 
@@ -429,6 +453,7 @@ fn scanSkillDirectoryIfPresent(
     directory: []const u8,
     scope: []const u8,
     skill_name_prefix: ?[]const u8,
+    restriction_product: ?product_restriction.Product,
     skills: *std.ArrayList(Skill),
     errors: *std.ArrayList(SkillError),
 ) !void {
@@ -447,9 +472,6 @@ fn scanSkillDirectoryIfPresent(
     const metadata = parseSkillFrontmatter(bytes);
     const base_name = metadata.name orelse std.fs.path.basename(directory);
     const description = metadata.description orelse "";
-    if (metadata.description == null) {
-        try appendSkillError(allocator, errors, skill_path, "SKILL.md is missing description frontmatter");
-    }
     const name = if (skill_name_prefix) |prefix|
         try std.fmt.allocPrint(allocator, "{s}:{s}", .{ prefix, base_name })
     else
@@ -460,8 +482,17 @@ fn scanSkillDirectoryIfPresent(
     errdefer allocator.free(normalized_skill_path);
 
     const metadata_directory = std.fs.path.dirname(normalized_skill_path) orelse directory;
-    var file_metadata = try loadSkillFileMetadata(allocator, metadata_directory);
+    var file_metadata = try loadSkillFileMetadata(allocator, metadata_directory, restriction_product);
     errdefer file_metadata.deinit(allocator);
+    if (!file_metadata.product_allowed) {
+        file_metadata.deinit(allocator);
+        allocator.free(normalized_skill_path);
+        allocator.free(name);
+        return;
+    }
+    if (metadata.description == null) {
+        try appendSkillError(allocator, errors, skill_path, "SKILL.md is missing description frontmatter");
+    }
 
     try skills.append(allocator, .{
         .name = name,
@@ -885,7 +916,7 @@ fn trimFrontmatterValue(raw: []const u8) []const u8 {
     return value;
 }
 
-fn loadSkillFileMetadata(allocator: std.mem.Allocator, directory: []const u8) !SkillFileMetadata {
+fn loadSkillFileMetadata(allocator: std.mem.Allocator, directory: []const u8, restriction_product: ?product_restriction.Product) !SkillFileMetadata {
     const metadata_path = try std.fs.path.join(allocator, &.{ directory, SKILL_METADATA_DIR, SKILL_METADATA_FILENAME });
     defer allocator.free(metadata_path);
 
@@ -895,11 +926,11 @@ fn loadSkillFileMetadata(allocator: std.mem.Allocator, directory: []const u8) !S
     };
     defer allocator.free(bytes);
 
-    if (try parseSkillMetadataJson(allocator, bytes, directory)) |metadata| return metadata;
-    return try parseSkillMetadataYaml(allocator, bytes, directory);
+    if (try parseSkillMetadataJson(allocator, bytes, directory, restriction_product)) |metadata| return metadata;
+    return try parseSkillMetadataYaml(allocator, bytes, directory, restriction_product);
 }
 
-fn parseSkillMetadataJson(allocator: std.mem.Allocator, bytes: []const u8, directory: []const u8) !?SkillFileMetadata {
+fn parseSkillMetadataJson(allocator: std.mem.Allocator, bytes: []const u8, directory: []const u8, restriction_product: ?product_restriction.Product) !?SkillFileMetadata {
     var parsed = std.json.parseFromSlice(std.json.Value, allocator, bytes, .{}) catch return null;
     defer parsed.deinit();
     if (parsed.value != .object) return .{};
@@ -908,6 +939,7 @@ fn parseSkillMetadataJson(allocator: std.mem.Allocator, bytes: []const u8, direc
     errdefer metadata.deinit(allocator);
     metadata.interface = try parseSkillInterfaceJson(allocator, parsed.value.object.get("interface"), directory);
     metadata.dependencies = try parseSkillDependenciesJson(allocator, parsed.value.object.get("dependencies"));
+    metadata.product_allowed = skillPolicyJsonAllowsProduct(parsed.value.object.get("policy"), restriction_product);
     return metadata;
 }
 
@@ -959,7 +991,9 @@ fn skillToolDependencyFromJson(allocator: std.mem.Allocator, object: std.json.Ob
     return takePartialSkillTool(allocator, &tool);
 }
 
-fn parseSkillMetadataYaml(allocator: std.mem.Allocator, bytes: []const u8, directory: []const u8) !SkillFileMetadata {
+const SkillMetadataYamlSection = enum { none, interface, dependencies, tools, policy, policy_products };
+
+fn parseSkillMetadataYaml(allocator: std.mem.Allocator, bytes: []const u8, directory: []const u8, restriction_product: ?product_restriction.Product) !SkillFileMetadata {
     var metadata = SkillFileMetadata{};
     errdefer metadata.deinit(allocator);
     var interface = SkillInterface{};
@@ -971,7 +1005,8 @@ fn parseSkillMetadataYaml(allocator: std.mem.Allocator, bytes: []const u8, direc
     }
     var current_tool = PartialSkillTool{};
     defer current_tool.deinit(allocator);
-    var section: enum { none, interface, dependencies, tools } = .none;
+    var section: SkillMetadataYamlSection = .none;
+    var policy_products = SkillProductPolicyAccumulator{};
 
     var lines = std.mem.splitScalar(u8, bytes, '\n');
     while (lines.next()) |raw_line_with_cr| {
@@ -979,7 +1014,7 @@ fn parseSkillMetadataYaml(allocator: std.mem.Allocator, bytes: []const u8, direc
             raw_line_with_cr[0 .. raw_line_with_cr.len - 1]
         else
             raw_line_with_cr;
-        const trimmed = std.mem.trim(u8, raw_line, " \t");
+        const trimmed = std.mem.trim(u8, stripYamlInlineComment(raw_line), " \t");
         if (trimmed.len == 0 or trimmed[0] == '#') continue;
         const indent = leadingSpaceCount(raw_line);
 
@@ -989,6 +1024,13 @@ fn parseSkillMetadataYaml(allocator: std.mem.Allocator, bytes: []const u8, direc
                 section = .interface;
             } else if (std.mem.eql(u8, trimmed, "dependencies:")) {
                 section = .dependencies;
+            } else if (std.mem.eql(u8, trimmed, "policy:")) {
+                section = .policy;
+            } else if (parseYamlKeyValue(trimmed)) |entry| {
+                section = .none;
+                if (std.mem.eql(u8, entry.key, "policy")) {
+                    parseYamlPolicyInline(&policy_products, restriction_product, entry.value);
+                }
             } else {
                 section = .none;
             }
@@ -1014,6 +1056,16 @@ fn parseSkillMetadataYaml(allocator: std.mem.Allocator, bytes: []const u8, direc
                     try setPartialToolField(allocator, &current_tool, entry.key, entry.value);
                 }
             },
+            .policy => {
+                section = parseYamlPolicyLine(&policy_products, restriction_product, trimmed);
+            },
+            .policy_products => {
+                if (std.mem.startsWith(u8, trimmed, "- ")) {
+                    addYamlPolicyProduct(&policy_products, restriction_product, std.mem.trim(u8, trimmed[2..], " \t"));
+                } else {
+                    section = parseYamlPolicyLine(&policy_products, restriction_product, trimmed);
+                }
+            },
             .none => {},
         }
     }
@@ -1026,7 +1078,151 @@ fn parseSkillMetadataYaml(allocator: std.mem.Allocator, bytes: []const u8, direc
     if (tools.items.len > 0) {
         metadata.dependencies = .{ .tools = try tools.toOwnedSlice(allocator) };
     }
+    metadata.product_allowed = policy_products.allows(restriction_product);
     return metadata;
+}
+
+const SkillProductPolicyAccumulator = struct {
+    has_products: bool = false,
+    count: usize = 0,
+    matched: bool = false,
+    invalid: bool = false,
+
+    fn allows(self: SkillProductPolicyAccumulator, restriction_product: ?product_restriction.Product) bool {
+        if (self.invalid) return true;
+        if (!self.has_products) return true;
+        if (self.count == 0) return true;
+        return restriction_product != null and self.matched;
+    }
+};
+
+fn parseYamlPolicyLine(accumulator: *SkillProductPolicyAccumulator, restriction_product: ?product_restriction.Product, trimmed: []const u8) SkillMetadataYamlSection {
+    if (std.mem.eql(u8, trimmed, "products:")) {
+        accumulator.has_products = true;
+        return .policy_products;
+    }
+    if (parseYamlKeyValue(trimmed)) |entry| {
+        if (std.mem.eql(u8, entry.key, "products")) {
+            accumulator.has_products = true;
+            addYamlPolicyProducts(accumulator, restriction_product, entry.value);
+        }
+    }
+    return .policy;
+}
+
+fn skillPolicyJsonAllowsProduct(policy_value: ?std.json.Value, restriction_product: ?product_restriction.Product) bool {
+    const policy = policy_value orelse return true;
+    if (policy == .null) return true;
+    if (policy != .object) return true;
+    const products = policy.object.get("products") orelse return true;
+    if (products == .null) return true;
+    if (products != .array) return true;
+    if (products.array.items.len == 0) return true;
+    var product_count: usize = 0;
+    var matched = false;
+    for (products.array.items) |item| {
+        if (item != .string) return true;
+        const item_product = product_restriction.fromName(item.string) orelse return true;
+        product_count += 1;
+        if (restriction_product) |product| {
+            if (item_product == product) matched = true;
+        }
+    }
+    if (product_count == 0) return true;
+    return restriction_product != null and matched;
+}
+
+fn addYamlPolicyProducts(accumulator: *SkillProductPolicyAccumulator, restriction_product: ?product_restriction.Product, raw: []const u8) void {
+    const trimmed = std.mem.trim(u8, stripYamlInlineComment(raw), " \t\r");
+    if (trimmed.len >= 2 and trimmed[0] == '[' and trimmed[trimmed.len - 1] == ']') {
+        var values = std.mem.splitScalar(u8, trimmed[1 .. trimmed.len - 1], ',');
+        while (values.next()) |value| {
+            addYamlPolicyProduct(accumulator, restriction_product, value);
+        }
+        return;
+    }
+    const value = trimFrontmatterValue(trimmed);
+    if (value.len == 0 or isYamlNullScalar(value)) return;
+    accumulator.invalid = true;
+}
+
+fn parseYamlPolicyInline(accumulator: *SkillProductPolicyAccumulator, restriction_product: ?product_restriction.Product, raw: []const u8) void {
+    const trimmed = std.mem.trim(u8, stripYamlInlineComment(raw), " \t\r");
+    if (trimmed.len < 2 or trimmed[0] != '{' or trimmed[trimmed.len - 1] != '}') return;
+    const inner = trimmed[1 .. trimmed.len - 1];
+
+    var index: usize = 0;
+    while (index < inner.len) {
+        while (index < inner.len and (std.ascii.isWhitespace(inner[index]) or inner[index] == ',')) : (index += 1) {}
+        if (index >= inner.len) break;
+
+        const key_start = index;
+        if (inner[index] == '"' or inner[index] == '\'') {
+            const quote = inner[index];
+            index += 1;
+            while (index < inner.len and inner[index] != quote) : (index += 1) {}
+            if (index < inner.len) index += 1;
+        } else {
+            while (index < inner.len and inner[index] != ':' and inner[index] != ',' and !std.ascii.isWhitespace(inner[index])) : (index += 1) {}
+        }
+        const key = trimFrontmatterValue(std.mem.trim(u8, inner[key_start..index], " \t\r"));
+
+        while (index < inner.len and std.ascii.isWhitespace(inner[index])) : (index += 1) {}
+        if (index >= inner.len or inner[index] != ':') {
+            while (index < inner.len and inner[index] != ',') : (index += 1) {}
+            continue;
+        }
+        index += 1;
+        while (index < inner.len and std.ascii.isWhitespace(inner[index])) : (index += 1) {}
+
+        const value_start = index;
+        var bracket_depth: usize = 0;
+        var brace_depth: usize = 0;
+        var quote: ?u8 = null;
+        while (index < inner.len) : (index += 1) {
+            const byte = inner[index];
+            if (quote) |active_quote| {
+                if (byte == active_quote and (index == value_start or inner[index - 1] != '\\')) quote = null;
+                continue;
+            }
+            if (byte == '"' or byte == '\'') {
+                quote = byte;
+            } else if (byte == '[') {
+                bracket_depth += 1;
+            } else if (byte == ']') {
+                if (bracket_depth > 0) bracket_depth -= 1;
+            } else if (byte == '{') {
+                brace_depth += 1;
+            } else if (byte == '}') {
+                if (brace_depth > 0) brace_depth -= 1;
+            } else if (byte == ',' and bracket_depth == 0 and brace_depth == 0) {
+                break;
+            }
+        }
+
+        if (std.mem.eql(u8, key, "products")) {
+            accumulator.has_products = true;
+            addYamlPolicyProducts(accumulator, restriction_product, inner[value_start..index]);
+        }
+    }
+}
+
+fn addYamlPolicyProduct(accumulator: *SkillProductPolicyAccumulator, restriction_product: ?product_restriction.Product, raw: []const u8) void {
+    var value = std.mem.trim(u8, stripYamlInlineComment(raw), " \t\r");
+    value = trimFrontmatterValue(value);
+    if (value.len == 0 or isYamlNullScalar(value)) return;
+    accumulator.has_products = true;
+    const value_product = product_restriction.fromName(value) orelse {
+        accumulator.invalid = true;
+        return;
+    };
+    accumulator.count += 1;
+    const product = restriction_product orelse return;
+    if (value_product == product) accumulator.matched = true;
+}
+
+fn isYamlNullScalar(value: []const u8) bool {
+    return std.mem.eql(u8, value, "~") or std.ascii.eqlIgnoreCase(value, "null");
 }
 
 const YamlKeyValue = struct {
@@ -1038,9 +1234,25 @@ fn parseYamlKeyValue(line: []const u8) ?YamlKeyValue {
     const colon = std.mem.indexOfScalar(u8, line, ':') orelse return null;
     const key = std.mem.trim(u8, line[0..colon], " \t");
     if (key.len == 0) return null;
-    const value = trimFrontmatterValue(line[colon + 1 ..]);
+    const value = trimFrontmatterValue(stripYamlInlineComment(line[colon + 1 ..]));
     if (value.len == 0) return null;
     return .{ .key = key, .value = value };
+}
+
+fn stripYamlInlineComment(raw: []const u8) []const u8 {
+    var quote: ?u8 = null;
+    for (raw, 0..) |byte, index| {
+        if (quote) |active_quote| {
+            if (byte == active_quote and (index == 0 or raw[index - 1] != '\\')) quote = null;
+            continue;
+        }
+        if (byte == '"' or byte == '\'') {
+            quote = byte;
+        } else if (byte == '#' and (index == 0 or std.ascii.isWhitespace(raw[index - 1]))) {
+            return std.mem.trim(u8, raw[0..index], " \t\r");
+        }
+    }
+    return raw;
 }
 
 fn setSkillInterfaceField(
@@ -1235,7 +1447,7 @@ test "skill metadata parser loads interface and dependencies" {
     const skill_dir = try std.fs.path.join(allocator, &.{ root, "demo" });
     defer allocator.free(skill_dir);
 
-    const metadata = try loadSkillFileMetadata(allocator, skill_dir);
+    const metadata = try loadSkillFileMetadata(allocator, skill_dir, .codex);
     defer metadata.deinit(allocator);
 
     try std.testing.expect(metadata.interface != null);
@@ -1283,7 +1495,7 @@ test "skill metadata parser accepts yaml interface and tool dependencies" {
     const skill_dir = try std.fs.path.join(allocator, &.{ root, "demo" });
     defer allocator.free(skill_dir);
 
-    const metadata = try loadSkillFileMetadata(allocator, skill_dir);
+    const metadata = try loadSkillFileMetadata(allocator, skill_dir, .codex);
     defer metadata.deinit(allocator);
 
     try std.testing.expectEqualStrings("Yaml Skill", metadata.interface.?.display_name.?);
@@ -1294,6 +1506,271 @@ test "skill metadata parser accepts yaml interface and tool dependencies" {
     try std.testing.expectEqualStrings("cli", metadata.dependencies.?.tools[0].kind);
     try std.testing.expectEqualStrings("gh", metadata.dependencies.?.tools[0].value);
     try std.testing.expectEqualStrings("GitHub CLI", metadata.dependencies.?.tools[0].description.?);
+}
+
+test "skill metadata parser honors json product policy" {
+    const allocator = std.testing.allocator;
+    var dir = std.testing.tmpDir(.{});
+    defer dir.cleanup();
+    const root = try dir.dir.realPathFileAlloc(std.Io.Threaded.global_single_threaded.io(), ".", allocator);
+    defer allocator.free(root);
+
+    try dir.dir.createDirPath(std.Io.Threaded.global_single_threaded.io(), "demo/agents");
+    try dir.dir.writeFile(std.Io.Threaded.global_single_threaded.io(), .{
+        .sub_path = "demo/agents/openai.yaml",
+        .data =
+        \\{
+        \\  "policy": {
+        \\    "products": ["CHATGPT"]
+        \\  }
+        \\}
+        ,
+    });
+    const skill_dir = try std.fs.path.join(allocator, &.{ root, "demo" });
+    defer allocator.free(skill_dir);
+
+    const codex_metadata = try loadSkillFileMetadata(allocator, skill_dir, .codex);
+    defer codex_metadata.deinit(allocator);
+    try std.testing.expect(!codex_metadata.product_allowed);
+
+    const chatgpt_metadata = try loadSkillFileMetadata(allocator, skill_dir, .chatgpt);
+    defer chatgpt_metadata.deinit(allocator);
+    try std.testing.expect(chatgpt_metadata.product_allowed);
+}
+
+test "skill metadata parser honors yaml product policy" {
+    const allocator = std.testing.allocator;
+    var dir = std.testing.tmpDir(.{});
+    defer dir.cleanup();
+    const root = try dir.dir.realPathFileAlloc(std.Io.Threaded.global_single_threaded.io(), ".", allocator);
+    defer allocator.free(root);
+
+    try dir.dir.createDirPath(std.Io.Threaded.global_single_threaded.io(), "demo/agents");
+    try dir.dir.writeFile(std.Io.Threaded.global_single_threaded.io(), .{
+        .sub_path = "demo/agents/openai.yaml",
+        .data =
+        \\policy: # product access
+        \\  products: # allowed products
+        \\    - CODEX
+        \\
+        ,
+    });
+    const skill_dir = try std.fs.path.join(allocator, &.{ root, "demo" });
+    defer allocator.free(skill_dir);
+
+    const codex_metadata = try loadSkillFileMetadata(allocator, skill_dir, .codex);
+    defer codex_metadata.deinit(allocator);
+    try std.testing.expect(codex_metadata.product_allowed);
+
+    const chatgpt_metadata = try loadSkillFileMetadata(allocator, skill_dir, .chatgpt);
+    defer chatgpt_metadata.deinit(allocator);
+    try std.testing.expect(!chatgpt_metadata.product_allowed);
+}
+
+test "skill metadata parser honors yaml flow product policy" {
+    const allocator = std.testing.allocator;
+    var dir = std.testing.tmpDir(.{});
+    defer dir.cleanup();
+    const root = try dir.dir.realPathFileAlloc(std.Io.Threaded.global_single_threaded.io(), ".", allocator);
+    defer allocator.free(root);
+
+    try dir.dir.createDirPath(std.Io.Threaded.global_single_threaded.io(), "demo/agents");
+    try dir.dir.writeFile(std.Io.Threaded.global_single_threaded.io(), .{
+        .sub_path = "demo/agents/openai.yaml",
+        .data =
+        \\policy: { allow_implicit_invocation: false, products: [CHATGPT] } # chat only
+        \\
+        ,
+    });
+    const skill_dir = try std.fs.path.join(allocator, &.{ root, "demo" });
+    defer allocator.free(skill_dir);
+
+    const codex_metadata = try loadSkillFileMetadata(allocator, skill_dir, .codex);
+    defer codex_metadata.deinit(allocator);
+    try std.testing.expect(!codex_metadata.product_allowed);
+
+    const chatgpt_metadata = try loadSkillFileMetadata(allocator, skill_dir, .chatgpt);
+    defer chatgpt_metadata.deinit(allocator);
+    try std.testing.expect(chatgpt_metadata.product_allowed);
+}
+
+test "skill metadata parser leaves yaml product list before sibling lists" {
+    const allocator = std.testing.allocator;
+    var dir = std.testing.tmpDir(.{});
+    defer dir.cleanup();
+    const root = try dir.dir.realPathFileAlloc(std.Io.Threaded.global_single_threaded.io(), ".", allocator);
+    defer allocator.free(root);
+
+    try dir.dir.createDirPath(std.Io.Threaded.global_single_threaded.io(), "demo/agents");
+    try dir.dir.writeFile(std.Io.Threaded.global_single_threaded.io(), .{
+        .sub_path = "demo/agents/openai.yaml",
+        .data =
+        \\policy:
+        \\  products:
+        \\    - CODEX
+        \\  allow_tools:
+        \\    - future-tool
+        \\
+        ,
+    });
+    const skill_dir = try std.fs.path.join(allocator, &.{ root, "demo" });
+    defer allocator.free(skill_dir);
+
+    const codex_metadata = try loadSkillFileMetadata(allocator, skill_dir, .codex);
+    defer codex_metadata.deinit(allocator);
+    try std.testing.expect(codex_metadata.product_allowed);
+
+    const chatgpt_metadata = try loadSkillFileMetadata(allocator, skill_dir, .chatgpt);
+    defer chatgpt_metadata.deinit(allocator);
+    try std.testing.expect(!chatgpt_metadata.product_allowed);
+}
+
+test "skill metadata parser treats yaml null product policy as unrestricted" {
+    const allocator = std.testing.allocator;
+    var dir = std.testing.tmpDir(.{});
+    defer dir.cleanup();
+    const root = try dir.dir.realPathFileAlloc(std.Io.Threaded.global_single_threaded.io(), ".", allocator);
+    defer allocator.free(root);
+
+    try dir.dir.createDirPath(std.Io.Threaded.global_single_threaded.io(), "block/agents");
+    try dir.dir.writeFile(std.Io.Threaded.global_single_threaded.io(), .{
+        .sub_path = "block/agents/openai.yaml",
+        .data =
+        \\policy:
+        \\  products: null
+        \\
+        ,
+    });
+    const block_skill_dir = try std.fs.path.join(allocator, &.{ root, "block" });
+    defer allocator.free(block_skill_dir);
+
+    const block_metadata = try loadSkillFileMetadata(allocator, block_skill_dir, .codex);
+    defer block_metadata.deinit(allocator);
+    try std.testing.expect(block_metadata.product_allowed);
+
+    try dir.dir.createDirPath(std.Io.Threaded.global_single_threaded.io(), "flow/agents");
+    try dir.dir.writeFile(std.Io.Threaded.global_single_threaded.io(), .{
+        .sub_path = "flow/agents/openai.yaml",
+        .data =
+        \\policy: { products: null }
+        \\
+        ,
+    });
+    const flow_skill_dir = try std.fs.path.join(allocator, &.{ root, "flow" });
+    defer allocator.free(flow_skill_dir);
+
+    const flow_metadata = try loadSkillFileMetadata(allocator, flow_skill_dir, .chatgpt);
+    defer flow_metadata.deinit(allocator);
+    try std.testing.expect(flow_metadata.product_allowed);
+}
+
+test "skill metadata parser treats invalid product policy as unrestricted" {
+    const allocator = std.testing.allocator;
+    var dir = std.testing.tmpDir(.{});
+    defer dir.cleanup();
+    const root = try dir.dir.realPathFileAlloc(std.Io.Threaded.global_single_threaded.io(), ".", allocator);
+    defer allocator.free(root);
+
+    try dir.dir.createDirPath(std.Io.Threaded.global_single_threaded.io(), "json/agents");
+    try dir.dir.writeFile(std.Io.Threaded.global_single_threaded.io(), .{
+        .sub_path = "json/agents/openai.yaml",
+        .data =
+        \\{
+        \\  "policy": {
+        \\    "products": ["SORA"]
+        \\  }
+        \\}
+        ,
+    });
+    const json_skill_dir = try std.fs.path.join(allocator, &.{ root, "json" });
+    defer allocator.free(json_skill_dir);
+
+    const json_metadata = try loadSkillFileMetadata(allocator, json_skill_dir, .codex);
+    defer json_metadata.deinit(allocator);
+    try std.testing.expect(json_metadata.product_allowed);
+
+    try dir.dir.createDirPath(std.Io.Threaded.global_single_threaded.io(), "scalar/agents");
+    try dir.dir.writeFile(std.Io.Threaded.global_single_threaded.io(), .{
+        .sub_path = "scalar/agents/openai.yaml",
+        .data =
+        \\policy:
+        \\  products: CHATGPT
+        \\
+        ,
+    });
+    const scalar_skill_dir = try std.fs.path.join(allocator, &.{ root, "scalar" });
+    defer allocator.free(scalar_skill_dir);
+
+    const scalar_metadata = try loadSkillFileMetadata(allocator, scalar_skill_dir, .codex);
+    defer scalar_metadata.deinit(allocator);
+    try std.testing.expect(scalar_metadata.product_allowed);
+
+    try dir.dir.createDirPath(std.Io.Threaded.global_single_threaded.io(), "future/agents");
+    try dir.dir.writeFile(std.Io.Threaded.global_single_threaded.io(), .{
+        .sub_path = "future/agents/openai.yaml",
+        .data =
+        \\policy: { products: [CODEX, SORA] }
+        \\
+        ,
+    });
+    const future_skill_dir = try std.fs.path.join(allocator, &.{ root, "future" });
+    defer allocator.free(future_skill_dir);
+
+    const future_metadata = try loadSkillFileMetadata(allocator, future_skill_dir, .chatgpt);
+    defer future_metadata.deinit(allocator);
+    try std.testing.expect(future_metadata.product_allowed);
+}
+
+test "skills list suppresses validation errors for product-hidden skills" {
+    const allocator = std.testing.allocator;
+    var dir = std.testing.tmpDir(.{});
+    defer dir.cleanup();
+    const root = try dir.dir.realPathFileAlloc(std.Io.Threaded.global_single_threaded.io(), ".", allocator);
+    defer allocator.free(root);
+
+    try dir.dir.createDirPath(std.Io.Threaded.global_single_threaded.io(), "skills/hidden/agents");
+    try dir.dir.writeFile(std.Io.Threaded.global_single_threaded.io(), .{
+        .sub_path = "skills/hidden/SKILL.md",
+        .data =
+        \\---
+        \\name: hidden
+        \\---
+        \\Hidden for Codex.
+        ,
+    });
+    try dir.dir.writeFile(std.Io.Threaded.global_single_threaded.io(), .{
+        .sub_path = "skills/hidden/agents/openai.yaml",
+        .data =
+        \\policy:
+        \\  products:
+        \\    - CHATGPT
+        \\
+        ,
+    });
+    const skills_root = try std.fs.path.join(allocator, &.{ root, "skills" });
+    defer allocator.free(skills_root);
+
+    var skills = std.ArrayList(Skill).empty;
+    defer {
+        for (skills.items) |skill| skill.deinit(allocator);
+        skills.deinit(allocator);
+    }
+    var errors = std.ArrayList(SkillError).empty;
+    defer {
+        for (errors.items) |err| err.deinit(allocator);
+        errors.deinit(allocator);
+    }
+
+    try scanSkillRoot(
+        allocator,
+        .{ .path = skills_root, .scope = "user" },
+        .codex,
+        &skills,
+        &errors,
+    );
+
+    try std.testing.expectEqual(@as(usize, 0), skills.items.len);
+    try std.testing.expectEqual(@as(usize, 0), errors.items.len);
 }
 
 test "skill config writer toggles name selector" {
@@ -1410,6 +1887,7 @@ test "skills list namespaces plugin skill names" {
     try scanSkillRoot(
         allocator,
         .{ .path = skills_path, .scope = "user", .skill_name_prefix = prefix },
+        .codex,
         &skills,
         &errors,
     );
