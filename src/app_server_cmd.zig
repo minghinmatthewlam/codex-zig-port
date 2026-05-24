@@ -824,6 +824,8 @@ const LoadedThread = struct {
     pending_session_start_source: ?[]const u8,
     created_at: i64,
     updated_at: i64,
+    summary_created_at_ms: ?i64 = null,
+    summary_updated_at_ms: ?i64 = null,
     status: ThreadRuntimeStatus = .idle,
     realtime_session: ?LoadedThreadRealtimeSession = null,
 
@@ -40694,6 +40696,8 @@ fn applyStateThreadMetadataWithOptions(
     metadata: thread_state.ThreadMetadata,
     options: StateThreadMetadataApplyOptions,
 ) !void {
+    thread.summary_created_at_ms = metadata.created_at_ms;
+    thread.summary_updated_at_ms = metadata.updated_at_ms;
     if (stateThreadString(metadata.first_user_message)) |preview| {
         try replaceOwnedString(allocator, &thread.preview, preview);
     }
@@ -43350,11 +43354,15 @@ fn renderConversationSummaryResponseFromLoadedThread(
 ) ![]const u8 {
     const timestamp = if (metadata) |value|
         try conversationSummaryTimestamp(allocator, value.created_at_ms)
+    else if (thread.summary_created_at_ms) |value|
+        try conversationSummaryTimestamp(allocator, value)
     else
         null;
     defer if (timestamp) |value| allocator.free(value);
     const updated_at = if (metadata) |value|
         try conversationSummaryTimestamp(allocator, value.updated_at_ms)
+    else if (loadedThreadSummaryUpdatedAtMs(thread)) |value|
+        try conversationSummaryTimestamp(allocator, value)
     else
         null;
     defer if (updated_at) |value| allocator.free(value);
@@ -43373,6 +43381,22 @@ fn renderConversationSummaryResponseFromLoadedThread(
         .git_branch = conversationSummaryGitMetadataString(metadata, .git_branch, thread.git_branch),
         .git_origin_url = conversationSummaryGitMetadataString(metadata, .git_origin_url, thread.git_origin_url),
     });
+}
+
+fn loadedThreadSummaryUpdatedAtMs(thread: *const LoadedThread) ?i64 {
+    return loadedThreadSummaryUpdatedAtMsFromValues(thread.summary_updated_at_ms, thread.updated_at);
+}
+
+fn loadedThreadSummaryUpdatedAtMsFromValues(summary_updated_at_ms_maybe: ?i64, updated_at_seconds: i64) ?i64 {
+    const summary_updated_at_ms = summary_updated_at_ms_maybe orelse return null;
+    const current_updated_at_ms = updated_at_seconds * 1000;
+    return @max(summary_updated_at_ms, current_updated_at_ms);
+}
+
+test "loaded summary updatedAt fallback advances with loaded thread" {
+    try std.testing.expectEqual(@as(?i64, null), loadedThreadSummaryUpdatedAtMsFromValues(null, 1736078702));
+    try std.testing.expectEqual(@as(?i64, 1736078700123), loadedThreadSummaryUpdatedAtMsFromValues(1736078700123, 1736078700));
+    try std.testing.expectEqual(@as(?i64, 1736078702000), loadedThreadSummaryUpdatedAtMsFromValues(1736078700123, 1736078702));
 }
 
 fn renderConversationSummaryResponseFromTranscript(
