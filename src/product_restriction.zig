@@ -18,6 +18,14 @@ pub fn fromSessionSourceName(value: []const u8) ?Product {
     return fromName(value);
 }
 
+pub fn toAppPlatform(product: Product) []const u8 {
+    return switch (product) {
+        .chatgpt => "chat",
+        .codex => "codex",
+        .atlas => "atlas",
+    };
+}
+
 pub fn nameMatches(product: Product, value: []const u8) bool {
     return switch (product) {
         .chatgpt => std.ascii.eqlIgnoreCase(value, "chatgpt"),

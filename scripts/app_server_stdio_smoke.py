@@ -1979,6 +1979,20 @@ class PluginBackendHandler(BaseHTTPRequestHandler):
             "plugins~Plugin_00000000000000000000000000000000"
             "/skills/plan-work"
         )
+        parsed_path = urllib.parse.urlparse(self.path)
+        if parsed_path.path == "/backend-api/plugins/featured":
+            query = urllib.parse.parse_qs(parsed_path.query)
+            platform = query.get("platform", ["codex"])[0]
+            body = json.dumps(
+                [f"featured-{platform}@openai-curated"],
+                separators=(",", ":"),
+            ).encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
         if self.path == bundle_path:
             body = remote_plugin_bundle_bytes()
             self.send_response(200)
@@ -5013,6 +5027,77 @@ def run_app_server_plugin_product_restriction_smoke(binary: Path) -> None:
         ).is_file()
     finally:
         shutil.rmtree(root, ignore_errors=True)
+
+
+def run_app_server_plugin_featured_ids_smoke(binary: Path) -> None:
+    server, base_url = start_plugin_backend()
+    codex_home = Path(
+        tempfile.mkdtemp(prefix="codex-zig-app-server-plugin-featured-", dir="/tmp")
+    )
+    try:
+        codex_home.joinpath("config.toml").write_text(
+            f"""chatgpt_base_url = "{base_url}/backend-api"
+
+[features]
+plugins = true
+""",
+            encoding="utf-8",
+        )
+        write_marketplace_fixture(codex_home, "openai-curated", "featured-local")
+        env = os.environ.copy()
+        env.pop("OPENAI_API_KEY", None)
+        env.pop("CODEX_ACCESS_TOKEN", None)
+        env["CODEX_HOME"] = str(codex_home)
+
+        PluginBackendHandler.requests = []
+        default_response = request_stdio_app_server(
+            binary,
+            {
+                "jsonrpc": "2.0",
+                "id": "plugin-featured-default",
+                "method": "plugin/list",
+                "params": {},
+            },
+            env,
+        )
+        assert default_response["id"] == "plugin-featured-default"
+        assert default_response["result"]["featuredPluginIds"] == [
+            "featured-codex@openai-curated"
+        ]
+        assert PluginBackendHandler.requests == [
+            {
+                "path": "/backend-api/plugins/featured?platform=codex",
+                "authorization": None,
+                "account_id": None,
+            }
+        ]
+
+        PluginBackendHandler.requests = []
+        atlas_response = request_stdio_app_server(
+            binary,
+            {
+                "jsonrpc": "2.0",
+                "id": "plugin-featured-atlas",
+                "method": "plugin/list",
+                "params": {},
+            },
+            env,
+            app_server_args=["--session-source=Atlas"],
+        )
+        assert atlas_response["id"] == "plugin-featured-atlas"
+        assert atlas_response["result"]["featuredPluginIds"] == [
+            "featured-atlas@openai-curated"
+        ]
+        assert PluginBackendHandler.requests == [
+            {
+                "path": "/backend-api/plugins/featured?platform=atlas",
+                "authorization": None,
+                "account_id": None,
+            }
+        ]
+    finally:
+        server.shutdown()
+        shutil.rmtree(codex_home, ignore_errors=True)
 
 
 def git(repo: Path, *args: str) -> None:
@@ -55974,6 +56059,8 @@ def main() -> None:
     print("app-server-session-source-e2e: ok")
     run_app_server_plugin_product_restriction_smoke(binary)
     print("app-server-plugin-product-restriction-e2e: ok")
+    run_app_server_plugin_featured_ids_smoke(binary)
+    print("app-server-plugin-featured-ids-e2e: ok")
     run_flag_compat_smoke(binary)
     print("app-server-flag-compat-e2e: ok")
 

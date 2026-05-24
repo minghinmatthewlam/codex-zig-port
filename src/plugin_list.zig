@@ -395,6 +395,28 @@ pub fn renderResponseWithRemoteMarketplacesForProduct(
     restriction_product: ?ProductRestriction,
     remote_marketplaces_json: ?[]const u8,
 ) ![]const u8 {
+    return renderResponseWithRemoteMarketplacesAndFeaturedForProduct(
+        allocator,
+        codex_home,
+        config_bytes,
+        cwds,
+        include_local,
+        restriction_product,
+        remote_marketplaces_json,
+        null,
+    );
+}
+
+pub fn renderResponseWithRemoteMarketplacesAndFeaturedForProduct(
+    allocator: std.mem.Allocator,
+    codex_home: []const u8,
+    config_bytes: []const u8,
+    cwds: []const []const u8,
+    include_local: bool,
+    restriction_product: ?ProductRestriction,
+    remote_marketplaces_json: ?[]const u8,
+    featured_plugin_ids_json: ?[]const u8,
+) ![]const u8 {
     if (!plugin_config.pluginsFeatureEnabled(config_bytes)) {
         return allocator.dupe(u8, "{\"marketplaces\":[],\"marketplaceLoadErrors\":[],\"featuredPluginIds\":[]}");
     }
@@ -442,8 +464,24 @@ pub fn renderResponseWithRemoteMarketplacesForProduct(
     try out.appendSlice(allocator, marketplaces.items);
     try out.appendSlice(allocator, "],\"marketplaceLoadErrors\":[");
     try out.appendSlice(allocator, load_errors.items);
-    try out.appendSlice(allocator, "],\"featuredPluginIds\":[]}");
+    try out.appendSlice(allocator, "],\"featuredPluginIds\":");
+    try out.appendSlice(allocator, featured_plugin_ids_json orelse "[]");
+    try out.appendSlice(allocator, "}");
     return out.toOwnedSlice(allocator);
+}
+
+pub fn responseHasMarketplaceName(allocator: std.mem.Allocator, response_json: []const u8, marketplace_name: []const u8) bool {
+    var parsed = std.json.parseFromSlice(std.json.Value, allocator, response_json, .{}) catch return false;
+    defer parsed.deinit();
+    if (parsed.value != .object) return false;
+    const marketplaces = parsed.value.object.get("marketplaces") orelse return false;
+    if (marketplaces != .array) return false;
+    for (marketplaces.array.items) |item| {
+        if (item != .object) continue;
+        const name = stringField(item.object, "name") orelse continue;
+        if (std.mem.eql(u8, name, marketplace_name)) return true;
+    }
+    return false;
 }
 
 pub fn renderConfiguredResponse(

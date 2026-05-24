@@ -46868,18 +46868,43 @@ fn handlePluginList(allocator: std.mem.Allocator, state: *AppServerState, id_val
         }
     }
 
-    const result = plugin_list.renderResponseWithRemoteMarketplacesForProduct(
+    const restriction_product = pluginProductRestrictionForSessionSource(state.session_source);
+    var featured_plugin_ids_json: ?[]const u8 = null;
+    defer if (featured_plugin_ids_json) |json| allocator.free(json);
+
+    var result = plugin_list.renderResponseWithRemoteMarketplacesForProduct(
         allocator,
         codex_home,
         raw_config_bytes,
         params.cwds,
         params.include_local(),
-        pluginProductRestrictionForSessionSource(state.session_source),
+        restriction_product,
         remote_marketplaces_json,
     ) catch |err| {
         return renderJsonRpcErrorForFailure(allocator, id_value, "plugin/list failed", err);
     };
     defer allocator.free(result);
+
+    if (plugin_list.responseHasMarketplaceName(allocator, result, marketplace_config.OPENAI_CURATED_MARKETPLACE_NAME)) {
+        featured_plugin_ids_json = fetchFeaturedPluginIdsForProduct(allocator, restriction_product) catch null;
+        if (featured_plugin_ids_json) |featured_json| {
+            const result_with_featured = plugin_list.renderResponseWithRemoteMarketplacesAndFeaturedForProduct(
+                allocator,
+                codex_home,
+                raw_config_bytes,
+                params.cwds,
+                params.include_local(),
+                restriction_product,
+                remote_marketplaces_json,
+                featured_json,
+            ) catch |err| {
+                return renderJsonRpcErrorForFailure(allocator, id_value, "plugin/list failed", err);
+            };
+            allocator.free(result);
+            result = result_with_featured;
+        }
+    }
+
     return renderJsonRpcResult(allocator, id_value, result);
 }
 
@@ -46938,6 +46963,28 @@ fn fetchRemotePluginListMarketplaces(
     }
 
     return remote_plugin.fetchMarketplacesJson(allocator, cfg.chatgpt_base_url, credentials, remote_sources);
+}
+
+fn fetchFeaturedPluginIdsForProduct(
+    allocator: std.mem.Allocator,
+    restriction_product: ?plugin_list.ProductRestriction,
+) ![]const u8 {
+    var cfg = try config.loadWithOptions(allocator, .{});
+    defer cfg.deinit(allocator);
+
+    var credentials: ?auth_mod.Credentials = null;
+    defer if (credentials) |*credential| credential.deinit(allocator);
+    if (auth_mod.loadCliAuthForConfig(allocator, &cfg)) |loaded| {
+        switch (loaded.mode) {
+            .chatgpt, .chatgpt_auth_tokens, .agent_identity => credentials = loaded,
+            .api_key, .local_oss, .provider_no_auth => {
+                var mutable = loaded;
+                mutable.deinit(allocator);
+            },
+        }
+    } else |_| {}
+
+    return remote_plugin.fetchFeaturedPluginIdsJson(allocator, cfg.chatgpt_base_url, credentials, restriction_product);
 }
 
 fn handlePluginRead(allocator: std.mem.Allocator, state: *AppServerState, id_value: std.json.Value, params_value: ?std.json.Value) ![]const u8 {

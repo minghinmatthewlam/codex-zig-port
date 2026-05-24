@@ -246,7 +246,7 @@ Zig TUI help in `src/tui.zig`, and the broader narrative tracker in
   reusing the existing app-server plugin/app runtime where possible.
 - Close user-visible app-server plugin gaps that remain after CLI/TUI routing:
   remote catalog cache synchronization, plugin cache update parity, app auth
-  lookups, and product-gated local detail behavior.
+  lookups, and exact remote/local cache behavior.
 
 ## P1 Gaps
 

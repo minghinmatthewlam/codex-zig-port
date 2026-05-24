@@ -1,6 +1,7 @@
 const std = @import("std");
 
 const auth = @import("auth.zig");
+const product_restriction = @import("product_restriction.zig");
 
 const MAX_REMOTE_DEFAULT_PROMPT_LEN = 128;
 const REMOTE_PLUGIN_SHARE_MAX_ARCHIVE_BYTES = 50 * 1024 * 1024;
@@ -487,8 +488,34 @@ pub fn fetchMarketplacesJson(
     return out.toOwnedSlice(allocator);
 }
 
+pub fn fetchFeaturedPluginIdsJson(
+    allocator: std.mem.Allocator,
+    base_url: []const u8,
+    credentials: ?auth.Credentials,
+    restriction_product: ?product_restriction.Product,
+) ![]const u8 {
+    const url = try featuredPluginsUrl(allocator, base_url, restriction_product orelse .codex);
+    defer allocator.free(url);
+    const body = try fetchJsonBytesOptionalAuth(allocator, url, credentials);
+    defer allocator.free(body);
+
+    var parsed = try std.json.parseFromSlice([]const []const u8, allocator, body, .{
+        .allocate = .alloc_always,
+    });
+    defer parsed.deinit();
+
+    var out = std.ArrayList(u8).empty;
+    errdefer out.deinit(allocator);
+    try appendStringArrayJson(allocator, &out, parsed.value);
+    return out.toOwnedSlice(allocator);
+}
+
 pub fn fetchJsonBytes(allocator: std.mem.Allocator, url: []const u8, credentials: auth.Credentials) ![]const u8 {
     return sendJsonBytes(allocator, url, .GET, credentials);
+}
+
+fn fetchJsonBytesOptionalAuth(allocator: std.mem.Allocator, url: []const u8, credentials: ?auth.Credentials) ![]const u8 {
+    return sendJsonBytesWithPayloadOptionalAuth(allocator, url, .GET, credentials, null);
 }
 
 fn fetchBytes(allocator: std.mem.Allocator, url: []const u8, max_bytes: usize) ![]const u8 {
@@ -529,21 +556,35 @@ fn sendJsonBytesWithPayload(
     credentials: auth.Credentials,
     payload: ?[]const u8,
 ) ![]const u8 {
+    return sendJsonBytesWithPayloadOptionalAuth(allocator, url, method, credentials, payload);
+}
+
+fn sendJsonBytesWithPayloadOptionalAuth(
+    allocator: std.mem.Allocator,
+    url: []const u8,
+    method: std.http.Method,
+    credentials: ?auth.Credentials,
+    payload: ?[]const u8,
+) ![]const u8 {
     var headers = std.ArrayList(std.http.Header).empty;
     defer headers.deinit(allocator);
-    const auth_header = try auth.authorizationHeader(allocator, credentials);
-    defer allocator.free(auth_header);
-    try headers.append(allocator, .{ .name = "Authorization", .value = auth_header });
+    var auth_header: ?[]const u8 = null;
+    defer if (auth_header) |header| allocator.free(header);
+
+    if (credentials) |credential| {
+        auth_header = try auth.authorizationHeader(allocator, credential);
+        try headers.append(allocator, .{ .name = "Authorization", .value = auth_header.? });
+        if (credential.account_id) |account_id| {
+            try headers.append(allocator, .{ .name = "ChatGPT-Account-Id", .value = account_id });
+        }
+        if (credential.fedramp) {
+            try headers.append(allocator, .{ .name = "X-OpenAI-Fedramp", .value = "true" });
+        }
+    }
     try headers.append(allocator, .{ .name = "Accept", .value = "application/json" });
     try headers.append(allocator, .{ .name = "User-Agent", .value = "codex-zig-port/0.0.1" });
     if (payload != null) {
         try headers.append(allocator, .{ .name = "Content-Type", .value = "application/json" });
-    }
-    if (credentials.account_id) |account_id| {
-        try headers.append(allocator, .{ .name = "ChatGPT-Account-Id", .value = account_id });
-    }
-    if (credentials.fedramp) {
-        try headers.append(allocator, .{ .name = "X-OpenAI-Fedramp", .value = "true" });
     }
 
     var io_instance: std.Io.Threaded = .init(allocator, .{});
@@ -785,6 +826,15 @@ fn installedPluginsPageUrl(allocator: std.mem.Allocator, base_url: []const u8, s
         try appendPathSegment(allocator, &url, token);
     }
     return url.toOwnedSlice(allocator);
+}
+
+fn featuredPluginsUrl(allocator: std.mem.Allocator, base_url: []const u8, product: product_restriction.Product) ![]const u8 {
+    const trimmed = std.mem.trimEnd(u8, base_url, "/");
+    if (trimmed.len == 0) return error.InvalidRemotePluginBaseUrl;
+    return std.fmt.allocPrint(allocator, "{s}/plugins/featured?platform={s}", .{
+        trimmed,
+        product_restriction.toAppPlatform(product),
+    });
 }
 
 fn skillDetailUrl(allocator: std.mem.Allocator, base_url: []const u8, plugin_id: []const u8, skill_name: []const u8) ![]const u8 {
@@ -2115,6 +2165,10 @@ test "remote plugin detail URLs match backend catalog paths" {
     const installed_url = try installedPluginsUrl(allocator, "https://chatgpt.com/backend-api/", .global);
     defer allocator.free(installed_url);
     try std.testing.expectEqualStrings("https://chatgpt.com/backend-api/ps/plugins/installed?scope=GLOBAL", installed_url);
+
+    const featured_url = try featuredPluginsUrl(allocator, "https://chatgpt.com/backend-api/", .chatgpt);
+    defer allocator.free(featured_url);
+    try std.testing.expectEqualStrings("https://chatgpt.com/backend-api/plugins/featured?platform=chat", featured_url);
 }
 
 test "remote plugin read JSON maps installed detail state" {
