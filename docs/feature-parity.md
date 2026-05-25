@@ -174,9 +174,10 @@ Zig TUI help in `src/tui.zig`, and the broader narrative tracker in
   help, human output, JSON top-level fields, grouped check rows, and
   `--json`, `--summary`, `--all`, `--no-color`, `--ascii`, `-c/--config`,
   `--enable`, and `--disable` parsing, plus real `rg` readiness probing,
-  install context and package-manager provenance details, inherited
-  package-manager env suppression for dev builds, PATH entry reporting,
-  npm global-root mismatch diagnostics, package-layout bundled `rg` detection
+  Rust-shaped install context details for package-layout and standalone release
+  installs, package-manager provenance details, inherited package-manager env
+  suppression for dev builds, PATH entry reporting, npm global-root mismatch
+  diagnostics, package-layout bundled `rg` detection
   through `codex-path`, standalone bundled `rg` detection through
   `codex-resources`, custom-CA env path validation, config-backed `log_dir` and
   `sqlite_home` reporting, read-only runtime SQLite DB integrity probes for
@@ -190,9 +191,9 @@ Zig TUI help in `src/tui.zig`, and the broader narrative tracker in
   and passive app-server daemon mode, pid, settings, update-loop path, and
   control-socket reachability reporting. Doctor-local
   `--strict-config` is rejected like Rust while root `--strict-config doctor` remains supported.
-  Remaining doctor parity is exact diagnostic depth: Rust's full installation
-  diagnostics and richer live background-daemon probes are deeper than the
-  current bounded Zig checks.
+  Remaining doctor parity is exact diagnostic depth: minor install-provenance
+  edge-case wording/status details and richer live background-daemon probes are
+  deeper than the current bounded Zig checks.
 - Root interactive/resume/fork, exec, and review support for
   `--strict-config` is implemented for user `config.toml` unknown fields and
   `-c/--config` unknown override fields, including unknown feature keys and

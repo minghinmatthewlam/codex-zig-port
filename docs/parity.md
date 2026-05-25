@@ -70,9 +70,10 @@ command-specific help plus Rust-visible `--json`, `--summary`, `--all`,
 `--no-color`, `--ascii`, `-c/--config`, `--enable`, and `--disable` flags, and
 emits a Rust-shaped JSON report with `schemaVersion`, `generatedAt`,
 `overallStatus`, `codexVersion`, and a check map keyed by diagnostic ID. The
-bounded local checks cover install/update detection, install context details,
-package-manager provenance, inherited package-manager env suppression for dev
-builds, PATH entry reporting, npm global-root mismatch diagnostics, runtime,
+bounded local checks cover install/update detection, Rust-shaped install context
+details for package-layout and standalone release installs, package-manager
+provenance, inherited package-manager env suppression for dev builds, PATH entry
+reporting, npm global-root mismatch diagnostics, runtime,
 package-layout bundled `rg` detection through `codex-path`, standalone bundled
 `rg` detection through `codex-resources`, real system `rg` readiness probing,
 config load, auth presence, MCP config parsing, sandbox config, proxy and
