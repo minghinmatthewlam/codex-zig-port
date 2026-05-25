@@ -2445,7 +2445,7 @@ def run_plugin_marketplace_smoke(
         capture_output=True,
         check=True,
     )
-    if "codex-zig plugin <COMMAND>" not in root_help.stderr:
+    if "codex-zig plugin [OPTIONS] <COMMAND>" not in root_help.stderr:
         raise AssertionError(f"expected plugin root help output:\n{root_help.stderr}")
     for expected in ["add", "list", "marketplace", "remove"]:
         if expected not in root_help.stderr:
@@ -2459,7 +2459,7 @@ def run_plugin_marketplace_smoke(
         capture_output=True,
         check=True,
     )
-    if "codex-zig plugin <COMMAND>" not in help_command.stderr:
+    if "codex-zig plugin [OPTIONS] <COMMAND>" not in help_command.stderr:
         raise AssertionError(f"expected help plugin output:\n{help_command.stderr}")
 
     marketplace_help = subprocess.run(
@@ -2470,7 +2470,7 @@ def run_plugin_marketplace_smoke(
         capture_output=True,
         check=True,
     )
-    if "codex-zig plugin marketplace <COMMAND>" not in marketplace_help.stderr:
+    if "codex-zig plugin marketplace [OPTIONS] <COMMAND>" not in marketplace_help.stderr:
         raise AssertionError(
             f"expected plugin marketplace help output:\n{marketplace_help.stderr}"
         )
@@ -2536,6 +2536,197 @@ def run_plugin_marketplace_smoke(
     write_git_marketplace_fixture(git_source, "git-debug", "git-sample")
     write_git_url_rewrite_config(git_config, git_url, git_source)
     write_marketplace_fixture(Path(env["CODEX_HOME"]), "home-only", "home-plugin")
+
+    feature_override_home = workspace / "plugin-feature-override-codex-home"
+    feature_override_home.mkdir()
+    feature_override_home.joinpath("config.toml").write_text(
+        "[features]\n"
+        "plugins = false\n\n"
+        "[marketplaces.debug]\n"
+        'source_type = "local"\n'
+        f'source = "{source}"\n'
+    )
+    feature_override_env = env.copy()
+    feature_override_env["CODEX_HOME"] = str(feature_override_home)
+    feature_override_disabled = subprocess.run(
+        [str(binary), "plugin", "list"],
+        cwd=workspace,
+        env=feature_override_env,
+        text=True,
+        capture_output=True,
+        check=True,
+    )
+    if "No marketplace plugins found." not in feature_override_disabled.stderr:
+        raise AssertionError(
+            "expected plugins=false to hide configured marketplace:\n"
+            f"{feature_override_disabled.stderr}"
+        )
+    feature_override_enable = subprocess.run(
+        [str(binary), "plugin", "--enable", "plugins", "list"],
+        cwd=workspace,
+        env=feature_override_env,
+        text=True,
+        capture_output=True,
+        check=True,
+    )
+    if "sample@debug" not in feature_override_enable.stderr:
+        raise AssertionError(
+            "expected --enable plugins to reveal configured marketplace:\n"
+            f"{feature_override_enable.stderr}"
+        )
+    feature_override_config = subprocess.run(
+        [str(binary), "plugin", "list", "-c", "features.plugins=true"],
+        cwd=workspace,
+        env=feature_override_env,
+        text=True,
+        capture_output=True,
+        check=True,
+    )
+    if "sample@debug" not in feature_override_config.stderr:
+        raise AssertionError(
+            "expected -c features.plugins=true to reveal configured marketplace:\n"
+            f"{feature_override_config.stderr}"
+        )
+    feature_override_root_config = subprocess.run(
+        [str(binary), "-c", "features.plugins=true", "plugin", "list"],
+        cwd=workspace,
+        env=feature_override_env,
+        text=True,
+        capture_output=True,
+        check=True,
+    )
+    if "sample@debug" not in feature_override_root_config.stderr:
+        raise AssertionError(
+            "expected root -c features.plugins=true to reveal configured marketplace:\n"
+            f"{feature_override_root_config.stderr}"
+        )
+    feature_override_root_disable = subprocess.run(
+        [str(binary), "-c", "features.plugins=false", "plugin", "list"],
+        cwd=workspace,
+        env=feature_override_env,
+        text=True,
+        capture_output=True,
+        check=True,
+    )
+    if "No marketplace plugins found." not in feature_override_root_disable.stderr:
+        raise AssertionError(
+            "expected root -c features.plugins=false to hide configured marketplace:\n"
+            f"{feature_override_root_disable.stderr}"
+        )
+    feature_override_marketplace = subprocess.run(
+        [str(binary), "plugin", "marketplace", "--enable", "plugins", "list"],
+        cwd=workspace,
+        env=feature_override_env,
+        text=True,
+        capture_output=True,
+        check=True,
+    )
+    if "debug" not in feature_override_marketplace.stderr or str(source) not in feature_override_marketplace.stderr:
+        raise AssertionError(
+            "expected marketplace --enable plugins to reveal configured root:\n"
+            f"{feature_override_marketplace.stderr}"
+        )
+
+    raw_config_home = workspace / "plugin-raw-config-codex-home"
+    raw_config_home.mkdir()
+    raw_config_env = env.copy()
+    raw_config_env["CODEX_HOME"] = str(raw_config_home)
+    raw_config_list = subprocess.run(
+        [
+            str(binary),
+            "plugin",
+            "-c",
+            "marketplaces.debug.source_type=local",
+            "list",
+            "-c",
+            f"marketplaces.debug.source={source}",
+        ],
+        cwd=workspace,
+        env=raw_config_env,
+        text=True,
+        capture_output=True,
+        check=True,
+    )
+    if "sample@debug" not in raw_config_list.stderr:
+        raise AssertionError(
+            "expected plugin-local marketplace config overrides to reveal sample plugin:\n"
+            f"{raw_config_list.stderr}"
+        )
+    raw_root_config_list = subprocess.run(
+        [
+            str(binary),
+            "-c",
+            "marketplaces.debug.source_type=local",
+            "-c",
+            f"marketplaces.debug.source={source}",
+            "plugin",
+            "marketplace",
+            "list",
+        ],
+        cwd=workspace,
+        env=raw_config_env,
+        text=True,
+        capture_output=True,
+        check=True,
+    )
+    if "debug" not in raw_root_config_list.stderr or str(source) not in raw_root_config_list.stderr:
+        raise AssertionError(
+            "expected root marketplace config overrides to reveal configured root:\n"
+            f"{raw_root_config_list.stderr}"
+        )
+    raw_config_add = subprocess.run(
+        [
+            str(binary),
+            "-c",
+            "marketplaces.debug.source_type=local",
+            "-c",
+            f"marketplaces.debug.source={source}",
+            "plugin",
+            "add",
+            "sample@debug",
+        ],
+        cwd=workspace,
+        env=raw_config_env,
+        text=True,
+        capture_output=True,
+        check=True,
+    )
+    if "Added plugin `sample` from marketplace `debug`." not in raw_config_add.stderr:
+        raise AssertionError(
+            "expected root marketplace config overrides to allow plugin add:\n"
+            f"{raw_config_add.stderr}"
+        )
+    raw_config_toml = raw_config_home.joinpath("config.toml").read_text()
+    if "[plugins.\"sample@debug\"]" not in raw_config_toml:
+        raise AssertionError(f"expected plugin add to persist enabled plugin:\n{raw_config_toml}")
+    if "[marketplaces.debug]" in raw_config_toml:
+        raise AssertionError(
+            "root -c marketplace overrides should not be persisted by plugin add:\n"
+            f"{raw_config_toml}"
+        )
+    raw_config_disable_plugin = subprocess.run(
+        [
+            str(binary),
+            "-c",
+            "marketplaces.debug.source_type=local",
+            "-c",
+            f"marketplaces.debug.source={source}",
+            "-c",
+            'plugins."sample@debug".enabled=false',
+            "plugin",
+            "list",
+        ],
+        cwd=workspace,
+        env=raw_config_env,
+        text=True,
+        capture_output=True,
+        check=True,
+    )
+    if "installed, disabled" not in raw_config_disable_plugin.stderr:
+        raise AssertionError(
+            "expected quoted plugin id config override to disable sample plugin:\n"
+            f"{raw_config_disable_plugin.stderr}"
+        )
 
     home_marketplace_home = workspace / "home-marketplace-home"
     home_marketplace_home.mkdir()
@@ -3233,6 +3424,50 @@ def run_plugin_marketplace_smoke(
         raise AssertionError(f"expected git marketplace remove output:\n{git_remove.stderr}")
     if git_root.exists():
         raise AssertionError(f"expected git marketplace root to be removed: {git_root}")
+
+    override_home = workspace / "plugin-marketplace-upgrade-override-codex-home"
+    override_home.mkdir()
+    override_env = git_env.copy()
+    override_env["CODEX_HOME"] = str(override_home)
+    git_source.joinpath("plugins", "git-sample", "VERSION").write_text("v3\n")
+    git(git_source, "add", ".")
+    git(git_source, "commit", "-m", "override upgrade")
+    git_override_upgrade = subprocess.run(
+        [
+            str(binary),
+            "plugin",
+            "marketplace",
+            "upgrade",
+            "-c",
+            "marketplaces.git-debug.source_type=git",
+            "-c",
+            f"marketplaces.git-debug.source={git_url}",
+            "-c",
+            "marketplaces.git-debug.ref=release",
+            "-c",
+            'marketplaces.git-debug.sparse_paths=[".agents","plugins/git-sample"]',
+            "git-debug",
+        ],
+        cwd=workspace,
+        env=override_env,
+        text=True,
+        capture_output=True,
+        check=True,
+    )
+    if "Upgraded marketplace `git-debug` to the latest configured revision." not in git_override_upgrade.stderr:
+        raise AssertionError(
+            "expected marketplace config overrides to allow git upgrade:\n"
+            f"{git_override_upgrade.stderr}"
+        )
+    override_root = override_home / ".tmp" / "marketplaces" / "git-debug"
+    if override_root.joinpath("plugins", "git-sample", "VERSION").read_text() != "v3\n":
+        raise AssertionError(f"expected override-upgraded marketplace contents at {override_root}")
+    override_config_path = override_home / "config.toml"
+    if override_config_path.exists() and "[marketplaces.git-debug]" in override_config_path.read_text():
+        raise AssertionError(
+            "marketplace -c overrides should not be persisted by upgrade:\n"
+            f"{override_config_path.read_text()}"
+        )
 
 
 def assert_empty_dir(path: Path) -> None:
