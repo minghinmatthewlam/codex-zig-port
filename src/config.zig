@@ -6,6 +6,7 @@ const model_catalog = @import("model_catalog.zig");
 
 pub const MIN_BACKGROUND_TERMINAL_EMPTY_POLL_TIMEOUT_MS: u64 = 5_000;
 pub const DEFAULT_BACKGROUND_TERMINAL_MAX_TIMEOUT_MS: u64 = 300_000;
+pub const DEFAULT_WEBSOCKET_CONNECT_TIMEOUT_MS: u64 = 15_000;
 pub const INSTALLATION_ID_FILENAME = "installation_id";
 
 const INSTALLATION_ID_MAX_BYTES = 4096;
@@ -26,6 +27,8 @@ pub const Config = struct {
     openai_base_url: []const u8,
     chatgpt_base_url: []const u8,
     model_provider_wire_api: ModelProviderWireApi = .responses,
+    model_provider_supports_websockets: bool = true,
+    model_provider_websocket_connect_timeout_ms: u64 = DEFAULT_WEBSOCKET_CONNECT_TIMEOUT_MS,
     model_provider_env_key: ?[]const u8 = null,
     model_provider_bearer_token: ?[]const u8 = null,
     model_provider_auth_command: ?ProviderAuthCommand = null,
@@ -464,6 +467,8 @@ fn applyModelProviderOverride(
     const next_model_provider_id = try allocator.dupe(u8, model_provider_id);
     errdefer allocator.free(next_model_provider_id);
     const next_requires_openai_auth = resolveModelProviderRequiresOpenAiAuth(config_view, provider_id);
+    const next_supports_websockets = resolveModelProviderSupportsWebsockets(config_view, provider_id);
+    const next_websocket_connect_timeout_ms = try resolveModelProviderWebsocketConnectTimeoutMs(config_view, provider_id);
     const next_base_urls = try resolveBaseUrlsForProvider(allocator, config_view, active_profile, provider_id);
     errdefer allocator.free(next_base_urls.openai);
     errdefer allocator.free(next_base_urls.chatgpt);
@@ -478,6 +483,8 @@ fn applyModelProviderOverride(
     if (cfg.model_provider_id) |existing| allocator.free(existing);
     cfg.model_provider_id = next_model_provider_id;
     cfg.model_provider_requires_openai_auth = next_requires_openai_auth;
+    cfg.model_provider_supports_websockets = next_supports_websockets;
+    cfg.model_provider_websocket_connect_timeout_ms = next_websocket_connect_timeout_ms;
 
     allocator.free(cfg.openai_base_url);
     cfg.openai_base_url = next_base_urls.openai;
@@ -947,6 +954,8 @@ fn clearModelProviderRequestMetadata(allocator: std.mem.Allocator, cfg: *Config)
     cfg.model_provider_id = null;
     cfg.model_provider_requires_openai_auth = false;
     cfg.model_provider_wire_api = .responses;
+    cfg.model_provider_supports_websockets = false;
+    cfg.model_provider_websocket_connect_timeout_ms = DEFAULT_WEBSOCKET_CONNECT_TIMEOUT_MS;
 
     if (cfg.model_provider_env_key) |value| allocator.free(value);
     cfg.model_provider_env_key = null;
@@ -1052,6 +1061,8 @@ pub fn loadWithOptions(allocator: std.mem.Allocator, options: LoadOptions) !Conf
     const model_provider_id = try resolveModelProviderId(allocator, config_view, active_profile);
     errdefer if (model_provider_id) |value| allocator.free(value);
     const model_provider_requires_openai_auth = resolveModelProviderRequiresOpenAiAuth(config_view, model_provider_id);
+    const model_provider_supports_websockets = resolveModelProviderSupportsWebsockets(config_view, model_provider_id);
+    const model_provider_websocket_connect_timeout_ms = try resolveModelProviderWebsocketConnectTimeoutMs(config_view, model_provider_id);
 
     const base_urls = try resolveBaseUrls(allocator, config_view, active_profile);
     errdefer allocator.free(base_urls.openai);
@@ -1124,6 +1135,8 @@ pub fn loadWithOptions(allocator: std.mem.Allocator, options: LoadOptions) !Conf
         .model_auto_compact_token_limit = model_auto_compact_token_limit,
         .model_provider_id = model_provider_id,
         .model_provider_requires_openai_auth = model_provider_requires_openai_auth,
+        .model_provider_supports_websockets = model_provider_supports_websockets,
+        .model_provider_websocket_connect_timeout_ms = model_provider_websocket_connect_timeout_ms,
         .openai_base_url = base_urls.openai,
         .chatgpt_base_url = base_urls.chatgpt,
         .model_provider_wire_api = model_provider_wire_api,
@@ -1419,6 +1432,19 @@ fn resolveModelProviderRequiresOpenAiAuth(config_view: ConfigView, model_provide
     }
     if (std.mem.eql(u8, provider, "openai")) return true;
     return false;
+}
+
+fn resolveModelProviderSupportsWebsockets(config_view: ConfigView, model_provider: ?[]const u8) bool {
+    const provider = model_provider orelse return true;
+    if (config_view.getModelProviderBool(provider, "supports_websockets")) |supports_websockets| {
+        return supports_websockets;
+    }
+    return std.ascii.eqlIgnoreCase(provider, "openai");
+}
+
+fn resolveModelProviderWebsocketConnectTimeoutMs(config_view: ConfigView, model_provider: ?[]const u8) !u64 {
+    const provider = model_provider orelse return DEFAULT_WEBSOCKET_CONNECT_TIMEOUT_MS;
+    return try config_view.getModelProviderU64(provider, "websocket_connect_timeout_ms") orelse DEFAULT_WEBSOCKET_CONNECT_TIMEOUT_MS;
 }
 
 fn resolveModelProviderWireApi(allocator: std.mem.Allocator, config_view: ConfigView, active_profile: ?[]const u8) !ModelProviderWireApi {
@@ -2639,6 +2665,31 @@ const ConfigView = struct {
         return null;
     }
 
+    fn getModelProviderU64(
+        self: ConfigView,
+        provider: []const u8,
+        key: []const u8,
+    ) !?u64 {
+        var in_provider = false;
+        var multiline = TomlMultilineScanState{};
+        var iter = std.mem.splitScalar(u8, self.bytes, '\n');
+        while (iter.next()) |line_raw| {
+            const line = std.mem.trim(u8, line_raw, " \t\r");
+            if (multiline.skipBodyLine(line_raw)) continue;
+            if (line.len == 0 or line[0] == '#') continue;
+            if (line[0] == '[') {
+                in_provider = isNamedSection(line, "model_providers.", provider);
+                continue;
+            }
+            if (in_provider) {
+                if (try u64ValueForKey(line, key)) |value| return value;
+            }
+            multiline.observeLine(line);
+        }
+        if (self.fallback) |fallback| return fallback.getModelProviderU64(provider, key);
+        return null;
+    }
+
     fn resolveCustomSandboxPermissionProfile(
         self: ConfigView,
         allocator: std.mem.Allocator,
@@ -3039,6 +3090,8 @@ fn strictConfigModelProviderPathAllowed(path: []const u8) bool {
     const known = [_][]const u8{
         "base_url",
         "wire_api",
+        "supports_websockets",
+        "websocket_connect_timeout_ms",
         "env_key",
         "experimental_bearer_token",
         "requires_openai_auth",
@@ -5041,6 +5094,26 @@ test "model provider query params resolve from provider table" {
     try std.testing.expectEqualStrings("2025-04-01-preview", query_params.?.entries[0].value);
     try std.testing.expectEqualStrings("deployment-name", query_params.?.entries[1].key);
     try std.testing.expectEqualStrings("codex-test", query_params.?.entries[1].value);
+}
+
+test "model provider websocket settings follow Rust defaults and provider overrides" {
+    const view = ConfigView{
+        .bytes =
+        \\model_provider = "ws-provider"
+        \\
+        \\[model_providers.ws-provider]
+        \\supports_websockets = true
+        \\websocket_connect_timeout_ms = 1200
+        \\
+        ,
+    };
+
+    try std.testing.expect(resolveModelProviderSupportsWebsockets(view, null));
+    try std.testing.expect(resolveModelProviderSupportsWebsockets(view, "openai"));
+    try std.testing.expect(resolveModelProviderSupportsWebsockets(view, "ws-provider"));
+    try std.testing.expect(!resolveModelProviderSupportsWebsockets(view, "custom"));
+    try std.testing.expectEqual(@as(u64, 1200), try resolveModelProviderWebsocketConnectTimeoutMs(view, "ws-provider"));
+    try std.testing.expectEqual(@as(u64, DEFAULT_WEBSOCKET_CONNECT_TIMEOUT_MS), try resolveModelProviderWebsocketConnectTimeoutMs(view, "custom"));
 }
 
 test "feedback enabled defaults true and honors feedback table" {
