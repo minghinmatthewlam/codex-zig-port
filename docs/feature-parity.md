@@ -52,9 +52,11 @@ app-server smoke.
   remote-control submissions, `/side` / `/btw` args, custom `/review` args,
   remote initial prompts, and remote stdin prompts including oversized
   multibyte input that must be drained without exiting the TUI.
-- Add robust user interruption and steering behavior in the TUI, including
-  queued input while a turn is running, `/compact` interactions, active tool
-  interruption, and accurate background-process cleanup.
+- Local TUI exit now silently terminates process-owned background terminals,
+  matching Rust's shutdown cleanup for unified exec processes. Remaining TUI
+  lifecycle gaps include robust user interruption and steering, queued input
+  while a turn is running, `/compact` interactions, active tool interruption,
+  and async background-process status depth.
 - Basic local TUI `/experimental` coverage is implemented as a text-mode
   feature browser/toggler: it lists Rust menu-visible experimental features
   with effective enabled state, menu label, description, and config key, and
