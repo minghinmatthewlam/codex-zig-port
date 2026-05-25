@@ -1984,6 +1984,11 @@ class PluginBackendHandler(BaseHTTPRequestHandler):
             "plugins~Plugin_22222222222222222222222222222222"
             "?includeDownloadUrls=true"
         )
+        disabled_checkout_detail_path = (
+            "/backend-api/ps/plugins/"
+            "plugins~Plugin_33333333333333333333333333333333"
+            "?includeDownloadUrls=true"
+        )
         bundle_path = "/bundles/linear.tar.gz"
         list_path = "/backend-api/ps/plugins/list?scope=GLOBAL&limit=200"
         installed_path = "/backend-api/ps/plugins/installed?scope=GLOBAL"
@@ -2098,6 +2103,9 @@ class PluginBackendHandler(BaseHTTPRequestHandler):
         checkout_plugin["release"]["bundle_download_url"] = (
             f"http://{self.headers['Host']}/bundles/linear.tar.gz"
         )
+        disabled_checkout_plugin = dict(checkout_plugin)
+        disabled_checkout_plugin["id"] = "plugins~Plugin_33333333333333333333333333333333"
+        disabled_checkout_plugin["status"] = "DISABLED_BY_ADMIN"
         if self.path == detail_path or self.path == detail_with_downloads_path:
             body = json.dumps(
                 plugin,
@@ -2106,6 +2114,11 @@ class PluginBackendHandler(BaseHTTPRequestHandler):
         elif self.path == checkout_detail_path:
             body = json.dumps(
                 checkout_plugin,
+                separators=(",", ":"),
+            ).encode("utf-8")
+        elif self.path == disabled_checkout_detail_path:
+            body = json.dumps(
+                disabled_checkout_plugin,
                 separators=(",", ":"),
             ).encode("utf-8")
         elif self.path == list_path:
@@ -24842,6 +24855,50 @@ plugin_sharing = true
         checkout_marketplace_path = (
             checkout_home / ".agents" / "plugins" / "marketplace.json"
         )
+        checkout_home.joinpath("plugins").mkdir(parents=True)
+        predictable_download_dir = checkout_home / "plugins" / "linear.download"
+        predictable_checkout_dir = checkout_home / "plugins" / "linear.checkout"
+        predictable_download_dir.mkdir()
+        predictable_checkout_dir.mkdir()
+        predictable_download_dir.joinpath("user-work.txt").write_text(
+            "must survive checkout",
+            encoding="utf-8",
+        )
+        predictable_checkout_dir.joinpath("user-work.txt").write_text(
+            "must survive checkout",
+            encoding="utf-8",
+        )
+
+        disabled_checkout_id = "plugins~Plugin_33333333333333333333333333333333"
+        PluginBackendHandler.requests = []
+        disabled_checkout = request_stdio_app_server(
+            binary,
+            {
+                "jsonrpc": "2.0",
+                "id": "plugin-share-checkout-disabled",
+                "method": "plugin/share/checkout",
+                "params": {
+                    "remotePluginId": disabled_checkout_id,
+                },
+            },
+            remote_env,
+        )
+        assert disabled_checkout["id"] == "plugin-share-checkout-disabled"
+        assert disabled_checkout["error"]["code"] == -32600
+        assert "disabled by admin" in disabled_checkout["error"]["message"]
+        assert not checked_out_plugin.exists()
+        assert PluginBackendHandler.requests == [
+            {
+                "path": (
+                    "/backend-api/ps/plugins/"
+                    "plugins~Plugin_33333333333333333333333333333333"
+                    "?includeDownloadUrls=true"
+                ),
+                "authorization": f"Bearer {access_token}",
+                "account_id": "acct_123",
+            },
+        ]
+
         PluginBackendHandler.requests = []
         plugin_share_checkout = request_stdio_app_server(
             binary,
@@ -24867,6 +24924,12 @@ plugin_sharing = true
         }
         assert checked_out_plugin.joinpath(".codex-plugin", "plugin.json").is_file()
         assert checked_out_plugin.joinpath("skills", "plan-work", "SKILL.md").is_file()
+        assert predictable_download_dir.joinpath("user-work.txt").read_text(
+            encoding="utf-8"
+        ) == "must survive checkout"
+        assert predictable_checkout_dir.joinpath("user-work.txt").read_text(
+            encoding="utf-8"
+        ) == "must survive checkout"
         checkout_marketplace = json.loads(
             checkout_marketplace_path.read_text(encoding="utf-8")
         )
@@ -24929,6 +24992,65 @@ plugin_sharing = true
         assert checked_out_plugin.joinpath("local-edit.txt").read_text(
             encoding="utf-8"
         ) == "keep local edits"
+        assert PluginBackendHandler.requests == [
+            {
+                "path": (
+                    "/backend-api/ps/plugins/"
+                    "plugins~Plugin_22222222222222222222222222222222"
+                    "?includeDownloadUrls=true"
+                ),
+                "authorization": f"Bearer {access_token}",
+                "account_id": "acct_123",
+            },
+        ]
+
+        checkout_marketplace_path.write_text(
+            json.dumps(
+                {
+                    "name": "codex-curated",
+                    "interface": {"displayName": "Personal"},
+                    "plugins": [
+                        {
+                            "name": "linear",
+                            "source": {
+                                "source": "git-subdir",
+                                "url": "https://example.com/linear.git",
+                                "path": "./plugins/linear",
+                            },
+                            "policy": {
+                                "installation": "AVAILABLE",
+                                "authentication": "ON_USE",
+                            },
+                        }
+                    ],
+                }
+            ),
+            encoding="utf-8",
+        )
+        PluginBackendHandler.requests = []
+        conflicting_checkout = request_stdio_app_server(
+            binary,
+            {
+                "jsonrpc": "2.0",
+                "id": "plugin-share-checkout-conflicting-source",
+                "method": "plugin/share/checkout",
+                "params": {
+                    "remotePluginId": checkout_plugin_id,
+                },
+            },
+            remote_env,
+        )
+        assert conflicting_checkout["id"] == "plugin-share-checkout-conflicting-source"
+        assert conflicting_checkout["error"]["code"] == -32600
+        assert "invalid plugin path" in conflicting_checkout["error"]["message"]
+        preserved_marketplace = json.loads(
+            checkout_marketplace_path.read_text(encoding="utf-8")
+        )
+        assert preserved_marketplace["plugins"][0]["source"] == {
+            "source": "git-subdir",
+            "url": "https://example.com/linear.git",
+            "path": "./plugins/linear",
+        }
         assert PluginBackendHandler.requests == [
             {
                 "path": (

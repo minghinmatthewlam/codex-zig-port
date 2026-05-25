@@ -350,6 +350,9 @@ pub fn checkoutShare(
     if (scope != .workspace or detail.share_url == null) return error.RemotePluginShareCheckoutNotAvailable;
     if (!isSafePluginCacheSegment(detail.name)) return error.RemotePluginInvalidPluginPath;
 
+    const availability = try normalizedAvailability(detail.status);
+    if (std.mem.eql(u8, availability, "DISABLED_BY_ADMIN")) return error.RemotePluginDisabledByAdmin;
+
     const version = detail.release.version orelse return error.RemotePluginMissingReleaseVersion;
     const bundle_url = detail.release.bundle_download_url orelse return error.RemotePluginMissingBundleDownloadUrl;
     if (!isRemoteBundleDownloadUrlAllowed(bundle_url)) return error.RemotePluginInsecureBundleDownloadUrl;
@@ -1952,14 +1955,15 @@ fn checkoutRemotePluginBundle(
     const bundle = try fetchBytes(allocator, bundle_url, REMOTE_PLUGIN_SHARE_MAX_ARCHIVE_BYTES);
     defer allocator.free(bundle);
 
-    const extract_root = try std.fmt.allocPrint(allocator, "{s}.download", .{local_plugin_path});
-    defer allocator.free(extract_root);
-    const staged_path = try std.fmt.allocPrint(allocator, "{s}.checkout", .{local_plugin_path});
-    defer allocator.free(staged_path);
+    const parent = std.fs.path.dirname(local_plugin_path) orelse return error.RemotePluginInvalidPluginPath;
+    try std.Io.Dir.cwd().createDirPath(std.Io.Threaded.global_single_threaded.io(), parent);
 
-    try deleteCachePathIfPresent(extract_root);
-    try deleteCachePathIfPresent(staged_path);
+    const extract_root = try createCheckoutTempDir(allocator, parent, plugin_name, "download");
+    defer allocator.free(extract_root);
     errdefer deleteCachePathIfPresent(extract_root) catch {};
+
+    const staged_path = try createCheckoutTempDir(allocator, parent, plugin_name, "checkout");
+    defer allocator.free(staged_path);
     errdefer deleteCachePathIfPresent(staged_path) catch {};
 
     try extractRemotePluginArchive(allocator, bundle, extract_root);
@@ -1968,6 +1972,30 @@ fn checkoutRemotePluginBundle(
     try copyDirRecursive(allocator, extracted_plugin_root, staged_path);
     std.Io.Dir.renameAbsolute(staged_path, local_plugin_path, std.Io.Threaded.global_single_threaded.io()) catch |err| return err;
     try deleteCachePathIfPresent(extract_root);
+}
+
+fn createCheckoutTempDir(allocator: std.mem.Allocator, parent: []const u8, plugin_name: []const u8, phase: []const u8) ![]const u8 {
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var attempts: usize = 0;
+    while (attempts < 16) : (attempts += 1) {
+        const now = std.Io.Timestamp.now(io, .real).nanoseconds;
+        var random_bytes: [8]u8 = undefined;
+        io.random(&random_bytes);
+        const random_id = std.mem.readInt(u64, &random_bytes, .little);
+        const dir_name = try std.fmt.allocPrint(allocator, ".codex-plugin-checkout-{s}-{s}-{d}-{x}", .{ plugin_name, phase, now, random_id });
+        defer allocator.free(dir_name);
+        const path = try std.fs.path.join(allocator, &.{ parent, dir_name });
+        errdefer allocator.free(path);
+        std.Io.Dir.cwd().createDir(io, path, .default_dir) catch |err| switch (err) {
+            error.PathAlreadyExists => {
+                allocator.free(path);
+                continue;
+            },
+            else => return err,
+        };
+        return path;
+    }
+    return error.RemotePluginTempDirUnavailable;
 }
 
 fn updatePersonalMarketplaceForCheckout(
@@ -2092,6 +2120,8 @@ fn updatePersonalMarketplaceForCheckout(
 fn pluginSourcePathEquals(plugin: std.json.ObjectMap, expected_path: []const u8) bool {
     const source = plugin.get("source") orelse return false;
     if (source != .object) return false;
+    const kind = stringField(source.object, "source") orelse return false;
+    if (!std.mem.eql(u8, kind, "local")) return false;
     const path = stringField(source.object, "path") orelse return false;
     return std.mem.eql(u8, path, expected_path);
 }

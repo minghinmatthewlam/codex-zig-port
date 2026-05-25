@@ -47667,6 +47667,11 @@ fn handlePluginShareCheckout(allocator: std.mem.Allocator, state: *AppServerStat
         context.cfg.codex_home,
         remote_plugin_id,
     ) catch |err| switch (err) {
+        error.RemotePluginDisabledByAdmin => {
+            const message = try std.fmt.allocPrint(allocator, "remote plugin {s} is disabled by admin", .{remote_plugin_id});
+            defer allocator.free(message);
+            return renderJsonRpcError(allocator, id_value, -32600, message);
+        },
         error.RemotePluginShareCheckoutNotAvailable => return renderJsonRpcError(allocator, id_value, -32600, "remote plugin is not available for plugin/share/checkout"),
         error.RemotePluginInvalidPluginPath => return renderJsonRpcError(allocator, id_value, -32600, "invalid plugin path for plugin/share/checkout"),
         error.RemotePluginInsecureBundleDownloadUrl => return renderJsonRpcError(allocator, id_value, -32600, "Invalid request: remote plugin bundle URL must use HTTPS"),
