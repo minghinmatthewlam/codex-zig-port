@@ -29415,8 +29415,10 @@ const AppServerApprovalContext = struct {
     allocator: std.mem.Allocator,
     state: *AppServerState,
     transport: ServerRequestTransport,
+    thread: ?*LoadedThread = null,
     thread_id: []const u8,
     turn_id: []const u8,
+    pending_steers: ?*AppServerPendingTurnInputQueue = null,
     turn_start_response_payload: []const u8,
     turn_start_response_sent: *bool,
 };
@@ -29427,6 +29429,7 @@ const AppServerRequestPermissionsContext = struct {
     transport: ServerRequestTransport,
     thread: *LoadedThread,
     turn_id: []const u8,
+    pending_steers: ?*AppServerPendingTurnInputQueue = null,
     turn_start_response_payload: []const u8,
     turn_start_response_sent: *bool,
 };
@@ -29435,8 +29438,10 @@ const AppServerRequestUserInputContext = struct {
     allocator: std.mem.Allocator,
     state: *AppServerState,
     transport: ServerRequestTransport,
+    thread: ?*LoadedThread = null,
     thread_id: []const u8,
     turn_id: []const u8,
+    pending_steers: ?*AppServerPendingTurnInputQueue = null,
     turn_start_response_payload: []const u8,
     turn_start_response_sent: *bool,
 };
@@ -29483,6 +29488,40 @@ const AppServerMcpElicitationContext = struct {
     turn_start_response_payload: ?[]const u8 = null,
     turn_start_response_sent: ?*bool = null,
 };
+
+const AppServerPendingTurnInputQueue = struct {
+    items: std.ArrayList(session_mod.PendingUserInput) = .empty,
+
+    fn deinit(self: *AppServerPendingTurnInputQueue, allocator: std.mem.Allocator) void {
+        for (self.items.items) |*item| item.deinit(allocator);
+        self.items.deinit(allocator);
+    }
+
+    fn append(self: *AppServerPendingTurnInputQueue, allocator: std.mem.Allocator, input: session_mod.PendingUserInput) !void {
+        try self.items.append(allocator, input);
+    }
+
+    fn drainInto(
+        self: *AppServerPendingTurnInputQueue,
+        allocator: std.mem.Allocator,
+        out: *std.ArrayList(session_mod.PendingUserInput),
+    ) !void {
+        while (self.items.items.len > 0) {
+            var input = self.items.orderedRemove(0);
+            errdefer input.deinit(allocator);
+            try out.append(allocator, input);
+        }
+    }
+};
+
+fn drainAppServerPendingTurnInput(
+    ctx: *anyopaque,
+    allocator: std.mem.Allocator,
+    out: *std.ArrayList(session_mod.PendingUserInput),
+) !void {
+    const queue: *AppServerPendingTurnInputQueue = @ptrCast(@alignCast(ctx));
+    try queue.drainInto(allocator, out);
+}
 
 const AppServerApprovalDecision = enum {
     allow,
@@ -29577,6 +29616,12 @@ fn handleAppServerApprovalRequest(ctx: *anyopaque, request: tool_runner.Approval
                 pending_tracked = false;
                 return error.AppServerApprovalCanceled;
             }
+            continue;
+        }
+
+        if (try renderPendingTurnSteerResponse(context.allocator, payload, context.state, context.thread, context.turn_id, context.pending_steers)) |response_payload| {
+            defer context.allocator.free(response_payload);
+            try context.transport.send_payload(context.transport.ctx, response_payload);
             continue;
         }
 
@@ -29948,6 +29993,134 @@ fn renderPendingApprovalInterruptResponse(
     };
 }
 
+fn renderPendingTurnSteerResponse(
+    allocator: std.mem.Allocator,
+    payload: []const u8,
+    state: *AppServerState,
+    thread_opt: ?*LoadedThread,
+    active_turn_id: []const u8,
+    pending_steers_opt: ?*AppServerPendingTurnInputQueue,
+) !?[]const u8 {
+    var parsed = std.json.parseFromSlice(std.json.Value, allocator, payload, .{}) catch return null;
+    defer parsed.deinit();
+    if (parsed.value != .object) return null;
+    const object = parsed.value.object;
+    const id_value = object.get("id") orelse return null;
+    const method = object.get("method") orelse return null;
+    if (method != .string or !std.mem.eql(u8, method.string, "turn/steer")) return null;
+
+    const params = object.get("params") orelse return try renderJsonRpcError(allocator, id_value, -32602, "turn/steer params must be an object");
+    if (params != .object) return try renderJsonRpcError(allocator, id_value, -32602, "turn/steer params must be an object");
+    const params_object = params.object;
+    if (!state.experimental_api_enabled) {
+        if (experimentalReasonForTurnSteerFields(params_object)) |reason| {
+            return try renderExperimentalApiRequiredError(allocator, id_value, reason);
+        }
+    }
+
+    const thread_id = requiredThreadIdParam(params_object) catch |err| switch (err) {
+        error.MissingThreadId => return try renderJsonRpcError(allocator, id_value, -32602, "threadId must be a string"),
+    };
+    const expected_turn_id_value = params_object.get("expectedTurnId") orelse return try renderJsonRpcError(allocator, id_value, -32602, "expectedTurnId must be a string");
+    if (expected_turn_id_value != .string) return try renderJsonRpcError(allocator, id_value, -32602, "expectedTurnId must be a string");
+    if (expected_turn_id_value.string.len == 0) return try renderJsonRpcError(allocator, id_value, -32600, "expectedTurnId must not be empty");
+    if (!isUuidString(thread_id)) {
+        return try renderInvalidThreadId(allocator, id_value, thread_id);
+    }
+    if (findLoadedThreadIndex(state, thread_id) == null) {
+        return try renderThreadNotFound(allocator, id_value, thread_id);
+    }
+
+    var input = parseTurnStartInput(allocator, params_object) catch |err| switch (err) {
+        error.InvalidTurnInput => return try renderJsonRpcError(allocator, id_value, -32602, "input must be an array of supported user input items"),
+        error.EmptyTurnInput => return try renderJsonRpcError(allocator, id_value, -32600, "input must not be empty"),
+        error.UnsupportedTurnInput => return try renderJsonRpcError(allocator, id_value, -32600, "only text, image, localImage, skill, and mention turn/steer input is implemented"),
+        else => return err,
+    };
+    defer input.deinit(allocator);
+    if (input.text_char_count > max_user_input_text_chars) {
+        return try renderTurnInputTooLargeError(allocator, id_value, input.text_char_count);
+    }
+
+    const thread = thread_opt orelse {
+        return try renderJsonRpcError(allocator, id_value, -32600, "no active turn to steer");
+    };
+    const pending_steers = pending_steers_opt orelse {
+        return try renderJsonRpcError(allocator, id_value, -32600, "no active turn to steer");
+    };
+    if (!std.mem.eql(u8, thread_id, thread.id)) {
+        return try renderJsonRpcError(allocator, id_value, -32600, "no active turn to steer");
+    }
+    if (!std.mem.eql(u8, expected_turn_id_value.string, active_turn_id)) {
+        const message = try std.fmt.allocPrint(allocator, "expected active turn id `{s}` but found `{s}`", .{ expected_turn_id_value.string, active_turn_id });
+        defer allocator.free(message);
+        return try renderJsonRpcError(allocator, id_value, -32600, message);
+    }
+
+    var pending_input = try materializePendingTurnSteerInput(allocator, state, thread, input);
+    var pending_input_moved = false;
+    errdefer if (!pending_input_moved) pending_input.deinit(allocator);
+    try pending_steers.append(allocator, pending_input);
+    pending_input_moved = true;
+
+    const response = try renderTurnSteerResponse(allocator, active_turn_id);
+    defer allocator.free(response);
+    return try renderJsonRpcResult(allocator, id_value, response);
+}
+
+fn renderTurnSteerResponse(allocator: std.mem.Allocator, turn_id: []const u8) ![]const u8 {
+    var response = std.ArrayList(u8).empty;
+    errdefer response.deinit(allocator);
+    try response.appendSlice(allocator, "{\"turnId\":");
+    try appendJsonString(allocator, &response, turn_id);
+    try response.append(allocator, '}');
+    return response.toOwnedSlice(allocator);
+}
+
+fn materializePendingTurnSteerInput(
+    allocator: std.mem.Allocator,
+    state: *const AppServerState,
+    thread: *const LoadedThread,
+    input: TurnStartInput,
+) !session_mod.PendingUserInput {
+    var local_images = try loadTurnLocalImages(allocator, thread.cwd, input.local_image_paths);
+    defer local_images.deinit(allocator);
+    const request_input_images = try combineTurnInputImages(allocator, input.image_urls, local_images.data_urls);
+    defer if (request_input_images.len > 0) allocator.free(request_input_images);
+    var skill_injections = try loadTurnSkillInjections(allocator, state, thread.cwd, input.skills);
+    defer skill_injections.deinit(allocator);
+    var mention_markers = try renderTurnMentionMarkers(allocator, input.mentions);
+    defer mention_markers.deinit(allocator);
+
+    const prompt_for_turn = try turnPromptWithContextBlocks(allocator, input.prompt, local_images.missing_placeholders, skill_injections.blocks, mention_markers.markers);
+    errdefer allocator.free(prompt_for_turn);
+    const input_images = try cloneStringSlice(allocator, request_input_images);
+    errdefer {
+        for (input_images) |image| allocator.free(image);
+        if (input_images.len > 0) allocator.free(input_images);
+    }
+
+    return .{
+        .prompt = prompt_for_turn,
+        .input_images = input_images,
+    };
+}
+
+fn cloneStringSlice(allocator: std.mem.Allocator, values: []const []const u8) ![]const []const u8 {
+    if (values.len == 0) return &.{};
+    const owned = try allocator.alloc([]const u8, values.len);
+    var initialized: usize = 0;
+    errdefer {
+        for (owned[0..initialized]) |value| allocator.free(value);
+        allocator.free(owned);
+    }
+    for (values, 0..) |value, index| {
+        owned[index] = try allocator.dupe(u8, value);
+        initialized = index + 1;
+    }
+    return owned;
+}
+
 fn sendServerRequestResolvedForRequest(
     allocator: std.mem.Allocator,
     state: *AppServerState,
@@ -30190,6 +30363,12 @@ fn handleAppServerRequestPermissions(ctx: *anyopaque, request: session_mod.Reque
                 pending_tracked = false;
                 return emptyRequestPermissionsResult(context.allocator, "request_permissions was cancelled before receiving a response");
             }
+            continue;
+        }
+
+        if (try renderPendingTurnSteerResponse(context.allocator, payload, context.state, context.thread, context.turn_id, context.pending_steers)) |response_payload| {
+            defer context.allocator.free(response_payload);
+            try context.transport.send_payload(context.transport.ctx, response_payload);
             continue;
         }
 
@@ -30487,6 +30666,12 @@ fn handleAppServerRequestUserInput(ctx: *anyopaque, request: session_mod.Request
                 pending_tracked = false;
                 return emptyRequestUserInputResult(context.allocator, "request_user_input was cancelled before receiving a response");
             }
+            continue;
+        }
+
+        if (try renderPendingTurnSteerResponse(context.allocator, payload, context.state, context.thread, context.turn_id, context.pending_steers)) |response_payload| {
+            defer context.allocator.free(response_payload);
+            try context.transport.send_payload(context.transport.ctx, response_payload);
             continue;
         }
 
@@ -33262,14 +33447,23 @@ fn handleTurnStart(
         return response_payload;
     }
 
+    var pending_steers = AppServerPendingTurnInputQueue{};
+    defer pending_steers.deinit(allocator);
+    const pending_input_callback = session_mod.PendingInputCallback{
+        .ctx = &pending_steers,
+        .on_drain_pending_input = drainAppServerPendingTurnInput,
+    };
+
     var approval_context: AppServerApprovalContext = undefined;
     const approval_callback: ?tool_runner.ApprovalCallback = if (state.server_request_transport) |transport| blk: {
         approval_context = .{
             .allocator = allocator,
             .state = state,
             .transport = transport,
+            .thread = thread,
             .thread_id = thread.id,
             .turn_id = turn_id,
+            .pending_steers = &pending_steers,
             .turn_start_response_payload = response_payload,
             .turn_start_response_sent = &turn_start_response_sent,
         };
@@ -33287,6 +33481,7 @@ fn handleTurnStart(
             .transport = transport,
             .thread = thread,
             .turn_id = turn_id,
+            .pending_steers = &pending_steers,
             .turn_start_response_payload = response_payload,
             .turn_start_response_sent = &turn_start_response_sent,
         };
@@ -33302,8 +33497,10 @@ fn handleTurnStart(
             .allocator = allocator,
             .state = state,
             .transport = transport,
+            .thread = thread,
             .thread_id = thread.id,
             .turn_id = turn_id,
+            .pending_steers = &pending_steers,
             .turn_start_response_payload = response_payload,
             .turn_start_response_sent = &turn_start_response_sent,
         };
@@ -33387,6 +33584,7 @@ fn handleTurnStart(
         .approval_callback = approval_callback,
         .request_permissions_callback = request_permissions_callback,
         .request_user_input_callback = request_user_input_callback,
+        .pending_input_callback = pending_input_callback,
         .goal_tool_callback = goal_tool_callback,
         .mcp_elicitation_callback = mcp_elicitation_callback,
         .external_auth_refresh_callback = external_auth_refresh_callback,
