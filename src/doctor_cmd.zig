@@ -192,6 +192,33 @@ const CommandProbe = struct {
     }
 };
 
+const NpmRootCheck = union(enum) {
+    match: []const u8,
+    mismatch: struct {
+        running_package_root: []const u8,
+        npm_package_root: []const u8,
+    },
+    missing_package_root,
+    npm_unavailable: []const u8,
+
+    fn deinit(self: NpmRootCheck, allocator: std.mem.Allocator) void {
+        switch (self) {
+            .match => |package_root| allocator.free(package_root),
+            .mismatch => |roots| {
+                allocator.free(roots.running_package_root);
+                allocator.free(roots.npm_package_root);
+            },
+            .missing_package_root => {},
+            .npm_unavailable => |message| allocator.free(message),
+        }
+    }
+};
+
+const NpmDiagnosticSurface = enum {
+    installation,
+    updates,
+};
+
 const AppServerRuntimeStatus = struct {
     status: Status,
     summary: []const u8,
@@ -529,6 +556,10 @@ fn installationCheck(allocator: std.mem.Allocator, codex_version: []const u8, sh
         for (path_entries, 0..) |entry, index| {
             try check.addDetailFmt(allocator, try std.fmt.allocPrint(allocator, "PATH codex-zig #{d}", .{index + 1}), "{s}", .{entry});
         }
+    }
+
+    if (managed_by_npm) {
+        try applyNpmRootDiagnostics(allocator, &check, .installation);
     }
     return check;
 }
@@ -962,6 +993,15 @@ fn updatesCheck(allocator: std.mem.Allocator) !Check {
         try check.addDetail(allocator, "update action", action.commandString());
     } else {
         try check.addDetail(allocator, "update action", "manual or unknown");
+    }
+    const io = std.Io.Threaded.global_single_threaded.io();
+    const exe = std.process.executablePathAlloc(io, allocator) catch null;
+    defer if (exe) |path| allocator.free(path);
+    const raw_managed_by_npm = try envPresent(allocator, "CODEX_MANAGED_BY_NPM");
+    const raw_managed_by_bun = try envPresent(allocator, "CODEX_MANAGED_BY_BUN");
+    const managed_by_npm = raw_managed_by_npm and !update_cmd.inheritedManagedEnvForDevBinary(exe, raw_managed_by_npm, raw_managed_by_bun);
+    if (managed_by_npm) {
+        try applyNpmRootDiagnostics(allocator, &check, .updates);
     }
     return check;
 }
@@ -2185,7 +2225,7 @@ fn localPathEnd(text: []const u8, start: usize) usize {
 }
 
 fn isPathTerminator(byte: u8) bool {
-    return byte == '"' or byte == '\'' or byte == ',' or byte == ';';
+    return byte == '"' or byte == '\'' or byte == ',' or byte == ';' or byte == ')';
 }
 
 fn isPathStatusSuffixStart(text: []const u8, index: usize) bool {
@@ -2269,8 +2309,12 @@ fn runCommandProbe(allocator: std.mem.Allocator, argv: []const []const u8) !Comm
     var io_instance: std.Io.Threaded = .init(allocator, .{});
     defer io_instance.deinit();
 
+    var child_env = try currentProcessEnvironment(allocator);
+    defer child_env.deinit();
+
     const result = try std.process.run(allocator, io_instance.io(), .{
         .argv = argv,
+        .environ_map = &child_env,
         .expand_arg0 = .expand,
         .stdout_limit = .limited(16 * 1024),
         .stderr_limit = .limited(16 * 1024),
@@ -2287,6 +2331,31 @@ fn runCommandProbe(allocator: std.mem.Allocator, argv: []const []const u8) !Comm
         .stderr = result.stderr,
         .term = result.term,
     };
+}
+
+fn currentProcessEnvironment(allocator: std.mem.Allocator) !std.process.Environ.Map {
+    var result = std.process.Environ.Map.init(allocator);
+    errdefer result.deinit();
+
+    if (builtin.os.tag == .windows) {
+        var parent_env = try std.process.Environ.createMap(.{ .block = .global }, allocator);
+        defer parent_env.deinit();
+        var iterator = parent_env.iterator();
+        while (iterator.next()) |entry| {
+            try result.put(entry.key_ptr.*, entry.value_ptr.*);
+        }
+    } else {
+        var index: usize = 0;
+        while (std.c.environ[index]) |entry_ptr| : (index += 1) {
+            const entry = std.mem.span(entry_ptr);
+            const eq = std.mem.indexOfScalar(u8, entry, '=') orelse continue;
+            const key = entry[0..eq];
+            if (!std.process.Environ.Map.validateKeyForPut(key)) continue;
+            try result.put(key, entry[eq + 1 ..]);
+        }
+    }
+
+    return result;
 }
 
 fn resolveCommandOnPath(allocator: std.mem.Allocator, command: []const u8) ![]const u8 {
@@ -2357,6 +2426,112 @@ fn installContextLabel(action: ?update_cmd.UpdateAction) []const u8 {
         .standalone_unix => "standalone (unix)",
         .standalone_windows => "standalone (windows)",
     };
+}
+
+fn applyNpmRootDiagnostics(allocator: std.mem.Allocator, check: *Check, surface: NpmDiagnosticSurface) !void {
+    const npm_root = try npmGlobalRootCheck(allocator);
+    defer npm_root.deinit(allocator);
+
+    switch (npm_root) {
+        .match => |package_root| {
+            try check.addDetail(allocator, "npm update target", package_root);
+        },
+        .mismatch => |roots| {
+            check.status = .fail;
+            check.summary = switch (surface) {
+                .installation => "npm install -g @openai/codex would update a different install",
+                .updates => "update would target a different npm install",
+            };
+            try check.addDetail(allocator, "running package root", roots.running_package_root);
+            try check.addDetail(allocator, "npm package root", roots.npm_package_root);
+            check.remediation = try std.fmt.allocPrint(
+                allocator,
+                "Fix PATH or npm prefix so the running package root ({s}) matches the npm global package root ({s}).",
+                .{ roots.running_package_root, roots.npm_package_root },
+            );
+        },
+        .missing_package_root => {
+            check.status = maxStatus(check.status, .warning);
+            check.summary = switch (surface) {
+                .installation => "npm-managed launch is missing package-root provenance",
+                .updates => "npm update target could not be proven",
+            };
+            check.remediation = "Reinstall or update Codex so the JS shim provides CODEX_MANAGED_PACKAGE_ROOT.";
+        },
+        .npm_unavailable => |message| {
+            check.status = maxStatus(check.status, .warning);
+            check.summary = switch (surface) {
+                .installation => "npm-managed launch could not inspect npm global root",
+                .updates => "npm update target could not be inspected",
+            };
+            try check.addDetail(allocator, "npm root -g failed", message);
+        },
+    }
+}
+
+fn npmGlobalRootCheck(allocator: std.mem.Allocator) !NpmRootCheck {
+    const running_package_root = try env.getOwned(allocator, "CODEX_MANAGED_PACKAGE_ROOT") orelse return .missing_package_root;
+    defer allocator.free(running_package_root);
+
+    const npm_path = resolveCommandOnPath(allocator, npmCommand()) catch |err| {
+        return .{ .npm_unavailable = try allocator.dupe(u8, @errorName(err)) };
+    };
+    defer allocator.free(npm_path);
+
+    var probe = runCommandProbe(allocator, &.{ npm_path, "root", "-g" }) catch |err| {
+        return .{ .npm_unavailable = try allocator.dupe(u8, @errorName(err)) };
+    };
+    defer probe.deinit(allocator);
+
+    if (!probe.success()) {
+        if (firstNonEmptyLine(probe.stderr) orelse firstNonEmptyLine(probe.stdout)) |line| {
+            return .{ .npm_unavailable = try allocator.dupe(u8, line) };
+        }
+        const term_label = try childTermLabel(allocator, probe.term);
+        defer allocator.free(term_label);
+        return .{ .npm_unavailable = try std.fmt.allocPrint(allocator, "exited with {s}", .{term_label}) };
+    }
+
+    const npm_root = firstNonEmptyLine(probe.stdout) orelse return .{ .npm_unavailable = try allocator.dupe(u8, "empty output from npm root -g") };
+    return compareNpmPackageRoots(allocator, running_package_root, npm_root);
+}
+
+fn compareNpmPackageRoots(allocator: std.mem.Allocator, running_package_root: []const u8, npm_root: []const u8) !NpmRootCheck {
+    const npm_package_root = try std.fs.path.join(allocator, &.{ npm_root, "@openai", "codex" });
+    errdefer allocator.free(npm_package_root);
+
+    const running_normalized = try normalizePathForCompare(allocator, running_package_root);
+    defer allocator.free(running_normalized);
+    const npm_normalized = try normalizePathForCompare(allocator, npm_package_root);
+    defer allocator.free(npm_normalized);
+
+    if (std.mem.eql(u8, running_normalized, npm_normalized)) {
+        return .{ .match = npm_package_root };
+    }
+
+    return .{ .mismatch = .{
+        .running_package_root = try allocator.dupe(u8, running_package_root),
+        .npm_package_root = npm_package_root,
+    } };
+}
+
+fn normalizePathForCompare(allocator: std.mem.Allocator, path: []const u8) ![:0]u8 {
+    const normalized = canonicalizeDoctorPath(allocator, path) catch try allocator.dupeZ(u8, path);
+    for (normalized) |*byte| {
+        if (byte.* == '\\') byte.* = '/';
+        if (builtin.os.tag == .windows) byte.* = std.ascii.toLower(byte.*);
+    }
+    return normalized;
+}
+
+fn npmCommand() []const u8 {
+    return if (builtin.os.tag == .windows) "npm.cmd" else "npm";
+}
+
+fn maxStatus(current: Status, candidate: Status) Status {
+    if (current == .fail or candidate == .fail) return .fail;
+    if (current == .warning or candidate == .warning) return .warning;
+    return .ok;
 }
 
 fn addEnvPathDetail(allocator: std.mem.Allocator, check: *Check, key: []const u8, comptime name: []const u8) !void {
@@ -2685,6 +2860,39 @@ test "doctor search command uses standalone bundled resources rg" {
     try std.testing.expect(std.mem.endsWith(u8, search.command, "codex-resources/rg"));
 }
 
+test "doctor npm root comparison detects match" {
+    const allocator = std.testing.allocator;
+    const result = try compareNpmPackageRoots(
+        allocator,
+        "/prefix/lib/node_modules/@openai/codex",
+        "/prefix/lib/node_modules",
+    );
+    defer result.deinit(allocator);
+
+    switch (result) {
+        .match => |package_root| try std.testing.expectEqualStrings("/prefix/lib/node_modules/@openai/codex", package_root),
+        else => return error.TestUnexpectedResult,
+    }
+}
+
+test "doctor npm root comparison detects mismatch" {
+    const allocator = std.testing.allocator;
+    const result = try compareNpmPackageRoots(
+        allocator,
+        "/old/lib/node_modules/@openai/codex",
+        "/new/lib/node_modules",
+    );
+    defer result.deinit(allocator);
+
+    switch (result) {
+        .mismatch => |roots| {
+            try std.testing.expectEqualStrings("/old/lib/node_modules/@openai/codex", roots.running_package_root);
+            try std.testing.expectEqualStrings("/new/lib/node_modules/@openai/codex", roots.npm_package_root);
+        },
+        else => return error.TestUnexpectedResult,
+    }
+}
+
 test "doctor websocket endpoint uses responses path and websocket display scheme" {
     const allocator = std.testing.allocator;
     var entries = [_]config.StringMapEntry{
@@ -2725,7 +2933,7 @@ test "doctor JSON redacts local paths" {
         .expected = "/Users/alice/.codex",
         .remedy = "Fix /Users/alice/.codex permissions.",
     });
-    check.remediation = "Inspect /Users/alice/.codex.";
+    check.remediation = "Compare (/tmp/codex-doctor-space) with (/opt/homebrew/lib/node_modules/@openai/codex).";
     const checks = try scratch.dupe(Check, &.{check});
     const report = Report{
         .generated_at = "1s since unix epoch",
@@ -2740,6 +2948,7 @@ test "doctor JSON redacts local paths" {
     try std.testing.expect(std.mem.indexOf(u8, rendered, "C:\\\\Users\\\\alice") == null);
     try std.testing.expect(std.mem.indexOf(u8, rendered, "\\\\\\\\server\\\\share\\\\alice") == null);
     try std.testing.expect(std.mem.indexOf(u8, rendered, "<redacted-path>") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rendered, "Compare (<redacted-path>) with (<redacted-path>)") != null);
     try std.testing.expect(std.mem.indexOf(u8, rendered, "@openai/codex") != null);
 }
 
