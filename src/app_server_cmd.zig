@@ -28311,7 +28311,7 @@ const StdioServer = struct {
             };
             if (byte_or_null) |byte| {
                 if (byte != '\n') {
-                    if (line_buffer.items.len >= 64 * 1024) return error.StreamTooLong;
+                    if (line_buffer.items.len >= max_app_server_json_rpc_line_bytes) return error.StreamTooLong;
                     try line_buffer.append(self.allocator, byte);
                     continue;
                 }
@@ -28439,7 +28439,7 @@ const UnixServer = struct {
             };
             if (byte_or_null) |byte| {
                 if (byte != '\n') {
-                    if (line_buffer.items.len >= 64 * 1024) return error.StreamTooLong;
+                    if (line_buffer.items.len >= max_app_server_json_rpc_line_bytes) return error.StreamTooLong;
                     try line_buffer.append(self.allocator, byte);
                     continue;
                 }
@@ -28972,7 +28972,7 @@ fn readJsonRpcLineTransportPayloadWithDeadline(
                     line.deinit(allocator);
                     return .{ .payload = payload };
                 }
-                if (line.items.len >= 64 * 1024) return error.StreamTooLong;
+                if (line.items.len >= max_app_server_json_rpc_line_bytes) return error.StreamTooLong;
                 try line.append(allocator, byte);
             },
             .closed => {
@@ -31890,6 +31890,9 @@ fn renderFuzzyFileSearchResult(allocator: std.mem.Allocator, results: fuzzy_file
 const THREAD_REALTIME_LIST_VOICES_RESPONSE_JSON =
     "{\"voices\":{\"v1\":[\"juniper\",\"maple\",\"spruce\",\"ember\",\"vale\",\"breeze\",\"arbor\",\"sol\",\"cove\"],\"v2\":[\"alloy\",\"ash\",\"ballad\",\"coral\",\"echo\",\"sage\",\"shimmer\",\"verse\",\"marin\",\"cedar\"],\"defaultV1\":\"cove\",\"defaultV2\":\"marin\"}}";
 
+const max_app_server_json_rpc_line_bytes = 16 * 1024 * 1024;
+const max_user_input_text_chars: usize = 1 << 20;
+
 const TurnStartInput = struct {
     prompt: []const u8,
     user_content_json: []const u8,
@@ -31897,6 +31900,7 @@ const TurnStartInput = struct {
     local_image_paths: []const []const u8,
     skills: []const TurnNamedPathInput,
     mentions: []const TurnNamedPathInput,
+    text_char_count: usize,
 
     fn deinit(self: *TurnStartInput, allocator: std.mem.Allocator) void {
         allocator.free(self.prompt);
@@ -33017,6 +33021,9 @@ fn handleTurnStart(
         else => return err,
     };
     defer input.deinit(allocator);
+    if (input.text_char_count > max_user_input_text_chars) {
+        return try renderTurnInputTooLargeError(allocator, id_value, input.text_char_count);
+    }
 
     const thread = &state.loaded_threads.items[thread_index];
     var cfg = loadConfigForLoadedThread(allocator, state, thread) catch |err| {
@@ -33607,6 +33614,9 @@ fn handleTurnSteer(
         else => return err,
     };
     defer input.deinit(allocator);
+    if (input.text_char_count > max_user_input_text_chars) {
+        return renderTurnInputTooLargeError(allocator, id_value, input.text_char_count);
+    }
 
     return renderJsonRpcError(allocator, id_value, -32600, "no active turn to steer");
 }
@@ -33674,6 +33684,7 @@ fn parseTurnStartInput(allocator: std.mem.Allocator, params: std.json.ObjectMap)
     };
     var input_items: usize = 0;
     var text_items: usize = 0;
+    var text_char_count: usize = 0;
     for (input.array.items) |item| {
         if (item != .object) return error.InvalidTurnInput;
         const item_type = item.object.get("type") orelse return error.InvalidTurnInput;
@@ -33681,6 +33692,7 @@ fn parseTurnStartInput(allocator: std.mem.Allocator, params: std.json.ObjectMap)
         if (std.mem.eql(u8, item_type.string, "text")) {
             const text = item.object.get("text") orelse return error.InvalidTurnInput;
             if (text != .string) return error.InvalidTurnInput;
+            text_char_count += std.unicode.utf8CountCodepoints(text.string) catch text.string.len;
             if (text_items > 0) try prompt.append(allocator, '\n');
             try prompt.appendSlice(allocator, text.string);
             if (input_items > 0) try user_content.append(allocator, ',');
@@ -33774,7 +33786,28 @@ fn parseTurnStartInput(allocator: std.mem.Allocator, params: std.json.ObjectMap)
         .local_image_paths = local_image_paths_owned,
         .skills = skills_owned,
         .mentions = mentions_owned,
+        .text_char_count = text_char_count,
     };
+}
+
+fn renderTurnInputTooLargeError(
+    allocator: std.mem.Allocator,
+    id_value: std.json.Value,
+    actual_chars: usize,
+) ![]const u8 {
+    const message = try std.fmt.allocPrint(
+        allocator,
+        "Input exceeds the maximum length of {d} characters.",
+        .{max_user_input_text_chars},
+    );
+    defer allocator.free(message);
+    const data = try std.fmt.allocPrint(
+        allocator,
+        "{{\"input_error_code\":\"input_too_large\",\"max_chars\":{d},\"actual_chars\":{d}}}",
+        .{ max_user_input_text_chars, actual_chars },
+    );
+    defer allocator.free(data);
+    return renderJsonRpcErrorWithData(allocator, id_value, -32602, message, data);
 }
 
 fn appendTurnStartTextInputJson(

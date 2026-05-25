@@ -17638,6 +17638,55 @@ def run_turn_control_rpc_smoke(binary: Path) -> None:
                 thread_id = thread["id"]
                 assert_thread_started_notification(read_json_line(proc, 5), thread)
 
+                max_user_input_text_chars = 1 << 20
+                oversized_text = "x" * (max_user_input_text_chars + 1)
+                write_json_line(
+                    proc,
+                    {
+                        "jsonrpc": "2.0",
+                        "id": "turn-start-input-too-large",
+                        "method": "turn/start",
+                        "params": {
+                            "threadId": thread_id,
+                            "input": [{"type": "text", "text": oversized_text}],
+                        },
+                    },
+                )
+                start_too_large = read_json_line(proc, 5)
+                assert start_too_large["id"] == "turn-start-input-too-large"
+                assert start_too_large["error"]["code"] == -32602
+                assert (
+                    start_too_large["error"]["message"]
+                    == f"Input exceeds the maximum length of {max_user_input_text_chars} characters."
+                )
+                assert start_too_large["error"]["data"] == {
+                    "input_error_code": "input_too_large",
+                    "max_chars": max_user_input_text_chars,
+                    "actual_chars": max_user_input_text_chars + 1,
+                }
+
+                write_json_line(
+                    proc,
+                    {
+                        "jsonrpc": "2.0",
+                        "id": "turn-steer-input-too-large",
+                        "method": "turn/steer",
+                        "params": {
+                            "threadId": thread_id,
+                            "input": [{"type": "text", "text": oversized_text}],
+                            "expectedTurnId": "turn-0",
+                        },
+                    },
+                )
+                steer_too_large = read_json_line(proc, 5)
+                assert steer_too_large["id"] == "turn-steer-input-too-large"
+                assert steer_too_large["error"]["code"] == -32602
+                assert steer_too_large["error"]["data"] == {
+                    "input_error_code": "input_too_large",
+                    "max_chars": max_user_input_text_chars,
+                    "actual_chars": max_user_input_text_chars + 1,
+                }
+
                 steer_input = [{"type": "text", "text": "steer the active turn"}]
                 write_json_line(
                     proc,
