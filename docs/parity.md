@@ -79,9 +79,11 @@ read-only SQLite integrity probes for existing runtime DBs, active/archived
 rollout file stats, and Rust-shaped human notes for large rollout storage,
 unrestricted sandbox/network posture, and mixed ChatGPT/API-key auth signals.
 Doctor-local `--strict-config` is rejected like Rust while root
-`--strict-config doctor` remains supported. Rust's deeper provider reachability, WebSocket,
-bundled-search layout, detailed installation probes, and standalone
-release-cache diagnostics remain planned exact-depth parity.
+`--strict-config doctor` remains supported. Bounded active-provider HTTP
+reachability probes now check the configured base URL and Responses route.
+Rust's deeper WebSocket reachability, bundled-search layout, detailed
+installation probes, and standalone release-cache diagnostics remain planned
+exact-depth parity.
 
 Current app-server `hooks/list` coverage: user `$CODEX_HOME/config.toml`,
 `$CODEX_HOME/hooks.json`, per-cwd `.codex/config.toml`, and per-cwd
