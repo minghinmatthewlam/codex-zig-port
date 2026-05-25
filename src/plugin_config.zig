@@ -393,6 +393,77 @@ pub fn upsertEnabledPluginConfig(allocator: std.mem.Allocator, bytes: []const u8
     return output.toOwnedSlice(allocator);
 }
 
+pub fn applyRawConfigOverrides(allocator: std.mem.Allocator, config_bytes: []const u8, raw_overrides: []const []const u8) ![]const u8 {
+    var current: []const u8 = try allocator.dupe(u8, config_bytes);
+    errdefer allocator.free(current);
+
+    for (raw_overrides) |raw| {
+        const parsed = try parseRawPluginEnabledOverride(raw) orelse continue;
+        const updated = try upsertPluginEnabledConfig(allocator, current, parsed.plugin_id, parsed.enabled);
+        allocator.free(current);
+        current = updated;
+    }
+
+    return current;
+}
+
+const RawPluginEnabledOverride = struct {
+    plugin_id: []const u8,
+    enabled: bool,
+};
+
+fn parseRawPluginEnabledOverride(raw: []const u8) !?RawPluginEnabledOverride {
+    const eq = std.mem.indexOfScalar(u8, raw, '=') orelse return error.InvalidConfigOverride;
+    const key = std.mem.trim(u8, raw[0..eq], " \t");
+    const prefix = "plugins.";
+    if (!std.mem.startsWith(u8, key, prefix)) return null;
+    const tail = key[prefix.len..];
+    const plugin_id = parseRawPluginEnabledOverrideId(tail) orelse return null;
+    if (!isValidPluginId(plugin_id)) return null;
+    const raw_value = std.mem.trim(u8, raw[eq + 1 ..], " \t");
+    const enabled = if (std.mem.eql(u8, raw_value, "true"))
+        true
+    else if (std.mem.eql(u8, raw_value, "false"))
+        false
+    else
+        return error.InvalidConfigOverride;
+    return .{ .plugin_id = plugin_id, .enabled = enabled };
+}
+
+fn parseRawPluginEnabledOverrideId(tail: []const u8) ?[]const u8 {
+    const suffix = ".enabled";
+    if (tail.len == 0) return null;
+    if (tail[0] != '"') {
+        if (!std.mem.endsWith(u8, tail, suffix)) return null;
+        return tail[0 .. tail.len - suffix.len];
+    }
+
+    var index: usize = 1;
+    while (index < tail.len and tail[index] != '"') : (index += 1) {
+        if (tail[index] == '\\') return null;
+    }
+    if (index >= tail.len) return null;
+    if (!std.mem.eql(u8, tail[index + 1 ..], suffix)) return null;
+    return tail[1..index];
+}
+
+fn upsertPluginEnabledConfig(allocator: std.mem.Allocator, bytes: []const u8, plugin_id: []const u8, enabled: bool) ![]const u8 {
+    if (!isValidPluginId(plugin_id)) return error.InvalidPluginId;
+
+    const without_plugin = try removePluginConfig(allocator, bytes, plugin_id);
+    defer allocator.free(without_plugin);
+
+    var output = std.ArrayList(u8).empty;
+    errdefer output.deinit(allocator);
+    try output.appendSlice(allocator, std.mem.trimEnd(u8, without_plugin, " \t\r\n"));
+    if (output.items.len > 0) try output.appendSlice(allocator, "\n\n");
+    try output.appendSlice(allocator, "[plugins.\"");
+    try output.appendSlice(allocator, plugin_id);
+    try output.appendSlice(allocator, "\"]\n");
+    try output.appendSlice(allocator, if (enabled) "enabled = true\n" else "enabled = false\n");
+    return output.toOwnedSlice(allocator);
+}
+
 fn flushEnabledPluginId(
     allocator: std.mem.Allocator,
     ids: *std.ArrayList([]const u8),
@@ -634,4 +705,24 @@ test "plugin config upsert enables plugin table" {
     try std.testing.expect(std.mem.indexOf(u8, updated, "[features]") != null);
     try std.testing.expect(std.mem.indexOf(u8, updated, "[plugins.\"demo@test\".mcp_servers.sample]") == null);
     try std.testing.expect(std.mem.indexOf(u8, updated, "[plugins.\"demo@test\"]\nenabled = true") != null);
+}
+
+test "raw plugin config overrides update enabled state" {
+    const allocator = std.testing.allocator;
+    const bytes =
+        \\[plugins."demo@test"]
+        \\enabled = true
+    ;
+
+    const updated = try applyRawConfigOverrides(allocator, bytes, &.{"plugins.\"demo@test\".enabled=false"});
+    defer allocator.free(updated);
+
+    const configured_ids = try configuredPluginIds(allocator, updated);
+    defer freeStringList(allocator, configured_ids);
+    try std.testing.expectEqual(@as(usize, 1), configured_ids.len);
+    try std.testing.expectEqualStrings("demo@test", configured_ids[0]);
+
+    const enabled_ids = try enabledPluginIds(allocator, updated);
+    defer freeStringList(allocator, enabled_ids);
+    try std.testing.expectEqual(@as(usize, 0), enabled_ids.len);
 }

@@ -4,37 +4,70 @@ const builtin = @import("builtin");
 const cli_utils = @import("cli_utils.zig");
 const config = @import("config.zig");
 const env = @import("env.zig");
+const features_cmd = @import("features_cmd.zig");
 const marketplace_config = @import("marketplace_config.zig");
 const plugin_config = @import("plugin_config.zig");
 const plugin_list = @import("plugin_list.zig");
 
+pub const Options = struct {
+    runtime_overrides: config.RuntimeOverrides = .{},
+    profile: ?[]const u8 = null,
+    feature_overrides: features_cmd.FeatureOverrides = .{},
+    raw_config_overrides: []const []const u8 = &.{},
+};
+
 pub fn run(allocator: std.mem.Allocator, args: *std.process.Args.Iterator) !void {
-    const subcommand = args.next() orelse {
+    try runWithOptions(allocator, args, .{});
+}
+
+pub fn runWithOptions(allocator: std.mem.Allocator, args: *std.process.Args.Iterator, options: Options) !void {
+    var raw_args = try collectRemainingArgs(allocator, args);
+    defer raw_args.deinit(allocator);
+    try runArgSlice(allocator, raw_args.items, options);
+}
+
+fn runArgSlice(allocator: std.mem.Allocator, args: []const []const u8, options: Options) !void {
+    if (pluginPreflightHelpTarget(args)) |target| {
+        printPluginPreflightHelp(target);
+        return;
+    }
+
+    var overrides = try PluginCliOverrides.init(allocator, options);
+    defer overrides.deinit(allocator);
+
+    var index: usize = 0;
+    const subcommand = while (index < args.len) : (index += 1) {
+        const arg = args[index];
+        if (isHelpFlag(arg)) {
+            printHelp();
+            return;
+        }
+        if (try parsePluginCliOverride(allocator, args, &index, &overrides)) continue;
+        break arg;
+    } else {
         printHelp();
         return error.MissingPluginSubcommand;
     };
-    if (isHelpFlag(subcommand)) {
-        printHelp();
-        return;
-    }
+    const tail = args[index + 1 ..];
+
     if (std.mem.eql(u8, subcommand, "add")) {
-        try runPluginAdd(allocator, args);
+        try runPluginAdd(allocator, tail, &overrides);
         return;
     }
     if (std.mem.eql(u8, subcommand, "list")) {
-        try runPluginList(allocator, args);
+        try runPluginList(allocator, tail, &overrides);
         return;
     }
     if (std.mem.eql(u8, subcommand, "help")) {
-        try runPluginHelp(allocator, args);
+        try printHelpForArgs(tail);
         return;
     }
     if (std.mem.eql(u8, subcommand, "marketplace")) {
-        try runMarketplace(allocator, args);
+        try runMarketplace(allocator, tail, &overrides);
         return;
     }
     if (std.mem.eql(u8, subcommand, "remove")) {
-        try runPluginRemove(allocator, args);
+        try runPluginRemove(allocator, tail, &overrides);
         return;
     }
     return error.UnknownPluginSubcommand;
@@ -45,7 +78,7 @@ pub fn printHelp() void {
         \\Manage Codex plugins
         \\
         \\Usage:
-        \\  codex-zig plugin <COMMAND>
+        \\  codex-zig plugin [OPTIONS] <COMMAND>
         \\
         \\Commands:
         \\  add          Install a plugin from a configured or personal marketplace snapshot
@@ -54,8 +87,65 @@ pub fn printHelp() void {
         \\  remove       Remove an installed plugin from local config and cache
         \\  help         Print this message or the help of the given subcommand(s)
         \\
+        \\Options:
+        \\  -c, --config key=value
+        \\                      Override a configuration value for this invocation
+        \\  --enable FEATURE    Enable a feature for this invocation
+        \\  --disable FEATURE   Disable a feature for this invocation
+        \\
     , .{});
 }
+
+const PluginCliOverrides = struct {
+    runtime_overrides: config.RuntimeOverrides = .{},
+    profile: ?[]const u8 = null,
+    feature_overrides: features_cmd.FeatureOverrides = .{},
+    raw_config_overrides: std.ArrayList([]const u8) = .empty,
+
+    fn init(allocator: std.mem.Allocator, options: Options) !PluginCliOverrides {
+        var overrides = PluginCliOverrides{
+            .runtime_overrides = options.runtime_overrides,
+            .profile = options.profile,
+            .feature_overrides = try options.feature_overrides.clone(allocator),
+        };
+        errdefer overrides.deinit(allocator);
+        for (options.raw_config_overrides) |raw| {
+            try applyRawFeatureConfigOverride(allocator, &overrides.feature_overrides, raw);
+            try overrides.raw_config_overrides.append(allocator, raw);
+        }
+        return overrides;
+    }
+
+    fn clone(self: PluginCliOverrides, allocator: std.mem.Allocator) !PluginCliOverrides {
+        var cloned = PluginCliOverrides{
+            .runtime_overrides = self.runtime_overrides,
+            .profile = self.profile,
+            .feature_overrides = try self.feature_overrides.clone(allocator),
+        };
+        errdefer cloned.deinit(allocator);
+        try cloned.raw_config_overrides.appendSlice(allocator, self.raw_config_overrides.items);
+        return cloned;
+    }
+
+    fn deinit(self: *PluginCliOverrides, allocator: std.mem.Allocator) void {
+        self.feature_overrides.deinit(allocator);
+        self.raw_config_overrides.deinit(allocator);
+    }
+};
+
+const PluginPreflightHelpTarget = enum {
+    root,
+    help,
+    add,
+    list,
+    remove,
+    marketplace,
+    marketplace_help,
+    marketplace_add,
+    marketplace_list,
+    marketplace_upgrade,
+    marketplace_remove,
+};
 
 const PluginCommandContext = struct {
     codex_home: []const u8,
@@ -85,13 +175,12 @@ const SelectorArgs = struct {
     plugin: ?[]const u8 = null,
     marketplace_name: ?[]const u8 = null,
     help: bool = false,
-};
+    overrides: PluginCliOverrides = .{},
 
-fn runPluginHelp(allocator: std.mem.Allocator, args: *std.process.Args.Iterator) !void {
-    var targets = try collectRemainingArgs(allocator, args);
-    defer targets.deinit(allocator);
-    try printHelpForArgs(targets.items);
-}
+    fn deinit(self: *SelectorArgs, allocator: std.mem.Allocator) void {
+        self.overrides.deinit(allocator);
+    }
+};
 
 fn collectRemainingArgs(allocator: std.mem.Allocator, args: *std.process.Args.Iterator) !std.ArrayList([]const u8) {
     var targets = std.ArrayList([]const u8).empty;
@@ -100,6 +189,252 @@ fn collectRemainingArgs(allocator: std.mem.Allocator, args: *std.process.Args.It
         try targets.append(allocator, arg);
     }
     return targets;
+}
+
+fn pluginRootHelpPreflight(args: []const []const u8) bool {
+    var index: usize = 0;
+    while (index < args.len) : (index += 1) {
+        const arg = args[index];
+        if (isHelpFlag(arg)) return true;
+        if (pluginCliOptionConsumesValue(arg)) {
+            index += 1;
+            if (index >= args.len or optionValueBoundary(args[index])) return false;
+            continue;
+        }
+        if (pluginCliOptionHasInlineValue(arg)) continue;
+        if (std.mem.startsWith(u8, arg, "-")) return false;
+        return false;
+    }
+    return false;
+}
+
+fn pluginPreflightHelpTarget(args: []const []const u8) ?PluginPreflightHelpTarget {
+    var index: usize = 0;
+    while (index < args.len) : (index += 1) {
+        const arg = args[index];
+        if (isHelpFlag(arg)) return .root;
+        if (pluginCliOptionConsumesValue(arg)) {
+            index += 1;
+            if (index >= args.len or optionValueBoundary(args[index])) return null;
+            continue;
+        }
+        if (pluginCliOptionHasInlineValue(arg)) continue;
+        if (std.mem.startsWith(u8, arg, "-")) return null;
+        if (std.mem.eql(u8, arg, "add")) {
+            return if (pluginArgsHelpPreflight(args[index + 1 ..], 1, .{ .marketplace = true })) .add else null;
+        }
+        if (std.mem.eql(u8, arg, "list")) {
+            return if (pluginArgsHelpPreflight(args[index + 1 ..], 0, .{ .marketplace = true })) .list else null;
+        }
+        if (std.mem.eql(u8, arg, "remove")) {
+            return if (pluginArgsHelpPreflight(args[index + 1 ..], 1, .{ .marketplace = true })) .remove else null;
+        }
+        if (std.mem.eql(u8, arg, "help")) {
+            return pluginHelpCommandPreflightTarget(args[index + 1 ..]);
+        }
+        if (std.mem.eql(u8, arg, "marketplace")) {
+            return pluginMarketplacePreflightHelpTarget(args[index + 1 ..]);
+        }
+        return null;
+    }
+    return null;
+}
+
+fn pluginMarketplacePreflightHelpTarget(args: []const []const u8) ?PluginPreflightHelpTarget {
+    var index: usize = 0;
+    while (index < args.len) : (index += 1) {
+        const arg = args[index];
+        if (isHelpFlag(arg)) return .marketplace;
+        if (pluginCliOptionConsumesValue(arg)) {
+            index += 1;
+            if (index >= args.len or optionValueBoundary(args[index])) return null;
+            continue;
+        }
+        if (pluginCliOptionHasInlineValue(arg)) continue;
+        if (std.mem.startsWith(u8, arg, "-")) return null;
+        if (std.mem.eql(u8, arg, "add")) {
+            return if (pluginArgsHelpPreflight(args[index + 1 ..], 1, .{ .ref_name = true, .sparse = true })) .marketplace_add else null;
+        }
+        if (std.mem.eql(u8, arg, "list")) {
+            return if (pluginArgsHelpPreflight(args[index + 1 ..], 0, .{})) .marketplace_list else null;
+        }
+        if (std.mem.eql(u8, arg, "upgrade")) {
+            return if (pluginArgsHelpPreflight(args[index + 1 ..], 1, .{})) .marketplace_upgrade else null;
+        }
+        if (std.mem.eql(u8, arg, "remove")) {
+            return if (pluginArgsHelpPreflight(args[index + 1 ..], 1, .{})) .marketplace_remove else null;
+        }
+        if (std.mem.eql(u8, arg, "help")) {
+            return pluginMarketplaceHelpCommandPreflightTarget(args[index + 1 ..]);
+        }
+        return null;
+    }
+    return null;
+}
+
+fn pluginHelpCommandPreflightTarget(args: []const []const u8) ?PluginPreflightHelpTarget {
+    if (args.len == 0) return .root;
+    if (std.mem.eql(u8, args[0], "marketplace")) return pluginMarketplaceHelpCommandPreflightTarget(args[1..]);
+    if (args.len > 1) return null;
+    if (std.mem.eql(u8, args[0], "help")) return .help;
+    if (std.mem.eql(u8, args[0], "add")) return .add;
+    if (std.mem.eql(u8, args[0], "list")) return .list;
+    if (std.mem.eql(u8, args[0], "remove")) return .remove;
+    return null;
+}
+
+fn pluginMarketplaceHelpCommandPreflightTarget(args: []const []const u8) ?PluginPreflightHelpTarget {
+    if (args.len == 0) return .marketplace;
+    if (args.len > 1) return null;
+    if (std.mem.eql(u8, args[0], "help")) return .marketplace_help;
+    if (std.mem.eql(u8, args[0], "add")) return .marketplace_add;
+    if (std.mem.eql(u8, args[0], "list")) return .marketplace_list;
+    if (std.mem.eql(u8, args[0], "upgrade")) return .marketplace_upgrade;
+    if (std.mem.eql(u8, args[0], "remove")) return .marketplace_remove;
+    return null;
+}
+
+fn printPluginPreflightHelp(target: PluginPreflightHelpTarget) void {
+    switch (target) {
+        .root => printHelp(),
+        .help => printPluginHelpCommandHelp(),
+        .add => printPluginAddHelp(),
+        .list => printPluginListHelp(),
+        .remove => printPluginRemoveHelp(),
+        .marketplace => printMarketplaceHelp(),
+        .marketplace_help => printMarketplaceHelpCommandHelp(),
+        .marketplace_add => printMarketplaceAddHelp(),
+        .marketplace_list => printMarketplaceListHelp(),
+        .marketplace_upgrade => printMarketplaceUpgradeHelp(),
+        .marketplace_remove => printMarketplaceRemoveHelp(),
+    }
+}
+
+fn pluginArgsHelpPreflight(args: []const []const u8, positional_limit: usize, extra_options: PluginHelpPreflightOptions) bool {
+    var positional_count: usize = 0;
+    var index: usize = 0;
+    while (index < args.len) : (index += 1) {
+        const arg = args[index];
+        if (isHelpFlag(arg)) return true;
+        if (pluginCliOptionConsumesValue(arg) or extraOptionConsumesValue(arg, extra_options)) {
+            index += 1;
+            if (index >= args.len or optionValueBoundary(args[index])) return false;
+            continue;
+        }
+        if (pluginCliOptionHasInlineValue(arg) or extraOptionHasInlineValue(arg, extra_options)) continue;
+        if (std.mem.startsWith(u8, arg, "-")) return false;
+        positional_count += 1;
+        if (positional_count > positional_limit) return false;
+    }
+    return false;
+}
+
+const PluginHelpPreflightOptions = struct {
+    marketplace: bool = false,
+    ref_name: bool = false,
+    sparse: bool = false,
+};
+
+fn extraOptionConsumesValue(arg: []const u8, options: PluginHelpPreflightOptions) bool {
+    return (options.marketplace and (std.mem.eql(u8, arg, "--marketplace") or std.mem.eql(u8, arg, "-m"))) or
+        (options.ref_name and std.mem.eql(u8, arg, "--ref")) or
+        (options.sparse and std.mem.eql(u8, arg, "--sparse"));
+}
+
+fn extraOptionHasInlineValue(arg: []const u8, options: PluginHelpPreflightOptions) bool {
+    return (options.marketplace and (std.mem.startsWith(u8, arg, "--marketplace=") or
+        (std.mem.startsWith(u8, arg, "-m") and arg.len > "-m".len))) or
+        (options.ref_name and std.mem.startsWith(u8, arg, "--ref=")) or
+        (options.sparse and std.mem.startsWith(u8, arg, "--sparse="));
+}
+
+fn parsePluginCliOverride(
+    allocator: std.mem.Allocator,
+    args: []const []const u8,
+    index: *usize,
+    overrides: *PluginCliOverrides,
+) !bool {
+    const arg = args[index.*];
+    if (std.mem.eql(u8, arg, "--config") or std.mem.eql(u8, arg, "-c")) {
+        index.* += 1;
+        if (index.* >= args.len or optionValueBoundary(args[index.*])) return error.MissingConfigOptionValue;
+        try config.applyRawConfigOverride(&overrides.runtime_overrides, &overrides.profile, args[index.*]);
+        try applyRawFeatureConfigOverride(allocator, &overrides.feature_overrides, args[index.*]);
+        try overrides.raw_config_overrides.append(allocator, args[index.*]);
+        return true;
+    }
+    if (std.mem.startsWith(u8, arg, "--config=")) {
+        const raw = arg["--config=".len..];
+        try config.applyRawConfigOverride(&overrides.runtime_overrides, &overrides.profile, raw);
+        try applyRawFeatureConfigOverride(allocator, &overrides.feature_overrides, raw);
+        try overrides.raw_config_overrides.append(allocator, raw);
+        return true;
+    }
+    if (std.mem.eql(u8, arg, "--enable")) {
+        index.* += 1;
+        if (index.* >= args.len or optionValueBoundary(args[index.*])) return error.MissingFeatureName;
+        try features_cmd.putRuntimeToggle(allocator, &overrides.feature_overrides, args[index.*], true);
+        return true;
+    }
+    if (std.mem.startsWith(u8, arg, "--enable=")) {
+        try features_cmd.putRuntimeToggle(allocator, &overrides.feature_overrides, arg["--enable=".len..], true);
+        return true;
+    }
+    if (std.mem.eql(u8, arg, "--disable")) {
+        index.* += 1;
+        if (index.* >= args.len or optionValueBoundary(args[index.*])) return error.MissingFeatureName;
+        try features_cmd.putRuntimeToggle(allocator, &overrides.feature_overrides, args[index.*], false);
+        return true;
+    }
+    if (std.mem.startsWith(u8, arg, "--disable=")) {
+        try features_cmd.putRuntimeToggle(allocator, &overrides.feature_overrides, arg["--disable=".len..], false);
+        return true;
+    }
+    return false;
+}
+
+fn applyRawFeatureConfigOverride(
+    allocator: std.mem.Allocator,
+    overrides: *features_cmd.FeatureOverrides,
+    raw: []const u8,
+) !void {
+    const eq = std.mem.indexOfScalar(u8, raw, '=') orelse return error.InvalidConfigOverride;
+    const key = std.mem.trim(u8, raw[0..eq], " \t");
+    const prefix = "features.";
+    if (!std.mem.startsWith(u8, key, prefix)) return;
+    const feature = key[prefix.len..];
+    if (feature.len == 0 or std.mem.indexOfScalar(u8, feature, '.') != null) return;
+    if (features_cmd.canonicalFeatureKey(feature) == null) return;
+
+    const raw_value = std.mem.trim(u8, raw[eq + 1 ..], " \t");
+    const enabled = if (std.mem.eql(u8, raw_value, "true"))
+        true
+    else if (std.mem.eql(u8, raw_value, "false"))
+        false
+    else
+        return error.InvalidConfigOverride;
+    try features_cmd.putRuntimeToggle(allocator, overrides, feature, enabled);
+}
+
+fn pluginsFeatureEnabled(config_bytes: []const u8, overrides: PluginCliOverrides) bool {
+    return overrides.feature_overrides.get("plugins") orelse plugin_config.pluginsFeatureEnabled(config_bytes);
+}
+
+fn pluginCliOptionConsumesValue(arg: []const u8) bool {
+    return std.mem.eql(u8, arg, "--config") or
+        std.mem.eql(u8, arg, "-c") or
+        std.mem.eql(u8, arg, "--enable") or
+        std.mem.eql(u8, arg, "--disable");
+}
+
+fn pluginCliOptionHasInlineValue(arg: []const u8) bool {
+    return std.mem.startsWith(u8, arg, "--config=") or
+        std.mem.startsWith(u8, arg, "--enable=") or
+        std.mem.startsWith(u8, arg, "--disable=");
+}
+
+fn optionValueBoundary(arg: []const u8) bool {
+    return std.mem.startsWith(u8, arg, "-") and !std.mem.eql(u8, arg, "-");
 }
 
 pub fn printHelpForArgs(args: []const []const u8) !void {
@@ -244,8 +579,9 @@ fn pluginHelpUsage(usage: PluginHelpUsage) []const u8 {
     };
 }
 
-fn runPluginAdd(allocator: std.mem.Allocator, args: *std.process.Args.Iterator) !void {
-    const parsed = try parseSelectorArgs(args, .add);
+fn runPluginAdd(allocator: std.mem.Allocator, args: []const []const u8, root_overrides: *const PluginCliOverrides) !void {
+    var parsed = try parseSelectorArgs(allocator, args, .add, root_overrides);
+    defer parsed.deinit(allocator);
     if (parsed.help) {
         printPluginAddHelp();
         return;
@@ -259,19 +595,30 @@ fn runPluginAdd(allocator: std.mem.Allocator, args: *std.process.Args.Iterator) 
         return err;
     };
     defer selection.deinit(allocator);
-    try addPluginAndPrint(allocator, selection);
+    try addPluginAndPrint(allocator, selection, parsed.overrides);
 }
 
-fn runPluginList(allocator: std.mem.Allocator, args: *std.process.Args.Iterator) !void {
+fn runPluginList(allocator: std.mem.Allocator, args: []const []const u8, root_overrides: *const PluginCliOverrides) !void {
+    if (pluginArgsHelpPreflight(args, 0, .{ .marketplace = true })) {
+        printPluginListHelp();
+        return;
+    }
+    var overrides = try root_overrides.clone(allocator);
+    defer overrides.deinit(allocator);
     var marketplace_name: ?[]const u8 = null;
 
-    while (args.next()) |arg| {
+    var index: usize = 0;
+    while (index < args.len) : (index += 1) {
+        const arg = args[index];
         if (isHelpFlag(arg)) {
             printPluginListHelp();
             return;
         }
+        if (try parsePluginCliOverride(allocator, args, &index, &overrides)) continue;
         if (std.mem.eql(u8, arg, "--marketplace") or std.mem.eql(u8, arg, "-m")) {
-            const value = args.next() orelse return error.MissingPluginMarketplaceName;
+            index += 1;
+            if (index >= args.len or optionValueBoundary(args[index])) return error.MissingPluginMarketplaceName;
+            const value = args[index];
             if (value.len == 0) return error.MissingPluginMarketplaceName;
             marketplace_name = value;
             continue;
@@ -290,11 +637,12 @@ fn runPluginList(allocator: std.mem.Allocator, args: *std.process.Args.Iterator)
         return error.UnexpectedPluginArgument;
     }
 
-    try listPluginsAndPrint(allocator, marketplace_name);
+    try listPluginsAndPrint(allocator, marketplace_name, overrides);
 }
 
-fn runPluginRemove(allocator: std.mem.Allocator, args: *std.process.Args.Iterator) !void {
-    const parsed = try parseSelectorArgs(args, .remove);
+fn runPluginRemove(allocator: std.mem.Allocator, args: []const []const u8, root_overrides: *const PluginCliOverrides) !void {
+    var parsed = try parseSelectorArgs(allocator, args, .remove, root_overrides);
+    defer parsed.deinit(allocator);
     if (parsed.help) {
         printPluginRemoveHelp();
         return;
@@ -313,15 +661,30 @@ fn runPluginRemove(allocator: std.mem.Allocator, args: *std.process.Args.Iterato
 
 const SelectorCommand = enum { add, remove };
 
-fn parseSelectorArgs(args: *std.process.Args.Iterator, command: SelectorCommand) !SelectorArgs {
-    var parsed = SelectorArgs{};
-    while (args.next()) |arg| {
+fn parseSelectorArgs(
+    allocator: std.mem.Allocator,
+    args: []const []const u8,
+    command: SelectorCommand,
+    root_overrides: *const PluginCliOverrides,
+) !SelectorArgs {
+    var parsed = SelectorArgs{ .overrides = try root_overrides.clone(allocator) };
+    errdefer parsed.deinit(allocator);
+    if (pluginArgsHelpPreflight(args, 1, .{ .marketplace = true })) {
+        parsed.help = true;
+        return parsed;
+    }
+    var index: usize = 0;
+    while (index < args.len) : (index += 1) {
+        const arg = args[index];
         if (isHelpFlag(arg)) {
             parsed.help = true;
             return parsed;
         }
+        if (try parsePluginCliOverride(allocator, args, &index, &parsed.overrides)) continue;
         if (std.mem.eql(u8, arg, "--marketplace") or std.mem.eql(u8, arg, "-m")) {
-            const value = args.next() orelse return error.MissingPluginMarketplaceName;
+            index += 1;
+            if (index >= args.len or optionValueBoundary(args[index])) return error.MissingPluginMarketplaceName;
+            const value = args[index];
             if (value.len == 0) return error.MissingPluginMarketplaceName;
             parsed.marketplace_name = value;
             continue;
@@ -412,6 +775,14 @@ fn loadPluginCommandContext(allocator: std.mem.Allocator) !PluginCommandContext 
     };
 }
 
+fn effectivePluginConfigBytes(allocator: std.mem.Allocator, base_config_bytes: []const u8, overrides: PluginCliOverrides) ![]const u8 {
+    const with_marketplaces = try marketplace_config.applyRawConfigOverrides(allocator, base_config_bytes, overrides.raw_config_overrides.items);
+    errdefer allocator.free(with_marketplaces);
+    const with_plugins = try plugin_config.applyRawConfigOverrides(allocator, with_marketplaces, overrides.raw_config_overrides.items);
+    allocator.free(with_marketplaces);
+    return with_plugins;
+}
+
 fn resolvePluginCodexHome(allocator: std.mem.Allocator) ![]const u8 {
     const raw = try config.resolveCodexHome(allocator);
     defer allocator.free(raw);
@@ -422,18 +793,21 @@ fn resolvePluginCodexHome(allocator: std.mem.Allocator) ![]const u8 {
     return std.fs.path.resolve(allocator, &.{ cwd, raw });
 }
 
-fn addPluginAndPrint(allocator: std.mem.Allocator, selection: PluginSelection) !void {
+fn addPluginAndPrint(allocator: std.mem.Allocator, selection: PluginSelection, overrides: PluginCliOverrides) !void {
     var context = try loadPluginCommandContext(allocator);
     defer context.deinit(allocator);
-    const config_bytes = context.config_bytes orelse "";
+    const base_config_bytes = context.config_bytes orelse "";
+    const effective_config_bytes = try effectivePluginConfigBytes(allocator, base_config_bytes, overrides);
+    defer allocator.free(effective_config_bytes);
+    const plugins_enabled = pluginsFeatureEnabled(effective_config_bytes, overrides);
 
-    const marketplace_path = findMarketplacePathForPlugin(allocator, context.codex_home, config_bytes, selection) catch |err| {
+    const marketplace_path = findMarketplacePathForPlugin(allocator, context.codex_home, effective_config_bytes, selection, plugins_enabled) catch |err| {
         try printFindMarketplaceError(allocator, selection, err);
         return err;
     };
     defer allocator.free(marketplace_path);
 
-    const install = plugin_list.installLocalPlugin(allocator, context.codex_home, config_bytes, marketplace_path, selection.plugin_name) catch |err| {
+    const install = plugin_list.installLocalPluginWithPluginsFeature(allocator, context.codex_home, base_config_bytes, marketplace_path, selection.plugin_name, plugins_enabled) catch |err| {
         try printPluginInstallError(allocator, selection, err);
         return err;
     };
@@ -444,13 +818,21 @@ fn addPluginAndPrint(allocator: std.mem.Allocator, selection: PluginSelection) !
     std.debug.print("Installed plugin root: {s}\n", .{install.installed_path});
 }
 
-fn listPluginsAndPrint(allocator: std.mem.Allocator, marketplace_filter: ?[]const u8) !void {
+fn listPluginsAndPrint(allocator: std.mem.Allocator, marketplace_filter: ?[]const u8, overrides: PluginCliOverrides) !void {
     var context = try loadPluginCommandContext(allocator);
     defer context.deinit(allocator);
 
     const home_root = try resolveHomeMarketplaceRoot(allocator);
     defer if (home_root) |root| allocator.free(root);
-    const response = try plugin_list.renderCliResponse(allocator, context.codex_home, context.config_bytes orelse "", home_root);
+    const config_bytes = try effectivePluginConfigBytes(allocator, context.config_bytes orelse "", overrides);
+    defer allocator.free(config_bytes);
+    const response = try plugin_list.renderCliResponseWithPluginsFeature(
+        allocator,
+        context.codex_home,
+        config_bytes,
+        home_root,
+        pluginsFeatureEnabled(config_bytes, overrides),
+    );
     defer allocator.free(response);
     var parsed = try std.json.parseFromSlice(std.json.Value, allocator, response, .{});
     defer parsed.deinit();
@@ -507,7 +889,7 @@ const MarketplaceListIssue = struct {
     }
 };
 
-fn listMarketplacesAndPrint(allocator: std.mem.Allocator) !void {
+fn listMarketplacesAndPrint(allocator: std.mem.Allocator, overrides: PluginCliOverrides) !void {
     var context = try loadPluginCommandContext(allocator);
     defer context.deinit(allocator);
 
@@ -523,13 +905,15 @@ fn listMarketplacesAndPrint(allocator: std.mem.Allocator) !void {
     }
 
     const config_bytes = context.config_bytes orelse "";
-    if (plugin_config.pluginsFeatureEnabled(config_bytes)) {
+    const effective_config_bytes = try effectivePluginConfigBytes(allocator, config_bytes, overrides);
+    defer allocator.free(effective_config_bytes);
+    if (pluginsFeatureEnabled(effective_config_bytes, overrides)) {
         if (try resolveHomeMarketplaceRoot(allocator)) |home| {
             defer allocator.free(home);
             try appendMarketplaceListRoot(allocator, &rows, &issues, null, home, false);
         }
 
-        var configured = try marketplace_config.configuredMarketplaceRootsStrict(allocator, context.codex_home, config_bytes);
+        var configured = try marketplace_config.configuredMarketplaceRootsStrict(allocator, context.codex_home, effective_config_bytes);
         defer configured.deinit(allocator);
         for (configured.issues) |issue| {
             try appendMarketplaceListIssue(allocator, &issues, issue.marketplace_name, issue.marketplace_path, issue.message);
@@ -750,10 +1134,11 @@ fn findMarketplacePathForPlugin(
     codex_home: []const u8,
     config_bytes: []const u8,
     selection: PluginSelection,
+    plugins_enabled: bool,
 ) ![]const u8 {
     const home_root = try resolveHomeMarketplaceRoot(allocator);
     defer if (home_root) |root| allocator.free(root);
-    const response = try plugin_list.renderCliResponse(allocator, codex_home, config_bytes, home_root);
+    const response = try plugin_list.renderCliResponseWithPluginsFeature(allocator, codex_home, config_bytes, home_root, plugins_enabled);
     defer allocator.free(response);
     var parsed = try std.json.parseFromSlice(std.json.Value, allocator, response, .{});
     defer parsed.deinit();
@@ -1051,11 +1436,15 @@ fn optionalStringFieldFromJson(object: std.json.ObjectMap, field: []const u8) ?[
 fn printPluginAddHelp() void {
     std.debug.print(
         \\Usage:
-        \\  codex-zig plugin add [--marketplace MARKETPLACE] PLUGIN[@MARKETPLACE]
+        \\  codex-zig plugin add [OPTIONS] <PLUGIN[@MARKETPLACE]>
         \\
         \\Options:
+        \\  -c, --config key=value
+        \\                      Override a configuration value for this invocation
         \\  -m, --marketplace MARKETPLACE
         \\                      Marketplace name to use when PLUGIN does not include @MARKETPLACE
+        \\  --enable FEATURE    Enable a feature for this invocation
+        \\  --disable FEATURE   Disable a feature for this invocation
         \\
         \\Examples:
         \\  codex-zig plugin add sample@debug
@@ -1079,11 +1468,15 @@ fn printPluginHelpCommandHelp() void {
 fn printPluginListHelp() void {
     std.debug.print(
         \\Usage:
-        \\  codex-zig plugin list [--marketplace MARKETPLACE]
+        \\  codex-zig plugin list [OPTIONS]
         \\
         \\Options:
+        \\  -c, --config key=value
+        \\                      Override a configuration value for this invocation
         \\  -m, --marketplace MARKETPLACE
         \\                      Only list plugins from this configured marketplace name
+        \\  --enable FEATURE    Enable a feature for this invocation
+        \\  --disable FEATURE   Disable a feature for this invocation
         \\
         \\Examples:
         \\  codex-zig plugin list
@@ -1095,11 +1488,15 @@ fn printPluginListHelp() void {
 fn printPluginRemoveHelp() void {
     std.debug.print(
         \\Usage:
-        \\  codex-zig plugin remove [--marketplace MARKETPLACE] PLUGIN[@MARKETPLACE]
+        \\  codex-zig plugin remove [OPTIONS] <PLUGIN[@MARKETPLACE]>
         \\
         \\Options:
+        \\  -c, --config key=value
+        \\                      Override a configuration value for this invocation
         \\  -m, --marketplace MARKETPLACE
         \\                      Marketplace name to use when PLUGIN does not include @MARKETPLACE
+        \\  --enable FEATURE    Enable a feature for this invocation
+        \\  --disable FEATURE   Disable a feature for this invocation
         \\
         \\Examples:
         \\  codex-zig plugin remove sample@debug
@@ -1108,57 +1505,77 @@ fn printPluginRemoveHelp() void {
     , .{});
 }
 
-fn runMarketplace(allocator: std.mem.Allocator, args: *std.process.Args.Iterator) !void {
-    const subcommand = args.next() orelse {
+fn runMarketplace(allocator: std.mem.Allocator, args: []const []const u8, root_overrides: *const PluginCliOverrides) !void {
+    if (pluginRootHelpPreflight(args)) {
+        printMarketplaceHelp();
+        return;
+    }
+
+    var overrides = try root_overrides.clone(allocator);
+    defer overrides.deinit(allocator);
+
+    var index: usize = 0;
+    const subcommand = while (index < args.len) : (index += 1) {
+        const arg = args[index];
+        if (isHelpFlag(arg)) {
+            printMarketplaceHelp();
+            return;
+        }
+        if (try parsePluginCliOverride(allocator, args, &index, &overrides)) continue;
+        break arg;
+    } else {
         printMarketplaceHelp();
         return error.MissingPluginMarketplaceSubcommand;
     };
-    if (isHelpFlag(subcommand)) {
-        printMarketplaceHelp();
-        return;
-    }
+    const tail = args[index + 1 ..];
+
     if (std.mem.eql(u8, subcommand, "add")) {
-        try runMarketplaceAdd(allocator, args);
+        try runMarketplaceAdd(allocator, tail, &overrides);
         return;
     }
     if (std.mem.eql(u8, subcommand, "list")) {
-        try runMarketplaceList(allocator, args);
+        try runMarketplaceList(allocator, tail, &overrides);
         return;
     }
     if (std.mem.eql(u8, subcommand, "upgrade")) {
-        try runMarketplaceUpgrade(allocator, args);
+        try runMarketplaceUpgrade(allocator, tail, &overrides);
         return;
     }
     if (std.mem.eql(u8, subcommand, "remove")) {
-        try runMarketplaceRemove(allocator, args);
+        try runMarketplaceRemove(allocator, tail, &overrides);
         return;
     }
     if (std.mem.eql(u8, subcommand, "help")) {
-        try runMarketplaceHelp(allocator, args);
+        try printMarketplaceHelpForArgs(tail);
         return;
     }
     return error.UnknownPluginMarketplaceSubcommand;
 }
 
-fn runMarketplaceHelp(allocator: std.mem.Allocator, args: *std.process.Args.Iterator) !void {
-    var targets = try collectRemainingArgs(allocator, args);
-    defer targets.deinit(allocator);
-    try printMarketplaceHelpForArgs(targets.items);
-}
-
-fn runMarketplaceAdd(allocator: std.mem.Allocator, args: *std.process.Args.Iterator) !void {
+fn runMarketplaceAdd(allocator: std.mem.Allocator, args: []const []const u8, root_overrides: *const PluginCliOverrides) !void {
+    if (pluginArgsHelpPreflight(args, 1, .{ .ref_name = true, .sparse = true })) {
+        printMarketplaceAddHelp();
+        return;
+    }
+    var overrides = try root_overrides.clone(allocator);
+    defer overrides.deinit(allocator);
     var source: ?[]const u8 = null;
     var ref_name: ?[]const u8 = null;
     var sparse_paths = std.ArrayList([]const u8).empty;
     defer sparse_paths.deinit(allocator);
 
-    while (args.next()) |arg| {
+    var index: usize = 0;
+    while (index < args.len) : (index += 1) {
+        const arg = args[index];
         if (isHelpFlag(arg)) {
             printMarketplaceAddHelp();
             return;
         }
+        if (try parsePluginCliOverride(allocator, args, &index, &overrides)) continue;
         if (std.mem.eql(u8, arg, "--ref")) {
-            const value = args.next() orelse return error.MissingPluginMarketplaceRef;
+            index += 1;
+            if (index >= args.len or optionValueBoundary(args[index])) return error.MissingPluginMarketplaceRef;
+            const value = args[index];
             if (value.len == 0) return error.MissingPluginMarketplaceRef;
             ref_name = value;
             continue;
@@ -1170,7 +1587,9 @@ fn runMarketplaceAdd(allocator: std.mem.Allocator, args: *std.process.Args.Itera
             continue;
         }
         if (std.mem.eql(u8, arg, "--sparse")) {
-            const value = args.next() orelse return error.MissingPluginMarketplaceSparsePath;
+            index += 1;
+            if (index >= args.len or optionValueBoundary(args[index])) return error.MissingPluginMarketplaceSparsePath;
+            const value = args[index];
             if (value.len == 0) return error.MissingPluginMarketplaceSparsePath;
             try sparse_paths.append(allocator, value);
             continue;
@@ -1193,45 +1612,76 @@ fn runMarketplaceAdd(allocator: std.mem.Allocator, args: *std.process.Args.Itera
     try addMarketplaceAndPrint(allocator, source_value, ref_name, sparse_paths.items);
 }
 
-fn runMarketplaceList(allocator: std.mem.Allocator, args: *std.process.Args.Iterator) !void {
-    while (args.next()) |arg| {
+fn runMarketplaceList(allocator: std.mem.Allocator, args: []const []const u8, root_overrides: *const PluginCliOverrides) !void {
+    if (pluginArgsHelpPreflight(args, 0, .{})) {
+        printMarketplaceListHelp();
+        return;
+    }
+    var overrides = try root_overrides.clone(allocator);
+    defer overrides.deinit(allocator);
+    var index: usize = 0;
+    while (index < args.len) : (index += 1) {
+        const arg = args[index];
         if (isHelpFlag(arg)) {
             printMarketplaceListHelp();
             return;
         }
+        if (try parsePluginCliOverride(allocator, args, &index, &overrides)) continue;
         return error.UnexpectedPluginMarketplaceArgument;
     }
-    try listMarketplacesAndPrint(allocator);
+    try listMarketplacesAndPrint(allocator, overrides);
 }
 
-fn runMarketplaceUpgrade(allocator: std.mem.Allocator, args: *std.process.Args.Iterator) !void {
+fn runMarketplaceUpgrade(allocator: std.mem.Allocator, args: []const []const u8, root_overrides: *const PluginCliOverrides) !void {
+    if (pluginArgsHelpPreflight(args, 1, .{})) {
+        printMarketplaceUpgradeHelp();
+        return;
+    }
+    var overrides = try root_overrides.clone(allocator);
+    defer overrides.deinit(allocator);
     var marketplace_name: ?[]const u8 = null;
 
-    while (args.next()) |arg| {
+    var index: usize = 0;
+    while (index < args.len) : (index += 1) {
+        const arg = args[index];
         if (isHelpFlag(arg)) {
             printMarketplaceUpgradeHelp();
             return;
         }
+        if (try parsePluginCliOverride(allocator, args, &index, &overrides)) continue;
         if (std.mem.startsWith(u8, arg, "-")) return error.UnknownPluginMarketplaceUpgradeOption;
         if (marketplace_name != null) return error.UnexpectedPluginMarketplaceArgument;
         marketplace_name = arg;
     }
 
-    return upgradeMarketplacesAndPrint(allocator, marketplace_name);
+    return upgradeMarketplacesAndPrint(allocator, marketplace_name, overrides);
 }
 
-fn runMarketplaceRemove(allocator: std.mem.Allocator, args: *std.process.Args.Iterator) !void {
-    const marketplace_name = args.next() orelse {
-        printMarketplaceRemoveHelp();
-        return error.MissingPluginMarketplaceName;
-    };
-    if (isHelpFlag(marketplace_name)) {
+fn runMarketplaceRemove(allocator: std.mem.Allocator, args: []const []const u8, root_overrides: *const PluginCliOverrides) !void {
+    if (pluginArgsHelpPreflight(args, 1, .{})) {
         printMarketplaceRemoveHelp();
         return;
     }
-    if (std.mem.startsWith(u8, marketplace_name, "-")) return error.MissingPluginMarketplaceName;
-    if (args.next() != null) return error.UnexpectedPluginMarketplaceArgument;
-    try removeMarketplaceAndPrint(allocator, marketplace_name);
+    var overrides = try root_overrides.clone(allocator);
+    defer overrides.deinit(allocator);
+    var marketplace_name: ?[]const u8 = null;
+    var index: usize = 0;
+    while (index < args.len) : (index += 1) {
+        const arg = args[index];
+        if (isHelpFlag(arg)) {
+            printMarketplaceRemoveHelp();
+            return;
+        }
+        if (try parsePluginCliOverride(allocator, args, &index, &overrides)) continue;
+        if (std.mem.startsWith(u8, arg, "-")) return error.MissingPluginMarketplaceName;
+        if (marketplace_name != null) return error.UnexpectedPluginMarketplaceArgument;
+        marketplace_name = arg;
+    }
+    const marketplace_name_value = marketplace_name orelse {
+        printMarketplaceRemoveHelp();
+        return error.MissingPluginMarketplaceName;
+    };
+    try removeMarketplaceAndPrint(allocator, marketplace_name_value);
 }
 
 fn addMarketplaceAndPrint(allocator: std.mem.Allocator, source: []const u8, ref_name: ?[]const u8, sparse_paths: []const []const u8) !void {
@@ -1257,21 +1707,24 @@ fn addMarketplaceAndPrint(allocator: std.mem.Allocator, source: []const u8, ref_
     std.debug.print("Installed marketplace root: {s}\n", .{add.installed_root});
 }
 
-fn upgradeMarketplacesAndPrint(allocator: std.mem.Allocator, marketplace_name: ?[]const u8) !void {
+fn upgradeMarketplacesAndPrint(allocator: std.mem.Allocator, marketplace_name: ?[]const u8, overrides: PluginCliOverrides) !void {
     const codex_home = try resolvePluginCodexHome(allocator);
     defer allocator.free(codex_home);
     const config_path = try config.configTomlPath(allocator, codex_home);
     defer allocator.free(config_path);
     const config_bytes = try config.readConfigTomlFile(allocator, config_path);
     defer if (config_bytes) |bytes| allocator.free(bytes);
+    const base_config_bytes = config_bytes orelse "";
+    const effective_config_bytes = try marketplace_config.applyRawConfigOverrides(allocator, base_config_bytes, overrides.raw_config_overrides.items);
+    defer allocator.free(effective_config_bytes);
 
-    const upgraded = marketplace_config.upgradeMarketplaces(allocator, codex_home, config_bytes orelse "", marketplace_name) catch |err| {
+    const upgraded = marketplace_config.upgradeMarketplaces(allocator, codex_home, effective_config_bytes, marketplace_name) catch |err| {
         try printUpgradeFatalError(allocator, marketplace_name, err);
         return err;
     };
     defer upgraded.deinit(allocator);
 
-    if (upgraded.upgraded_roots.len > 0) {
+    if (upgraded.upgraded_roots.len > 0 and !hasMarketplaceConfigOverrides(overrides)) {
         try config.writeConfigTomlFile(config_path, upgraded.updated_config);
     }
 
@@ -1302,6 +1755,15 @@ fn upgradeMarketplacesAndPrint(allocator: std.mem.Allocator, marketplace_name: ?
     for (upgraded.upgraded_roots) |root| {
         std.debug.print("Installed marketplace root: {s}\n", .{root});
     }
+}
+
+fn hasMarketplaceConfigOverrides(overrides: PluginCliOverrides) bool {
+    for (overrides.raw_config_overrides.items) |raw| {
+        const eq = std.mem.indexOfScalar(u8, raw, '=') orelse continue;
+        const key = std.mem.trim(u8, raw[0..eq], " \t");
+        if (std.mem.startsWith(u8, key, "marketplaces.")) return true;
+    }
+    return false;
 }
 
 fn removeMarketplaceAndPrint(allocator: std.mem.Allocator, marketplace_name: []const u8) !void {
@@ -1381,13 +1843,19 @@ fn printRemoveError(allocator: std.mem.Allocator, marketplace_name: []const u8, 
 fn printMarketplaceHelp() void {
     std.debug.print(
         \\Usage:
-        \\  codex-zig plugin marketplace <COMMAND>
+        \\  codex-zig plugin marketplace [OPTIONS] <COMMAND>
         \\
         \\Subcommands:
         \\  add SOURCE          Add a marketplace source
         \\  list                List marketplace roots currently in scope
         \\  upgrade [NAME]      Upgrade configured Git marketplaces
         \\  remove NAME         Remove a configured marketplace
+        \\
+        \\Options:
+        \\  -c, --config key=value
+        \\                      Override a configuration value for this invocation
+        \\  --enable FEATURE    Enable a feature for this invocation
+        \\  --disable FEATURE   Disable a feature for this invocation
         \\
     , .{});
 }
@@ -1407,14 +1875,18 @@ fn printMarketplaceHelpCommandHelp() void {
 fn printMarketplaceAddHelp() void {
     std.debug.print(
         \\Usage:
-        \\  codex-zig plugin marketplace add [--ref REF] [--sparse PATH] SOURCE
+        \\  codex-zig plugin marketplace add [OPTIONS] <SOURCE>
         \\
         \\SOURCE accepts the Rust CLI forms: owner/repo[@ref], Git URL, SSH URL,
         \\or local marketplace root directory.
         \\
         \\Options:
+        \\  -c, --config key=value
+        \\                      Override a configuration value for this invocation
         \\  --ref REF           Git ref for the marketplace source
+        \\  --enable FEATURE    Enable a feature for this invocation
         \\  --sparse PATH       Sparse checkout path; repeatable
+        \\  --disable FEATURE   Disable a feature for this invocation
         \\
     , .{});
 }
@@ -1422,7 +1894,13 @@ fn printMarketplaceAddHelp() void {
 fn printMarketplaceListHelp() void {
     std.debug.print(
         \\Usage:
-        \\  codex-zig plugin marketplace list
+        \\  codex-zig plugin marketplace list [OPTIONS]
+        \\
+        \\Options:
+        \\  -c, --config key=value
+        \\                      Override a configuration value for this invocation
+        \\  --enable FEATURE    Enable a feature for this invocation
+        \\  --disable FEATURE   Disable a feature for this invocation
         \\
     , .{});
 }
@@ -1430,7 +1908,13 @@ fn printMarketplaceListHelp() void {
 fn printMarketplaceUpgradeHelp() void {
     std.debug.print(
         \\Usage:
-        \\  codex-zig plugin marketplace upgrade [MARKETPLACE_NAME]
+        \\  codex-zig plugin marketplace upgrade [OPTIONS] [MARKETPLACE_NAME]
+        \\
+        \\Options:
+        \\  -c, --config key=value
+        \\                      Override a configuration value for this invocation
+        \\  --enable FEATURE    Enable a feature for this invocation
+        \\  --disable FEATURE   Disable a feature for this invocation
         \\
     , .{});
 }
@@ -1438,11 +1922,76 @@ fn printMarketplaceUpgradeHelp() void {
 fn printMarketplaceRemoveHelp() void {
     std.debug.print(
         \\Usage:
-        \\  codex-zig plugin marketplace remove MARKETPLACE_NAME
+        \\  codex-zig plugin marketplace remove [OPTIONS] <MARKETPLACE_NAME>
+        \\
+        \\Options:
+        \\  -c, --config key=value
+        \\                      Override a configuration value for this invocation
+        \\  --enable FEATURE    Enable a feature for this invocation
+        \\  --disable FEATURE   Disable a feature for this invocation
         \\
     , .{});
 }
 
 fn isHelpFlag(arg: []const u8) bool {
     return std.mem.eql(u8, arg, "--help") or std.mem.eql(u8, arg, "-h");
+}
+
+test "plugin local config and feature options defer validation for help" {
+    try std.testing.expectEqual(PluginPreflightHelpTarget.root, pluginPreflightHelpTarget(&.{ "--enable", "not_real", "--help" }).?);
+    try std.testing.expectEqual(PluginPreflightHelpTarget.list, pluginPreflightHelpTarget(&.{ "list", "--enable", "not_real", "--help" }).?);
+    try std.testing.expectEqual(PluginPreflightHelpTarget.marketplace_add, pluginPreflightHelpTarget(&.{ "marketplace", "--enable", "not_real", "add", "--help" }).?);
+    try std.testing.expectEqual(PluginPreflightHelpTarget.marketplace_add, pluginPreflightHelpTarget(&.{ "--enable", "not_real", "marketplace", "add", "--help" }).?);
+    try std.testing.expectEqual(PluginPreflightHelpTarget.list, pluginPreflightHelpTarget(&.{ "--enable", "not_real", "help", "list" }).?);
+    try std.testing.expectEqual(PluginPreflightHelpTarget.marketplace_add, pluginPreflightHelpTarget(&.{ "--enable", "not_real", "help", "marketplace", "add" }).?);
+    try std.testing.expectEqual(PluginPreflightHelpTarget.marketplace_add, pluginPreflightHelpTarget(&.{ "marketplace", "--enable", "not_real", "help", "add" }).?);
+    try std.testing.expect(pluginPreflightHelpTarget(&.{ "--enable", "not_real", "help", "nope" }) == null);
+    try std.testing.expect(pluginPreflightHelpTarget(&.{ "--enable", "--help" }) == null);
+    try std.testing.expect(pluginPreflightHelpTarget(&.{ "marketplace", "add", "--sparse", "--help" }) == null);
+}
+
+test "plugin selector options validate features outside help paths" {
+    const allocator = std.testing.allocator;
+    const root_overrides = PluginCliOverrides{};
+
+    var help = try parseSelectorArgs(allocator, &.{ "--enable", "not_real", "--help" }, .add, &root_overrides);
+    defer help.deinit(allocator);
+    try std.testing.expect(help.help);
+
+    try std.testing.expectError(error.UnknownFeature, parseSelectorArgs(allocator, &.{ "--enable", "not_real", "sample@debug" }, .add, &root_overrides));
+    try std.testing.expectError(error.MissingFeatureName, parseSelectorArgs(allocator, &.{ "--enable", "--help" }, .add, &root_overrides));
+}
+
+test "plugin config feature overrides affect plugin feature gate" {
+    const allocator = std.testing.allocator;
+
+    var overrides = PluginCliOverrides{};
+    defer overrides.deinit(allocator);
+    try applyRawFeatureConfigOverride(allocator, &overrides.feature_overrides, "features.plugins=true");
+    try std.testing.expect(pluginsFeatureEnabled("[features]\nplugins = false\n", overrides));
+
+    try applyRawFeatureConfigOverride(allocator, &overrides.feature_overrides, "features.plugins=false");
+    try std.testing.expect(!pluginsFeatureEnabled("[features]\nplugins = true\n", overrides));
+}
+
+test "plugin root config overrides affect plugin feature gate" {
+    const allocator = std.testing.allocator;
+
+    var overrides = try PluginCliOverrides.init(allocator, .{
+        .raw_config_overrides = &.{"features.plugins=false"},
+    });
+    defer overrides.deinit(allocator);
+
+    try std.testing.expect(!pluginsFeatureEnabled("[features]\nplugins = true\n", overrides));
+}
+
+test "detects marketplace config overrides" {
+    const allocator = std.testing.allocator;
+
+    var overrides = try PluginCliOverrides.init(allocator, .{
+        .raw_config_overrides = &.{ "features.plugins=true", "marketplaces.debug.source_type=local" },
+    });
+    defer overrides.deinit(allocator);
+
+    try std.testing.expect(hasMarketplaceConfigOverrides(overrides));
 }

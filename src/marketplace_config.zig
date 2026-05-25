@@ -656,6 +656,232 @@ pub fn configuredMarketplaceRootsStrict(allocator: std.mem.Allocator, codex_home
     };
 }
 
+pub fn applyRawConfigOverrides(allocator: std.mem.Allocator, config_bytes: []const u8, raw_overrides: []const []const u8) ![]const u8 {
+    var current: []const u8 = try allocator.dupe(u8, config_bytes);
+    errdefer allocator.free(current);
+
+    for (raw_overrides) |raw| {
+        var parsed = (try parseRawMarketplaceOverride(allocator, raw)) orelse continue;
+        defer parsed.deinit(allocator);
+
+        const updated = try applyRawMarketplaceOverride(allocator, current, parsed);
+        allocator.free(current);
+        current = updated;
+    }
+
+    return current;
+}
+
+const RawMarketplaceOverrideField = enum {
+    last_revision,
+    source_type,
+    source,
+    ref_name,
+    sparse_paths,
+};
+
+const RawMarketplaceOverride = struct {
+    name: []const u8,
+    field: RawMarketplaceOverrideField,
+    string_value: ?[]const u8 = null,
+    array_value: ?[]const []const u8 = null,
+
+    fn deinit(self: *RawMarketplaceOverride, allocator: std.mem.Allocator) void {
+        allocator.free(self.name);
+        if (self.string_value) |value| allocator.free(value);
+        if (self.array_value) |values| {
+            for (values) |value| allocator.free(value);
+            if (values.len > 0) allocator.free(values);
+        }
+    }
+};
+
+const RawMarketplaceOverrideKey = struct {
+    name: []const u8,
+    field_name: []const u8,
+
+    fn deinit(self: *RawMarketplaceOverrideKey, allocator: std.mem.Allocator) void {
+        if (self.name.len > 0) allocator.free(self.name);
+        if (self.field_name.len > 0) allocator.free(self.field_name);
+    }
+
+    fn takeName(self: *RawMarketplaceOverrideKey) []const u8 {
+        const name = self.name;
+        self.name = &.{};
+        return name;
+    }
+};
+
+fn parseRawMarketplaceOverride(allocator: std.mem.Allocator, raw: []const u8) !?RawMarketplaceOverride {
+    const eq = std.mem.indexOfScalar(u8, raw, '=') orelse return error.InvalidConfigOverride;
+    const key = std.mem.trim(u8, raw[0..eq], " \t");
+    const prefix = "marketplaces.";
+    if (!std.mem.startsWith(u8, key, prefix)) return null;
+
+    var key_parts = (try parseRawMarketplaceOverrideKey(allocator, key[prefix.len..])) orelse return null;
+    defer key_parts.deinit(allocator);
+
+    const field = if (std.mem.eql(u8, key_parts.field_name, "last_revision"))
+        RawMarketplaceOverrideField.last_revision
+    else if (std.mem.eql(u8, key_parts.field_name, "source_type"))
+        RawMarketplaceOverrideField.source_type
+    else if (std.mem.eql(u8, key_parts.field_name, "source"))
+        RawMarketplaceOverrideField.source
+    else if (std.mem.eql(u8, key_parts.field_name, "ref"))
+        RawMarketplaceOverrideField.ref_name
+    else if (std.mem.eql(u8, key_parts.field_name, "sparse_paths"))
+        RawMarketplaceOverrideField.sparse_paths
+    else
+        return null;
+
+    const raw_value = std.mem.trim(u8, raw[eq + 1 ..], " \t");
+    if (field == .sparse_paths) {
+        return .{
+            .name = key_parts.takeName(),
+            .field = field,
+            .array_value = try parseRawStringArrayValue(allocator, raw_value),
+        };
+    }
+    return .{
+        .name = key_parts.takeName(),
+        .field = field,
+        .string_value = try parseRawStringValue(allocator, raw_value),
+    };
+}
+
+fn parseRawMarketplaceOverrideKey(allocator: std.mem.Allocator, tail: []const u8) !?RawMarketplaceOverrideKey {
+    var index: usize = 0;
+    const name = (try parseRawDottedKeySegment(allocator, tail, &index)) orelse return null;
+    errdefer allocator.free(name);
+    if (!plugin_config.isValidPluginSegment(name)) {
+        allocator.free(name);
+        return null;
+    }
+
+    skipTomlWhitespace(tail, &index);
+    if (index >= tail.len or tail[index] != '.') {
+        allocator.free(name);
+        return null;
+    }
+    index += 1;
+
+    const field_name = (try parseRawDottedKeySegment(allocator, tail, &index)) orelse {
+        allocator.free(name);
+        return null;
+    };
+    errdefer allocator.free(field_name);
+    skipTomlWhitespace(tail, &index);
+    if (index != tail.len) {
+        allocator.free(name);
+        allocator.free(field_name);
+        return null;
+    }
+    return .{ .name = name, .field_name = field_name };
+}
+
+fn parseRawDottedKeySegment(allocator: std.mem.Allocator, raw: []const u8, index: *usize) !?[]const u8 {
+    skipTomlWhitespace(raw, index);
+    if (index.* >= raw.len) return null;
+    if (raw[index.*] == '"') return try parseTomlStringAt(allocator, raw, index);
+
+    const start = index.*;
+    while (index.* < raw.len and raw[index.*] != '.') : (index.* += 1) {}
+    const segment = std.mem.trim(u8, raw[start..index.*], " \t");
+    if (segment.len == 0) return null;
+    const owned = try allocator.dupe(u8, segment);
+    return owned;
+}
+
+fn applyRawMarketplaceOverride(allocator: std.mem.Allocator, config_bytes: []const u8, raw_override: RawMarketplaceOverride) ![]const u8 {
+    var entry = if (try marketplaceEntryForName(allocator, config_bytes, raw_override.name)) |existing|
+        existing
+    else
+        MarketplaceEntry{ .name = try allocator.dupe(u8, raw_override.name) };
+    defer entry.deinit(allocator);
+
+    switch (raw_override.field) {
+        .last_revision => try replaceOptionalString(allocator, &entry.last_revision, raw_override.string_value.?),
+        .source_type => try replaceOptionalString(allocator, &entry.source_type, raw_override.string_value.?),
+        .source => try replaceOptionalString(allocator, &entry.source, raw_override.string_value.?),
+        .ref_name => try replaceOptionalString(allocator, &entry.ref_name, raw_override.string_value.?),
+        .sparse_paths => try replaceStringList(allocator, &entry.sparse_paths, raw_override.array_value.?),
+    }
+
+    return upsertMarketplaceEntryFields(allocator, config_bytes, entry);
+}
+
+fn upsertMarketplaceEntryFields(allocator: std.mem.Allocator, bytes: []const u8, entry: MarketplaceEntry) ![]const u8 {
+    const removed = try removeMarketplaceConfig(allocator, bytes, entry.name);
+    defer allocator.free(removed.updated_config);
+
+    var output = std.ArrayList(u8).empty;
+    errdefer output.deinit(allocator);
+    try output.appendSlice(allocator, std.mem.trimEnd(u8, removed.updated_config, " \t\r\n"));
+    if (output.items.len > 0) try output.appendSlice(allocator, "\n\n");
+    try output.appendSlice(allocator, "[marketplaces.");
+    try output.appendSlice(allocator, entry.name);
+    try output.appendSlice(allocator, "]\n");
+    if (entry.last_revision) |value| {
+        try output.appendSlice(allocator, "last_revision = ");
+        try appendTomlStringLiteral(allocator, &output, value);
+        try output.append(allocator, '\n');
+    }
+    if (entry.source_type) |value| {
+        try output.appendSlice(allocator, "source_type = ");
+        try appendTomlStringLiteral(allocator, &output, value);
+        try output.append(allocator, '\n');
+    }
+    if (entry.source) |value| {
+        try output.appendSlice(allocator, "source = ");
+        try appendTomlStringLiteral(allocator, &output, value);
+        try output.append(allocator, '\n');
+    }
+    if (entry.ref_name) |value| {
+        try output.appendSlice(allocator, "ref = ");
+        try appendTomlStringLiteral(allocator, &output, value);
+        try output.append(allocator, '\n');
+    }
+    if (entry.sparse_paths.len > 0) {
+        try output.appendSlice(allocator, "sparse_paths = [");
+        for (entry.sparse_paths, 0..) |path, index| {
+            if (index > 0) try output.appendSlice(allocator, ", ");
+            try appendTomlStringLiteral(allocator, &output, path);
+        }
+        try output.appendSlice(allocator, "]\n");
+    }
+    return output.toOwnedSlice(allocator);
+}
+
+fn replaceOptionalString(allocator: std.mem.Allocator, target: *?[]const u8, value: []const u8) !void {
+    if (target.*) |existing| allocator.free(existing);
+    target.* = try allocator.dupe(u8, value);
+}
+
+fn replaceStringList(allocator: std.mem.Allocator, target: *[]const []const u8, values: []const []const u8) !void {
+    for (target.*) |existing| allocator.free(existing);
+    if (target.*.len > 0) allocator.free(target.*);
+    target.* = try cloneStringList(allocator, values);
+}
+
+fn parseRawStringValue(allocator: std.mem.Allocator, raw: []const u8) ![]const u8 {
+    if (raw.len >= 2 and raw[0] == '\'' and raw[raw.len - 1] == '\'') {
+        return allocator.dupe(u8, raw[1 .. raw.len - 1]);
+    }
+    var index: usize = 0;
+    if (try parseTomlStringAt(allocator, raw, &index)) |value| {
+        skipTomlWhitespace(raw, &index);
+        if (index == raw.len) return value;
+        allocator.free(value);
+    }
+    return allocator.dupe(u8, raw);
+}
+
+fn parseRawStringArrayValue(allocator: std.mem.Allocator, raw: []const u8) ![]const []const u8 {
+    const line = try std.fmt.allocPrint(allocator, "sparse_paths = {s}", .{raw});
+    defer allocator.free(line);
+    return (try tomlStringArrayValueForKey(allocator, line, "sparse_paths")) orelse error.InvalidConfigOverride;
+}
+
 fn appendConfiguredMarketplaceIssue(
     allocator: std.mem.Allocator,
     issues: *std.ArrayList(ConfiguredMarketplaceLoadIssue),
@@ -1638,6 +1864,51 @@ test "configured marketplace roots include local sources" {
     ;
 
     const roots = try configuredMarketplaceRoots(allocator, "/tmp/codex-home", bytes);
+    defer {
+        for (roots) |*root| root.deinit(allocator);
+        allocator.free(roots);
+    }
+    try std.testing.expectEqual(@as(usize, 1), roots.len);
+    try std.testing.expectEqualStrings("debug", roots[0].marketplace_name);
+    try std.testing.expectEqualStrings("/tmp/debug-marketplace", roots[0].root);
+}
+
+test "raw marketplace config overrides merge into effective config" {
+    const allocator = std.testing.allocator;
+    const bytes =
+        \\[marketplaces.debug]
+        \\source_type = "git"
+        \\source = "https://github.com/owner/repo.git"
+        \\ref = "main"
+    ;
+
+    const updated = try applyRawConfigOverrides(allocator, bytes, &.{
+        "marketplaces.debug.source_type=local",
+        "marketplaces.debug.source=/tmp/debug-marketplace",
+    });
+    defer allocator.free(updated);
+
+    const roots = try configuredMarketplaceRoots(allocator, "/tmp/codex-home", updated);
+    defer {
+        for (roots) |*root| root.deinit(allocator);
+        allocator.free(roots);
+    }
+    try std.testing.expectEqual(@as(usize, 1), roots.len);
+    try std.testing.expectEqualStrings("debug", roots[0].marketplace_name);
+    try std.testing.expectEqualStrings("/tmp/debug-marketplace", roots[0].root);
+    try std.testing.expect(std.mem.indexOf(u8, updated, "ref = \"main\"") != null);
+}
+
+test "raw marketplace config overrides accept quoted marketplace names" {
+    const allocator = std.testing.allocator;
+
+    const updated = try applyRawConfigOverrides(allocator, "", &.{
+        "marketplaces.\"debug\".source_type=local",
+        "marketplaces.\"debug\".source='/tmp/debug-marketplace'",
+    });
+    defer allocator.free(updated);
+
+    const roots = try configuredMarketplaceRoots(allocator, "/tmp/codex-home", updated);
     defer {
         for (roots) |*root| root.deinit(allocator);
         allocator.free(roots);

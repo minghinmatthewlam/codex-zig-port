@@ -498,7 +498,17 @@ pub fn renderCliResponse(
     config_bytes: []const u8,
     home_root: ?[]const u8,
 ) ![]const u8 {
-    if (!plugin_config.pluginsFeatureEnabled(config_bytes)) {
+    return renderCliResponseWithPluginsFeature(allocator, codex_home, config_bytes, home_root, plugin_config.pluginsFeatureEnabled(config_bytes));
+}
+
+pub fn renderCliResponseWithPluginsFeature(
+    allocator: std.mem.Allocator,
+    codex_home: []const u8,
+    config_bytes: []const u8,
+    home_root: ?[]const u8,
+    plugins_enabled: bool,
+) ![]const u8 {
+    if (!plugins_enabled) {
         return allocator.dupe(u8, "{\"marketplaces\":[],\"marketplaceLoadErrors\":[],\"featuredPluginIds\":[]}");
     }
 
@@ -701,6 +711,17 @@ pub fn installLocalPlugin(
     return installLocalPluginForProduct(allocator, codex_home, config_bytes, marketplace_path, requested_plugin_name, .codex);
 }
 
+pub fn installLocalPluginWithPluginsFeature(
+    allocator: std.mem.Allocator,
+    codex_home: []const u8,
+    config_bytes: []const u8,
+    marketplace_path: []const u8,
+    requested_plugin_name: []const u8,
+    plugins_enabled: bool,
+) !InstallResult {
+    return installLocalPluginForProductWithPluginsFeature(allocator, codex_home, config_bytes, marketplace_path, requested_plugin_name, .codex, plugins_enabled);
+}
+
 pub fn installLocalPluginForProduct(
     allocator: std.mem.Allocator,
     codex_home: []const u8,
@@ -709,7 +730,27 @@ pub fn installLocalPluginForProduct(
     requested_plugin_name: []const u8,
     restriction_product: ?ProductRestriction,
 ) !InstallResult {
-    if (!plugin_config.pluginsFeatureEnabled(config_bytes)) return InstallError.PluginsDisabled;
+    return installLocalPluginForProductWithPluginsFeature(
+        allocator,
+        codex_home,
+        config_bytes,
+        marketplace_path,
+        requested_plugin_name,
+        restriction_product,
+        plugin_config.pluginsFeatureEnabled(config_bytes),
+    );
+}
+
+fn installLocalPluginForProductWithPluginsFeature(
+    allocator: std.mem.Allocator,
+    codex_home: []const u8,
+    config_bytes: []const u8,
+    marketplace_path: []const u8,
+    requested_plugin_name: []const u8,
+    restriction_product: ?ProductRestriction,
+    plugins_enabled: bool,
+) !InstallResult {
+    if (!plugins_enabled) return InstallError.PluginsDisabled;
 
     const bytes = try readFileOptional(allocator, marketplace_path, 1024 * 1024) orelse return InstallError.InvalidMarketplaceFile;
     defer allocator.free(bytes);

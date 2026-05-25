@@ -199,6 +199,8 @@ fn mainInner(init: std.process.Init) !void {
     }
     var root_config_child_args = std.ArrayList([]const u8).empty;
     defer root_config_child_args.deinit(allocator);
+    var root_config_raw_overrides = std.ArrayList([]const u8).empty;
+    defer root_config_raw_overrides.deinit(allocator);
     var runtime_feature_overrides = features_cmd.FeatureOverrides{};
     defer runtime_feature_overrides.deinit(allocator);
 
@@ -266,6 +268,7 @@ fn mainInner(init: std.process.Init) !void {
             }
             try root_config_child_args.append(allocator, arg);
             try root_config_child_args.append(allocator, raw);
+            try root_config_raw_overrides.append(allocator, raw);
             continue;
         }
         if (std.mem.startsWith(u8, arg, "--config=")) {
@@ -279,6 +282,7 @@ fn mainInner(init: std.process.Init) !void {
                 );
             }
             try root_config_child_args.append(allocator, arg);
+            try root_config_raw_overrides.append(allocator, raw);
             continue;
         }
         if (std.mem.eql(u8, arg, "--model") or std.mem.eql(u8, arg, "-m")) {
@@ -625,7 +629,12 @@ fn mainInner(init: std.process.Init) !void {
             return;
         }
         if (std.mem.eql(u8, cmd, "plugin")) {
-            try plugin_cmd.run(allocator, &args);
+            try plugin_cmd.runWithOptions(allocator, &args, .{
+                .runtime_overrides = overrides.runtime,
+                .profile = overrides.profile,
+                .feature_overrides = runtime_feature_overrides,
+                .raw_config_overrides = root_config_raw_overrides.items,
+            });
             return;
         }
         if (std.mem.eql(u8, cmd, "app")) {
@@ -1587,15 +1596,24 @@ fn cloudHelpPathIsValid(args: []const []const u8) bool {
 }
 
 fn pluginTailHasHelp(args: []const []const u8) bool {
-    if (args.len == 0) return false;
-    const subcommand = args[0];
-    if (isHelpFlag(subcommand)) return true;
-    if (std.mem.eql(u8, subcommand, "help")) return pluginHelpPathIsValid(args[1..]);
-    if (std.mem.eql(u8, subcommand, "add") or std.mem.eql(u8, subcommand, "remove")) {
-        return pluginSelectorTailHasHelp(args[1..]);
+    var index: usize = 0;
+    while (index < args.len) : (index += 1) {
+        const subcommand = args[index];
+        if (isHelpFlag(subcommand)) return true;
+        switch (scanConfigFeatureTailOption(args, &index, subcommand, true)) {
+            .valid => continue,
+            .invalid => return false,
+            .not_handled => {},
+        }
+        if (std.mem.startsWith(u8, subcommand, "-")) return false;
+        if (std.mem.eql(u8, subcommand, "help")) return pluginHelpPathIsValid(args[index + 1 ..]);
+        if (std.mem.eql(u8, subcommand, "add") or std.mem.eql(u8, subcommand, "remove")) {
+            return pluginSelectorTailHasHelp(args[index + 1 ..]);
+        }
+        if (std.mem.eql(u8, subcommand, "list")) return pluginListTailHasHelp(args[index + 1 ..]);
+        if (std.mem.eql(u8, subcommand, "marketplace")) return pluginMarketplaceTailHasHelp(args[index + 1 ..]);
+        return false;
     }
-    if (std.mem.eql(u8, subcommand, "list")) return pluginListTailHasHelp(args[1..]);
-    if (std.mem.eql(u8, subcommand, "marketplace")) return pluginMarketplaceTailHasHelp(args[1..]);
     return false;
 }
 
@@ -1606,9 +1624,14 @@ fn pluginSelectorTailHasHelp(args: []const []const u8) bool {
         const arg = args[index];
         if (std.mem.eql(u8, arg, "--")) return false;
         if (isHelpFlag(arg)) return true;
+        switch (scanConfigFeatureTailOption(args, &index, arg, true)) {
+            .valid => continue,
+            .invalid => return false,
+            .not_handled => {},
+        }
         if (std.mem.eql(u8, arg, "--marketplace") or std.mem.eql(u8, arg, "-m")) {
             index += 1;
-            if (index >= args.len) return false;
+            if (index >= args.len or isRootPromptOptionValueBoundary(args[index])) return false;
             continue;
         }
         if (std.mem.startsWith(u8, arg, "--marketplace=") or
@@ -1629,9 +1652,14 @@ fn pluginListTailHasHelp(args: []const []const u8) bool {
         const arg = args[index];
         if (std.mem.eql(u8, arg, "--")) return false;
         if (isHelpFlag(arg)) return true;
+        switch (scanConfigFeatureTailOption(args, &index, arg, true)) {
+            .valid => continue,
+            .invalid => return false,
+            .not_handled => {},
+        }
         if (std.mem.eql(u8, arg, "--marketplace") or std.mem.eql(u8, arg, "-m")) {
             index += 1;
-            if (index >= args.len) return false;
+            if (index >= args.len or isRootPromptOptionValueBoundary(args[index])) return false;
             continue;
         }
         if (std.mem.startsWith(u8, arg, "--marketplace=") or
@@ -1645,14 +1673,23 @@ fn pluginListTailHasHelp(args: []const []const u8) bool {
 }
 
 fn pluginMarketplaceTailHasHelp(args: []const []const u8) bool {
-    if (args.len == 0) return false;
-    const subcommand = args[0];
-    if (isHelpFlag(subcommand)) return true;
-    if (std.mem.eql(u8, subcommand, "help")) return pluginMarketplaceHelpPathIsValid(args[1..]);
-    if (std.mem.eql(u8, subcommand, "add")) return pluginMarketplaceAddTailHasHelp(args[1..]);
-    if (std.mem.eql(u8, subcommand, "list")) return pluginNoArgumentTailHasHelp(args[1..]);
-    if (std.mem.eql(u8, subcommand, "upgrade")) return pluginSingleArgumentTailHasHelp(args[1..], true);
-    if (std.mem.eql(u8, subcommand, "remove")) return pluginSingleArgumentTailHasHelp(args[1..], false);
+    var index: usize = 0;
+    while (index < args.len) : (index += 1) {
+        const subcommand = args[index];
+        if (isHelpFlag(subcommand)) return true;
+        switch (scanConfigFeatureTailOption(args, &index, subcommand, true)) {
+            .valid => continue,
+            .invalid => return false,
+            .not_handled => {},
+        }
+        if (std.mem.startsWith(u8, subcommand, "-")) return false;
+        if (std.mem.eql(u8, subcommand, "help")) return pluginMarketplaceHelpPathIsValid(args[index + 1 ..]);
+        if (std.mem.eql(u8, subcommand, "add")) return pluginMarketplaceAddTailHasHelp(args[index + 1 ..]);
+        if (std.mem.eql(u8, subcommand, "list")) return pluginNoArgumentTailHasHelp(args[index + 1 ..]);
+        if (std.mem.eql(u8, subcommand, "upgrade")) return pluginSingleArgumentTailHasHelp(args[index + 1 ..], true);
+        if (std.mem.eql(u8, subcommand, "remove")) return pluginSingleArgumentTailHasHelp(args[index + 1 ..], true);
+        return false;
+    }
     return false;
 }
 
@@ -1663,9 +1700,14 @@ fn pluginMarketplaceAddTailHasHelp(args: []const []const u8) bool {
         const arg = args[index];
         if (std.mem.eql(u8, arg, "--")) return false;
         if (isHelpFlag(arg)) return true;
+        switch (scanConfigFeatureTailOption(args, &index, arg, true)) {
+            .valid => continue,
+            .invalid => return false,
+            .not_handled => {},
+        }
         if (std.mem.eql(u8, arg, "--ref") or std.mem.eql(u8, arg, "--sparse")) {
             index += 1;
-            if (index >= args.len) return false;
+            if (index >= args.len or isRootPromptOptionValueBoundary(args[index])) return false;
             continue;
         }
         if (std.mem.startsWith(u8, arg, "--ref=") or std.mem.startsWith(u8, arg, "--sparse=")) {
@@ -1679,9 +1721,16 @@ fn pluginMarketplaceAddTailHasHelp(args: []const []const u8) bool {
 }
 
 fn pluginNoArgumentTailHasHelp(args: []const []const u8) bool {
-    for (args) |arg| {
+    var index: usize = 0;
+    while (index < args.len) : (index += 1) {
+        const arg = args[index];
         if (std.mem.eql(u8, arg, "--")) return false;
         if (isHelpFlag(arg)) return true;
+        switch (scanConfigFeatureTailOption(args, &index, arg, true)) {
+            .valid => continue,
+            .invalid => return false,
+            .not_handled => {},
+        }
         return false;
     }
     return false;
@@ -1689,9 +1738,16 @@ fn pluginNoArgumentTailHasHelp(args: []const []const u8) bool {
 
 fn pluginSingleArgumentTailHasHelp(args: []const []const u8, allow_help_after_argument: bool) bool {
     var argument_seen = false;
-    for (args) |arg| {
+    var index: usize = 0;
+    while (index < args.len) : (index += 1) {
+        const arg = args[index];
         if (std.mem.eql(u8, arg, "--")) return false;
         if (isHelpFlag(arg)) return !argument_seen or allow_help_after_argument;
+        switch (scanConfigFeatureTailOption(args, &index, arg, true)) {
+            .valid => continue,
+            .invalid => return false,
+            .not_handled => {},
+        }
         if (std.mem.startsWith(u8, arg, "-")) return false;
         if (argument_seen) return false;
         argument_seen = true;
@@ -3709,7 +3765,15 @@ test "root semantic checks defer to help and version tails" {
     try std.testing.expect(try rootArgsTailHasHelpOrVersion(std.testing.allocator, &.{ "--remote", "ws://127.0.0.1:1", "exec-server", "--help", "--bad" }));
     try std.testing.expect(try rootArgsTailHasHelpOrVersion(std.testing.allocator, &.{ "--remote", "ws://127.0.0.1:1", "exec-server", "--remote", "ws://127.0.0.1:2", "--help" }));
     try std.testing.expect(try rootArgsTailHasHelpOrVersion(std.testing.allocator, &.{ "--strict-config", "-c", "foo.bar=1", "plugin", "add", "--marketplace", "debug", "--help" }));
+    try std.testing.expect(try rootArgsTailHasHelpOrVersion(std.testing.allocator, &.{ "--strict-config", "-c", "foo.bar=1", "plugin", "--enable", "definitely-not-a-feature", "list", "--help" }));
+    try std.testing.expect(try rootArgsTailHasHelpOrVersion(std.testing.allocator, &.{ "--strict-config", "-c", "foo.bar=1", "plugin", "list", "--enable", "definitely-not-a-feature", "--help" }));
+    try std.testing.expect(try rootArgsTailHasHelpOrVersion(std.testing.allocator, &.{ "--strict-config", "-c", "foo.bar=1", "plugin", "marketplace", "--enable", "definitely-not-a-feature", "add", "--help" }));
+    try std.testing.expect(try rootArgsTailHasHelpOrVersion(std.testing.allocator, &.{ "--strict-config", "-c", "foo.bar=1", "plugin", "--enable", "definitely-not-a-feature", "marketplace", "add", "--help" }));
+    try std.testing.expect(try rootArgsTailHasHelpOrVersion(std.testing.allocator, &.{ "--strict-config", "-c", "foo.bar=1", "plugin", "--enable", "definitely-not-a-feature", "help", "list" }));
+    try std.testing.expect(try rootArgsTailHasHelpOrVersion(std.testing.allocator, &.{ "--strict-config", "-c", "foo.bar=1", "plugin", "--enable", "definitely-not-a-feature", "help", "marketplace", "add" }));
+    try std.testing.expect(try rootArgsTailHasHelpOrVersion(std.testing.allocator, &.{ "--strict-config", "-c", "foo.bar=1", "plugin", "marketplace", "--enable", "definitely-not-a-feature", "help", "add" }));
     try std.testing.expect(try rootArgsTailHasHelpOrVersion(std.testing.allocator, &.{ "--strict-config", "-c", "foo.bar=1", "plugin", "help", "marketplace", "add" }));
+    try std.testing.expect(try rootArgsTailHasHelpOrVersion(std.testing.allocator, &.{ "--strict-config", "-c", "foo.bar=1", "plugin", "marketplace", "remove", "debug", "--help" }));
     try std.testing.expect(try rootArgsTailHasHelpOrVersion(std.testing.allocator, &.{ "--remote", "ws://127.0.0.1:1", "mcp", "help", "add" }));
     try std.testing.expect(try rootArgsTailHasHelpOrVersion(std.testing.allocator, &.{ "--remote", "ws://127.0.0.1:1", "mcp", "remove", "server", "--help" }));
     try std.testing.expect(try rootArgsTailHasHelpOrVersion(std.testing.allocator, &.{ "--remote", "ws://127.0.0.1:1", "mcp", "logout", "server", "--help" }));
@@ -3781,6 +3845,8 @@ test "root semantic checks defer to help and version tails" {
     try std.testing.expect(!(try rootArgsTailHasHelpOrVersion(std.testing.allocator, &.{ "--remote", "ws://127.0.0.1:1", "cloud", "exec", "--env", "env-id", "--attempts", "5", "--help" })));
     try std.testing.expect(!(try rootArgsTailHasHelpOrVersion(std.testing.allocator, &.{ "--strict-config", "-c", "foo.bar=1", "plugin", "add", "sample", "extra", "--help" })));
     try std.testing.expect(!(try rootArgsTailHasHelpOrVersion(std.testing.allocator, &.{ "--strict-config", "-c", "foo.bar=1", "plugin", "add", "--marketplace", "--help" })));
+    try std.testing.expect(!(try rootArgsTailHasHelpOrVersion(std.testing.allocator, &.{ "--strict-config", "-c", "foo.bar=1", "plugin", "marketplace", "add", "--sparse", "--help" })));
+    try std.testing.expect(!(try rootArgsTailHasHelpOrVersion(std.testing.allocator, &.{ "--strict-config", "-c", "foo.bar=1", "plugin", "--enable", "definitely-not-a-feature", "help", "nope" })));
     try std.testing.expect(!(try rootArgsTailHasHelpOrVersion(std.testing.allocator, &.{ "--remote", "ws://127.0.0.1:1", "mcp", "add", "server", "echo", "--help" })));
     try std.testing.expect(!(try rootArgsTailHasHelpOrVersion(std.testing.allocator, &.{ "--remote", "ws://127.0.0.1:1", "mcp", "remove", "server", "extra", "--help" })));
     try std.testing.expect(!(try rootArgsTailHasHelpOrVersion(std.testing.allocator, &.{ "--remote", "ws://127.0.0.1:1", "mcp", "logout", "server", "extra", "--help" })));
