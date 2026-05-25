@@ -7,6 +7,7 @@ import json
 import os
 import pty
 import select
+import shlex
 import shutil
 import socket
 import ssl
@@ -825,6 +826,45 @@ class MockResponsesHandler(BaseHTTPRequestHandler):
                     },
                 },
             )
+        elif "exit cleanup marker " in latest_prompt and has_tool_output(
+            items, "call-tui-e2e-exit-cleanup"
+        ):
+            payload = sse(
+                {
+                    "type": "response.output_text.delta",
+                    "delta": "exit cleanup terminal started\n",
+                },
+            )
+        elif "exit cleanup marker " in latest_prompt:
+            marker = latest_prompt.split("exit cleanup marker ", 1)[1].strip()
+            cmd = (
+                "zmodload zsh/zselect; "
+                "zselect -t 250; "
+                f"print -rn survived > {shlex.quote(marker)}"
+            )
+            payload = sse(
+                {
+                    "type": "response.output_text.delta",
+                    "delta": "I'll start an exit cleanup terminal.\n",
+                },
+                {
+                    "type": "response.output_item.done",
+                    "item": {
+                        "type": "function_call",
+                        "call_id": "call-tui-e2e-exit-cleanup",
+                        "name": "exec_command",
+                        "arguments": json.dumps(
+                            {
+                                "cmd": cmd,
+                                "tty": True,
+                                "yield_time_ms": 200,
+                                "max_output_tokens": 2000,
+                            },
+                            separators=(",", ":"),
+                        ),
+                    },
+                },
+            )
         elif has_tool_output(items, "call-tui-e2e-1"):
             payload = sse(
                 {
@@ -994,6 +1034,75 @@ def wait_for(
 
 def send_line(master_fd: int, line: str) -> None:
     os.write(master_fd, line.encode() + b"\n")
+
+
+def run_tui_exit_background_cleanup_smoke(
+    binary: Path,
+    env: dict[str, str],
+    workspace: Path,
+    port: int,
+) -> None:
+    marker = workspace / f"exit-cleanup-{uuid.uuid4().hex}.txt"
+    output = bytearray()
+    master_fd = -1
+    proc: subprocess.Popen[bytes] | None = None
+
+    try:
+        master_fd, slave_fd = pty.openpty()
+        proc = subprocess.Popen(
+            [
+                str(binary),
+                "--no-alt-screen",
+                "-c",
+                f"chatgpt_base_url=http://127.0.0.1:{port}",
+            ],
+            cwd=workspace,
+            env=env,
+            stdin=slave_fd,
+            stdout=slave_fd,
+            stderr=slave_fd,
+            close_fds=True,
+        )
+        os.close(slave_fd)
+
+        wait_for(master_fd, output, b"Type /help for commands", 8)
+        send_line(master_fd, f"exit cleanup marker {marker}")
+        wait_for(master_fd, output, b"Tool approval required", 8)
+        wait_for(master_fd, output, b"Run this command? [y/N]", 5)
+        mark = len(output)
+        send_line(master_fd, "y")
+        wait_for(master_fd, output, b"[tool result] session", 10, mark)
+        wait_for(master_fd, output, b"exit cleanup terminal started", 8, mark)
+        read_available(master_fd, output, 0.2)
+
+        mark = len(output)
+        send_line(master_fd, "/quit")
+        wait_for(master_fd, output, b"bye", 5, mark)
+        exit_code = proc.wait(timeout=5)
+        if exit_code != 0:
+            rendered = output.decode(errors="replace")
+            raise AssertionError(
+                f"exit-cleanup TUI smoke exited {exit_code}:\n{rendered}"
+            )
+        proc = None
+        os.close(master_fd)
+        master_fd = -1
+
+        time.sleep(3)
+        if marker.exists():
+            raise AssertionError(
+                f"background terminal survived TUI exit and wrote {marker}"
+            )
+    finally:
+        if master_fd != -1:
+            os.close(master_fd)
+        if proc is not None and proc.poll() is None:
+            proc.terminate()
+            try:
+                proc.wait(timeout=2)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                proc.wait(timeout=2)
 
 
 def run_tui_oversized_input_smoke(
@@ -7430,7 +7539,7 @@ def run_cloud_apply_command_smoke(
         raise AssertionError(f"expected bearer auth header, saw {headers!r}")
 
 
-def run_e2e(binary: Path) -> str:
+def run_e2e(binary: Path, only: str | None = None) -> str:
     if not binary.exists():
         raise FileNotFoundError(f"binary not found: {binary}; run `zig build` first")
 
@@ -7508,6 +7617,10 @@ def run_e2e(binary: Path) -> str:
             env.pop("ZELLIJ", None)
             env.pop("ZELLIJ_SESSION_NAME", None)
             env.pop("CODEX_CLOUD_TASKS_BASE_URL", None)
+
+            run_tui_exit_background_cleanup_smoke(binary, env, workspace, port)
+            if only == "exit-cleanup":
+                return ""
 
             run_feature_toggle_smoke(binary, env, workspace)
             run_help_command_smoke(binary, env, workspace)
@@ -8208,6 +8321,11 @@ def main() -> int:
         action="store_true",
         help="Print the captured terminal transcript after success.",
     )
+    parser.add_argument(
+        "--only",
+        choices=["exit-cleanup"],
+        help="Run one focused TUI smoke instead of the full suite.",
+    )
     args = parser.parse_args()
 
     repo = Path(__file__).resolve().parents[1]
@@ -8215,7 +8333,7 @@ def main() -> int:
     if not binary.is_absolute():
         binary = repo / binary
 
-    transcript = run_e2e(binary)
+    transcript = run_e2e(binary, args.only)
     print("tui-e2e: ok")
     if args.show_output:
         print(transcript)

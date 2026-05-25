@@ -257,6 +257,7 @@ pub fn runWithOptions(allocator: std.mem.Allocator, options: Options) !void {
     if (options.oss) {
         try config.applyOssMode(&cfg, allocator, options.oss_provider, options.runtime_overrides.model != null);
     }
+    defer _ = tools.stopAllExecSessions();
     var feature_overrides = try features_cmd.loadFeatureOverridesForProfile(allocator, cfg.codex_home, cfg.active_profile);
     defer feature_overrides.deinit(allocator);
     try feature_overrides.putAll(allocator, options.feature_overrides);
