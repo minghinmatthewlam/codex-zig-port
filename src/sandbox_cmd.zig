@@ -22,13 +22,11 @@ const SandboxArgs = struct {
     profile_override: ?[]const u8 = null,
     runtime_overrides: config.RuntimeOverrides = .{},
     feature_overrides: features_cmd.FeatureOverrides = .{},
-    mode: ?config.SandboxMode = null,
     permissions_profile: ?[]const u8 = null,
     include_managed_config: bool = false,
     allow_unix_sockets: std.ArrayList([]const u8) = .empty,
     log_denials: bool = false,
     cwd: ?[]const u8 = null,
-    additional_writable_roots: std.ArrayList([]const u8) = .empty,
     command: []const []const u8 = &.{},
 
     fn deinit(self: SandboxArgs, allocator: std.mem.Allocator) void {
@@ -39,9 +37,6 @@ const SandboxArgs = struct {
         var sockets = self.allow_unix_sockets;
         sockets.deinit(allocator);
         if (self.cwd) |cwd| allocator.free(cwd);
-        for (self.additional_writable_roots.items) |root| allocator.free(root);
-        var roots = self.additional_writable_roots;
-        roots.deinit(allocator);
         if (self.command.len > 0) allocator.free(self.command);
     }
 };
@@ -73,6 +68,13 @@ pub fn runWithOptions(allocator: std.mem.Allocator, args: *std.process.Args.Iter
     if (raw_args.items.len == 0) {
         printHelp();
         return error.MissingSandboxSubcommand;
+    }
+    if (helpPreflight(raw_args.items)) |target| {
+        switch (target) {
+            .root => printHelp(),
+            .kind => |kind| printSandboxKindHelp(kind),
+        }
+        return;
     }
 
     var root_options = SandboxRootOptions{};
@@ -124,7 +126,6 @@ pub fn runWithOptions(allocator: std.mem.Allocator, args: *std.process.Args.Iter
     var sandbox_profile: ?config.SandboxPermissionProfile = null;
     defer if (sandbox_profile) |*profile| profile.deinit(allocator);
     try config.applyRuntimeOverrides(&cfg, allocator, runtime_overrides);
-    if (parsed.mode) |mode| cfg.sandbox_mode = mode;
     if (parsed.permissions_profile) |profile| {
         sandbox_profile = try config.loadSandboxPermissionProfileWithOptions(allocator, profile, .{
             .allow_read_denied_globs = true,
@@ -145,18 +146,12 @@ pub fn runWithOptions(allocator: std.mem.Allocator, args: *std.process.Args.Iter
         profile_writable_roots,
     );
     defer allocator.free(option_and_profile_roots);
-    const additional_writable_roots = try cli_utils.mergeStringSlices(
-        allocator,
-        option_and_profile_roots,
-        parsed.additional_writable_roots.items,
-    );
-    defer allocator.free(additional_writable_roots);
 
     const include_cwd_write_root = if (sandbox_profile) |profile| profile.include_cwd_write_root else true;
     const network_enabled = if (sandbox_profile) |profile| profile.network_enabled else true;
     const read_denied_roots = if (sandbox_profile) |profile| profile.read_denied_roots.items else &.{};
     const read_denied_globs = if (sandbox_profile) |profile| profile.read_denied_globs.items else &.{};
-    try runCommand(allocator, parsed.command, cfg.sandbox_mode, additional_writable_roots, include_cwd_write_root, network_enabled, read_denied_roots, read_denied_globs, allow_unix_sockets, parsed.log_denials);
+    try runCommand(allocator, parsed.command, cfg.sandbox_mode, option_and_profile_roots, include_cwd_write_root, network_enabled, read_denied_roots, read_denied_globs, allow_unix_sockets, parsed.log_denials);
 }
 
 fn parseSandboxRootOption(
@@ -279,6 +274,89 @@ fn parseSandboxKind(subcommand: []const u8) ?SandboxKind {
     return null;
 }
 
+pub fn isKindName(subcommand: []const u8) bool {
+    return parseSandboxKind(subcommand) != null;
+}
+
+const HelpTarget = union(enum) {
+    root,
+    kind: SandboxKind,
+};
+
+fn helpPreflight(args: []const []const u8) ?HelpTarget {
+    var index: usize = 0;
+    while (index < args.len) : (index += 1) {
+        const arg = args[index];
+        if (isHelpFlag(arg)) return .root;
+        if (std.mem.eql(u8, arg, "help")) {
+            if (index + 1 >= args.len) return .root;
+            if (index + 2 < args.len) return null;
+            const kind = parseSandboxKind(args[index + 1]) orelse return null;
+            return .{ .kind = kind };
+        }
+        if (isConfigFeatureOptionName(arg)) {
+            index += 1;
+            if (index >= args.len or optionValueBoundary(args[index])) return null;
+            continue;
+        }
+        if (isConfigFeatureOptionWithInlineValue(arg)) continue;
+        if (std.mem.startsWith(u8, arg, "-")) return null;
+        const kind = parseSandboxKind(arg) orelse return null;
+        return kindHelpPreflight(kind, args[index + 1 ..]);
+    }
+    return null;
+}
+
+fn kindHelpPreflight(kind: SandboxKind, args: []const []const u8) ?HelpTarget {
+    var index: usize = 0;
+    while (index < args.len) : (index += 1) {
+        const arg = args[index];
+        if (std.mem.eql(u8, arg, "--")) return null;
+        if (isHelpFlag(arg)) return .{ .kind = kind };
+        if (isConfigFeatureOptionName(arg) or
+            std.mem.eql(u8, arg, "--permissions-profile") or
+            std.mem.eql(u8, arg, "--allow-unix-socket") or
+            std.mem.eql(u8, arg, "--cd") or
+            std.mem.eql(u8, arg, "-C"))
+        {
+            index += 1;
+            if (index >= args.len or optionValueBoundary(args[index])) return null;
+            continue;
+        }
+        if (isConfigFeatureOptionWithInlineValue(arg) or
+            std.mem.startsWith(u8, arg, "--permissions-profile=") or
+            std.mem.startsWith(u8, arg, "--allow-unix-socket=") or
+            std.mem.startsWith(u8, arg, "--cd="))
+        {
+            continue;
+        }
+        if (std.mem.eql(u8, arg, "--include-managed-config") or
+            std.mem.eql(u8, arg, "--log-denials"))
+        {
+            continue;
+        }
+        return null;
+    }
+    return null;
+}
+
+fn isConfigFeatureOptionName(arg: []const u8) bool {
+    return std.mem.eql(u8, arg, "--config") or
+        std.mem.eql(u8, arg, "-c") or
+        std.mem.eql(u8, arg, "--enable") or
+        std.mem.eql(u8, arg, "--disable");
+}
+
+fn isConfigFeatureOptionWithInlineValue(arg: []const u8) bool {
+    return std.mem.startsWith(u8, arg, "--config=") or
+        std.mem.startsWith(u8, arg, "--enable=") or
+        std.mem.startsWith(u8, arg, "--disable=");
+}
+
+fn optionValueBoundary(arg: []const u8) bool {
+    return std.mem.startsWith(u8, arg, "-");
+}
+
 fn parseSandboxArgs(allocator: std.mem.Allocator, args: []const []const u8) !SandboxArgs {
     var parsed = SandboxArgs{};
     errdefer parsed.deinit(allocator);
@@ -306,10 +384,9 @@ fn parseSandboxArgs(allocator: std.mem.Allocator, args: []const []const u8) !San
             continue;
         }
         if (!end_options and std.mem.eql(u8, arg, "--permissions-profile")) {
-            index += 1;
-            if (index >= args.len) return error.MissingSandboxOptionValue;
+            const value = try nextSandboxOptionValue(args, &index);
             if (parsed.permissions_profile) |existing| allocator.free(existing);
-            parsed.permissions_profile = try allocator.dupe(u8, args[index]);
+            parsed.permissions_profile = try allocator.dupe(u8, value);
             continue;
         }
         if (!end_options and std.mem.startsWith(u8, arg, "--permissions-profile=")) {
@@ -322,9 +399,8 @@ fn parseSandboxArgs(allocator: std.mem.Allocator, args: []const []const u8) !San
             continue;
         }
         if (!end_options and std.mem.eql(u8, arg, "--allow-unix-socket")) {
-            index += 1;
-            if (index >= args.len) return error.MissingSandboxOptionValue;
-            try parsed.allow_unix_sockets.append(allocator, try allocator.dupe(u8, args[index]));
+            const value = try nextSandboxOptionValue(args, &index);
+            try parsed.allow_unix_sockets.append(allocator, try allocator.dupe(u8, value));
             continue;
         }
         if (!end_options and std.mem.startsWith(u8, arg, "--allow-unix-socket=")) {
@@ -335,36 +411,15 @@ fn parseSandboxArgs(allocator: std.mem.Allocator, args: []const []const u8) !San
             parsed.log_denials = true;
             continue;
         }
-        if (!end_options and (std.mem.eql(u8, arg, "--sandbox") or std.mem.eql(u8, arg, "-s"))) {
-            index += 1;
-            if (index >= args.len) return error.MissingSandboxOptionValue;
-            parsed.mode = try config.SandboxMode.parse(args[index]);
-            continue;
-        }
-        if (!end_options and std.mem.startsWith(u8, arg, "--sandbox=")) {
-            parsed.mode = try config.SandboxMode.parse(arg["--sandbox=".len..]);
-            continue;
-        }
         if (!end_options and (std.mem.eql(u8, arg, "--cd") or std.mem.eql(u8, arg, "-C"))) {
-            index += 1;
-            if (index >= args.len) return error.MissingSandboxOptionValue;
+            const value = try nextSandboxOptionValue(args, &index);
             if (parsed.cwd) |existing| allocator.free(existing);
-            parsed.cwd = try allocator.dupe(u8, args[index]);
+            parsed.cwd = try allocator.dupe(u8, value);
             continue;
         }
         if (!end_options and std.mem.startsWith(u8, arg, "--cd=")) {
             if (parsed.cwd) |existing| allocator.free(existing);
             parsed.cwd = try allocator.dupe(u8, arg["--cd=".len..]);
-            continue;
-        }
-        if (!end_options and std.mem.eql(u8, arg, "--add-dir")) {
-            index += 1;
-            if (index >= args.len) return error.MissingSandboxOptionValue;
-            try parsed.additional_writable_roots.append(allocator, try allocator.dupe(u8, args[index]));
-            continue;
-        }
-        if (!end_options and std.mem.startsWith(u8, arg, "--add-dir=")) {
-            try parsed.additional_writable_roots.append(allocator, try allocator.dupe(u8, arg["--add-dir=".len..]));
             continue;
         }
         if (!end_options and std.mem.startsWith(u8, arg, "-")) {
@@ -383,6 +438,12 @@ fn parseSandboxArgs(allocator: std.mem.Allocator, args: []const []const u8) !San
     }
 
     return parsed;
+}
+
+fn nextSandboxOptionValue(args: []const []const u8, index: *usize) ![]const u8 {
+    index.* += 1;
+    if (index.* >= args.len or optionValueBoundary(args[index.*])) return error.MissingSandboxOptionValue;
+    return args[index.*];
 }
 
 fn runCommand(
@@ -1327,8 +1388,6 @@ fn printMacosHelp() void {
         \\  --allow-unix-socket PATH
         \\                      Allow the sandboxed command to bind/connect AF_UNIX sockets rooted at PATH
         \\  --log-denials      Print a macOS sandbox denial summary after the command exits
-        \\  -s, --sandbox MODE  read-only, workspace-write, or danger-full-access
-        \\  --add-dir DIR       Allow workspace-write command to write DIR
         \\  -h, --help          Print help
         \\
     , .{});
@@ -1386,12 +1445,11 @@ fn printWindowsHelp() void {
 
 test "sandbox macos args parse command and options" {
     const allocator = std.testing.allocator;
-    const argv = [_][]const u8{ "--sandbox", "read-only", "--add-dir", "/tmp/extra", "--", "/bin/echo", "ok" };
+    const argv = [_][]const u8{ "--permissions-profile", ":workspace", "--", "/bin/echo", "ok" };
     const parsed = try parseSandboxArgs(allocator, argv[0..]);
     defer parsed.deinit(allocator);
 
-    try std.testing.expectEqual(config.SandboxMode.read_only, parsed.mode.?);
-    try std.testing.expectEqualStrings("/tmp/extra", parsed.additional_writable_roots.items[0]);
+    try std.testing.expectEqualStrings(":workspace", parsed.permissions_profile.?);
     try std.testing.expectEqualStrings("/bin/echo", parsed.command[0]);
     try std.testing.expectEqualStrings("ok", parsed.command[1]);
 }
@@ -1494,10 +1552,16 @@ test "sandbox value options reject option terminator as missing value" {
     const missing_config = [_][]const u8{ "-c", "--", "/bin/echo", "ok" };
     const missing_enable = [_][]const u8{ "--enable", "--", "/bin/echo", "ok" };
     const missing_disable = [_][]const u8{ "--disable", "--", "/bin/echo", "ok" };
+    const missing_profile = [_][]const u8{ "--permissions-profile", "--help" };
+    const missing_socket = [_][]const u8{ "--allow-unix-socket", "--help" };
+    const missing_cd = [_][]const u8{ "--cd", "--help" };
 
     try std.testing.expectError(error.MissingConfigOptionValue, parseSandboxArgs(allocator, missing_config[0..]));
     try std.testing.expectError(error.MissingFeatureName, parseSandboxArgs(allocator, missing_enable[0..]));
     try std.testing.expectError(error.MissingFeatureName, parseSandboxArgs(allocator, missing_disable[0..]));
+    try std.testing.expectError(error.MissingSandboxOptionValue, parseSandboxArgs(allocator, missing_profile[0..]));
+    try std.testing.expectError(error.MissingSandboxOptionValue, parseSandboxArgs(allocator, missing_socket[0..]));
+    try std.testing.expectError(error.MissingSandboxOptionValue, parseSandboxArgs(allocator, missing_cd[0..]));
 }
 
 test "sandbox kind recognizes Rust platform aliases" {

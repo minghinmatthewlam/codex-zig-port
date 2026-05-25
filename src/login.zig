@@ -23,19 +23,14 @@ const LoginArgs = struct {
     with_api_key: bool = false,
     with_access_token: bool = false,
     device_auth: bool = false,
-    open_browser: bool = true,
-    callback_port: u16 = DEFAULT_CALLBACK_PORT,
     issuer: []const u8 = DEFAULT_ISSUER,
     client_id: []const u8 = auth.chatgpt_client_id,
-    force_state: ?[]const u8 = null,
     issuer_owned: bool = false,
     client_id_owned: bool = false,
-    force_state_owned: bool = false,
 
     fn deinit(self: LoginArgs, allocator: std.mem.Allocator) void {
         if (self.issuer_owned) allocator.free(self.issuer);
         if (self.client_id_owned) allocator.free(self.client_id);
-        if (self.force_state_owned) allocator.free(self.force_state.?);
     }
 };
 
@@ -255,6 +250,11 @@ fn parseArgs(allocator: std.mem.Allocator, args: []const []const u8) !LoginArgs 
     var parsed = LoginArgs{};
     errdefer parsed.deinit(allocator);
 
+    if (helpPreflight(args)) {
+        parsed.help = true;
+        return parsed;
+    }
+
     var index: usize = 0;
     while (index < args.len) : (index += 1) {
         const arg = args[index];
@@ -278,38 +278,18 @@ fn parseArgs(allocator: std.mem.Allocator, args: []const []const u8) !LoginArgs 
             parsed.device_auth = true;
             continue;
         }
-        if (std.mem.eql(u8, arg, "--no-browser")) {
-            parsed.open_browser = false;
-            continue;
-        }
-        if (std.mem.eql(u8, arg, "--experimental_port")) {
-            index += 1;
-            if (index >= args.len) return error.MissingLoginOptionValue;
-            parsed.callback_port = try std.fmt.parseInt(u16, args[index], 10);
-            continue;
-        }
         if (std.mem.eql(u8, arg, "--experimental_issuer")) {
-            index += 1;
-            if (index >= args.len) return error.MissingLoginOptionValue;
+            const value = try nextLoginOptionValue(args, &index);
             if (parsed.issuer_owned) allocator.free(parsed.issuer);
-            parsed.issuer = try allocator.dupe(u8, args[index]);
+            parsed.issuer = try allocator.dupe(u8, value);
             parsed.issuer_owned = true;
             continue;
         }
         if (std.mem.eql(u8, arg, "--experimental_client-id")) {
-            index += 1;
-            if (index >= args.len) return error.MissingLoginOptionValue;
+            const value = try nextLoginOptionValue(args, &index);
             if (parsed.client_id_owned) allocator.free(parsed.client_id);
-            parsed.client_id = try allocator.dupe(u8, args[index]);
+            parsed.client_id = try allocator.dupe(u8, value);
             parsed.client_id_owned = true;
-            continue;
-        }
-        if (std.mem.eql(u8, arg, "--experimental_state")) {
-            index += 1;
-            if (index >= args.len) return error.MissingLoginOptionValue;
-            if (parsed.force_state_owned) allocator.free(parsed.force_state.?);
-            parsed.force_state = try allocator.dupe(u8, args[index]);
-            parsed.force_state_owned = true;
             continue;
         }
 
@@ -324,6 +304,36 @@ fn parseArgs(allocator: std.mem.Allocator, args: []const []const u8) !LoginArgs 
     if (login_mode_count > 1) return error.ConflictingLoginModes;
     if (parsed.status and login_mode_count > 0) return error.ConflictingLoginModes;
     return parsed;
+}
+
+fn nextLoginOptionValue(args: []const []const u8, index: *usize) ![]const u8 {
+    index.* += 1;
+    if (index.* >= args.len or std.mem.startsWith(u8, args[index.*], "-")) return error.MissingLoginOptionValue;
+    return args[index.*];
+}
+
+fn helpPreflight(args: []const []const u8) bool {
+    var index: usize = 0;
+    while (index < args.len) : (index += 1) {
+        const arg = args[index];
+        if (std.mem.eql(u8, arg, "--help") or std.mem.eql(u8, arg, "-h")) return true;
+        if (std.mem.eql(u8, arg, "status") or
+            std.mem.eql(u8, arg, "--with-api-key") or
+            std.mem.eql(u8, arg, "--with-access-token") or
+            std.mem.eql(u8, arg, "--device-auth"))
+        {
+            continue;
+        }
+        if (std.mem.eql(u8, arg, "--experimental_issuer") or
+            std.mem.eql(u8, arg, "--experimental_client-id"))
+        {
+            index += 1;
+            if (index >= args.len or std.mem.startsWith(u8, args[index], "-")) return false;
+            continue;
+        }
+        return false;
+    }
+    return false;
 }
 
 fn runStatus(allocator: std.mem.Allocator, cfg: config.Config) !void {
@@ -374,13 +384,10 @@ fn runBrowserAuth(
     var pkce = try generatePkce(allocator);
     defer pkce.deinit(allocator);
 
-    const state = if (args.force_state) |forced|
-        try allocator.dupe(u8, forced)
-    else
-        try randomUrlSafe(allocator, 32);
+    const state = try randomUrlSafe(allocator, 32);
     defer allocator.free(state);
 
-    var callback_server = try bindCallbackServer(args.callback_port);
+    var callback_server = try bindCallbackServer(DEFAULT_CALLBACK_PORT);
     defer callback_server.deinit(std.Io.Threaded.global_single_threaded.io());
 
     const actual_port = callback_server.socket.address.getPort();
@@ -398,11 +405,9 @@ fn runBrowserAuth(
     );
     defer allocator.free(authorize_url);
 
-    if (args.open_browser) {
-        openBrowser(allocator, authorize_url) catch |err| {
-            std.debug.print("warning: could not open browser automatically: {s}\n", .{@errorName(err)});
-        };
-    }
+    openBrowser(allocator, authorize_url) catch |err| {
+        std.debug.print("warning: could not open browser automatically: {s}\n", .{@errorName(err)});
+    };
 
     std.debug.print(
         \\Starting local login server on http://localhost:{d}.
@@ -1543,17 +1548,23 @@ pub fn printLoginHelp() void {
         \\  --with-api-key          Read an OpenAI API key from stdin
         \\  --with-access-token     Read an access token from stdin
         \\  --device-auth           Sign in with ChatGPT device code authorization
-        \\  --no-browser            Print the ChatGPT login URL without opening it
-        \\  --experimental_issuer URL
-        \\                          Override OAuth issuer for testing
-        \\  --experimental_client-id CLIENT_ID
-        \\                          Override OAuth client id for testing
-        \\  --experimental_port PORT
-        \\                          Override localhost callback port for testing
-        \\  --experimental_state STATE
-        \\                          Override OAuth state for testing
         \\
     , .{});
+}
+
+test "login hidden option values reject help boundary" {
+    const allocator = std.testing.allocator;
+
+    const missing_issuer = [_][]const u8{ "--experimental_issuer", "--help" };
+    try std.testing.expectError(error.MissingLoginOptionValue, parseArgs(allocator, missing_issuer[0..]));
+
+    const missing_client = [_][]const u8{ "--experimental_client-id", "--help" };
+    try std.testing.expectError(error.MissingLoginOptionValue, parseArgs(allocator, missing_client[0..]));
+
+    const valid_help = [_][]const u8{ "--experimental_issuer", "https://auth.example.test", "--help" };
+    const parsed = try parseArgs(allocator, valid_help[0..]);
+    defer parsed.deinit(allocator);
+    try std.testing.expect(parsed.help);
 }
 
 test "safe api key formatting matches codex cli shape" {
