@@ -196,10 +196,11 @@ Zig TUI help in `src/tui.zig`, and the broader narrative tracker in
   deeper than the current bounded Zig checks.
 - Root interactive/resume/fork, exec, and review support for
   `--strict-config` is implemented for user `config.toml` unknown fields and
-  `-c/--config` unknown override fields, including unknown feature keys and
-  nested MCP/provider fields. Remaining strict-config depth is command
-  propagation to the other Rust-supported strict surfaces and full config-layer
-  coverage.
+  `-c/--config` unknown override fields, including unknown feature keys,
+  nested MCP/provider fields, Rust-supported `doctor`, `mcp-server`,
+  `app-server`, and `exec-server` propagation, root unsupported-subcommand
+  rejection, and app-server subcommand rejection. Remaining strict-config depth
+  is full config-layer coverage across every user/project/system/managed layer.
 - Root runtime surfaces now support `--profile-v2 <CONFIG_PROFILE_V2>` for
   interactive runs, `exec`, `review`, `resume`, `fork`, and
   `debug prompt-input`; `exec --profile-v2` also works locally. Unsupported
@@ -228,6 +229,12 @@ Zig TUI help in `src/tui.zig`, and the broader narrative tracker in
   user-visible cases as Rust, including unknown strict-config overrides,
   dangerous-bypass approval conflicts, invalid pre-help `-C` directories, and
   root remote flags on subcommand help paths.
+- Root help and top-level shell completion discovery now track Rust's normal
+  command surface more closely: the root help uses Rust's command-summary shape
+  and no longer advertises Zig-only demo/session helper commands, while
+  completions expose Rust-visible aliases plus hidden internal Rust command
+  entries such as `responses-api-proxy` and `stdio-to-uds`; `help
+  stdio-to-uds` now resolves like the command-local help path.
 
 ### App-Server Daemon and Remote Control
 
@@ -356,12 +363,12 @@ Zig TUI help in `src/tui.zig`, and the broader narrative tracker in
 
 ### Completion, Help, and Error Polish
 
-- Bring completion output closer to Rust for all user-facing command/flag
-  surfaces after the command set is complete.
+- Bring nested completion output closer to Rust for all user-facing
+  command/flag surfaces after the command set is complete.
 - Normalize help/error behavior for implemented commands, especially app-server
   generator help, hidden commands, aliases, and command-specific usage text.
-- Remove or hide Zig-only demo commands from normal feature-parity reporting if
-  they are not intended user-facing Codex behavior.
+- Finish hiding or documenting remaining Zig-only compatibility/helper commands
+  outside normal Rust parity discovery surfaces.
 
 ### Debug and Diagnostic Tools
 

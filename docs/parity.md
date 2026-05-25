@@ -16,6 +16,13 @@ Feature-only parity priorities are tracked separately in
 `docs/feature-parity.md`. This file remains the detailed runtime, protocol,
 schema, and edge-case parity ledger.
 
+Current root help and shell completion discovery: root `--help` now follows
+Rust's command-summary shape for the normal command surface and no longer lists
+Zig-only demo/session helper commands. Top-level completions now advertise the
+Rust-visible command set plus aliases and hidden internal entries such as
+`responses-api-proxy` and `stdio-to-uds`, and root `help stdio-to-uds` resolves
+to the hidden command's local help.
+
 Current local TUI `/skills` and `/hooks` coverage: `/skills` lists discovered
 repo/user/plugin skills for the current working directory with scope, enabled
 state, first-line description, source path, and load errors. `/hooks` lists
