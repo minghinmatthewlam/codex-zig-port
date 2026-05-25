@@ -9,7 +9,7 @@ purely internal generator parity. The current reference is:
 - Rust checkout: `/Users/matthewlam/dev/codex` at
   `5381240f57fe326b13bc81325f3c61596592fc7a`
 - Installed Rust CLI: `codex-cli 0.133.0`
-- Zig checkout: `2925717f68b2ea4b290e2520c361f67cff3abea7`
+- Zig checkout: `bfd3d441e1df89ba1ba534f02214e10025d7f048`
 - Zig CLI: `codex-zig 0.0.1`
 
 The source evidence for this pass was the Rust and Zig root help output,
@@ -324,6 +324,12 @@ app-server smoke.
   synchronization and full remote/plugin cache behavior.
 - Implement richer TUI `/plugins` management and richer `/apps` flows,
   reusing the existing app-server plugin/app runtime where possible.
+- App-server remote plugin share checkout is now implemented for the Rust
+  `plugin/share/checkout` JSON-RPC method: it requires the `plugin_sharing`
+  feature, validates Rust-shaped remote plugin IDs, checks out shared workspace
+  bundles into the user's personal HOME plugin root, updates the personal
+  marketplace manifest, records remote-to-local share mappings, and preserves
+  local edits on repeated checkout.
 - Close user-visible app-server plugin gaps that remain after CLI/TUI routing:
   remote catalog cache synchronization, plugin cache update parity, app auth
   lookups, and exact remote/local cache behavior.
