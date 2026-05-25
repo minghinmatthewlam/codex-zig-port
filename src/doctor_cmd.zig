@@ -252,6 +252,11 @@ fn parseArgs(allocator: std.mem.Allocator, argv: []const []const u8, options: Op
     };
     errdefer parsed.deinit(allocator);
 
+    if (helpPreflight(argv)) {
+        parsed.help = true;
+        return parsed;
+    }
+
     var index: usize = 0;
     while (index < argv.len) : (index += 1) {
         const arg = argv[index];
@@ -320,11 +325,49 @@ fn parseArgs(allocator: std.mem.Allocator, argv: []const []const u8, options: Op
         return error.UnexpectedDoctorArgument;
     }
 
-    if (parsed.strict_config) {
+    if (parsed.strict_config and !parsed.help) {
         if (parsed.unknown_config_override) |field| return config.failStrictConfigUnknownCliOverride(field);
     }
 
     return parsed;
+}
+
+fn helpPreflight(argv: []const []const u8) bool {
+    var index: usize = 0;
+    while (index < argv.len) : (index += 1) {
+        const arg = argv[index];
+        if (isHelpFlag(arg)) return true;
+        if (std.mem.eql(u8, arg, "--json") or
+            std.mem.eql(u8, arg, "--summary") or
+            std.mem.eql(u8, arg, "--all") or
+            std.mem.eql(u8, arg, "--no-color") or
+            std.mem.eql(u8, arg, "--ascii") or
+            std.mem.eql(u8, arg, "--strict-config"))
+        {
+            continue;
+        }
+        if (std.mem.eql(u8, arg, "--config") or
+            std.mem.eql(u8, arg, "-c") or
+            std.mem.eql(u8, arg, "--enable") or
+            std.mem.eql(u8, arg, "--disable"))
+        {
+            index += 1;
+            if (index >= argv.len or optionValueBoundary(argv[index])) return false;
+            continue;
+        }
+        if (std.mem.startsWith(u8, arg, "--config=") or
+            std.mem.startsWith(u8, arg, "--enable=") or
+            std.mem.startsWith(u8, arg, "--disable="))
+        {
+            continue;
+        }
+        return false;
+    }
+    return false;
+}
+
+fn optionValueBoundary(arg: []const u8) bool {
+    return std.mem.startsWith(u8, arg, "-");
 }
 
 fn isHelpFlag(arg: []const u8) bool {

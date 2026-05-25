@@ -1111,7 +1111,9 @@ pub fn runWithOptions(
     const strict_config = invocation_options.strict_config or options.strict_config;
 
     if (subcommand) |name| {
-        if (strict_config) return failStrictConfigUnsupportedForSubcommand(name);
+        const subcommand_help = appServerSubcommandTailHasHelp(name, subcommand_args.items);
+        const subcommand_help_like = subcommand_help or (std.mem.eql(u8, name, "daemon") and daemonTailMentionsHelp(subcommand_args.items));
+        if (strict_config and !subcommand_help_like) return failStrictConfigUnsupportedForSubcommandWithTail(name, subcommand_args.items);
         if (std.mem.eql(u8, name, "proxy")) {
             try runProxy(allocator, subcommand_args.items);
             return;
@@ -1373,11 +1375,26 @@ fn runDaemon(
             return;
         }
         if (std.mem.eql(u8, arg, "help")) {
+            if (command) |cmd| return failUnexpectedDaemonArgument(cmd, arg);
             if (index + 1 < raw_args.len) {
+                if (index + 2 < raw_args.len) {
+                    if (daemonCommandFromName(raw_args[index + 1])) |cmd| {
+                        return failUnknownDaemonSubcommandForCommand(cmd, raw_args[index + 2]);
+                    }
+                    if (std.mem.eql(u8, raw_args[index + 1], "help")) {
+                        return failUnknownDaemonSubcommandForHelp(raw_args[index + 2]);
+                    }
+                    return failUnknownDaemonSubcommand(raw_args[index + 1]);
+                }
+                if (std.mem.eql(u8, raw_args[index + 1], "help")) {
+                    printDaemonHelpCommandHelp();
+                    return;
+                }
                 if (daemonCommandFromName(raw_args[index + 1])) |cmd| {
                     printDaemonCommandHelp(cmd);
                     return;
                 }
+                return failUnknownDaemonSubcommand(raw_args[index + 1]);
             }
             printDaemonHelp();
             return;
@@ -1439,6 +1456,155 @@ fn runDaemon(
         .restart => try runDaemonRestart(allocator, codex_home, options.child_global_args.items),
         .pid_update_loop => try runDaemonPidUpdateLoop(),
     }
+}
+
+pub fn tailHasHelp(args: []const []const u8) bool {
+    var index: usize = 0;
+    while (index < args.len) : (index += 1) {
+        const arg = args[index];
+        if (std.mem.eql(u8, arg, "--")) return false;
+        if (isHelpFlag(arg)) return true;
+        if (std.mem.eql(u8, arg, "--ws-auth")) {
+            index += 1;
+            if (index >= args.len or optionValueLooksMissing(args[index])) return false;
+            _ = parseWebsocketAuthMode(args[index]) catch return false;
+            continue;
+        }
+        if (std.mem.startsWith(u8, arg, "--ws-auth=")) {
+            _ = parseWebsocketAuthMode(arg["--ws-auth=".len..]) catch return false;
+            continue;
+        }
+        if (std.mem.eql(u8, arg, "--ws-max-clock-skew-seconds")) {
+            index += 1;
+            if (index >= args.len or optionValueLooksMissing(args[index])) return false;
+            _ = parseWebsocketClockSkew(args[index]) catch return false;
+            continue;
+        }
+        if (std.mem.startsWith(u8, arg, "--ws-max-clock-skew-seconds=")) {
+            _ = parseWebsocketClockSkew(arg["--ws-max-clock-skew-seconds=".len..]) catch return false;
+            continue;
+        }
+        if (appServerRootOptionConsumesSingleValue(arg)) {
+            index += 1;
+            if (index >= args.len or optionValueLooksMissing(args[index])) return false;
+            continue;
+        }
+        if (appServerRootOptionHasInlineValue(arg) or appServerRootOptionIsBoolean(arg)) {
+            continue;
+        }
+        if (std.mem.startsWith(u8, arg, "-")) return false;
+        return appServerSubcommandTailHasHelp(arg, args[index + 1 ..]);
+    }
+    return false;
+}
+
+fn appServerRootOptionConsumesSingleValue(arg: []const u8) bool {
+    return std.mem.eql(u8, arg, "--listen") or
+        std.mem.eql(u8, arg, "--session-source") or
+        std.mem.eql(u8, arg, "--ws-auth") or
+        std.mem.eql(u8, arg, "--ws-token-file") or
+        std.mem.eql(u8, arg, "--ws-token-sha256") or
+        std.mem.eql(u8, arg, "--ws-shared-secret-file") or
+        std.mem.eql(u8, arg, "--ws-issuer") or
+        std.mem.eql(u8, arg, "--ws-audience") or
+        std.mem.eql(u8, arg, "--ws-max-clock-skew-seconds");
+}
+
+fn appServerRootOptionHasInlineValue(arg: []const u8) bool {
+    return std.mem.startsWith(u8, arg, "--listen=") or
+        std.mem.startsWith(u8, arg, "--session-source=") or
+        std.mem.startsWith(u8, arg, "--ws-auth=") or
+        std.mem.startsWith(u8, arg, "--ws-token-file=") or
+        std.mem.startsWith(u8, arg, "--ws-token-sha256=") or
+        std.mem.startsWith(u8, arg, "--ws-shared-secret-file=") or
+        std.mem.startsWith(u8, arg, "--ws-issuer=") or
+        std.mem.startsWith(u8, arg, "--ws-audience=") or
+        std.mem.startsWith(u8, arg, "--ws-max-clock-skew-seconds=");
+}
+
+fn appServerRootOptionIsBoolean(arg: []const u8) bool {
+    return std.mem.eql(u8, arg, "--analytics-default-enabled") or
+        std.mem.eql(u8, arg, "--remote-control") or
+        std.mem.eql(u8, arg, "--strict-config");
+}
+
+fn appServerSubcommandTailHasHelp(name: []const u8, args: []const []const u8) bool {
+    if (std.mem.eql(u8, name, "proxy")) return proxyTailHasHelp(args);
+    if (std.mem.eql(u8, name, "daemon")) return daemonTailHasHelp(args);
+    return false;
+}
+
+fn proxyTailHasHelp(args: []const []const u8) bool {
+    var index: usize = 0;
+    while (index < args.len) : (index += 1) {
+        const arg = args[index];
+        if (std.mem.eql(u8, arg, "--")) return false;
+        if (isHelpFlag(arg)) return true;
+        if (std.mem.eql(u8, arg, "--sock")) {
+            index += 1;
+            if (index >= args.len or optionValueLooksMissing(args[index])) return false;
+            continue;
+        }
+        if (std.mem.startsWith(u8, arg, "--sock=")) continue;
+        return false;
+    }
+    return false;
+}
+
+fn daemonTailHasHelp(args: []const []const u8) bool {
+    var command_seen: ?[]const u8 = null;
+    var index: usize = 0;
+    while (index < args.len) : (index += 1) {
+        const arg = args[index];
+        if (std.mem.eql(u8, arg, "--")) return false;
+        if (isHelpFlag(arg)) return true;
+        if (std.mem.eql(u8, arg, "help")) {
+            if (command_seen != null) return false;
+            if (index + 1 >= args.len) return true;
+            if (index + 2 < args.len) return false;
+            return daemonCommandNameIsValid(args[index + 1]) or std.mem.eql(u8, args[index + 1], "help");
+        }
+        if (std.mem.eql(u8, arg, "-c") or
+            std.mem.eql(u8, arg, "--config") or
+            std.mem.eql(u8, arg, "--enable") or
+            std.mem.eql(u8, arg, "--disable"))
+        {
+            index += 1;
+            if (index >= args.len or optionValueLooksMissing(args[index])) return false;
+            continue;
+        }
+        if (std.mem.startsWith(u8, arg, "--config=") or
+            std.mem.startsWith(u8, arg, "--enable=") or
+            std.mem.startsWith(u8, arg, "--disable="))
+        {
+            continue;
+        }
+        if (std.mem.eql(u8, arg, "--remote-control")) {
+            if (command_seen) |cmd| {
+                if (std.mem.eql(u8, cmd, "bootstrap")) continue;
+            }
+            return false;
+        }
+        if (std.mem.startsWith(u8, arg, "-")) return false;
+        if (!daemonCommandNameIsValid(arg) or command_seen != null) return false;
+        command_seen = arg;
+    }
+    return false;
+}
+
+fn daemonTailMentionsHelp(args: []const []const u8) bool {
+    for (args) |arg| {
+        if (isHelpFlag(arg) or std.mem.eql(u8, arg, "help")) return true;
+    }
+    return false;
+}
+
+fn daemonCommandNameIsValid(arg: []const u8) bool {
+    return daemonCommandFromName(arg) != null;
+}
+
+fn optionValueLooksMissing(arg: []const u8) bool {
+    return std.mem.eql(u8, arg, "--") or std.mem.startsWith(u8, arg, "-");
 }
 
 fn appendDaemonFeatureOverrideArgs(
@@ -3196,6 +3362,30 @@ fn failUnknownDaemonOptionForCommand(command: DaemonCommand, arg: []const u8) er
     return error.AppServerDaemonCommandFailed;
 }
 
+fn failUnknownDaemonSubcommandForCommand(command: DaemonCommand, arg: []const u8) error{AppServerDaemonCommandFailed} {
+    std.debug.print(
+        \\error: unrecognized subcommand '{s}'
+        \\
+        \\Usage: {s}
+        \\
+        \\For more information, try '--help'.
+        \\
+    , .{ arg, daemonCommandUsage(command) });
+    return error.AppServerDaemonCommandFailed;
+}
+
+fn failUnknownDaemonSubcommandForHelp(arg: []const u8) error{AppServerDaemonCommandFailed} {
+    std.debug.print(
+        \\error: unrecognized subcommand '{s}'
+        \\
+        \\Usage: codex-zig app-server daemon help [COMMAND]...
+        \\
+        \\For more information, try '--help'.
+        \\
+    , .{arg});
+    return error.AppServerDaemonCommandFailed;
+}
+
 fn failUnexpectedDaemonArgument(command: DaemonCommand, arg: []const u8) error{AppServerDaemonCommandFailed} {
     std.debug.print(
         \\error: unexpected argument '{s}' found
@@ -3241,6 +3431,14 @@ fn parseWebsocketAuthMode(value: []const u8) !WebsocketAuthMode {
 fn failStrictConfigUnsupportedForSubcommand(subcommand: []const u8) error{StrictConfigUnsupportedForSubcommand} {
     std.debug.print("`--strict-config` is not supported for `codex-zig app-server {s}`\n", .{subcommand});
     return error.StrictConfigUnsupportedForSubcommand;
+}
+
+fn failStrictConfigUnsupportedForSubcommandWithTail(subcommand: []const u8, args: []const []const u8) error{StrictConfigUnsupportedForSubcommand} {
+    if (std.mem.eql(u8, subcommand, "daemon") and args.len > 0 and daemonCommandFromName(args[0]) != null) {
+        std.debug.print("`--strict-config` is not supported for `codex-zig app-server daemon {s}`\n", .{args[0]});
+        return error.StrictConfigUnsupportedForSubcommand;
+    }
+    return failStrictConfigUnsupportedForSubcommand(subcommand);
 }
 
 fn parseWebsocketClockSkew(value: []const u8) !u64 {
@@ -67313,6 +67511,18 @@ fn printDaemonHelp() void {
         \\      --enable <FEATURE>    Enable a feature (repeatable)
         \\      --disable <FEATURE>   Disable a feature (repeatable)
         \\  -h, --help                Print help
+        \\
+    , .{});
+}
+
+fn printDaemonHelpCommandHelp() void {
+    std.debug.print(
+        \\Print this message or the help of the given subcommand(s)
+        \\
+        \\Usage: codex-zig app-server daemon help [COMMAND]...
+        \\
+        \\Arguments:
+        \\  [COMMAND]...  Print help for the subcommand(s)
         \\
     , .{});
 }

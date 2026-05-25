@@ -2048,7 +2048,7 @@ fn parseArgs(args: *std.process.Args.Iterator, invocation_options: InvocationOpt
     while (args.next()) |arg| {
         if (isHelpFlag(arg)) {
             parsed.help = true;
-            continue;
+            return parsed;
         }
         if (std.mem.eql(u8, arg, "--strict-config")) {
             parsed.strict_config = true;

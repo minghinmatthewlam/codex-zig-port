@@ -94,6 +94,11 @@ pub const Options = struct {
     unknown_config_override: ?[]const u8 = null,
 };
 
+const ParseOptions = struct {
+    diagnostics: bool = true,
+    validate_config_feature_values: bool = true,
+};
+
 pub fn run(allocator: std.mem.Allocator, args: *std.process.Args.Iterator) !void {
     try runWithOptions(allocator, args, .{});
 }
@@ -314,7 +319,20 @@ pub fn runWithOptions(allocator: std.mem.Allocator, args: *std.process.Args.Iter
     }
 }
 
+pub fn tailHasHelpOrVersion(allocator: std.mem.Allocator, args: []const []const u8) !bool {
+    var parsed = parseArgsWithOptions(allocator, args, .{ .diagnostics = false, .validate_config_feature_values = false }) catch return false;
+    defer parsed.deinit(allocator);
+    return parsed.help != null or parsed.version;
+}
+
 fn parseArgs(allocator: std.mem.Allocator, args: []const []const u8) !ExecArgs {
+    if (try tailHasHelpOrVersion(allocator, args)) {
+        return parseArgsWithOptions(allocator, args, .{ .validate_config_feature_values = false });
+    }
+    return parseArgsWithOptions(allocator, args, .{});
+}
+
+fn parseArgsWithOptions(allocator: std.mem.Allocator, args: []const []const u8, parse_options: ParseOptions) !ExecArgs {
     var parsed = ExecArgs{};
     errdefer parsed.deinit(allocator);
 
@@ -408,34 +426,49 @@ fn parseArgs(allocator: std.mem.Allocator, args: []const []const u8) !ExecArgs {
         if (!end_options and (std.mem.eql(u8, arg, "--config") or std.mem.eql(u8, arg, "-c"))) {
             index += 1;
             if (index >= args.len) return error.MissingExecOptionValue;
-            try config.rememberStrictConfigUnknownOverride(allocator, &parsed.unknown_config_override, args[index]);
-            try config.applyRawConfigOverride(&parsed.config_overrides, &parsed.config_profile, args[index]);
+            if (!parse_options.validate_config_feature_values and optionValueLooksMissing(args[index])) return error.MissingExecOptionValue;
+            if (parse_options.validate_config_feature_values) {
+                try config.rememberStrictConfigUnknownOverride(allocator, &parsed.unknown_config_override, args[index]);
+                try config.applyRawConfigOverride(&parsed.config_overrides, &parsed.config_profile, args[index]);
+            }
             continue;
         }
         if (!end_options and std.mem.startsWith(u8, arg, "--config=")) {
             const raw = arg["--config=".len..];
-            try config.rememberStrictConfigUnknownOverride(allocator, &parsed.unknown_config_override, raw);
-            try config.applyRawConfigOverride(&parsed.config_overrides, &parsed.config_profile, raw);
+            if (parse_options.validate_config_feature_values) {
+                try config.rememberStrictConfigUnknownOverride(allocator, &parsed.unknown_config_override, raw);
+                try config.applyRawConfigOverride(&parsed.config_overrides, &parsed.config_profile, raw);
+            }
             continue;
         }
         if (!end_options and std.mem.eql(u8, arg, "--enable")) {
             index += 1;
             if (index >= args.len) return error.MissingFeatureName;
-            try features_cmd.putRuntimeToggle(allocator, &parsed.feature_overrides, args[index], true);
+            if (!parse_options.validate_config_feature_values and optionValueLooksMissing(args[index])) return error.MissingFeatureName;
+            if (parse_options.validate_config_feature_values) {
+                try features_cmd.putRuntimeToggle(allocator, &parsed.feature_overrides, args[index], true);
+            }
             continue;
         }
         if (!end_options and std.mem.startsWith(u8, arg, "--enable=")) {
-            try features_cmd.putRuntimeToggle(allocator, &parsed.feature_overrides, arg["--enable=".len..], true);
+            if (parse_options.validate_config_feature_values) {
+                try features_cmd.putRuntimeToggle(allocator, &parsed.feature_overrides, arg["--enable=".len..], true);
+            }
             continue;
         }
         if (!end_options and std.mem.eql(u8, arg, "--disable")) {
             index += 1;
             if (index >= args.len) return error.MissingFeatureName;
-            try features_cmd.putRuntimeToggle(allocator, &parsed.feature_overrides, args[index], false);
+            if (!parse_options.validate_config_feature_values and optionValueLooksMissing(args[index])) return error.MissingFeatureName;
+            if (parse_options.validate_config_feature_values) {
+                try features_cmd.putRuntimeToggle(allocator, &parsed.feature_overrides, args[index], false);
+            }
             continue;
         }
         if (!end_options and std.mem.startsWith(u8, arg, "--disable=")) {
-            try features_cmd.putRuntimeToggle(allocator, &parsed.feature_overrides, arg["--disable=".len..], false);
+            if (parse_options.validate_config_feature_values) {
+                try features_cmd.putRuntimeToggle(allocator, &parsed.feature_overrides, arg["--disable=".len..], false);
+            }
             continue;
         }
         if (!end_options and std.mem.eql(u8, arg, "--color")) {
@@ -620,7 +653,7 @@ fn parseArgs(allocator: std.mem.Allocator, args: []const []const u8) !ExecArgs {
             continue;
         }
         if (!end_options and std.mem.startsWith(u8, arg, "-") and !std.mem.eql(u8, arg, "-")) {
-            if (!builtin.is_test) std.debug.print("unknown exec option: {s}\n", .{arg});
+            if (parse_options.diagnostics and !builtin.is_test) std.debug.print("unknown exec option: {s}\n", .{arg});
             return error.UnknownExecOption;
         }
 
@@ -629,7 +662,7 @@ fn parseArgs(allocator: std.mem.Allocator, args: []const []const u8) !ExecArgs {
             continue;
         }
         if (!end_options and !resume_mode and prompt_parts.items.len == 0 and std.mem.eql(u8, arg, "help")) {
-            parsed.help = try parseHelpTopic(args[index + 1 ..]);
+            parsed.help = try parseHelpTopic(args[index + 1 ..], parse_options.diagnostics);
             break;
         }
         if (!end_options and !resume_mode and prompt_parts.items.len == 0 and std.mem.eql(u8, arg, "review")) {
@@ -672,7 +705,7 @@ fn parseArgs(allocator: std.mem.Allocator, args: []const []const u8) !ExecArgs {
     return parsed;
 }
 
-fn parseHelpTopic(args: []const []const u8) !ExecHelpTopic {
+fn parseHelpTopic(args: []const []const u8, diagnostics: bool) !ExecHelpTopic {
     if (args.len == 0) return .root;
     const target = args[0];
     const topic: ExecHelpTopic = if (std.mem.eql(u8, target, "resume"))
@@ -682,18 +715,22 @@ fn parseHelpTopic(args: []const []const u8) !ExecHelpTopic {
     else if (std.mem.eql(u8, target, "help"))
         .help_cmd
     else {
-        failExecHelpSubcommand(target, .root);
+        failExecHelpSubcommand(target, .root, diagnostics);
         return error.HelpSubcommandInvalid;
     };
     if (args.len > 1) {
-        failExecHelpSubcommand(args[1], topic);
+        failExecHelpSubcommand(args[1], topic, diagnostics);
         return error.HelpSubcommandInvalid;
     }
     return topic;
 }
 
-fn failExecHelpSubcommand(subcommand: []const u8, topic: ExecHelpTopic) void {
-    if (builtin.is_test) return;
+fn optionValueLooksMissing(arg: []const u8) bool {
+    return std.mem.startsWith(u8, arg, "-") and !std.mem.eql(u8, arg, "-");
+}
+
+fn failExecHelpSubcommand(subcommand: []const u8, topic: ExecHelpTopic, diagnostics: bool) void {
+    if (!diagnostics or builtin.is_test) return;
     cli_utils.printUnrecognizedSubcommand(subcommand, execHelpUsage(topic), topic != .help_cmd);
 }
 
@@ -861,7 +898,7 @@ pub fn printHelp() void {
 }
 
 pub fn printHelpForArgs(args: []const []const u8) !void {
-    const topic = try parseHelpTopic(args);
+    const topic = try parseHelpTopic(args, true);
     printHelpTopic(topic);
 }
 

@@ -355,6 +355,26 @@ pub fn printHelpForArgs(args: []const []const u8) !void {
     printMcpSubcommandHelp(usage);
 }
 
+pub fn tailHasHelp(args: []const []const u8) bool {
+    if (args.len == 0) return false;
+    const subcommand = args[0];
+    if (isHelpFlag(subcommand)) return true;
+    if (std.mem.eql(u8, subcommand, "help")) return helpPathIsValid(args[1..]);
+    if (mcpHelpUsageForSubcommand(subcommand) == null) return false;
+    const preflight = preflightDirectSubcommandHelp(subcommand, args[1..]) catch return false;
+    return switch (preflight) {
+        .help => true,
+        .run => false,
+    };
+}
+
+fn helpPathIsValid(args: []const []const u8) bool {
+    if (args.len == 0) return true;
+    if (args.len > 1) return false;
+    if (std.mem.eql(u8, args[0], "help")) return true;
+    return mcpHelpUsageForSubcommand(args[0]) != null;
+}
+
 const McpHelpUsage = enum {
     root,
     help_cmd,

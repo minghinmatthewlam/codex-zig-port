@@ -11,6 +11,13 @@ const Command = enum {
     stop,
 };
 
+const HelpTarget = enum {
+    root,
+    start,
+    stop,
+    help_cmd,
+};
+
 pub const ParsedOptions = struct {
     command: Command = .foreground,
     json: bool = false,
@@ -69,6 +76,11 @@ fn parseArgSliceWithOptions(allocator: std.mem.Allocator, args: []const []const 
     errdefer parsed.deinit(allocator);
     try parsed.child_global_args.appendSlice(allocator, options.child_global_args);
 
+    if (helpPreflight(args)) |target| {
+        printHelpTarget(target);
+        return error.RemoteControlHelpRequested;
+    }
+
     var profile: ?[]const u8 = null;
     var index: usize = 0;
     while (index < args.len) : (index += 1) {
@@ -81,6 +93,10 @@ fn parseArgSliceWithOptions(allocator: std.mem.Allocator, args: []const []const 
             if (parsed.command != .foreground) return error.UnexpectedRemoteControlArgument;
             if (index + 1 < args.len) {
                 if (index + 2 < args.len) return error.UnexpectedRemoteControlArgument;
+                if (std.mem.eql(u8, args[index + 1], "help")) {
+                    printHelpCommandHelp();
+                    return error.RemoteControlHelpRequested;
+                }
                 const help_command = parseCommand(args[index + 1]) orelse return error.UnexpectedRemoteControlArgument;
                 printCommandHelp(help_command);
                 return error.RemoteControlHelpRequested;
@@ -148,6 +164,55 @@ fn parseArgSliceWithOptions(allocator: std.mem.Allocator, args: []const []const 
     return parsed;
 }
 
+fn helpPreflight(args: []const []const u8) ?HelpTarget {
+    var command: Command = .foreground;
+    var index: usize = 0;
+    while (index < args.len) : (index += 1) {
+        const arg = args[index];
+        if (isHelpFlag(arg)) return helpTargetForCommand(command);
+        if (std.mem.eql(u8, arg, "help")) {
+            if (command != .foreground) return null;
+            if (index + 1 >= args.len) return .root;
+            if (index + 2 < args.len) return null;
+            if (std.mem.eql(u8, args[index + 1], "help")) return .help_cmd;
+            const target = parseCommand(args[index + 1]) orelse return null;
+            return helpTargetForCommand(target);
+        }
+        if (std.mem.eql(u8, arg, "--json")) continue;
+        if (std.mem.eql(u8, arg, "--config") or
+            std.mem.eql(u8, arg, "-c") or
+            std.mem.eql(u8, arg, "--enable") or
+            std.mem.eql(u8, arg, "--disable"))
+        {
+            index += 1;
+            if (index >= args.len or optionValueBoundary(args[index])) return null;
+            continue;
+        }
+        if (std.mem.startsWith(u8, arg, "--config=") or
+            std.mem.startsWith(u8, arg, "--enable=") or
+            std.mem.startsWith(u8, arg, "--disable="))
+        {
+            continue;
+        }
+        if (std.mem.startsWith(u8, arg, "-")) return null;
+        if (command != .foreground) return null;
+        command = parseCommand(arg) orelse return null;
+    }
+    return null;
+}
+
+fn helpTargetForCommand(command: Command) HelpTarget {
+    return switch (command) {
+        .foreground => .root,
+        .start => .start,
+        .stop => .stop,
+    };
+}
+
+fn optionValueBoundary(arg: []const u8) bool {
+    return std.mem.startsWith(u8, arg, "-");
+}
+
 fn enableRemoteControlForInvocation(
     allocator: std.mem.Allocator,
     overrides: *features_cmd.FeatureOverrides,
@@ -202,6 +267,27 @@ fn printHelpForCommand(command: Command) void {
         .foreground => printHelp(),
         .start, .stop => printCommandHelp(command),
     }
+}
+
+fn printHelpTarget(target: HelpTarget) void {
+    switch (target) {
+        .root => printHelp(),
+        .start => printCommandHelp(.start),
+        .stop => printCommandHelp(.stop),
+        .help_cmd => printHelpCommandHelp(),
+    }
+}
+
+fn printHelpCommandHelp() void {
+    std.debug.print(
+        \\Print this message or the help of the given subcommand(s)
+        \\
+        \\Usage: codex-zig remote-control help [COMMAND]...
+        \\
+        \\Arguments:
+        \\  [COMMAND]...  Print help for the subcommand(s)
+        \\
+    , .{});
 }
 
 fn printCommandHelp(command: Command) void {

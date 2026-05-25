@@ -2065,6 +2065,35 @@ fn maybePrintHelpOrVersion(allocator: std.mem.Allocator, args: []const []const u
     return false;
 }
 
+pub fn tailHasHelpOrVersion(allocator: std.mem.Allocator, args: []const []const u8) !bool {
+    if (args.len == 0) return false;
+
+    var index: usize = 0;
+    while (index < args.len) : (index += 1) {
+        const arg = args[index];
+        if (std.mem.eql(u8, arg, "--")) return false;
+        if (std.mem.eql(u8, arg, "help")) {
+            var parsed = parseArgSliceForHelp(allocator, args[0..index]) catch continue;
+            defer parsed.deinit(allocator);
+            if (parsed.command != .tui) continue;
+            const target_args = args[index + 1 ..];
+            if (target_args.len == 0) return true;
+            return target_args.len == 1 and subcommandFromArg(target_args[0]) != null;
+        }
+        if (isHelpFlag(arg)) {
+            var parsed = parseArgSliceForHelp(allocator, args[0..index]) catch return false;
+            defer parsed.deinit(allocator);
+            return true;
+        }
+        if (isVersionFlag(arg)) {
+            var parsed = parseArgSliceForHelp(allocator, args[0..index]) catch return false;
+            defer parsed.deinit(allocator);
+            return parsed.command == .tui;
+        }
+    }
+    return false;
+}
+
 fn parseArgSlice(allocator: std.mem.Allocator, args: []const []const u8) !ParsedOptions {
     return parseArgSliceWithMode(allocator, args, .{});
 }

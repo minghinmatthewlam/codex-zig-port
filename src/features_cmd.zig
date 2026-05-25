@@ -97,27 +97,20 @@ pub fn runWithOptions(allocator: std.mem.Allocator, args: *std.process.Args.Iter
         printHelp();
         return;
     }
+    var remaining = std.ArrayList([]const u8).empty;
+    defer remaining.deinit(allocator);
+    while (args.next()) |arg| try remaining.append(allocator, arg);
+
     if (std.mem.eql(u8, subcommand, "list")) {
+        if (listHelpPreflight(remaining.items)) {
+            printListHelp();
+            return;
+        }
         var runtime_overrides = try options.runtime_overrides.clone(allocator);
         defer runtime_overrides.deinit(allocator);
-        if (args.next()) |extra| {
-            if (isHelpFlag(extra)) {
-                printListHelp();
-                return;
-            }
-            try parseRuntimeToggle(allocator, extra, args, &runtime_overrides);
-            while (args.next()) |arg| {
-                if (isHelpFlag(arg)) {
-                    printListHelp();
-                    return;
-                }
-                try parseRuntimeToggle(allocator, arg, args, &runtime_overrides);
-            }
-            try listFeatures(allocator, .{
-                .profile = options.profile,
-                .runtime_overrides = runtime_overrides,
-            });
-            return;
+        var index: usize = 0;
+        while (index < remaining.items.len) : (index += 1) {
+            try parseRuntimeToggleSlice(allocator, remaining.items, &index, &runtime_overrides);
         }
         try listFeatures(allocator, .{
             .profile = options.profile,
@@ -126,26 +119,34 @@ pub fn runWithOptions(allocator: std.mem.Allocator, args: *std.process.Args.Iter
         return;
     }
     if (std.mem.eql(u8, subcommand, "enable") or std.mem.eql(u8, subcommand, "disable")) {
-        const feature = args.next() orelse return error.MissingFeatureName;
+        if (setHelpPreflight(remaining.items)) {
+            printSetHelp(subcommand);
+            return;
+        }
+        if (remaining.items.len == 0) return error.MissingFeatureName;
+        const feature = remaining.items[0];
         if (isHelpFlag(feature)) {
             printSetHelp(subcommand);
             return;
         }
-        if (args.next() != null) return error.UnknownFeaturesOption;
+        if (remaining.items.len > 1) return error.UnknownFeaturesOption;
         try setFeature(allocator, options, feature, std.mem.eql(u8, subcommand, "enable"));
         return;
     }
     return error.UnknownFeaturesSubcommand;
 }
 
-fn parseRuntimeToggle(
+fn parseRuntimeToggleSlice(
     allocator: std.mem.Allocator,
-    arg: []const u8,
-    args: *std.process.Args.Iterator,
+    args: []const []const u8,
+    index: *usize,
     overrides: *FeatureOverrides,
 ) !void {
+    const arg = args[index.*];
     if (std.mem.eql(u8, arg, "--enable")) {
-        try putRuntimeToggle(allocator, overrides, args.next() orelse return error.MissingFeatureName, true);
+        index.* += 1;
+        if (index.* >= args.len) return error.MissingFeatureName;
+        try putRuntimeToggle(allocator, overrides, args[index.*], true);
         return;
     }
     if (std.mem.startsWith(u8, arg, "--enable=")) {
@@ -153,7 +154,9 @@ fn parseRuntimeToggle(
         return;
     }
     if (std.mem.eql(u8, arg, "--disable")) {
-        try putRuntimeToggle(allocator, overrides, args.next() orelse return error.MissingFeatureName, false);
+        index.* += 1;
+        if (index.* >= args.len) return error.MissingFeatureName;
+        try putRuntimeToggle(allocator, overrides, args[index.*], false);
         return;
     }
     if (std.mem.startsWith(u8, arg, "--disable=")) {
@@ -161,6 +164,34 @@ fn parseRuntimeToggle(
         return;
     }
     return error.UnknownFeaturesOption;
+}
+
+fn listHelpPreflight(args: []const []const u8) bool {
+    var index: usize = 0;
+    while (index < args.len) : (index += 1) {
+        const arg = args[index];
+        if (isHelpFlag(arg)) return true;
+        if (std.mem.eql(u8, arg, "--enable") or std.mem.eql(u8, arg, "--disable")) {
+            index += 1;
+            if (index >= args.len or optionValueBoundary(args[index])) return false;
+            continue;
+        }
+        if (std.mem.startsWith(u8, arg, "--enable=") or std.mem.startsWith(u8, arg, "--disable=")) continue;
+        return false;
+    }
+    return false;
+}
+
+fn setHelpPreflight(args: []const []const u8) bool {
+    if (args.len == 0) return false;
+    if (isHelpFlag(args[0])) return true;
+    if (optionValueBoundary(args[0])) return false;
+    if (args.len > 1 and isHelpFlag(args[1])) return true;
+    return false;
+}
+
+fn optionValueBoundary(arg: []const u8) bool {
+    return std.mem.startsWith(u8, arg, "-");
 }
 
 pub fn putRuntimeToggle(

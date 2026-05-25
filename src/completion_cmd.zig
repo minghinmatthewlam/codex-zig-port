@@ -31,20 +31,31 @@ const Shell = enum {
 };
 
 pub fn run(allocator: std.mem.Allocator, args: *std.process.Args.Iterator) !void {
-    const first = args.next();
-    if (first) |arg| {
-        if (isHelpFlag(arg)) {
-            printHelp();
-            return;
-        }
+    var raw_args = std.ArrayList([]const u8).empty;
+    defer raw_args.deinit(allocator);
+    while (args.next()) |arg| try raw_args.append(allocator, arg);
+
+    if (helpPreflight(raw_args.items)) {
+        printHelp();
+        return;
     }
 
-    const shell = if (first) |arg| try Shell.parse(arg) else Shell.bash;
-    if (args.next() != null) return error.UnexpectedCompletionArgument;
+    const shell = if (raw_args.items.len > 0) try Shell.parse(raw_args.items[0]) else Shell.bash;
+    if (raw_args.items.len > 1) return error.UnexpectedCompletionArgument;
 
     const rendered = try renderCompletion(allocator, shell);
     defer allocator.free(rendered);
     try cli_utils.writeStdout(rendered);
+}
+
+fn helpPreflight(args: []const []const u8) bool {
+    if (args.len == 0) return false;
+    if (isHelpFlag(args[0])) return true;
+    if (Shell.parse(args[0])) |_| {
+        return args.len > 1 and isHelpFlag(args[1]);
+    } else |_| {
+        return false;
+    }
 }
 
 fn renderCompletion(allocator: std.mem.Allocator, shell: Shell) ![]const u8 {

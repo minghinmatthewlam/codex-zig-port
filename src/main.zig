@@ -209,15 +209,17 @@ fn mainInner(init: std.process.Init) !void {
     defer if (forced_initial_prompt) |prompt| allocator.free(prompt);
     var approval_policy_requested = false;
     var dangerous_bypass_requested = false;
+    var conflicting_cli_options = false;
     var cwd_applied = false;
     var pending_arg: ?[]const u8 = null;
+    const tail_has_help_or_version = try processArgsTailHasHelpOrVersion(allocator, init.minimal.args);
     while (true) {
         const arg = if (pending_arg) |value| arg: {
             pending_arg = null;
             break :arg value;
         } else args.next() orelse break;
         if (std.mem.eql(u8, arg, "--profile") or std.mem.eql(u8, arg, "-p")) {
-            overrides.profile = args.next() orelse return error.MissingProfileOptionValue;
+            overrides.profile = try nextRootOptionValue(&args, error.MissingProfileOptionValue);
             continue;
         }
         if (std.mem.startsWith(u8, arg, "--profile=")) {
@@ -225,7 +227,7 @@ fn mainInner(init: std.process.Init) !void {
             continue;
         }
         if (std.mem.eql(u8, arg, "--profile-v2")) {
-            const value = args.next() orelse return error.MissingProfileOptionValue;
+            const value = try nextRootOptionValue(&args, error.MissingProfileOptionValue);
             try config.validateProfileV2Name(value);
             overrides.profile_v2 = value;
             continue;
@@ -237,7 +239,7 @@ fn mainInner(init: std.process.Init) !void {
             continue;
         }
         if (std.mem.eql(u8, arg, "--cd") or std.mem.eql(u8, arg, "-C")) {
-            overrides.cwd = args.next() orelse return error.MissingCdOptionValue;
+            overrides.cwd = try nextRootOptionValue(&args, error.MissingCdOptionValue);
             continue;
         }
         if (std.mem.startsWith(u8, arg, "--cd=")) {
@@ -245,7 +247,7 @@ fn mainInner(init: std.process.Init) !void {
             continue;
         }
         if (std.mem.eql(u8, arg, "--add-dir")) {
-            try additional_writable_roots.append(allocator, args.next() orelse return error.MissingAddDirOptionValue);
+            try additional_writable_roots.append(allocator, try nextRootOptionValue(&args, error.MissingAddDirOptionValue));
             continue;
         }
         if (std.mem.startsWith(u8, arg, "--add-dir=")) {
@@ -253,30 +255,34 @@ fn mainInner(init: std.process.Init) !void {
             continue;
         }
         if (std.mem.eql(u8, arg, "--config") or std.mem.eql(u8, arg, "-c")) {
-            const raw = args.next() orelse return error.MissingConfigOptionValue;
-            try config.rememberStrictConfigUnknownOverride(allocator, &overrides.unknown_config_override, raw);
-            try config.applyRawConfigOverride(
-                &overrides.runtime,
-                &overrides.profile,
-                raw,
-            );
+            const raw = try nextRootOptionValue(&args, error.MissingConfigOptionValue);
+            if (!tail_has_help_or_version) {
+                try config.rememberStrictConfigUnknownOverride(allocator, &overrides.unknown_config_override, raw);
+                try config.applyRawConfigOverride(
+                    &overrides.runtime,
+                    &overrides.profile,
+                    raw,
+                );
+            }
             try root_config_child_args.append(allocator, arg);
             try root_config_child_args.append(allocator, raw);
             continue;
         }
         if (std.mem.startsWith(u8, arg, "--config=")) {
             const raw = arg["--config=".len..];
-            try config.rememberStrictConfigUnknownOverride(allocator, &overrides.unknown_config_override, raw);
-            try config.applyRawConfigOverride(
-                &overrides.runtime,
-                &overrides.profile,
-                raw,
-            );
+            if (!tail_has_help_or_version) {
+                try config.rememberStrictConfigUnknownOverride(allocator, &overrides.unknown_config_override, raw);
+                try config.applyRawConfigOverride(
+                    &overrides.runtime,
+                    &overrides.profile,
+                    raw,
+                );
+            }
             try root_config_child_args.append(allocator, arg);
             continue;
         }
         if (std.mem.eql(u8, arg, "--model") or std.mem.eql(u8, arg, "-m")) {
-            overrides.runtime.model = args.next() orelse return error.MissingModelOptionValue;
+            overrides.runtime.model = try nextRootOptionValue(&args, error.MissingModelOptionValue);
             continue;
         }
         if (std.mem.startsWith(u8, arg, "--model=")) {
@@ -296,19 +302,21 @@ fn mainInner(init: std.process.Init) !void {
             continue;
         }
         if (std.mem.eql(u8, arg, "--enable")) {
-            try features_cmd.putRuntimeToggle(allocator, &runtime_feature_overrides, args.next() orelse return error.MissingFeatureName, true);
+            const feature = try nextRootOptionValue(&args, error.MissingFeatureName);
+            if (!tail_has_help_or_version) try features_cmd.putRuntimeToggle(allocator, &runtime_feature_overrides, feature, true);
             continue;
         }
         if (std.mem.startsWith(u8, arg, "--enable=")) {
-            try features_cmd.putRuntimeToggle(allocator, &runtime_feature_overrides, arg["--enable=".len..], true);
+            if (!tail_has_help_or_version) try features_cmd.putRuntimeToggle(allocator, &runtime_feature_overrides, arg["--enable=".len..], true);
             continue;
         }
         if (std.mem.eql(u8, arg, "--disable")) {
-            try features_cmd.putRuntimeToggle(allocator, &runtime_feature_overrides, args.next() orelse return error.MissingFeatureName, false);
+            const feature = try nextRootOptionValue(&args, error.MissingFeatureName);
+            if (!tail_has_help_or_version) try features_cmd.putRuntimeToggle(allocator, &runtime_feature_overrides, feature, false);
             continue;
         }
         if (std.mem.startsWith(u8, arg, "--disable=")) {
-            try features_cmd.putRuntimeToggle(allocator, &runtime_feature_overrides, arg["--disable=".len..], false);
+            if (!tail_has_help_or_version) try features_cmd.putRuntimeToggle(allocator, &runtime_feature_overrides, arg["--disable=".len..], false);
             continue;
         }
         if (std.mem.eql(u8, arg, "--oss")) {
@@ -316,7 +324,7 @@ fn mainInner(init: std.process.Init) !void {
             continue;
         }
         if (std.mem.eql(u8, arg, "--local-provider")) {
-            overrides.oss_provider = args.next() orelse return error.MissingLocalProviderOptionValue;
+            overrides.oss_provider = try nextRootOptionValue(&args, error.MissingLocalProviderOptionValue);
             continue;
         }
         if (std.mem.startsWith(u8, arg, "--local-provider=")) {
@@ -324,35 +332,35 @@ fn mainInner(init: std.process.Init) !void {
             continue;
         }
         if (std.mem.eql(u8, arg, "--ask-for-approval") or std.mem.eql(u8, arg, "-a")) {
-            if (dangerous_bypass_requested) return error.ConflictingCliOptions;
+            if (dangerous_bypass_requested) conflicting_cli_options = true;
             approval_policy_requested = true;
             overrides.explicit_approval_policy = true;
-            overrides.runtime.approval_policy = try config.ApprovalPolicy.parse(args.next() orelse return error.MissingApprovalOptionValue);
+            overrides.runtime.approval_policy = try config.ApprovalPolicy.parse(try nextRootOptionValue(&args, error.MissingApprovalOptionValue));
             continue;
         }
         if (std.mem.startsWith(u8, arg, "--ask-for-approval=")) {
-            if (dangerous_bypass_requested) return error.ConflictingCliOptions;
+            if (dangerous_bypass_requested) conflicting_cli_options = true;
             approval_policy_requested = true;
             overrides.explicit_approval_policy = true;
             overrides.runtime.approval_policy = try config.ApprovalPolicy.parse(arg["--ask-for-approval=".len..]);
             continue;
         }
         if (std.mem.eql(u8, arg, "--approval-policy")) {
-            if (dangerous_bypass_requested) return error.ConflictingCliOptions;
+            if (dangerous_bypass_requested) conflicting_cli_options = true;
             approval_policy_requested = true;
             overrides.explicit_approval_policy = true;
-            overrides.runtime.approval_policy = try config.ApprovalPolicy.parse(args.next() orelse return error.MissingApprovalOptionValue);
+            overrides.runtime.approval_policy = try config.ApprovalPolicy.parse(try nextRootOptionValue(&args, error.MissingApprovalOptionValue));
             continue;
         }
         if (std.mem.startsWith(u8, arg, "--approval-policy=")) {
-            if (dangerous_bypass_requested) return error.ConflictingCliOptions;
+            if (dangerous_bypass_requested) conflicting_cli_options = true;
             approval_policy_requested = true;
             overrides.explicit_approval_policy = true;
             overrides.runtime.approval_policy = try config.ApprovalPolicy.parse(arg["--approval-policy=".len..]);
             continue;
         }
         if (std.mem.eql(u8, arg, "--sandbox") or std.mem.eql(u8, arg, "-s")) {
-            overrides.runtime.sandbox_mode = try config.SandboxMode.parse(args.next() orelse return error.MissingSandboxOptionValue);
+            overrides.runtime.sandbox_mode = try config.SandboxMode.parse(try nextRootOptionValue(&args, error.MissingSandboxOptionValue));
             continue;
         }
         if (std.mem.startsWith(u8, arg, "--sandbox=")) {
@@ -360,7 +368,7 @@ fn mainInner(init: std.process.Init) !void {
             continue;
         }
         if (std.mem.eql(u8, arg, "--dangerously-bypass-approvals-and-sandbox") or std.mem.eql(u8, arg, "--yolo")) {
-            if (approval_policy_requested) return error.ConflictingCliOptions;
+            if (approval_policy_requested) conflicting_cli_options = true;
             dangerous_bypass_requested = true;
             overrides.runtime.approval_policy = .never;
             overrides.runtime.sandbox_mode = .danger_full_access;
@@ -379,7 +387,7 @@ fn mainInner(init: std.process.Init) !void {
             continue;
         }
         if (std.mem.eql(u8, arg, "--remote")) {
-            overrides.remote = args.next() orelse return error.MissingRemoteOptionValue;
+            overrides.remote = try nextRootOptionValue(&args, error.MissingRemoteOptionValue);
             continue;
         }
         if (std.mem.startsWith(u8, arg, "--remote=")) {
@@ -387,7 +395,7 @@ fn mainInner(init: std.process.Init) !void {
             continue;
         }
         if (std.mem.eql(u8, arg, "--remote-auth-token-env")) {
-            overrides.remote_auth_token_env = args.next() orelse return error.MissingRemoteAuthTokenEnvOptionValue;
+            overrides.remote_auth_token_env = try nextRootOptionValue(&args, error.MissingRemoteAuthTokenEnvOptionValue);
             continue;
         }
         if (std.mem.startsWith(u8, arg, "--remote-auth-token-env=")) {
@@ -399,7 +407,7 @@ fn mainInner(init: std.process.Init) !void {
             continue;
         }
         if (std.mem.eql(u8, arg, "--remote-control-bind")) {
-            overrides.remote_control_bind = args.next() orelse return error.MissingRemoteControlBindOptionValue;
+            overrides.remote_control_bind = try nextRootOptionValue(&args, error.MissingRemoteControlBindOptionValue);
             continue;
         }
         if (std.mem.startsWith(u8, arg, "--remote-control-bind=")) {
@@ -427,7 +435,13 @@ fn mainInner(init: std.process.Init) !void {
         break;
     }
     overrides.additional_writable_roots = additional_writable_roots.items;
-    if (overrides.strict_config) {
+    const prompt_fallback_command = if (cmd_opt) |cmd|
+        !isKnownRootCommand(cmd) and !isHelpFlag(cmd) and !isVersionFlag(cmd)
+    else
+        false;
+    const defer_semantic_checks = tail_has_help_or_version or prompt_fallback_command;
+    if (!defer_semantic_checks and conflicting_cli_options) return error.ConflictingCliOptions;
+    if (!defer_semantic_checks and overrides.strict_config) {
         if (cmd_opt) |cmd| {
             if (strictConfigUnsupportedSubcommandName(cmd)) |subcommand| {
                 return rejectStrictConfigForSubcommand(subcommand);
@@ -435,19 +449,21 @@ fn mainInner(init: std.process.Init) !void {
         }
         if (overrides.unknown_config_override) |field| return config.failStrictConfigUnknownCliOverride(field);
     }
-    if (overrides.profile_v2 != null) {
+    if (!defer_semantic_checks and overrides.profile_v2 != null) {
         if (cmd_opt) |cmd| {
             if (profileV2UnsupportedSubcommandName(cmd) != null) {
                 return error.ProfileV2UnsupportedCommand;
             }
         }
     }
+    const dispatch_strict_config = overrides.strict_config and !defer_semantic_checks;
+    const dispatch_unknown_config_override: ?[]const u8 = if (defer_semantic_checks) null else overrides.unknown_config_override;
 
     const should_apply_cwd = if (cmd_opt) |cmd|
         rootCommandAppliesCwdBeforeDispatch(cmd)
     else
         true;
-    if (should_apply_cwd) {
+    if (!defer_semantic_checks and should_apply_cwd) {
         if (overrides.cwd) |cwd| {
             try workdir.change(cwd);
             cwd_applied = true;
@@ -483,7 +499,7 @@ fn mainInner(init: std.process.Init) !void {
             printVersion();
             return;
         }
-        if (commandRejectsRootRemote(cmd)) {
+        if (!defer_semantic_checks and commandRejectsRootRemote(cmd)) {
             if (std.mem.eql(u8, cmd, "app-server") and hasRootInteractiveOnlyFlags(overrides)) {
                 var remaining = try collectRemainingArgs(allocator, &args);
                 defer remaining.deinit(allocator);
@@ -537,8 +553,8 @@ fn mainInner(init: std.process.Init) !void {
                 .oss = overrides.oss,
                 .oss_provider = overrides.oss_provider,
                 .version = version,
-                .strict_config = overrides.strict_config,
-                .unknown_config_override = overrides.unknown_config_override,
+                .strict_config = dispatch_strict_config,
+                .unknown_config_override = dispatch_unknown_config_override,
             });
             return;
         }
@@ -550,8 +566,8 @@ fn mainInner(init: std.process.Init) !void {
                 .feature_overrides = runtime_feature_overrides,
                 .oss = overrides.oss,
                 .oss_provider = overrides.oss_provider,
-                .strict_config = overrides.strict_config,
-                .unknown_config_override = overrides.unknown_config_override,
+                .strict_config = dispatch_strict_config,
+                .unknown_config_override = dispatch_unknown_config_override,
             });
             return;
         }
@@ -604,7 +620,7 @@ fn mainInner(init: std.process.Init) !void {
                 .feature_overrides = runtime_feature_overrides,
                 .child_global_args = root_config_child_args.items,
                 .bypass_hook_trust = overrides.runtime.bypass_hook_trust orelse false,
-                .strict_config = overrides.strict_config,
+                .strict_config = dispatch_strict_config,
             });
             return;
         }
@@ -626,7 +642,7 @@ fn mainInner(init: std.process.Init) !void {
         }
         if (std.mem.eql(u8, cmd, "exec-server")) {
             try exec_server_cmd.runWithOptions(allocator, &args, .{
-                .strict_config = overrides.strict_config,
+                .strict_config = dispatch_strict_config,
             });
             return;
         }
@@ -659,7 +675,7 @@ fn mainInner(init: std.process.Init) !void {
                 .oss = overrides.oss,
                 .oss_provider = overrides.oss_provider,
                 .additional_writable_roots = overrides.additional_writable_roots,
-                .strict_config = overrides.strict_config,
+                .strict_config = dispatch_strict_config,
             });
             return;
         }
@@ -674,8 +690,8 @@ fn mainInner(init: std.process.Init) !void {
                 .cwd = overrides.cwd,
                 .additional_writable_roots = overrides.additional_writable_roots,
                 .explicit_approval_policy = overrides.explicit_approval_policy,
-                .strict_config = overrides.strict_config,
-                .unknown_config_override = overrides.unknown_config_override,
+                .strict_config = dispatch_strict_config,
+                .unknown_config_override = dispatch_unknown_config_override,
             });
             return;
         }
@@ -805,6 +821,7 @@ fn mainInner(init: std.process.Init) !void {
             }
             return;
         }
+        if (conflicting_cli_options) return error.ConflictingCliOptions;
         if (overrides.strict_config) {
             if (overrides.unknown_config_override) |field| return config.failStrictConfigUnknownCliOverride(field);
         }
@@ -905,6 +922,956 @@ fn isHelpFlag(arg: []const u8) bool {
 
 fn isVersionFlag(arg: []const u8) bool {
     return std.mem.eql(u8, arg, "--version") or std.mem.eql(u8, arg, "-V");
+}
+
+fn nextRootOptionValue(args: *std.process.Args.Iterator, missing_error: anyerror) ![]const u8 {
+    const value = args.next() orelse return missing_error;
+    if (isRootPromptOptionValueBoundary(value)) {
+        if (isKnownRootOptionBoundary(value)) return missing_error;
+        return error.UnknownCliOption;
+    }
+    return value;
+}
+
+fn processArgsTailHasHelpOrVersion(allocator: std.mem.Allocator, process_args: std.process.Args) !bool {
+    var scan = try std.process.Args.Iterator.initAllocator(process_args, allocator);
+    defer scan.deinit();
+
+    var argv = std.ArrayList([]const u8).empty;
+    defer argv.deinit(allocator);
+    while (scan.next()) |arg| {
+        try argv.append(allocator, arg);
+    }
+    if (argv.items.len <= 1) return false;
+    return rootArgsTailHasHelpOrVersion(allocator, argv.items[1..]);
+}
+
+fn rootArgsTailHasHelpOrVersion(allocator: std.mem.Allocator, args: []const []const u8) !bool {
+    var index: usize = 0;
+    while (index < args.len) : (index += 1) {
+        const arg = args[index];
+        if (isHelpFlag(arg) or isVersionFlag(arg)) return true;
+        if (std.mem.eql(u8, arg, "--")) return false;
+
+        if (rootOptionConsumesSingleValue(arg)) {
+            index += 1;
+            if (index >= args.len) return false;
+            if (isRootPromptOptionValueBoundary(args[index])) return false;
+            continue;
+        }
+        if (rootOptionHasInlineValue(arg) or rootOptionIsBoolean(arg)) {
+            continue;
+        }
+        if (std.mem.eql(u8, arg, "--image") or std.mem.eql(u8, arg, "-i")) {
+            var next = index + 1;
+            var consumed = false;
+            while (next < args.len) : (next += 1) {
+                if (isRootPromptOptionValueBoundary(args[next])) break;
+                consumed = true;
+            }
+            if (!consumed) return false;
+            index = next - 1;
+            continue;
+        }
+        if (std.mem.startsWith(u8, arg, "--image=")) {
+            var next = index + 1;
+            while (next < args.len) : (next += 1) {
+                if (isRootPromptOptionValueBoundary(args[next])) break;
+            }
+            index = next - 1;
+            continue;
+        }
+        if (std.mem.startsWith(u8, arg, "-")) return false;
+
+        return try rootCommandTailHasHelpOrVersion(allocator, arg, args[index + 1 ..]);
+    }
+    return false;
+}
+
+fn rootCommandTailHasHelpOrVersion(allocator: std.mem.Allocator, cmd: []const u8, tail: []const []const u8) !bool {
+    if (std.mem.eql(u8, cmd, "sandbox")) return sandboxTailHasHelp(tail);
+    if (isExecCommand(cmd)) return try exec.tailHasHelpOrVersion(allocator, tail);
+    if (std.mem.eql(u8, cmd, "app-server")) return app_server_cmd.tailHasHelp(tail);
+    if (std.mem.eql(u8, cmd, "plugin")) return pluginTailHasHelp(tail);
+    if (std.mem.eql(u8, cmd, "mcp")) return mcp_cmd.tailHasHelp(tail);
+    if (std.mem.eql(u8, cmd, "debug")) return debugTailHasHelp(tail);
+    if (isCloudCommand(cmd)) return try cloud_cmd.tailHasHelpOrVersion(allocator, tail);
+    if (std.mem.eql(u8, cmd, "login")) return loginTailHasHelp(tail);
+    if (std.mem.eql(u8, cmd, "help")) return true;
+    if (std.mem.startsWith(u8, cmd, "mock-")) return false;
+    if (!isKnownRootCommand(cmd)) return promptFallbackTailHasHelpOrVersion(tail);
+    if (std.mem.eql(u8, cmd, "auth-status") or
+        std.mem.eql(u8, cmd, "logout") or
+        std.mem.eql(u8, cmd, "update") or
+        std.mem.eql(u8, cmd, "stdio-to-uds"))
+    {
+        return noArgumentTailHasHelp(tail);
+    }
+    if (std.mem.eql(u8, cmd, "completion")) return completionTailHasHelp(tail);
+    if (std.mem.eql(u8, cmd, "doctor")) return doctorTailHasHelp(tail);
+    if (std.mem.eql(u8, cmd, "review")) return reviewTailHasHelp(tail);
+    if (std.mem.eql(u8, cmd, "features")) return featuresTailHasHelp(tail);
+    if (std.mem.eql(u8, cmd, "execpolicy")) return execpolicyTailHasHelp(tail);
+    if (std.mem.eql(u8, cmd, "app")) return appTailHasHelp(tail);
+    if (std.mem.eql(u8, cmd, "responses-api-proxy")) return responsesApiProxyTailHasHelp(tail);
+    if (std.mem.eql(u8, cmd, "exec-server")) return execServerTailHasHelp(tail);
+    if (std.mem.eql(u8, cmd, "remote-control")) return remoteControlTailHasHelp(tail);
+    if (isApplyCommand(cmd)) return applyTailHasHelp(tail);
+    if (std.mem.eql(u8, cmd, "mcp-server")) return mcpServerTailHasHelp(tail);
+    if (std.mem.eql(u8, cmd, "resume")) return sessionCommandTailHasHelp(allocator, tail, true);
+    if (std.mem.eql(u8, cmd, "fork")) return sessionCommandTailHasHelp(allocator, tail, false);
+    if (std.mem.eql(u8, cmd, "remote-fork")) return remoteForkTailHasHelp(allocator, tail);
+    if (std.mem.eql(u8, cmd, "sessions")) return noArgumentTailHasHelp(tail);
+    return false;
+}
+
+fn noArgumentTailHasHelp(args: []const []const u8) bool {
+    return args.len > 0 and isHelpFlag(args[0]);
+}
+
+fn completionTailHasHelp(args: []const []const u8) bool {
+    if (args.len == 0) return false;
+    if (isHelpFlag(args[0])) return true;
+    if (completionShellNameIsValid(args[0])) {
+        return args.len > 1 and isHelpFlag(args[1]);
+    }
+    return false;
+}
+
+fn completionShellNameIsValid(arg: []const u8) bool {
+    return std.mem.eql(u8, arg, "bash") or
+        std.mem.eql(u8, arg, "elvish") or
+        std.mem.eql(u8, arg, "fish") or
+        std.mem.eql(u8, arg, "powershell") or
+        std.mem.eql(u8, arg, "zsh");
+}
+
+fn promptFallbackTailHasHelpOrVersion(args: []const []const u8) bool {
+    var index: usize = 0;
+    while (index < args.len) : (index += 1) {
+        const arg = args[index];
+        if (std.mem.eql(u8, arg, "--")) return false;
+        if (isHelpFlag(arg) or isVersionFlag(arg)) return true;
+
+        if (std.mem.eql(u8, arg, "--image") or std.mem.eql(u8, arg, "-i")) {
+            var next = index + 1;
+            var consumed = false;
+            while (next < args.len) : (next += 1) {
+                if (isRootPromptOptionValueBoundary(args[next])) break;
+                consumed = true;
+            }
+            if (!consumed) return false;
+            index = next - 1;
+            continue;
+        }
+        if (std.mem.startsWith(u8, arg, "--image=")) {
+            var next = index + 1;
+            while (next < args.len) : (next += 1) {
+                if (isRootPromptOptionValueBoundary(args[next])) break;
+            }
+            index = next - 1;
+            continue;
+        }
+        if (rootOptionConsumesSingleValue(arg)) {
+            index += 1;
+            if (index >= args.len or isRootPromptOptionValueBoundary(args[index])) return false;
+            continue;
+        }
+        if (rootOptionHasInlineValue(arg) or rootOptionIsBoolean(arg)) continue;
+        return false;
+    }
+    return false;
+}
+
+const TailOptionScan = enum {
+    not_handled,
+    valid,
+    invalid,
+};
+
+fn scanConfigFeatureTailOption(
+    args: []const []const u8,
+    index: *usize,
+    arg: []const u8,
+    accept_features: bool,
+) TailOptionScan {
+    if (std.mem.eql(u8, arg, "--config") or std.mem.eql(u8, arg, "-c")) {
+        index.* += 1;
+        if (index.* >= args.len or isRootPromptOptionValueBoundary(args[index.*])) return .invalid;
+        return .valid;
+    }
+    if (std.mem.startsWith(u8, arg, "--config=")) {
+        _ = arg["--config=".len..];
+        return .valid;
+    }
+    if (!accept_features) return .not_handled;
+    if (std.mem.eql(u8, arg, "--enable") or std.mem.eql(u8, arg, "--disable")) {
+        index.* += 1;
+        if (index.* >= args.len or isRootPromptOptionValueBoundary(args[index.*])) return .invalid;
+        return .valid;
+    }
+    if (std.mem.startsWith(u8, arg, "--enable=")) {
+        return .valid;
+    }
+    if (std.mem.startsWith(u8, arg, "--disable=")) {
+        return .valid;
+    }
+    return .not_handled;
+}
+
+fn doctorTailHasHelp(args: []const []const u8) bool {
+    var index: usize = 0;
+    while (index < args.len) : (index += 1) {
+        const arg = args[index];
+        if (isHelpFlag(arg)) return true;
+        if (std.mem.eql(u8, arg, "--json") or
+            std.mem.eql(u8, arg, "--summary") or
+            std.mem.eql(u8, arg, "--all") or
+            std.mem.eql(u8, arg, "--no-color") or
+            std.mem.eql(u8, arg, "--ascii") or
+            std.mem.eql(u8, arg, "--strict-config"))
+        {
+            continue;
+        }
+        switch (scanConfigFeatureTailOption(args, &index, arg, true)) {
+            .valid => continue,
+            .invalid => return false,
+            .not_handled => {},
+        }
+        return false;
+    }
+    return false;
+}
+
+fn reviewTailHasHelp(args: []const []const u8) bool {
+    var uncommitted = false;
+    var base = false;
+    var commit = false;
+    var commit_title = false;
+    var read_stdin = false;
+    var prompt_parts = false;
+    var end_options = false;
+
+    var index: usize = 0;
+    while (index < args.len) : (index += 1) {
+        const arg = args[index];
+        if (!end_options and std.mem.eql(u8, arg, "--")) {
+            end_options = true;
+            continue;
+        }
+        if (!end_options and isHelpFlag(arg)) return true;
+        if (!end_options) {
+            switch (scanConfigFeatureTailOption(args, &index, arg, true)) {
+                .valid => continue,
+                .invalid => return false,
+                .not_handled => {},
+            }
+        }
+        if (!end_options and std.mem.eql(u8, arg, "--strict-config")) continue;
+        if (!end_options and std.mem.eql(u8, arg, "--uncommitted")) {
+            uncommitted = true;
+            continue;
+        }
+        if (!end_options and (std.mem.eql(u8, arg, "--base") or std.mem.eql(u8, arg, "--commit") or std.mem.eql(u8, arg, "--title"))) {
+            const option = arg;
+            index += 1;
+            if (index >= args.len or isRootPromptOptionValueBoundary(args[index])) return false;
+            if (std.mem.eql(u8, option, "--base")) base = true;
+            if (std.mem.eql(u8, option, "--commit")) commit = true;
+            if (std.mem.eql(u8, option, "--title")) commit_title = true;
+            continue;
+        }
+        if (!end_options and std.mem.startsWith(u8, arg, "--base=")) {
+            base = true;
+            continue;
+        }
+        if (!end_options and std.mem.startsWith(u8, arg, "--commit=")) {
+            commit = true;
+            continue;
+        }
+        if (!end_options and std.mem.startsWith(u8, arg, "--title=")) {
+            commit_title = true;
+            continue;
+        }
+        if (!end_options and std.mem.eql(u8, arg, "-") and !prompt_parts) {
+            read_stdin = true;
+            continue;
+        }
+        if (!end_options and std.mem.startsWith(u8, arg, "-")) return false;
+        if (prompt_parts or read_stdin) return false;
+        prompt_parts = true;
+    }
+
+    var target_count: usize = 0;
+    if (uncommitted) target_count += 1;
+    if (base) target_count += 1;
+    if (commit) target_count += 1;
+    if (read_stdin) target_count += 1;
+    if (prompt_parts) target_count += 1;
+    if (target_count > 1) return false;
+    if (commit_title and !commit) return false;
+    return false;
+}
+
+fn featuresTailHasHelp(args: []const []const u8) bool {
+    if (args.len == 0) return false;
+    if (isHelpFlag(args[0])) return true;
+    if (std.mem.eql(u8, args[0], "list")) return featuresListTailHasHelp(args[1..]);
+    if (std.mem.eql(u8, args[0], "enable") or std.mem.eql(u8, args[0], "disable")) {
+        if (args.len < 2) return false;
+        if (isHelpFlag(args[1])) return true;
+        return !std.mem.startsWith(u8, args[1], "-") and args.len > 2 and isHelpFlag(args[2]);
+    }
+    return false;
+}
+
+fn featuresListTailHasHelp(args: []const []const u8) bool {
+    var index: usize = 0;
+    while (index < args.len) : (index += 1) {
+        const arg = args[index];
+        if (isHelpFlag(arg)) return true;
+        if (std.mem.eql(u8, arg, "--enable") or std.mem.eql(u8, arg, "--disable")) {
+            index += 1;
+            if (index >= args.len or isRootPromptOptionValueBoundary(args[index])) return false;
+            continue;
+        }
+        if (std.mem.startsWith(u8, arg, "--enable=")) {
+            continue;
+        }
+        if (std.mem.startsWith(u8, arg, "--disable=")) {
+            continue;
+        }
+        return false;
+    }
+    return false;
+}
+
+fn execpolicyTailHasHelp(args: []const []const u8) bool {
+    if (args.len == 0) return false;
+    if (isHelpFlag(args[0])) return true;
+    if (!std.mem.eql(u8, args[0], "check")) return false;
+
+    var index: usize = 1;
+    while (index < args.len) : (index += 1) {
+        const arg = args[index];
+        if (std.mem.eql(u8, arg, "--")) return false;
+        if (isHelpFlag(arg)) return true;
+        if (std.mem.eql(u8, arg, "--rules") or std.mem.eql(u8, arg, "-r")) {
+            index += 1;
+            if (index >= args.len or isRootPromptOptionValueBoundary(args[index])) return false;
+            continue;
+        }
+        if (std.mem.startsWith(u8, arg, "--rules=")) continue;
+        if (std.mem.eql(u8, arg, "--pretty") or std.mem.eql(u8, arg, "--resolve-host-executables")) continue;
+        return false;
+    }
+    return false;
+}
+
+fn appTailHasHelp(args: []const []const u8) bool {
+    var path_seen = false;
+    var index: usize = 0;
+    while (index < args.len) : (index += 1) {
+        const arg = args[index];
+        if (isHelpFlag(arg)) return true;
+        if (std.mem.eql(u8, arg, "--download-url")) {
+            index += 1;
+            if (index >= args.len or isRootPromptOptionValueBoundary(args[index])) return false;
+            continue;
+        }
+        if (std.mem.startsWith(u8, arg, "--download-url=")) continue;
+        if (std.mem.startsWith(u8, arg, "-")) return false;
+        if (path_seen) return false;
+        path_seen = true;
+    }
+    return false;
+}
+
+fn responsesApiProxyTailHasHelp(args: []const []const u8) bool {
+    var index: usize = 0;
+    while (index < args.len) : (index += 1) {
+        const arg = args[index];
+        if (isHelpFlag(arg)) return true;
+        if (std.mem.eql(u8, arg, "--http-shutdown")) continue;
+        if (std.mem.eql(u8, arg, "--port")) {
+            index += 1;
+            if (index >= args.len or isRootPromptOptionValueBoundary(args[index])) return false;
+            if (!responsesApiProxyPortIsValid(args[index])) return false;
+            continue;
+        }
+        if (std.mem.startsWith(u8, arg, "--port=")) {
+            if (!responsesApiProxyPortIsValid(arg["--port=".len..])) return false;
+            continue;
+        }
+        if (std.mem.eql(u8, arg, "--server-info") or
+            std.mem.eql(u8, arg, "--upstream-url") or
+            std.mem.eql(u8, arg, "--dump-dir"))
+        {
+            index += 1;
+            if (index >= args.len or isRootPromptOptionValueBoundary(args[index])) return false;
+            continue;
+        }
+        if (std.mem.startsWith(u8, arg, "--server-info=") or
+            std.mem.startsWith(u8, arg, "--upstream-url=") or
+            std.mem.startsWith(u8, arg, "--dump-dir="))
+        {
+            continue;
+        }
+        return false;
+    }
+    return false;
+}
+
+fn responsesApiProxyPortIsValid(value: []const u8) bool {
+    if (value.len == 0) return false;
+    _ = std.fmt.parseUnsigned(u16, value, 10) catch return false;
+    return true;
+}
+
+fn execServerTailHasHelp(args: []const []const u8) bool {
+    var listen = false;
+    var remote = false;
+    var executor_id = false;
+    var index: usize = 0;
+    while (index < args.len) : (index += 1) {
+        const arg = args[index];
+        if (isHelpFlag(arg)) return true;
+        if (std.mem.eql(u8, arg, "--strict-config")) continue;
+        if (std.mem.eql(u8, arg, "--listen") or
+            std.mem.eql(u8, arg, "--remote") or
+            std.mem.eql(u8, arg, "--executor-id") or
+            std.mem.eql(u8, arg, "--name"))
+        {
+            const option = arg;
+            index += 1;
+            if (index >= args.len or isRootPromptOptionValueBoundary(args[index])) return false;
+            if (std.mem.eql(u8, option, "--listen")) listen = true;
+            if (std.mem.eql(u8, option, "--remote")) remote = true;
+            if (std.mem.eql(u8, option, "--executor-id")) executor_id = true;
+            continue;
+        }
+        if (std.mem.startsWith(u8, arg, "--listen=")) {
+            listen = true;
+            continue;
+        }
+        if (std.mem.startsWith(u8, arg, "--remote=")) {
+            remote = true;
+            continue;
+        }
+        if (std.mem.startsWith(u8, arg, "--executor-id=")) {
+            executor_id = true;
+            continue;
+        }
+        if (std.mem.startsWith(u8, arg, "--name=")) {
+            continue;
+        }
+        return false;
+    }
+    if (listen and remote) return false;
+    if (remote and !executor_id) return false;
+    return false;
+}
+
+fn remoteControlTailHasHelp(args: []const []const u8) bool {
+    var command_seen = false;
+    var index: usize = 0;
+    while (index < args.len) : (index += 1) {
+        const arg = args[index];
+        if (isHelpFlag(arg)) return true;
+        if (std.mem.eql(u8, arg, "help")) {
+            if (command_seen) return false;
+            return index + 1 == args.len or
+                (index + 2 == args.len and (remoteControlCommandNameIsValid(args[index + 1]) or std.mem.eql(u8, args[index + 1], "help")));
+        }
+        if (std.mem.eql(u8, arg, "--json")) continue;
+        switch (scanConfigFeatureTailOption(args, &index, arg, true)) {
+            .valid => continue,
+            .invalid => return false,
+            .not_handled => {},
+        }
+        if (std.mem.startsWith(u8, arg, "-")) return false;
+        if (!remoteControlCommandNameIsValid(arg) or command_seen) return false;
+        command_seen = true;
+    }
+    return false;
+}
+
+fn remoteControlCommandNameIsValid(arg: []const u8) bool {
+    return std.mem.eql(u8, arg, "start") or std.mem.eql(u8, arg, "stop");
+}
+
+fn applyTailHasHelp(args: []const []const u8) bool {
+    var task_seen = false;
+    var index: usize = 0;
+    while (index < args.len) : (index += 1) {
+        const arg = args[index];
+        if (isHelpFlag(arg)) return true;
+        switch (scanConfigFeatureTailOption(args, &index, arg, false)) {
+            .valid => continue,
+            .invalid => return false,
+            .not_handled => {},
+        }
+        if (std.mem.startsWith(u8, arg, "-")) return false;
+        if (task_seen) return false;
+        task_seen = true;
+    }
+    return false;
+}
+
+fn mcpServerTailHasHelp(args: []const []const u8) bool {
+    for (args) |arg| {
+        if (isHelpFlag(arg)) return true;
+        if (std.mem.eql(u8, arg, "--strict-config")) continue;
+        return false;
+    }
+    return false;
+}
+
+fn sessionCommandTailHasHelp(allocator: std.mem.Allocator, args: []const []const u8, allow_include_non_interactive: bool) !bool {
+    var parsed = parseSessionCommandArgs(allocator, args, allow_include_non_interactive) catch return false;
+    defer parsed.deinit(allocator);
+    return parsed.help;
+}
+
+fn remoteForkTailHasHelp(allocator: std.mem.Allocator, args: []const []const u8) !bool {
+    var parsed = parseRemoteForkCommandArgs(allocator, args) catch return false;
+    defer parsed.deinit(allocator);
+    return parsed.help;
+}
+
+fn debugHelpPathIsValid(args: []const []const u8) bool {
+    if (args.len == 0) return true;
+    if (std.mem.eql(u8, args[0], "app-server")) return debugAppServerHelpPathIsValid(args[1..]);
+    if (args.len > 1) return false;
+    return std.mem.eql(u8, args[0], "help") or
+        std.mem.eql(u8, args[0], "prompt-input") or
+        std.mem.eql(u8, args[0], "models") or
+        std.mem.eql(u8, args[0], "trace-reduce") or
+        std.mem.eql(u8, args[0], "clear-memories");
+}
+
+fn debugAppServerHelpPathIsValid(args: []const []const u8) bool {
+    if (args.len == 0) return true;
+    if (args.len > 1) return false;
+    return std.mem.eql(u8, args[0], "help") or
+        std.mem.eql(u8, args[0], "send-message-v2");
+}
+
+fn debugTailHasHelp(args: []const []const u8) bool {
+    if (debugNestedHelpTailIsValid(args)) return true;
+    if (args.len == 0) return false;
+    if (isHelpFlag(args[0])) return true;
+    if (std.mem.eql(u8, args[0], "app-server")) {
+        return debugAppServerTailHasHelp(args[1..]);
+    }
+    if (std.mem.eql(u8, args[0], "prompt-input")) return debugPromptInputTailHasHelp(args[1..]);
+    if (std.mem.eql(u8, args[0], "models")) return debugModelsTailHasHelp(args[1..]);
+    if (std.mem.eql(u8, args[0], "trace-reduce")) return debugTraceReduceTailHasHelp(args[1..]);
+    if (std.mem.eql(u8, args[0], "clear-memories")) return debugNoArgumentTailHasHelp(args[1..]);
+    return false;
+}
+
+fn debugNestedHelpTailIsValid(args: []const []const u8) bool {
+    if (args.len == 0) return false;
+    if (!std.mem.eql(u8, args[0], "help")) return false;
+    return debugHelpPathIsValid(args[1..]);
+}
+
+fn debugAppServerTailHasHelp(args: []const []const u8) bool {
+    if (args.len == 0) return false;
+    if (isHelpFlag(args[0])) return true;
+    if (std.mem.eql(u8, args[0], "help")) return debugAppServerHelpPathIsValid(args[1..]);
+    if (std.mem.eql(u8, args[0], "send-message-v2")) {
+        return args.len > 1 and isHelpFlag(args[1]);
+    }
+    return false;
+}
+
+fn debugPromptInputTailHasHelp(args: []const []const u8) bool {
+    var index: usize = 0;
+    while (index < args.len) : (index += 1) {
+        const arg = args[index];
+        if (std.mem.eql(u8, arg, "--")) return false;
+        if (isHelpFlag(arg)) return true;
+        if (std.mem.eql(u8, arg, "--image") or std.mem.eql(u8, arg, "-i")) {
+            var next = index + 1;
+            var consumed = false;
+            while (next < args.len) : (next += 1) {
+                if (isRootPromptOptionValueBoundary(args[next])) break;
+                consumed = true;
+            }
+            if (!consumed) return false;
+            index = next - 1;
+            continue;
+        }
+        if (std.mem.startsWith(u8, arg, "--image=")) {
+            var next = index + 1;
+            while (next < args.len) : (next += 1) {
+                if (isRootPromptOptionValueBoundary(args[next])) break;
+            }
+            index = next - 1;
+            continue;
+        }
+        if (std.mem.startsWith(u8, arg, "-")) return false;
+    }
+    return false;
+}
+
+fn debugModelsTailHasHelp(args: []const []const u8) bool {
+    for (args) |arg| {
+        if (std.mem.eql(u8, arg, "--")) return false;
+        if (isHelpFlag(arg)) return true;
+        if (std.mem.eql(u8, arg, "--bundled")) continue;
+        return false;
+    }
+    return false;
+}
+
+fn debugTraceReduceTailHasHelp(args: []const []const u8) bool {
+    var bundle_seen = false;
+    var index: usize = 0;
+    while (index < args.len) : (index += 1) {
+        const arg = args[index];
+        if (std.mem.eql(u8, arg, "--")) return false;
+        if (isHelpFlag(arg)) return true;
+        if (std.mem.eql(u8, arg, "--output") or std.mem.eql(u8, arg, "-o")) {
+            index += 1;
+            if (index >= args.len or isRootPromptOptionValueBoundary(args[index])) return false;
+            continue;
+        }
+        if (std.mem.startsWith(u8, arg, "--output=")) continue;
+        if (std.mem.startsWith(u8, arg, "-")) return false;
+        if (bundle_seen) return false;
+        bundle_seen = true;
+    }
+    return false;
+}
+
+fn debugNoArgumentTailHasHelp(args: []const []const u8) bool {
+    for (args) |arg| {
+        if (std.mem.eql(u8, arg, "--")) return false;
+        if (isHelpFlag(arg)) return true;
+        return false;
+    }
+    return false;
+}
+
+fn pluginHelpPathIsValid(args: []const []const u8) bool {
+    if (args.len == 0) return true;
+    if (std.mem.eql(u8, args[0], "marketplace")) return pluginMarketplaceHelpPathIsValid(args[1..]);
+    if (args.len > 1) return false;
+    return std.mem.eql(u8, args[0], "help") or
+        std.mem.eql(u8, args[0], "add") or
+        std.mem.eql(u8, args[0], "list") or
+        std.mem.eql(u8, args[0], "remove");
+}
+
+fn pluginMarketplaceHelpPathIsValid(args: []const []const u8) bool {
+    if (args.len == 0) return true;
+    if (args.len > 1) return false;
+    return std.mem.eql(u8, args[0], "help") or
+        std.mem.eql(u8, args[0], "add") or
+        std.mem.eql(u8, args[0], "list") or
+        std.mem.eql(u8, args[0], "upgrade") or
+        std.mem.eql(u8, args[0], "remove");
+}
+
+fn cloudHelpPathIsValid(args: []const []const u8) bool {
+    if (args.len == 0) return true;
+    if (args.len > 1) return false;
+    return std.mem.eql(u8, args[0], "exec") or
+        std.mem.eql(u8, args[0], "status") or
+        std.mem.eql(u8, args[0], "list") or
+        std.mem.eql(u8, args[0], "apply") or
+        std.mem.eql(u8, args[0], "diff");
+}
+
+fn pluginTailHasHelp(args: []const []const u8) bool {
+    if (args.len == 0) return false;
+    const subcommand = args[0];
+    if (isHelpFlag(subcommand)) return true;
+    if (std.mem.eql(u8, subcommand, "help")) return pluginHelpPathIsValid(args[1..]);
+    if (std.mem.eql(u8, subcommand, "add") or std.mem.eql(u8, subcommand, "remove")) {
+        return pluginSelectorTailHasHelp(args[1..]);
+    }
+    if (std.mem.eql(u8, subcommand, "list")) return pluginListTailHasHelp(args[1..]);
+    if (std.mem.eql(u8, subcommand, "marketplace")) return pluginMarketplaceTailHasHelp(args[1..]);
+    return false;
+}
+
+fn pluginSelectorTailHasHelp(args: []const []const u8) bool {
+    var plugin_seen = false;
+    var index: usize = 0;
+    while (index < args.len) : (index += 1) {
+        const arg = args[index];
+        if (std.mem.eql(u8, arg, "--")) return false;
+        if (isHelpFlag(arg)) return true;
+        if (std.mem.eql(u8, arg, "--marketplace") or std.mem.eql(u8, arg, "-m")) {
+            index += 1;
+            if (index >= args.len) return false;
+            continue;
+        }
+        if (std.mem.startsWith(u8, arg, "--marketplace=") or
+            (std.mem.startsWith(u8, arg, "-m") and arg.len > "-m".len))
+        {
+            continue;
+        }
+        if (std.mem.startsWith(u8, arg, "-")) return false;
+        if (plugin_seen) return false;
+        plugin_seen = true;
+    }
+    return false;
+}
+
+fn pluginListTailHasHelp(args: []const []const u8) bool {
+    var index: usize = 0;
+    while (index < args.len) : (index += 1) {
+        const arg = args[index];
+        if (std.mem.eql(u8, arg, "--")) return false;
+        if (isHelpFlag(arg)) return true;
+        if (std.mem.eql(u8, arg, "--marketplace") or std.mem.eql(u8, arg, "-m")) {
+            index += 1;
+            if (index >= args.len) return false;
+            continue;
+        }
+        if (std.mem.startsWith(u8, arg, "--marketplace=") or
+            (std.mem.startsWith(u8, arg, "-m") and arg.len > "-m".len))
+        {
+            continue;
+        }
+        return false;
+    }
+    return false;
+}
+
+fn pluginMarketplaceTailHasHelp(args: []const []const u8) bool {
+    if (args.len == 0) return false;
+    const subcommand = args[0];
+    if (isHelpFlag(subcommand)) return true;
+    if (std.mem.eql(u8, subcommand, "help")) return pluginMarketplaceHelpPathIsValid(args[1..]);
+    if (std.mem.eql(u8, subcommand, "add")) return pluginMarketplaceAddTailHasHelp(args[1..]);
+    if (std.mem.eql(u8, subcommand, "list")) return pluginNoArgumentTailHasHelp(args[1..]);
+    if (std.mem.eql(u8, subcommand, "upgrade")) return pluginSingleArgumentTailHasHelp(args[1..], true);
+    if (std.mem.eql(u8, subcommand, "remove")) return pluginSingleArgumentTailHasHelp(args[1..], false);
+    return false;
+}
+
+fn pluginMarketplaceAddTailHasHelp(args: []const []const u8) bool {
+    var source_seen = false;
+    var index: usize = 0;
+    while (index < args.len) : (index += 1) {
+        const arg = args[index];
+        if (std.mem.eql(u8, arg, "--")) return false;
+        if (isHelpFlag(arg)) return true;
+        if (std.mem.eql(u8, arg, "--ref") or std.mem.eql(u8, arg, "--sparse")) {
+            index += 1;
+            if (index >= args.len) return false;
+            continue;
+        }
+        if (std.mem.startsWith(u8, arg, "--ref=") or std.mem.startsWith(u8, arg, "--sparse=")) {
+            continue;
+        }
+        if (std.mem.startsWith(u8, arg, "-")) return false;
+        if (source_seen) return false;
+        source_seen = true;
+    }
+    return false;
+}
+
+fn pluginNoArgumentTailHasHelp(args: []const []const u8) bool {
+    for (args) |arg| {
+        if (std.mem.eql(u8, arg, "--")) return false;
+        if (isHelpFlag(arg)) return true;
+        return false;
+    }
+    return false;
+}
+
+fn pluginSingleArgumentTailHasHelp(args: []const []const u8, allow_help_after_argument: bool) bool {
+    var argument_seen = false;
+    for (args) |arg| {
+        if (std.mem.eql(u8, arg, "--")) return false;
+        if (isHelpFlag(arg)) return !argument_seen or allow_help_after_argument;
+        if (std.mem.startsWith(u8, arg, "-")) return false;
+        if (argument_seen) return false;
+        argument_seen = true;
+    }
+    return false;
+}
+
+fn loginTailHasHelp(args: []const []const u8) bool {
+    var status = false;
+    var login_mode_count: u8 = 0;
+    var index: usize = 0;
+    while (index < args.len) : (index += 1) {
+        const arg = args[index];
+        if (isHelpFlag(arg)) return true;
+        if (std.mem.eql(u8, arg, "status")) {
+            status = true;
+            continue;
+        }
+        if (std.mem.eql(u8, arg, "--with-api-key") or
+            std.mem.eql(u8, arg, "--with-access-token") or
+            std.mem.eql(u8, arg, "--device-auth"))
+        {
+            login_mode_count += 1;
+            continue;
+        }
+        if (std.mem.eql(u8, arg, "--experimental_issuer") or
+            std.mem.eql(u8, arg, "--experimental_client-id"))
+        {
+            index += 1;
+            if (index >= args.len) return false;
+            continue;
+        }
+        return false;
+    }
+    if (login_mode_count > 1) return false;
+    if (status and login_mode_count > 0) return false;
+    return false;
+}
+
+fn sandboxTailHasHelp(args: []const []const u8) bool {
+    var index: usize = 0;
+    while (index < args.len) : (index += 1) {
+        const arg = args[index];
+        if (std.mem.eql(u8, arg, "--")) return false;
+        if (isHelpFlag(arg)) return true;
+        if (std.mem.eql(u8, arg, "help")) return sandboxHelpPathIsValid(args[index + 1 ..]);
+
+        switch (scanConfigFeatureTailOption(args, &index, arg, true)) {
+            .valid => continue,
+            .invalid => return false,
+            .not_handled => {},
+        }
+        if (std.mem.startsWith(u8, arg, "-")) return false;
+        if (!sandbox_cmd.isKindName(arg)) return false;
+        if (!sandboxKindTailHasHelp(args[index + 1 ..])) return false;
+        return true;
+    }
+    return false;
+}
+
+fn sandboxHelpPathIsValid(args: []const []const u8) bool {
+    if (args.len == 0) return true;
+    if (args.len > 1) return false;
+    return std.mem.eql(u8, args[0], "help") or sandbox_cmd.isKindName(args[0]);
+}
+
+fn sandboxKindTailHasHelp(args: []const []const u8) bool {
+    var end_options = false;
+    var index: usize = 0;
+    while (index < args.len) : (index += 1) {
+        const arg = args[index];
+        if (!end_options and std.mem.eql(u8, arg, "--")) {
+            end_options = true;
+            continue;
+        }
+        if (!end_options and isHelpFlag(arg)) return true;
+
+        if (!end_options) {
+            switch (scanConfigFeatureTailOption(args, &index, arg, true)) {
+                .valid => continue,
+                .invalid => return false,
+                .not_handled => {},
+            }
+        }
+        if (!end_options and sandboxKindOptionConsumesSingleValue(arg)) {
+            index += 1;
+            if (index >= args.len) return false;
+            if (isRootPromptOptionValueBoundary(args[index])) return false;
+            continue;
+        }
+        if (!end_options and (sandboxKindOptionHasInlineValue(arg) or sandboxKindOptionIsBoolean(arg))) {
+            continue;
+        }
+        if (!end_options and std.mem.startsWith(u8, arg, "-")) return false;
+        return false;
+    }
+    return false;
+}
+
+fn sandboxKindOptionConsumesSingleValue(arg: []const u8) bool {
+    return std.mem.eql(u8, arg, "--permissions-profile") or
+        std.mem.eql(u8, arg, "--allow-unix-socket") or
+        std.mem.eql(u8, arg, "--cd") or
+        std.mem.eql(u8, arg, "-C");
+}
+
+fn sandboxKindOptionHasInlineValue(arg: []const u8) bool {
+    return std.mem.startsWith(u8, arg, "--permissions-profile=") or
+        std.mem.startsWith(u8, arg, "--allow-unix-socket=") or
+        std.mem.startsWith(u8, arg, "--cd=");
+}
+
+fn sandboxKindOptionIsBoolean(arg: []const u8) bool {
+    return std.mem.eql(u8, arg, "--include-managed-config") or
+        std.mem.eql(u8, arg, "--log-denials");
+}
+
+fn rootOptionConsumesSingleValue(arg: []const u8) bool {
+    return std.mem.eql(u8, arg, "--profile") or
+        std.mem.eql(u8, arg, "-p") or
+        std.mem.eql(u8, arg, "--profile-v2") or
+        std.mem.eql(u8, arg, "--cd") or
+        std.mem.eql(u8, arg, "-C") or
+        std.mem.eql(u8, arg, "--add-dir") or
+        std.mem.eql(u8, arg, "--config") or
+        std.mem.eql(u8, arg, "-c") or
+        std.mem.eql(u8, arg, "--model") or
+        std.mem.eql(u8, arg, "-m") or
+        std.mem.eql(u8, arg, "--enable") or
+        std.mem.eql(u8, arg, "--disable") or
+        std.mem.eql(u8, arg, "--local-provider") or
+        std.mem.eql(u8, arg, "--ask-for-approval") or
+        std.mem.eql(u8, arg, "-a") or
+        std.mem.eql(u8, arg, "--approval-policy") or
+        std.mem.eql(u8, arg, "--sandbox") or
+        std.mem.eql(u8, arg, "-s") or
+        std.mem.eql(u8, arg, "--remote") or
+        std.mem.eql(u8, arg, "--remote-auth-token-env") or
+        std.mem.eql(u8, arg, "--remote-control-bind");
+}
+
+fn rootOptionHasInlineValue(arg: []const u8) bool {
+    return std.mem.startsWith(u8, arg, "--profile=") or
+        std.mem.startsWith(u8, arg, "--profile-v2=") or
+        std.mem.startsWith(u8, arg, "--cd=") or
+        std.mem.startsWith(u8, arg, "--add-dir=") or
+        std.mem.startsWith(u8, arg, "--config=") or
+        std.mem.startsWith(u8, arg, "--model=") or
+        std.mem.startsWith(u8, arg, "--enable=") or
+        std.mem.startsWith(u8, arg, "--disable=") or
+        std.mem.startsWith(u8, arg, "--local-provider=") or
+        std.mem.startsWith(u8, arg, "--ask-for-approval=") or
+        std.mem.startsWith(u8, arg, "--approval-policy=") or
+        std.mem.startsWith(u8, arg, "--sandbox=") or
+        std.mem.startsWith(u8, arg, "--remote=") or
+        std.mem.startsWith(u8, arg, "--remote-auth-token-env=") or
+        std.mem.startsWith(u8, arg, "--remote-control-bind=");
+}
+
+fn rootOptionIsBoolean(arg: []const u8) bool {
+    return std.mem.eql(u8, arg, "--oss") or
+        std.mem.eql(u8, arg, "--dangerously-bypass-approvals-and-sandbox") or
+        std.mem.eql(u8, arg, "--yolo") or
+        std.mem.eql(u8, arg, "--dangerously-bypass-hook-trust") or
+        std.mem.eql(u8, arg, "--strict-config") or
+        std.mem.eql(u8, arg, "--search") or
+        std.mem.eql(u8, arg, "--remote-control") or
+        std.mem.eql(u8, arg, "--no-alt-screen");
+}
+
+fn isKnownRootOptionBoundary(arg: []const u8) bool {
+    return std.mem.eql(u8, arg, "--") or
+        isHelpFlag(arg) or
+        isVersionFlag(arg) or
+        rootOptionConsumesSingleValue(arg) or
+        rootOptionHasInlineValue(arg) or
+        rootOptionIsBoolean(arg) or
+        std.mem.eql(u8, arg, "--image") or
+        std.mem.eql(u8, arg, "-i") or
+        std.mem.startsWith(u8, arg, "--image=");
 }
 
 fn hasRootInteractiveOnlyFlags(overrides: CliOverrides) bool {
@@ -1216,11 +2183,14 @@ fn parseRootPromptTail(
     approval_policy_requested: *bool,
     dangerous_bypass_requested: *bool,
 ) !?RootPromptFlagAction {
+    var conflicting_cli_options = false;
+    const tail_has_help_or_version = promptFallbackTailHasHelpOrVersion(tail);
     var index: usize = 0;
     while (index < tail.len) : (index += 1) {
         const arg = tail[index];
         if (std.mem.eql(u8, arg, "--")) {
             if (index + 1 < tail.len) return rejectUnexpectedPromptArgument(tail[index + 1]);
+            if (conflicting_cli_options) return error.ConflictingCliOptions;
             return null;
         }
         if (isHelpFlag(arg)) return .help;
@@ -1264,16 +2234,20 @@ fn parseRootPromptTail(
         }
         if (std.mem.eql(u8, arg, "--config") or std.mem.eql(u8, arg, "-c")) {
             const raw = try nextRootPromptOptionValue(tail, &index, error.MissingConfigOptionValue);
-            try config.rememberStrictConfigUnknownOverride(allocator, &overrides.unknown_config_override, raw);
-            try config.applyRawConfigOverride(&overrides.runtime, &overrides.profile, raw);
+            if (!tail_has_help_or_version) {
+                try config.rememberStrictConfigUnknownOverride(allocator, &overrides.unknown_config_override, raw);
+                try config.applyRawConfigOverride(&overrides.runtime, &overrides.profile, raw);
+            }
             try root_config_child_args.append(allocator, arg);
             try root_config_child_args.append(allocator, raw);
             continue;
         }
         if (std.mem.startsWith(u8, arg, "--config=")) {
             const raw = arg["--config=".len..];
-            try config.rememberStrictConfigUnknownOverride(allocator, &overrides.unknown_config_override, raw);
-            try config.applyRawConfigOverride(&overrides.runtime, &overrides.profile, raw);
+            if (!tail_has_help_or_version) {
+                try config.rememberStrictConfigUnknownOverride(allocator, &overrides.unknown_config_override, raw);
+                try config.applyRawConfigOverride(&overrides.runtime, &overrides.profile, raw);
+            }
             try root_config_child_args.append(allocator, arg);
             continue;
         }
@@ -1298,20 +2272,20 @@ fn parseRootPromptTail(
         }
         if (std.mem.eql(u8, arg, "--enable")) {
             const value = try nextRootPromptOptionValue(tail, &index, error.MissingFeatureName);
-            try features_cmd.putRuntimeToggle(allocator, feature_overrides, value, true);
+            if (!tail_has_help_or_version) try features_cmd.putRuntimeToggle(allocator, feature_overrides, value, true);
             continue;
         }
         if (std.mem.startsWith(u8, arg, "--enable=")) {
-            try features_cmd.putRuntimeToggle(allocator, feature_overrides, arg["--enable=".len..], true);
+            if (!tail_has_help_or_version) try features_cmd.putRuntimeToggle(allocator, feature_overrides, arg["--enable=".len..], true);
             continue;
         }
         if (std.mem.eql(u8, arg, "--disable")) {
             const value = try nextRootPromptOptionValue(tail, &index, error.MissingFeatureName);
-            try features_cmd.putRuntimeToggle(allocator, feature_overrides, value, false);
+            if (!tail_has_help_or_version) try features_cmd.putRuntimeToggle(allocator, feature_overrides, value, false);
             continue;
         }
         if (std.mem.startsWith(u8, arg, "--disable=")) {
-            try features_cmd.putRuntimeToggle(allocator, feature_overrides, arg["--disable=".len..], false);
+            if (!tail_has_help_or_version) try features_cmd.putRuntimeToggle(allocator, feature_overrides, arg["--disable=".len..], false);
             continue;
         }
         if (std.mem.eql(u8, arg, "--oss")) {
@@ -1327,7 +2301,7 @@ fn parseRootPromptTail(
             continue;
         }
         if (std.mem.eql(u8, arg, "--ask-for-approval") or std.mem.eql(u8, arg, "-a") or std.mem.eql(u8, arg, "--approval-policy")) {
-            if (dangerous_bypass_requested.*) return error.ConflictingCliOptions;
+            if (dangerous_bypass_requested.*) conflicting_cli_options = true;
             const value = try nextRootPromptOptionValue(tail, &index, error.MissingApprovalOptionValue);
             approval_policy_requested.* = true;
             overrides.explicit_approval_policy = true;
@@ -1335,14 +2309,14 @@ fn parseRootPromptTail(
             continue;
         }
         if (std.mem.startsWith(u8, arg, "--ask-for-approval=")) {
-            if (dangerous_bypass_requested.*) return error.ConflictingCliOptions;
+            if (dangerous_bypass_requested.*) conflicting_cli_options = true;
             approval_policy_requested.* = true;
             overrides.explicit_approval_policy = true;
             overrides.runtime.approval_policy = try config.ApprovalPolicy.parse(arg["--ask-for-approval=".len..]);
             continue;
         }
         if (std.mem.startsWith(u8, arg, "--approval-policy=")) {
-            if (dangerous_bypass_requested.*) return error.ConflictingCliOptions;
+            if (dangerous_bypass_requested.*) conflicting_cli_options = true;
             approval_policy_requested.* = true;
             overrides.explicit_approval_policy = true;
             overrides.runtime.approval_policy = try config.ApprovalPolicy.parse(arg["--approval-policy=".len..]);
@@ -1358,7 +2332,7 @@ fn parseRootPromptTail(
             continue;
         }
         if (std.mem.eql(u8, arg, "--dangerously-bypass-approvals-and-sandbox") or std.mem.eql(u8, arg, "--yolo")) {
-            if (approval_policy_requested.*) return error.ConflictingCliOptions;
+            if (approval_policy_requested.*) conflicting_cli_options = true;
             dangerous_bypass_requested.* = true;
             overrides.runtime.approval_policy = .never;
             overrides.runtime.sandbox_mode = .danger_full_access;
@@ -1410,6 +2384,7 @@ fn parseRootPromptTail(
         }
         return rejectUnexpectedPromptArgument(arg);
     }
+    if (conflicting_cli_options) return error.ConflictingCliOptions;
     return null;
 }
 
@@ -1417,7 +2392,10 @@ fn nextRootPromptOptionValue(tail: []const []const u8, index: *usize, missing_er
     index.* += 1;
     if (index.* >= tail.len) return missing_error;
     const value = tail[index.*];
-    if (isRootPromptOptionValueBoundary(value)) return missing_error;
+    if (isRootPromptOptionValueBoundary(value)) {
+        if (isKnownRootOptionBoundary(value)) return missing_error;
+        return rejectUnexpectedPromptArgument(value);
+    }
     return value;
 }
 
@@ -1494,6 +2472,7 @@ fn printStdioToUdsHelp() void {
 
 const SessionCommandArgs = struct {
     target: ?[]const u8 = null,
+    initial_prompt: ?[]const u8 = null,
     last: bool = false,
     show_all: bool = false,
     include_non_interactive: bool = false,
@@ -1525,10 +2504,12 @@ const SessionCommandArgs = struct {
 const SessionLaunchOptions = struct {
     image_files: []const []const u8,
     tui_options: tui.Options,
+    owned_initial_prompt: ?[]const u8 = null,
 
     fn deinit(self: *SessionLaunchOptions, allocator: std.mem.Allocator) void {
         allocator.free(self.image_files);
         allocator.free(self.tui_options.additional_writable_roots);
+        if (self.owned_initial_prompt) |prompt| allocator.free(prompt);
     }
 };
 
@@ -1569,8 +2550,12 @@ fn prepareSessionLaunchOptions(
     );
     errdefer allocator.free(additional_writable_roots);
 
+    const initial_prompt = try sessionLaunchInitialPrompt(allocator, parsed);
+    errdefer if (initial_prompt.owned) |prompt| allocator.free(prompt);
+
     return .{
         .image_files = image_files,
+        .owned_initial_prompt = initial_prompt.owned,
         .tui_options = .{
             .profile = parsed.profile orelse overrides.profile,
             .profile_v2 = parsed.profile_v2 orelse overrides.profile_v2,
@@ -1578,6 +2563,7 @@ fn prepareSessionLaunchOptions(
             .oss = overrides.oss or parsed.oss,
             .oss_provider = parsed.oss_provider orelse overrides.oss_provider,
             .additional_writable_roots = additional_writable_roots,
+            .initial_prompt = initial_prompt.value,
             .no_alt_screen = overrides.no_alt_screen or parsed.no_alt_screen,
             .remote = parsed.remote orelse overrides.remote,
             .remote_auth_token_env = parsed.remote_auth_token_env orelse overrides.remote_auth_token_env,
@@ -1589,9 +2575,38 @@ fn prepareSessionLaunchOptions(
     };
 }
 
+const SessionInitialPrompt = struct {
+    value: ?[]const u8,
+    owned: ?[]const u8 = null,
+};
+
+fn sessionLaunchInitialPrompt(allocator: std.mem.Allocator, parsed: SessionCommandArgs) !SessionInitialPrompt {
+    if (!parsed.last or parsed.target == null) return .{ .value = parsed.initial_prompt };
+
+    const target = parsed.target.?;
+    const prompt = parsed.initial_prompt orelse return .{ .value = target };
+    const parts = [_][]const u8{ target, prompt };
+    const joined = try cli_utils.joinWithSpaces(allocator, parts[0..]);
+    return .{ .value = joined, .owned = joined };
+}
+
+const SessionParseOptions = struct {
+    allow_include_non_interactive: bool,
+    help_positionals: u8 = 2,
+};
+
 fn parseSessionCommandArgs(allocator: std.mem.Allocator, args: []const []const u8, allow_include_non_interactive: bool) !SessionCommandArgs {
+    return parseSessionCommandArgsWithOptions(allocator, args, .{ .allow_include_non_interactive = allow_include_non_interactive });
+}
+
+fn parseSessionCommandArgsWithOptions(allocator: std.mem.Allocator, args: []const []const u8, options: SessionParseOptions) !SessionCommandArgs {
     var parsed = SessionCommandArgs{};
     errdefer parsed.deinit(allocator);
+
+    if (try sessionHelpPreflight(args, options)) {
+        parsed.help = true;
+        return parsed;
+    }
 
     var approval_policy_requested = false;
     var dangerous_bypass_requested = false;
@@ -1616,7 +2631,7 @@ fn parseSessionCommandArgs(allocator: std.mem.Allocator, args: []const []const u
             continue;
         }
         if (!end_options and std.mem.eql(u8, arg, "--include-non-interactive")) {
-            if (!allow_include_non_interactive) return error.UnknownSessionCommandOption;
+            if (!options.allow_include_non_interactive) return error.UnknownSessionCommandOption;
             parsed.include_non_interactive = true;
             continue;
         }
@@ -1809,16 +2824,130 @@ fn parseSessionCommandArgs(allocator: std.mem.Allocator, args: []const []const u
         if (!end_options and std.mem.startsWith(u8, arg, "-")) {
             return error.UnknownSessionCommandOption;
         }
-        if (parsed.target != null) return error.UnexpectedSessionCommandArgument;
-        parsed.target = arg;
+        if (parsed.target == null) {
+            parsed.target = arg;
+            continue;
+        }
+        if (parsed.initial_prompt == null) {
+            parsed.initial_prompt = arg;
+            continue;
+        }
+        return error.UnexpectedSessionCommandArgument;
     }
     return parsed;
 }
 
+fn sessionHelpPreflight(args: []const []const u8, options: SessionParseOptions) !bool {
+    var positional_count: u8 = 0;
+    var index: usize = 0;
+    while (index < args.len) : (index += 1) {
+        const arg = args[index];
+        if (std.mem.eql(u8, arg, "--")) return false;
+        if (isHelpFlag(arg)) return true;
+        if (std.mem.eql(u8, arg, "--last") or
+            std.mem.eql(u8, arg, "--all") or
+            std.mem.eql(u8, arg, "--oss") or
+            std.mem.eql(u8, arg, "--search") or
+            std.mem.eql(u8, arg, "--no-alt-screen") or
+            std.mem.eql(u8, arg, "--remote-control") or
+            std.mem.eql(u8, arg, "--dangerously-bypass-approvals-and-sandbox") or
+            std.mem.eql(u8, arg, "--yolo") or
+            std.mem.eql(u8, arg, "--dangerously-bypass-hook-trust") or
+            std.mem.eql(u8, arg, "--strict-config"))
+        {
+            continue;
+        }
+        if (options.allow_include_non_interactive and std.mem.eql(u8, arg, "--include-non-interactive")) continue;
+        if (std.mem.eql(u8, arg, "--profile-v2")) {
+            index += 1;
+            if (index >= args.len or isRootPromptOptionValueBoundary(args[index])) return false;
+            try config.validateProfileV2Name(args[index]);
+            continue;
+        }
+        if (std.mem.startsWith(u8, arg, "--profile-v2=")) {
+            try config.validateProfileV2Name(arg["--profile-v2=".len..]);
+            continue;
+        }
+        if (std.mem.eql(u8, arg, "--ask-for-approval") or
+            std.mem.eql(u8, arg, "-a") or
+            std.mem.eql(u8, arg, "--approval-policy"))
+        {
+            index += 1;
+            if (index >= args.len or isRootPromptOptionValueBoundary(args[index])) return false;
+            _ = try config.ApprovalPolicy.parse(args[index]);
+            continue;
+        }
+        if (std.mem.startsWith(u8, arg, "--ask-for-approval=")) {
+            _ = try config.ApprovalPolicy.parse(arg["--ask-for-approval=".len..]);
+            continue;
+        }
+        if (std.mem.startsWith(u8, arg, "--approval-policy=")) {
+            _ = try config.ApprovalPolicy.parse(arg["--approval-policy=".len..]);
+            continue;
+        }
+        if (std.mem.eql(u8, arg, "--sandbox") or std.mem.eql(u8, arg, "-s")) {
+            index += 1;
+            if (index >= args.len or isRootPromptOptionValueBoundary(args[index])) return false;
+            _ = try config.SandboxMode.parse(args[index]);
+            continue;
+        }
+        if (std.mem.startsWith(u8, arg, "--sandbox=")) {
+            _ = try config.SandboxMode.parse(arg["--sandbox=".len..]);
+            continue;
+        }
+        if (std.mem.eql(u8, arg, "--profile") or
+            std.mem.eql(u8, arg, "-p") or
+            std.mem.eql(u8, arg, "--config") or
+            std.mem.eql(u8, arg, "-c") or
+            std.mem.eql(u8, arg, "--model") or
+            std.mem.eql(u8, arg, "-m") or
+            std.mem.eql(u8, arg, "--cd") or
+            std.mem.eql(u8, arg, "-C") or
+            std.mem.eql(u8, arg, "--add-dir") or
+            std.mem.eql(u8, arg, "--local-provider") or
+            std.mem.eql(u8, arg, "--remote") or
+            std.mem.eql(u8, arg, "--remote-auth-token-env") or
+            std.mem.eql(u8, arg, "--remote-control-bind"))
+        {
+            index += 1;
+            if (index >= args.len or isRootPromptOptionValueBoundary(args[index])) return false;
+            continue;
+        }
+        if (std.mem.eql(u8, arg, "--image") or std.mem.eql(u8, arg, "-i")) {
+            var next = index + 1;
+            var consumed = false;
+            while (next < args.len) : (next += 1) {
+                if (isRootPromptOptionValueBoundary(args[next])) break;
+                consumed = true;
+            }
+            if (!consumed) return false;
+            index = next - 1;
+            continue;
+        }
+        if (std.mem.startsWith(u8, arg, "--image=")) {
+            var next = index + 1;
+            while (next < args.len) : (next += 1) {
+                if (isRootPromptOptionValueBoundary(args[next])) break;
+            }
+            index = next - 1;
+            continue;
+        }
+        if (rootOptionHasInlineValue(arg)) continue;
+        if (std.mem.startsWith(u8, arg, "-")) return false;
+        positional_count += 1;
+        if (positional_count > options.help_positionals) return false;
+    }
+    return false;
+}
+
 fn parseRemoteForkCommandArgs(allocator: std.mem.Allocator, args: []const []const u8) !SessionCommandArgs {
-    var parsed = try parseSessionCommandArgs(allocator, args, false);
+    var parsed = try parseSessionCommandArgsWithOptions(allocator, args, .{
+        .allow_include_non_interactive = false,
+        .help_positionals = 1,
+    });
     errdefer parsed.deinit(allocator);
 
+    if (parsed.initial_prompt != null) return error.UnexpectedSessionCommandArgument;
     if (parsed.help) return parsed;
     if (parsed.last or parsed.show_all or parsed.include_non_interactive) {
         return error.UnknownRemoteForkOption;
@@ -2010,7 +3139,7 @@ fn printResumeHelp() void {
         \\  codex-zig resume
         \\  codex-zig resume [--all] [--include-non-interactive] [--remote ADDR]
         \\  codex-zig resume --last [--all] [--include-non-interactive] [--remote ADDR]
-        \\  codex-zig resume ID|PATH|last
+        \\  codex-zig resume ID|PATH|last [PROMPT]
         \\
         \\Without a target, opens a numbered picker for saved Zig sessions.
         \\--all, --include-non-interactive, and remote flags are accepted for Rust CLI compatibility.
@@ -2024,7 +3153,7 @@ fn printForkHelp() void {
         \\  codex-zig fork
         \\  codex-zig fork [--all] [--remote ADDR]
         \\  codex-zig fork --last [--all] [--remote ADDR]
-        \\  codex-zig fork ID|PATH|last
+        \\  codex-zig fork ID|PATH|last [PROMPT]
         \\
         \\Without a target, opens a numbered picker for saved Zig sessions.
         \\--all and remote flags are accepted for Rust CLI compatibility.
@@ -2314,6 +3443,24 @@ test "session command flags reject path-like profile v2 names" {
     try std.testing.expectError(error.InvalidProfileV2Name, parseSessionCommandArgs(allocator, argv[0..], true));
 }
 
+test "session command help preflight validates typed option values" {
+    const allocator = std.testing.allocator;
+
+    const invalid_profile = [_][]const u8{ "--profile-v2", "../team", "--help" };
+    try std.testing.expectError(error.InvalidProfileV2Name, parseSessionCommandArgs(allocator, invalid_profile[0..], true));
+
+    const invalid_approval = [_][]const u8{ "--ask-for-approval", "bogus", "--help" };
+    try std.testing.expectError(error.InvalidApprovalPolicy, parseSessionCommandArgs(allocator, invalid_approval[0..], true));
+
+    const invalid_sandbox = [_][]const u8{ "--sandbox=bogus", "--help" };
+    try std.testing.expectError(error.InvalidSandboxMode, parseSessionCommandArgs(allocator, invalid_sandbox[0..], true));
+
+    const semantic_config = [_][]const u8{ "--strict-config", "-c", "foo.bar=1", "--help" };
+    var parsed = try parseSessionCommandArgs(allocator, semantic_config[0..], true);
+    defer parsed.deinit(allocator);
+    try std.testing.expect(parsed.help);
+}
+
 test "session command flags parse remote compatibility options" {
     const allocator = std.testing.allocator;
     const argv = [_][]const u8{
@@ -2406,15 +3553,47 @@ test "session command variadic images stop at separator before target" {
     try std.testing.expectEqualStrings("/tmp/b.png", parsed.image_files.items[1]);
 }
 
-test "session command flags parse target and reject extra target" {
+test "session command flags parse target and prompt and reject extra target" {
     const allocator = std.testing.allocator;
     const target_argv = [_][]const u8{"session-id"};
     var target = try parseSessionCommandArgs(allocator, target_argv[0..], false);
     defer target.deinit(allocator);
     try std.testing.expectEqualStrings("session-id", target.target.?);
 
-    const extra_argv = [_][]const u8{ "one", "two" };
+    const prompt_argv = [_][]const u8{ "session-id", "follow-up prompt" };
+    var prompt = try parseSessionCommandArgs(allocator, prompt_argv[0..], false);
+    defer prompt.deinit(allocator);
+    try std.testing.expectEqualStrings("session-id", prompt.target.?);
+    try std.testing.expectEqualStrings("follow-up prompt", prompt.initial_prompt.?);
+
+    const extra_argv = [_][]const u8{ "one", "two", "three" };
     try std.testing.expectError(error.UnexpectedSessionCommandArgument, parseSessionCommandArgs(allocator, extra_argv[0..], true));
+}
+
+test "session launch initial prompt carries last positionals" {
+    const allocator = std.testing.allocator;
+
+    const normal = try sessionLaunchInitialPrompt(allocator, .{
+        .target = "session-id",
+        .initial_prompt = "follow-up prompt",
+    });
+    defer if (normal.owned) |prompt| allocator.free(prompt);
+    try std.testing.expectEqualStrings("follow-up prompt", normal.value.?);
+
+    const last_target = try sessionLaunchInitialPrompt(allocator, .{
+        .last = true,
+        .target = "session-id",
+    });
+    defer if (last_target.owned) |prompt| allocator.free(prompt);
+    try std.testing.expectEqualStrings("session-id", last_target.value.?);
+
+    const last_prompt = try sessionLaunchInitialPrompt(allocator, .{
+        .last = true,
+        .target = "session-id",
+        .initial_prompt = "follow-up prompt",
+    });
+    defer if (last_prompt.owned) |prompt| allocator.free(prompt);
+    try std.testing.expectEqualStrings("session-id follow-up prompt", last_prompt.value.?);
 }
 
 test "fork session command rejects include non interactive" {
@@ -2447,6 +3626,9 @@ test "remote fork command requires a code and rejects session picker flags" {
 
     const all = [_][]const u8{ "--all", "http://127.0.0.1:1234/claim" };
     try std.testing.expectError(error.UnknownRemoteForkOption, parseRemoteForkCommandArgs(allocator, all[0..]));
+
+    const prompt = [_][]const u8{ "http://127.0.0.1:1234/claim", "prompt" };
+    try std.testing.expectError(error.UnexpectedSessionCommandArgument, parseRemoteForkCommandArgs(allocator, prompt[0..]));
 }
 
 test "root remote is only accepted for interactive commands" {
@@ -2476,6 +3658,139 @@ test "root cwd is deferred for prompt fallback commands" {
     try std.testing.expect(!rootCommandAppliesCwdBeforeDispatch("--help"));
     try std.testing.expect(!rootCommandAppliesCwdBeforeDispatch("marketplace"));
     try std.testing.expect(!rootCommandAppliesCwdBeforeDispatch("prompt-token"));
+}
+
+test "root semantic checks defer to help and version tails" {
+    try std.testing.expect(try rootArgsTailHasHelpOrVersion(std.testing.allocator, &.{ "--strict-config", "-c", "foo.bar=1", "--help" }));
+    try std.testing.expect(try rootArgsTailHasHelpOrVersion(std.testing.allocator, &.{ "-C", "does-not-exist", "sandbox", "--help" }));
+    try std.testing.expect(try rootArgsTailHasHelpOrVersion(std.testing.allocator, &.{ "--remote", "ws://127.0.0.1:1", "sandbox", "macos", "--help" }));
+    try std.testing.expect(try rootArgsTailHasHelpOrVersion(std.testing.allocator, &.{ "--strict-config", "-c", "foo.bar=1", "sandbox", "help", "macos" }));
+    try std.testing.expect(try rootArgsTailHasHelpOrVersion(std.testing.allocator, &.{ "--strict-config", "-c", "foo.bar=1", "sandbox", "help", "help" }));
+    try std.testing.expect(try rootArgsTailHasHelpOrVersion(std.testing.allocator, &.{ "--remote", "ws://127.0.0.1:1", "sandbox", "--enable", "definitely-not-a-feature", "macos", "--help" }));
+    try std.testing.expect(try rootArgsTailHasHelpOrVersion(std.testing.allocator, &.{ "--remote", "ws://127.0.0.1:1", "sandbox", "macos", "--enable", "definitely-not-a-feature", "--help" }));
+    try std.testing.expect(try rootArgsTailHasHelpOrVersion(std.testing.allocator, &.{ "--remote", "ws://127.0.0.1:1", "sandbox", "macos", "--help", "--bad" }));
+    try std.testing.expect(try rootArgsTailHasHelpOrVersion(std.testing.allocator, &.{ "--remote", "ws://127.0.0.1:1", "sandbox", "--config", "bogus", "macos", "--help" }));
+    try std.testing.expect(try rootArgsTailHasHelpOrVersion(std.testing.allocator, &.{ "--remote", "ws://127.0.0.1:1", "sandbox", "macos", "--config", "bogus", "--help" }));
+    try std.testing.expect(try rootArgsTailHasHelpOrVersion(std.testing.allocator, &.{ "--strict-config", "-c", "foo.bar=1", "doctor", "--help" }));
+    try std.testing.expect(try rootArgsTailHasHelpOrVersion(std.testing.allocator, &.{ "doctor", "--strict-config", "-c", "foo.bar=1", "--help" }));
+    try std.testing.expect(try rootArgsTailHasHelpOrVersion(std.testing.allocator, &.{ "--remote", "ws://127.0.0.1:1", "doctor", "--json", "--help", "--summary" }));
+    try std.testing.expect(try rootArgsTailHasHelpOrVersion(std.testing.allocator, &.{ "--remote", "ws://127.0.0.1:1", "doctor", "--config", "bogus", "--help" }));
+    try std.testing.expect(try rootArgsTailHasHelpOrVersion(std.testing.allocator, &.{ "--remote", "ws://127.0.0.1:1", "doctor", "--enable", "definitely-not-a-feature", "--help" }));
+    try std.testing.expect(try rootArgsTailHasHelpOrVersion(std.testing.allocator, &.{ "--remote", "ws://127.0.0.1:1", "doctor", "--help", "--bad" }));
+    try std.testing.expect(try rootArgsTailHasHelpOrVersion(std.testing.allocator, &.{ "--strict-config", "-c", "foo.bar=1", "review", "--help" }));
+    try std.testing.expect(try rootArgsTailHasHelpOrVersion(std.testing.allocator, &.{ "review", "--strict-config", "-c", "foo.bar=1", "--help" }));
+    try std.testing.expect(try rootArgsTailHasHelpOrVersion(std.testing.allocator, &.{ "-C", "does-not-exist", "review", "--help" }));
+    try std.testing.expect(try rootArgsTailHasHelpOrVersion(std.testing.allocator, &.{ "--remote", "ws://127.0.0.1:1", "review", "--help" }));
+    try std.testing.expect(try rootArgsTailHasHelpOrVersion(std.testing.allocator, &.{ "--remote", "ws://127.0.0.1:1", "review", "--base", "main", "--help" }));
+    try std.testing.expect(try rootArgsTailHasHelpOrVersion(std.testing.allocator, &.{ "--remote", "ws://127.0.0.1:1", "review", "--config", "bogus", "--help" }));
+    try std.testing.expect(try rootArgsTailHasHelpOrVersion(std.testing.allocator, &.{ "--remote", "ws://127.0.0.1:1", "review", "--enable", "definitely-not-a-feature", "--help" }));
+    try std.testing.expect(try rootArgsTailHasHelpOrVersion(std.testing.allocator, &.{ "--remote", "ws://127.0.0.1:1", "review", "--base=", "--help" }));
+    try std.testing.expect(try rootArgsTailHasHelpOrVersion(std.testing.allocator, &.{ "--remote", "ws://127.0.0.1:1", "review", "--uncommitted", "--base", "main", "--help" }));
+    try std.testing.expect(try rootArgsTailHasHelpOrVersion(std.testing.allocator, &.{ "--strict-config", "-c", "foo.bar=1", "review", "--title", "summary", "--help" }));
+    try std.testing.expect(try rootArgsTailHasHelpOrVersion(std.testing.allocator, &.{ "--strict-config", "-c", "foo.bar=1", "review", "--base", "bad\nref", "--help" }));
+    try std.testing.expect(try rootArgsTailHasHelpOrVersion(std.testing.allocator, &.{ "--remote", "ws://127.0.0.1:1", "exec", "--version" }));
+    try std.testing.expect(try rootArgsTailHasHelpOrVersion(std.testing.allocator, &.{ "--remote", "ws://127.0.0.1:1", "exec", "--image", "/tmp/a.png", "--help" }));
+    try std.testing.expect(try rootArgsTailHasHelpOrVersion(std.testing.allocator, &.{ "--remote", "ws://127.0.0.1:1", "exec", "--color", "never", "--help" }));
+    try std.testing.expect(try rootArgsTailHasHelpOrVersion(std.testing.allocator, &.{ "--remote", "ws://127.0.0.1:1", "exec", "--enable", "definitely-not-a-feature", "--help" }));
+    try std.testing.expect(try rootArgsTailHasHelpOrVersion(std.testing.allocator, &.{ "--remote", "ws://127.0.0.1:1", "exec", "--config", "approval_policy=bogus", "--help" }));
+    try std.testing.expect(try rootArgsTailHasHelpOrVersion(std.testing.allocator, &.{ "--remote", "ws://127.0.0.1:1", "exec", "echo", "--help" }));
+    try std.testing.expect(try rootArgsTailHasHelpOrVersion(std.testing.allocator, &.{ "--remote", "ws://127.0.0.1:1", "exec", "resume", "--last", "--help" }));
+    try std.testing.expect(try rootArgsTailHasHelpOrVersion(std.testing.allocator, &.{ "--remote", "ws://127.0.0.1:1", "exec", "help", "review" }));
+    try std.testing.expect(try rootArgsTailHasHelpOrVersion(std.testing.allocator, &.{ "--remote", "ws://127.0.0.1:1", "login", "status", "--help" }));
+    try std.testing.expect(try rootArgsTailHasHelpOrVersion(std.testing.allocator, &.{ "--remote", "ws://127.0.0.1:1", "login", "status", "--help", "--no-browser" }));
+    try std.testing.expect(try rootArgsTailHasHelpOrVersion(std.testing.allocator, &.{ "--remote", "ws://127.0.0.1:1", "login", "--help", "--bad" }));
+    try std.testing.expect(try rootArgsTailHasHelpOrVersion(std.testing.allocator, &.{ "--remote", "ws://127.0.0.1:1", "login", "--with-api-key", "--device-auth", "--help" }));
+    try std.testing.expect(try rootArgsTailHasHelpOrVersion(std.testing.allocator, &.{ "-C", "does-not-exist", "resume", "--last", "--help" }));
+    try std.testing.expect(try rootArgsTailHasHelpOrVersion(std.testing.allocator, &.{ "-C", "does-not-exist", "resume", "--include-non-interactive", "--help" }));
+    try std.testing.expect(try rootArgsTailHasHelpOrVersion(std.testing.allocator, &.{ "-C", "does-not-exist", "resume", "--help", "--bad" }));
+    try std.testing.expect(try rootArgsTailHasHelpOrVersion(std.testing.allocator, &.{ "-C", "does-not-exist", "fork", "--last", "--help" }));
+    try std.testing.expect(try rootArgsTailHasHelpOrVersion(std.testing.allocator, &.{ "--strict-config", "-c", "foo.bar=1", "remote-fork", "--last", "--help" }));
+    try std.testing.expect(try rootArgsTailHasHelpOrVersion(std.testing.allocator, &.{ "--remote", "ws://127.0.0.1:1", "exec-server", "--strict-config", "--help" }));
+    try std.testing.expect(try rootArgsTailHasHelpOrVersion(std.testing.allocator, &.{ "--remote", "ws://127.0.0.1:1", "exec-server", "--help", "--bad" }));
+    try std.testing.expect(try rootArgsTailHasHelpOrVersion(std.testing.allocator, &.{ "--remote", "ws://127.0.0.1:1", "exec-server", "--remote", "ws://127.0.0.1:2", "--help" }));
+    try std.testing.expect(try rootArgsTailHasHelpOrVersion(std.testing.allocator, &.{ "--strict-config", "-c", "foo.bar=1", "plugin", "add", "--marketplace", "debug", "--help" }));
+    try std.testing.expect(try rootArgsTailHasHelpOrVersion(std.testing.allocator, &.{ "--strict-config", "-c", "foo.bar=1", "plugin", "help", "marketplace", "add" }));
+    try std.testing.expect(try rootArgsTailHasHelpOrVersion(std.testing.allocator, &.{ "--remote", "ws://127.0.0.1:1", "mcp", "help", "add" }));
+    try std.testing.expect(try rootArgsTailHasHelpOrVersion(std.testing.allocator, &.{ "--remote", "ws://127.0.0.1:1", "mcp", "remove", "server", "--help" }));
+    try std.testing.expect(try rootArgsTailHasHelpOrVersion(std.testing.allocator, &.{ "--remote", "ws://127.0.0.1:1", "mcp", "logout", "server", "--help" }));
+    try std.testing.expect(try rootArgsTailHasHelpOrVersion(std.testing.allocator, &.{ "--remote", "ws://127.0.0.1:1", "features", "list", "--enable", "apps", "--help" }));
+    try std.testing.expect(try rootArgsTailHasHelpOrVersion(std.testing.allocator, &.{ "--remote", "ws://127.0.0.1:1", "features", "list", "--enable", "definitely-not-a-feature", "--help" }));
+    try std.testing.expect(try rootArgsTailHasHelpOrVersion(std.testing.allocator, &.{ "--remote", "ws://127.0.0.1:1", "features", "enable", "definitely-not-a-feature", "--help" }));
+    try std.testing.expect(try rootArgsTailHasHelpOrVersion(std.testing.allocator, &.{ "--remote", "ws://127.0.0.1:1", "debug", "prompt-input", "--image", "/tmp/a.png", "--help" }));
+    try std.testing.expect(try rootArgsTailHasHelpOrVersion(std.testing.allocator, &.{ "--remote", "ws://127.0.0.1:1", "debug", "app-server", "help", "send-message-v2" }));
+    try std.testing.expect(try rootArgsTailHasHelpOrVersion(std.testing.allocator, &.{ "-C", "does-not-exist", "debug", "trace-reduce", "--output", "out.json", "--help" }));
+    try std.testing.expect(try rootArgsTailHasHelpOrVersion(std.testing.allocator, &.{ "-C", "does-not-exist", "app-server", "--session-source", "vscode", "--help" }));
+    try std.testing.expect(try rootArgsTailHasHelpOrVersion(std.testing.allocator, &.{ "--remote", "ws://127.0.0.1:1", "app-server", "--ws-auth", "capability-token", "--help" }));
+    try std.testing.expect(try rootArgsTailHasHelpOrVersion(std.testing.allocator, &.{ "--remote", "ws://127.0.0.1:1", "app-server", "--ws-max-clock-skew-seconds", "30", "--help" }));
+    try std.testing.expect(try rootArgsTailHasHelpOrVersion(std.testing.allocator, &.{ "--strict-config", "app-server", "proxy", "--help" }));
+    try std.testing.expect(try rootArgsTailHasHelpOrVersion(std.testing.allocator, &.{ "app-server", "--strict-config", "proxy", "--help" }));
+    try std.testing.expect(try rootArgsTailHasHelpOrVersion(std.testing.allocator, &.{ "-C", "does-not-exist", "app-server", "proxy", "--sock", "/tmp/app.sock", "--help" }));
+    try std.testing.expect(try rootArgsTailHasHelpOrVersion(std.testing.allocator, &.{ "--strict-config", "app-server", "daemon", "bootstrap", "--remote-control", "--help" }));
+    try std.testing.expect(try rootArgsTailHasHelpOrVersion(std.testing.allocator, &.{ "app-server", "--strict-config", "daemon", "bootstrap", "--remote-control", "--help" }));
+    try std.testing.expect(try rootArgsTailHasHelpOrVersion(std.testing.allocator, &.{ "-C", "does-not-exist", "app-server", "daemon", "bootstrap", "--remote-control", "--help" }));
+    try std.testing.expect(try rootArgsTailHasHelpOrVersion(std.testing.allocator, &.{ "--remote", "ws://127.0.0.1:1", "responses-api-proxy", "--port", "0", "--help" }));
+    try std.testing.expect(try rootArgsTailHasHelpOrVersion(std.testing.allocator, &.{ "--remote", "ws://127.0.0.1:1", "remote-control", "--enable", "definitely-not-a-feature", "--help" }));
+    try std.testing.expect(try rootArgsTailHasHelpOrVersion(std.testing.allocator, &.{ "--remote", "ws://127.0.0.1:1", "remote-control", "--config", "bogus", "--help" }));
+    try std.testing.expect(try rootArgsTailHasHelpOrVersion(std.testing.allocator, &.{ "--remote", "ws://127.0.0.1:1", "cloud", "exec", "--env", "env-id", "--help" }));
+    try std.testing.expect(try rootArgsTailHasHelpOrVersion(std.testing.allocator, &.{ "--strict-config", "-c", "foo.bar=1", "update", "--help", "--bad" }));
+    try std.testing.expect(try rootArgsTailHasHelpOrVersion(std.testing.allocator, &.{ "--strict-config", "-c", "foo.bar=1", "logout", "--help", "--bad" }));
+    try std.testing.expect(try rootArgsTailHasHelpOrVersion(std.testing.allocator, &.{ "--strict-config", "-c", "foo.bar=1", "completion", "zsh", "--help" }));
+    try std.testing.expect(try rootArgsTailHasHelpOrVersion(std.testing.allocator, &.{ "-C", "does-not-exist", "apply", "--help", "--bad" }));
+    try std.testing.expect(try rootArgsTailHasHelpOrVersion(std.testing.allocator, &.{ "-C", "does-not-exist", "apply", "--config", "bogus", "--help" }));
+    try std.testing.expect(try rootArgsTailHasHelpOrVersion(std.testing.allocator, &.{ "--image", "/tmp/a.png", "prompt-token", "--help" }));
+    try std.testing.expect(!(try rootArgsTailHasHelpOrVersion(std.testing.allocator, &.{ "-C", "--help" })));
+    try std.testing.expect(!(try rootArgsTailHasHelpOrVersion(std.testing.allocator, &.{ "--model", "--help" })));
+    try std.testing.expect(!(try rootArgsTailHasHelpOrVersion(std.testing.allocator, &.{ "-C", "does-not-exist", "debug", "trace-reduce", "--output", "--help" })));
+    try std.testing.expect(!(try rootArgsTailHasHelpOrVersion(std.testing.allocator, &.{ "-C", "does-not-exist", "debug", "clear-memories", "--bundled", "--help" })));
+    try std.testing.expect(!(try rootArgsTailHasHelpOrVersion(std.testing.allocator, &.{ "-C", "does-not-exist", "app-server", "--session-source", "--help" })));
+    try std.testing.expect(!(try rootArgsTailHasHelpOrVersion(std.testing.allocator, &.{ "-C", "does-not-exist", "app-server", "generate-ts", "--out", "src", "--help" })));
+    try std.testing.expect(!(try rootArgsTailHasHelpOrVersion(std.testing.allocator, &.{ "-C", "does-not-exist", "app-server", "daemon", "--remote-control", "--help" })));
+    try std.testing.expect(!(try rootArgsTailHasHelpOrVersion(std.testing.allocator, &.{ "--remote", "ws://127.0.0.1:1", "doctor", "--config", "--help" })));
+    try std.testing.expect(!(try rootArgsTailHasHelpOrVersion(std.testing.allocator, &.{ "-C", "does-not-exist", "doctor", "unexpected", "--help" })));
+    try std.testing.expect(!(try rootArgsTailHasHelpOrVersion(std.testing.allocator, &.{ "--remote", "ws://127.0.0.1:1", "sessions", "--version" })));
+    try std.testing.expect(!(try rootArgsTailHasHelpOrVersion(std.testing.allocator, &.{ "--remote", "ws://127.0.0.1:1", "sessions", "--json", "--help" })));
+    try std.testing.expect(!(try rootArgsTailHasHelpOrVersion(std.testing.allocator, &.{ "--remote", "ws://127.0.0.1:1", "sessions", "10", "--help" })));
+    try std.testing.expect(!(try rootArgsTailHasHelpOrVersion(std.testing.allocator, &.{ "--remote", "ws://127.0.0.1:1", "review", "--version" })));
+    try std.testing.expect(!(try rootArgsTailHasHelpOrVersion(std.testing.allocator, &.{ "--remote", "ws://127.0.0.1:1", "review", "--bad", "--help" })));
+    try std.testing.expect(!(try rootArgsTailHasHelpOrVersion(std.testing.allocator, &.{ "--strict-config", "-c", "foo.bar=1", "review", "--base", "--help" })));
+    try std.testing.expect(!(try rootArgsTailHasHelpOrVersion(std.testing.allocator, &.{ "--remote", "ws://127.0.0.1:1", "review", "one", "two", "--help" })));
+    try std.testing.expect(!(try rootArgsTailHasHelpOrVersion(std.testing.allocator, &.{ "resume", "--sandbox", "bogus", "--help" })));
+    try std.testing.expect(!(try rootArgsTailHasHelpOrVersion(std.testing.allocator, &.{ "fork", "--profile-v2", "../bad", "--help" })));
+    try std.testing.expect(!(try rootArgsTailHasHelpOrVersion(std.testing.allocator, &.{ "remote-fork", "--approval-policy", "bogus", "--help" })));
+    try std.testing.expect(!(try rootArgsTailHasHelpOrVersion(std.testing.allocator, &.{ "--remote", "ws://127.0.0.1:1", "exec", "--base", "main", "--help" })));
+    try std.testing.expect(!(try rootArgsTailHasHelpOrVersion(std.testing.allocator, &.{ "--remote", "ws://127.0.0.1:1", "exec", "--color", "red", "--help" })));
+    try std.testing.expect(!(try rootArgsTailHasHelpOrVersion(std.testing.allocator, &.{ "--remote", "ws://127.0.0.1:1", "exec", "--sandbox", "bogus", "--help" })));
+    try std.testing.expect(!(try rootArgsTailHasHelpOrVersion(std.testing.allocator, &.{ "--remote", "ws://127.0.0.1:1", "exec", "--yolo", "--approval-policy", "never", "--help" })));
+    try std.testing.expect(!(try rootArgsTailHasHelpOrVersion(std.testing.allocator, &.{ "--remote", "ws://127.0.0.1:1", "exec", "help", "--base" })));
+    try std.testing.expect(!(try rootArgsTailHasHelpOrVersion(std.testing.allocator, &.{ "--remote", "ws://127.0.0.1:1", "exec", "resume", "--base", "main", "--help" })));
+    try std.testing.expect(!(try rootArgsTailHasHelpOrVersion(std.testing.allocator, &.{ "--remote", "ws://127.0.0.1:1", "exec", "echo", "resume", "--last", "--help" })));
+    try std.testing.expect(!(try rootArgsTailHasHelpOrVersion(std.testing.allocator, &.{ "--remote", "ws://127.0.0.1:1", "debug", "--base", "main", "help", "models" })));
+    try std.testing.expect(!(try rootArgsTailHasHelpOrVersion(std.testing.allocator, &.{ "-C", "does-not-exist", "sandbox", "bogus", "--help" })));
+    try std.testing.expect(!(try rootArgsTailHasHelpOrVersion(std.testing.allocator, &.{ "-C", "does-not-exist", "sandbox", "help", "bogus" })));
+    try std.testing.expect(!(try rootArgsTailHasHelpOrVersion(std.testing.allocator, &.{ "-C", "does-not-exist", "sandbox", "help", "macos", "extra" })));
+    try std.testing.expect(!(try rootArgsTailHasHelpOrVersion(std.testing.allocator, &.{ "--remote", "ws://127.0.0.1:1", "sandbox", "bogus", "--help" })));
+    try std.testing.expect(!(try rootArgsTailHasHelpOrVersion(std.testing.allocator, &.{ "--strict-config", "-c", "foo.bar=1", "sandbox", "bogus", "--help" })));
+    try std.testing.expect(!(try rootArgsTailHasHelpOrVersion(std.testing.allocator, &.{ "--remote", "ws://127.0.0.1:1", "sandbox", "--version" })));
+    try std.testing.expect(!(try rootArgsTailHasHelpOrVersion(std.testing.allocator, &.{ "--remote", "ws://127.0.0.1:1", "sandbox", "macos", "echo", "--help" })));
+    try std.testing.expect(!(try rootArgsTailHasHelpOrVersion(std.testing.allocator, &.{ "--remote", "ws://127.0.0.1:1", "sandbox", "macos", "echo", "--version" })));
+    try std.testing.expect(!(try rootArgsTailHasHelpOrVersion(std.testing.allocator, &.{ "--remote", "ws://127.0.0.1:1", "sandbox", "macos", "--sandbox", "bogus", "--help" })));
+    try std.testing.expect(!(try rootArgsTailHasHelpOrVersion(std.testing.allocator, &.{ "--remote", "ws://127.0.0.1:1", "sandbox", "macos", "--add-dir", "/tmp", "--help" })));
+    try std.testing.expect(!(try rootArgsTailHasHelpOrVersion(std.testing.allocator, &.{ "--remote", "ws://127.0.0.1:1", "exec", "review", "--version" })));
+    try std.testing.expect(!(try rootArgsTailHasHelpOrVersion(std.testing.allocator, &.{ "--remote", "ws://127.0.0.1:1", "cloud", "exec", "--version" })));
+    try std.testing.expect(!(try rootArgsTailHasHelpOrVersion(std.testing.allocator, &.{ "--remote", "ws://127.0.0.1:1", "cloud", "exec", "--color", "red", "--help" })));
+    try std.testing.expect(!(try rootArgsTailHasHelpOrVersion(std.testing.allocator, &.{ "--remote", "ws://127.0.0.1:1", "cloud", "exec", "--env", "env-id", "--attempts", "5", "--help" })));
+    try std.testing.expect(!(try rootArgsTailHasHelpOrVersion(std.testing.allocator, &.{ "--strict-config", "-c", "foo.bar=1", "plugin", "add", "sample", "extra", "--help" })));
+    try std.testing.expect(!(try rootArgsTailHasHelpOrVersion(std.testing.allocator, &.{ "--strict-config", "-c", "foo.bar=1", "plugin", "add", "--marketplace", "--help" })));
+    try std.testing.expect(!(try rootArgsTailHasHelpOrVersion(std.testing.allocator, &.{ "--remote", "ws://127.0.0.1:1", "mcp", "add", "server", "echo", "--help" })));
+    try std.testing.expect(!(try rootArgsTailHasHelpOrVersion(std.testing.allocator, &.{ "--remote", "ws://127.0.0.1:1", "mcp", "remove", "server", "extra", "--help" })));
+    try std.testing.expect(!(try rootArgsTailHasHelpOrVersion(std.testing.allocator, &.{ "--remote", "ws://127.0.0.1:1", "mcp", "logout", "server", "extra", "--help" })));
+    try std.testing.expect(!(try rootArgsTailHasHelpOrVersion(std.testing.allocator, &.{ "--remote", "ws://127.0.0.1:1", "app-server", "--ws-auth", "bogus", "--help" })));
+    try std.testing.expect(!(try rootArgsTailHasHelpOrVersion(std.testing.allocator, &.{ "--remote", "ws://127.0.0.1:1", "app-server", "--ws-max-clock-skew-seconds", "bogus", "--help" })));
+    try std.testing.expect(!(try rootArgsTailHasHelpOrVersion(std.testing.allocator, &.{ "--remote", "ws://127.0.0.1:1", "responses-api-proxy", "--port", "bogus", "--help" })));
+    try std.testing.expect(!(try rootArgsTailHasHelpOrVersion(std.testing.allocator, &.{ "--remote", "ws://127.0.0.1:1", "login", "unexpected", "--help" })));
+    try std.testing.expect(!(try rootArgsTailHasHelpOrVersion(std.testing.allocator, &.{ "--remote", "ws://127.0.0.1:1", "login", "--experimental_port", "--help" })));
+    try std.testing.expect(!(try rootArgsTailHasHelpOrVersion(std.testing.allocator, &.{ "--remote", "ws://127.0.0.1:1", "login", "--experimental_port", "bogus", "--help" })));
+    try std.testing.expect(!(try rootArgsTailHasHelpOrVersion(std.testing.allocator, &.{ "prompt-token", "--", "--help" })));
 }
 
 test "root strict config is rejected for unsupported subcommands" {
@@ -2629,6 +3944,88 @@ test "root prompt fallback honors trailing global flags" {
     try std.testing.expectError(error.MissingRemoteOptionValue, parseRootPromptTail(
         allocator,
         &.{ "--remote", "--no-alt-screen" },
+        &overrides,
+        &feature_overrides,
+        &additional_writable_roots,
+        &image_files,
+        &root_config_child_args,
+        &approval_policy_requested,
+        &dangerous_bypass_requested,
+    ));
+    try std.testing.expectError(error.UnexpectedPromptArgument, parseRootPromptTail(
+        allocator,
+        &.{ "--cd", "--bad" },
+        &overrides,
+        &feature_overrides,
+        &additional_writable_roots,
+        &image_files,
+        &root_config_child_args,
+        &approval_policy_requested,
+        &dangerous_bypass_requested,
+    ));
+    approval_policy_requested = false;
+    dangerous_bypass_requested = false;
+    try std.testing.expectEqual(
+        RootPromptFlagAction.help,
+        (try parseRootPromptTail(
+            allocator,
+            &.{ "--yolo", "-a", "never", "--help" },
+            &overrides,
+            &feature_overrides,
+            &additional_writable_roots,
+            &image_files,
+            &root_config_child_args,
+            &approval_policy_requested,
+            &dangerous_bypass_requested,
+        )).?,
+    );
+    try std.testing.expectEqual(
+        RootPromptFlagAction.help,
+        (try parseRootPromptTail(
+            allocator,
+            &.{ "--config", "approval_policy=bogus", "--help" },
+            &overrides,
+            &feature_overrides,
+            &additional_writable_roots,
+            &image_files,
+            &root_config_child_args,
+            &approval_policy_requested,
+            &dangerous_bypass_requested,
+        )).?,
+    );
+    try std.testing.expectEqual(
+        RootPromptFlagAction.help,
+        (try parseRootPromptTail(
+            allocator,
+            &.{ "--enable", "definitely-not-a-feature", "--help" },
+            &overrides,
+            &feature_overrides,
+            &additional_writable_roots,
+            &image_files,
+            &root_config_child_args,
+            &approval_policy_requested,
+            &dangerous_bypass_requested,
+        )).?,
+    );
+    try std.testing.expectEqual(
+        RootPromptFlagAction.version,
+        (try parseRootPromptTail(
+            allocator,
+            &.{ "--enable", "definitely-not-a-feature", "--version" },
+            &overrides,
+            &feature_overrides,
+            &additional_writable_roots,
+            &image_files,
+            &root_config_child_args,
+            &approval_policy_requested,
+            &dangerous_bypass_requested,
+        )).?,
+    );
+    approval_policy_requested = false;
+    dangerous_bypass_requested = false;
+    try std.testing.expectError(error.ConflictingCliOptions, parseRootPromptTail(
+        allocator,
+        &.{ "--yolo", "-a", "never" },
         &overrides,
         &feature_overrides,
         &additional_writable_roots,

@@ -231,8 +231,12 @@ fn parseArgsWithOptions(allocator: std.mem.Allocator, args: []const []const u8, 
     var parsed = ReviewArgs{};
     errdefer parsed.deinit(allocator);
 
-    var prompt_parts = std.ArrayList([]const u8).empty;
-    defer prompt_parts.deinit(allocator);
+    if (helpPreflight(args, parse_options)) {
+        parsed.help = true;
+        return parsed;
+    }
+
+    try validateSyntax(args, parse_options);
 
     var index: usize = 0;
     var end_options = false;
@@ -365,7 +369,7 @@ fn parseArgsWithOptions(allocator: std.mem.Allocator, args: []const []const u8, 
             try setRequiredOption(allocator, &parsed.commit_title, arg["--title=".len..]);
             continue;
         }
-        if (!end_options and std.mem.eql(u8, arg, "-") and prompt_parts.items.len == 0) {
+        if (!end_options and std.mem.eql(u8, arg, "-") and parsed.prompt == null) {
             parsed.read_stdin = true;
             continue;
         }
@@ -373,7 +377,8 @@ fn parseArgsWithOptions(allocator: std.mem.Allocator, args: []const []const u8, 
             return error.UnknownReviewOption;
         }
 
-        try prompt_parts.append(allocator, arg);
+        if (parsed.prompt != null or parsed.read_stdin) return error.InvalidReviewArguments;
+        parsed.prompt = try allocator.dupe(u8, arg);
     }
 
     var target_count: usize = 0;
@@ -381,16 +386,155 @@ fn parseArgsWithOptions(allocator: std.mem.Allocator, args: []const []const u8, 
     if (parsed.base != null) target_count += 1;
     if (parsed.commit != null) target_count += 1;
     if (parsed.read_stdin) target_count += 1;
-    if (prompt_parts.items.len > 0) target_count += 1;
+    if (parsed.prompt != null) target_count += 1;
     if (target_count > 1) return error.InvalidReviewArguments;
     if (parsed.commit_title != null and parsed.commit == null) return error.InvalidReviewArguments;
 
-    if (prompt_parts.items.len > 0) {
-        parsed.prompt = try cli_utils.joinWithSpaces(allocator, prompt_parts.items);
-    }
     if (!parsed.help and !parsed.uncommitted and parsed.base == null and parsed.commit == null and !parsed.read_stdin and parsed.prompt == null) return error.MissingReviewTarget;
 
     return parsed;
+}
+
+fn validateSyntax(args: []const []const u8, parse_options: ParseOptions) !void {
+    var prompt_seen = false;
+    var read_stdin = false;
+    var index: usize = 0;
+    var end_options = false;
+    while (index < args.len) : (index += 1) {
+        const arg = args[index];
+        if (!end_options and std.mem.eql(u8, arg, "--")) {
+            end_options = true;
+            continue;
+        }
+        if (!end_options and isHelpFlag(arg)) continue;
+
+        if (!end_options and (std.mem.eql(u8, arg, "--config") or
+            std.mem.eql(u8, arg, "-c") or
+            std.mem.eql(u8, arg, "--base") or
+            std.mem.eql(u8, arg, "--commit") or
+            std.mem.eql(u8, arg, "--title") or
+            (parse_options.allow_exec_options and
+                (std.mem.eql(u8, arg, "--model") or
+                    std.mem.eql(u8, arg, "-m") or
+                    std.mem.eql(u8, arg, "--output-last-message") or
+                    std.mem.eql(u8, arg, "-o")))))
+        {
+            index += 1;
+            if (index >= args.len or optionValueBoundary(args[index])) return error.MissingReviewOptionValue;
+            continue;
+        }
+        if (!end_options and (std.mem.eql(u8, arg, "--enable") or std.mem.eql(u8, arg, "--disable"))) {
+            index += 1;
+            if (index >= args.len or optionValueBoundary(args[index])) return error.MissingFeatureName;
+            continue;
+        }
+
+        if (!end_options and (std.mem.startsWith(u8, arg, "--config=") or
+            std.mem.startsWith(u8, arg, "--enable=") or
+            std.mem.startsWith(u8, arg, "--disable=") or
+            std.mem.startsWith(u8, arg, "--base=") or
+            std.mem.startsWith(u8, arg, "--commit=") or
+            std.mem.startsWith(u8, arg, "--title=")))
+        {
+            continue;
+        }
+
+        if (!end_options and parse_options.allow_exec_options and
+            (std.mem.startsWith(u8, arg, "--model=") or
+                std.mem.startsWith(u8, arg, "--output-last-message=") or
+                std.mem.eql(u8, arg, "--json") or
+                std.mem.eql(u8, arg, "--experimental-json") or
+                std.mem.eql(u8, arg, "--ephemeral") or
+                std.mem.eql(u8, arg, "--ignore-user-config") or
+                std.mem.eql(u8, arg, "--ignore-rules") or
+                std.mem.eql(u8, arg, "--skip-git-repo-check") or
+                std.mem.eql(u8, arg, "--dangerously-bypass-approvals-and-sandbox") or
+                std.mem.eql(u8, arg, "--dangerously-bypass-hook-trust")))
+        {
+            continue;
+        }
+
+        if (!end_options and (std.mem.eql(u8, arg, "--strict-config") or std.mem.eql(u8, arg, "--uncommitted"))) continue;
+        if (!end_options and std.mem.eql(u8, arg, "-") and !prompt_seen and !read_stdin) {
+            read_stdin = true;
+            continue;
+        }
+        if (!end_options and std.mem.startsWith(u8, arg, "-")) return error.UnknownReviewOption;
+        if (prompt_seen or read_stdin) return error.InvalidReviewArguments;
+        prompt_seen = true;
+    }
+}
+
+fn helpPreflight(args: []const []const u8, parse_options: ParseOptions) bool {
+    var prompt_seen = false;
+    var read_stdin = false;
+    var index: usize = 0;
+    while (index < args.len) : (index += 1) {
+        const arg = args[index];
+        if (std.mem.eql(u8, arg, "--")) return false;
+        if (isHelpFlag(arg)) return true;
+
+        if (std.mem.eql(u8, arg, "--config") or
+            std.mem.eql(u8, arg, "-c") or
+            std.mem.eql(u8, arg, "--enable") or
+            std.mem.eql(u8, arg, "--disable") or
+            std.mem.eql(u8, arg, "--base") or
+            std.mem.eql(u8, arg, "--commit") or
+            std.mem.eql(u8, arg, "--title") or
+            (parse_options.allow_exec_options and
+                (std.mem.eql(u8, arg, "--model") or
+                    std.mem.eql(u8, arg, "-m") or
+                    std.mem.eql(u8, arg, "--output-last-message") or
+                    std.mem.eql(u8, arg, "-o"))))
+        {
+            index += 1;
+            if (index >= args.len or optionValueBoundary(args[index])) return false;
+            continue;
+        }
+
+        if (std.mem.startsWith(u8, arg, "--config=") or
+            std.mem.startsWith(u8, arg, "--enable=") or
+            std.mem.startsWith(u8, arg, "--disable=") or
+            std.mem.startsWith(u8, arg, "--base=") or
+            std.mem.startsWith(u8, arg, "--commit=") or
+            std.mem.startsWith(u8, arg, "--title="))
+        {
+            continue;
+        }
+
+        if (parse_options.allow_exec_options and
+            (std.mem.startsWith(u8, arg, "--model=") or
+                std.mem.startsWith(u8, arg, "--output-last-message=") or
+                std.mem.eql(u8, arg, "--json") or
+                std.mem.eql(u8, arg, "--experimental-json") or
+                std.mem.eql(u8, arg, "--ephemeral") or
+                std.mem.eql(u8, arg, "--ignore-user-config") or
+                std.mem.eql(u8, arg, "--ignore-rules") or
+                std.mem.eql(u8, arg, "--skip-git-repo-check") or
+                std.mem.eql(u8, arg, "--dangerously-bypass-approvals-and-sandbox") or
+                std.mem.eql(u8, arg, "--dangerously-bypass-hook-trust")))
+        {
+            continue;
+        }
+
+        if (std.mem.eql(u8, arg, "--strict-config") or std.mem.eql(u8, arg, "--uncommitted")) continue;
+        if (std.mem.eql(u8, arg, "-") and !prompt_seen and !read_stdin) {
+            read_stdin = true;
+            continue;
+        }
+        if (std.mem.startsWith(u8, arg, "-")) return false;
+        if (prompt_seen or read_stdin) return false;
+        prompt_seen = true;
+    }
+    return false;
+}
+
+fn optionValueBoundary(arg: []const u8) bool {
+    return std.mem.startsWith(u8, arg, "-");
+}
+
+fn isHelpFlag(arg: []const u8) bool {
+    return std.mem.eql(u8, arg, "--help") or std.mem.eql(u8, arg, "-h");
 }
 
 fn readPromptFromStdin(allocator: std.mem.Allocator) ![]const u8 {
@@ -582,13 +726,20 @@ test "review args parse uncommitted" {
     try std.testing.expect(parsed.prompt == null);
 }
 
-test "review args join custom prompt" {
+test "review args parse custom prompt" {
     const allocator = std.testing.allocator;
-    const argv = [_][]const u8{ "check", "this" };
+    const argv = [_][]const u8{"check this"};
     const parsed = try parseArgs(allocator, argv[0..]);
     defer parsed.deinit(allocator);
 
     try std.testing.expectEqualStrings("check this", parsed.prompt.?);
+}
+
+test "review args reject extra custom prompt arguments before semantic overrides" {
+    const allocator = std.testing.allocator;
+    const argv = [_][]const u8{ "--config", "bogus", "check", "this" };
+
+    try std.testing.expectError(error.InvalidReviewArguments, parseArgs(allocator, argv[0..]));
 }
 
 test "review args parse stdin prompt sentinel" {
@@ -695,7 +846,7 @@ test "review args reject invalid commit values before prompt building" {
     }
     {
         const argv = [_][]const u8{ "--commit", "--stat" };
-        try std.testing.expectError(error.InvalidGitRevision, parseArgs(allocator, argv[0..]));
+        try std.testing.expectError(error.MissingReviewOptionValue, parseArgs(allocator, argv[0..]));
     }
 }
 

@@ -54,6 +54,10 @@ pub fn runWithOptions(allocator: std.mem.Allocator, args: *std.process.Args.Iter
 
 fn parseArgs(args: []const []const u8) !ApplyArgs {
     var parsed = ApplyArgs{};
+    if (helpPreflight(args)) {
+        parsed.help = true;
+        return parsed;
+    }
     var index: usize = 0;
     while (index < args.len) : (index += 1) {
         const arg = args[index];
@@ -76,6 +80,29 @@ fn parseArgs(args: []const []const u8) !ApplyArgs {
         parsed.task_id = arg;
     }
     return parsed;
+}
+
+fn helpPreflight(args: []const []const u8) bool {
+    var task_seen = false;
+    var index: usize = 0;
+    while (index < args.len) : (index += 1) {
+        const arg = args[index];
+        if (isHelpFlag(arg)) return true;
+        if (std.mem.eql(u8, arg, "--config") or std.mem.eql(u8, arg, "-c")) {
+            index += 1;
+            if (index >= args.len or optionValueBoundary(args[index])) return false;
+            continue;
+        }
+        if (std.mem.startsWith(u8, arg, "--config=")) continue;
+        if (std.mem.startsWith(u8, arg, "-")) return false;
+        if (task_seen) return false;
+        task_seen = true;
+    }
+    return false;
+}
+
+fn optionValueBoundary(arg: []const u8) bool {
+    return std.mem.startsWith(u8, arg, "-");
 }
 
 fn fetchTask(
