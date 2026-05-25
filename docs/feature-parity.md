@@ -262,11 +262,15 @@ Zig TUI help in `src/tui.zig`, and the broader narrative tracker in
   Rust-compatible personal HOME marketplace roots,
   including `PLUGIN@MARKETPLACE` and `--marketplace` selectors, Rust-shaped
   listing tables, local plugin cache install, config enablement, and local
-  cache/config removal. CLI `codex plugin marketplace list` lists configured
-  and home marketplace roots, including roots whose plugin entries are filtered
-  out or empty. Remaining CLI plugin parity is exact config-override option
-  depth, remote catalog/cache synchronization, and full remote/plugin cache
-  behavior.
+  cache/config removal. The plugin and plugin marketplace command families now
+  accept Rust-visible `-c/--config`, `--enable`, and `--disable` options before
+  or after the subcommand, with feature-gate overrides, help preflight, and
+  missing-value behavior aligned to Rust; root and plugin-local config
+  overrides now flow into marketplace source and plugin enabled-state config for
+  list/add/marketplace-list surfaces. CLI `codex plugin marketplace list` lists
+  configured and home marketplace roots, including roots whose plugin entries
+  are filtered out or empty. Remaining CLI plugin parity is remote catalog/cache
+  synchronization and full remote/plugin cache behavior.
 - Implement richer TUI `/plugins` management and richer `/apps` flows,
   reusing the existing app-server plugin/app runtime where possible.
 - Close user-visible app-server plugin gaps that remain after CLI/TUI routing:
