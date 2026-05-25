@@ -185,14 +185,13 @@ Zig TUI help in `src/tui.zig`, and the broader narrative tracker in
   ChatGPT/API-key auth signals, bounded active-provider HTTP reachability probes
   for the base URL and provider models route, bounded Responses WebSocket
   handshake probes for provider-enabled `responses` endpoints with
-  auth-mode/header diagnostics, and passive app-server daemon mode, pid,
-  settings, update-loop path, and
+  auth-mode/header diagnostics plus immediate close-frame code/reason warnings,
+  and passive app-server daemon mode, pid, settings, update-loop path, and
   control-socket reachability reporting. Doctor-local
   `--strict-config` is rejected like Rust while root `--strict-config doctor` remains supported.
   Remaining doctor parity is exact diagnostic depth: Rust's full installation,
-  WebSocket immediate-close inspection, standalone release-cache diagnostics,
-  and richer live background-daemon probes are deeper than the current bounded
-  Zig checks.
+  standalone release-cache diagnostics, and richer live background-daemon probes
+  are deeper than the current bounded Zig checks.
 - Root interactive/resume/fork, exec, and review support for
   `--strict-config` is implemented for user `config.toml` unknown fields and
   `-c/--config` unknown override fields, including unknown feature keys and

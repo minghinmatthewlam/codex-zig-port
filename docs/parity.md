@@ -88,9 +88,10 @@ reachability probes now check the configured base URL and provider models route.
 Bounded Responses WebSocket reachability now honors provider
 `supports_websockets` and `websocket_connect_timeout_ms`, resolves ChatGPT
 versus API-key auth mode, performs the `responses` upgrade handshake, and
-reports HTTP 101 plus reasoning/model-cache header presence. Rust's immediate
-close-frame inspection and standalone release-cache diagnostics remain planned
-exact-depth parity.
+reports HTTP 101 plus reasoning/model-cache header presence. It also applies
+Rust's immediate close-frame grace window after a successful upgrade and warns
+with close code/reason details when the stream closes immediately. Standalone
+release-cache diagnostics remain planned exact-depth parity.
 
 Current app-server `hooks/list` coverage: user `$CODEX_HOME/config.toml`,
 `$CODEX_HOME/hooks.json`, per-cwd `.codex/config.toml`, and per-cwd
