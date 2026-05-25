@@ -416,7 +416,7 @@ fn buildReport(allocator: std.mem.Allocator, args: ParsedArgs, codex_version: []
 
     const cfg_load = try loadConfigForDoctor(allocator, args);
 
-    try checks.append(allocator, try installationCheck(allocator, codex_version));
+    try checks.append(allocator, try installationCheck(allocator, codex_version, !args.summary));
     try checks.append(allocator, try runtimeCheck(allocator, codex_version));
     try checks.append(allocator, try searchCheck(allocator));
     try checks.append(allocator, try configCheck(allocator, cfg_load, args));
@@ -473,12 +473,13 @@ fn loadConfigForDoctor(allocator: std.mem.Allocator, args: ParsedArgs) !ConfigLo
     };
 }
 
-fn installationCheck(allocator: std.mem.Allocator, codex_version: []const u8) !Check {
-    var check = Check.init("installation", "install", .ok, "installation context is readable");
+fn installationCheck(allocator: std.mem.Allocator, codex_version: []const u8, show_details: bool) !Check {
+    var check = Check.init("installation", "install", .ok, "installation looks consistent");
     try check.addDetail(allocator, "version", codex_version);
 
     const io = std.Io.Threaded.global_single_threaded.io();
     const exe = std.process.executablePathAlloc(io, allocator) catch null;
+    defer if (exe) |path| allocator.free(path);
     if (exe) |path| {
         try check.addDetail(allocator, "current executable", path);
     } else {
@@ -487,13 +488,30 @@ fn installationCheck(allocator: std.mem.Allocator, codex_version: []const u8) !C
         try check.addDetail(allocator, "current executable", "unknown");
     }
 
-    if (try update_cmd.detectCurrentUpdateAction(allocator)) |action| {
-        try check.addDetail(allocator, "update action", action.commandString());
-    } else {
-        check.status = .warning;
-        check.summary = "installation method is not detected";
-        try check.addDetail(allocator, "update action", "unknown");
-        check.remediation = "Update this build manually when a newer Codex version is needed.";
+    const raw_managed_by_npm = try envPresent(allocator, "CODEX_MANAGED_BY_NPM");
+    const raw_managed_by_bun = try envPresent(allocator, "CODEX_MANAGED_BY_BUN");
+    const inherited_managed_env = update_cmd.inheritedManagedEnvForDevBinary(exe, raw_managed_by_npm, raw_managed_by_bun);
+    const managed_by_npm = raw_managed_by_npm and !inherited_managed_env;
+    const managed_by_bun = raw_managed_by_bun and !inherited_managed_env;
+    const update_action = try update_cmd.detectCurrentUpdateAction(allocator);
+
+    try check.addDetail(allocator, "install context", installContextLabel(update_action));
+    if (inherited_managed_env) {
+        try check.addDetail(allocator, "ignored inherited package-manager launch env", "true");
+    }
+    try check.addDetail(allocator, "managed by npm", boolString(managed_by_npm));
+    try check.addDetail(allocator, "managed by bun", boolString(managed_by_bun));
+    try addEnvPathDetail(allocator, &check, "managed package root", "CODEX_MANAGED_PACKAGE_ROOT");
+
+    const path_entries = try commandPathEntries(allocator, "codex-zig");
+    defer freeStringSlice(allocator, path_entries);
+    if (path_entries.len > 1) {
+        try check.addDetailFmt(allocator, "PATH codex-zig entries", "{d}", .{path_entries.len});
+    }
+    if (show_details or path_entries.len > 1) {
+        for (path_entries, 0..) |entry, index| {
+            try check.addDetailFmt(allocator, try std.fmt.allocPrint(allocator, "PATH codex-zig #{d}", .{index + 1}), "{s}", .{entry});
+        }
     }
     return check;
 }
@@ -783,14 +801,11 @@ fn sandboxCheck(allocator: std.mem.Allocator, cfg_load: ConfigLoad) !Check {
 }
 
 fn updatesCheck(allocator: std.mem.Allocator) !Check {
-    var check = Check.init("updates.status", "updates", .ok, "update configuration is locally inspectable");
+    var check = Check.init("updates.status", "updates", .ok, "update configuration is locally consistent");
     if (try update_cmd.detectCurrentUpdateAction(allocator)) |action| {
         try check.addDetail(allocator, "update action", action.commandString());
     } else {
-        check.status = .warning;
-        check.summary = "update method is unknown";
-        try check.addDetail(allocator, "update action", "unknown");
-        check.remediation = "Update this build manually.";
+        try check.addDetail(allocator, "update action", "manual or unknown");
     }
     return check;
 }
@@ -2025,12 +2040,20 @@ fn isPathStatusSuffixStart(text: []const u8, index: usize) bool {
 
 fn envPresent(allocator: std.mem.Allocator, comptime name: []const u8) !bool {
     const value = try env.getOwned(allocator, name);
-    return if (value) |text| text.len > 0 else false;
+    if (value) |text| {
+        defer allocator.free(text);
+        return text.len > 0;
+    }
+    return false;
 }
 
 fn envPresentDynamicTrimmed(allocator: std.mem.Allocator, name: []const u8) !bool {
     const value = try env.getOwnedDynamic(allocator, name);
-    return if (value) |text| std.mem.trim(u8, text, " \t\r\n").len > 0 else false;
+    if (value) |text| {
+        defer allocator.free(text);
+        return std.mem.trim(u8, text, " \t\r\n").len > 0;
+    }
+    return false;
 }
 
 fn joinOrNone(allocator: std.mem.Allocator, values: []const []const u8) ![]const u8 {
@@ -2168,6 +2191,45 @@ fn executableFileCandidate(
         else => return err,
     };
     return candidate;
+}
+
+fn installContextLabel(action: ?update_cmd.UpdateAction) []const u8 {
+    return switch (action orelse return "other") {
+        .npm_global_latest => "npm",
+        .bun_global_latest => "bun",
+        .brew_upgrade => "brew",
+        .standalone_unix => "standalone (unix)",
+        .standalone_windows => "standalone (windows)",
+    };
+}
+
+fn addEnvPathDetail(allocator: std.mem.Allocator, check: *Check, key: []const u8, comptime name: []const u8) !void {
+    const value = try env.getOwned(allocator, name);
+    defer if (value) |path| allocator.free(path);
+    try check.addDetail(allocator, key, value orelse "not set");
+}
+
+fn commandPathEntries(allocator: std.mem.Allocator, command: []const u8) ![][]const u8 {
+    const path_env = try env.getOwned(allocator, "PATH") orelse return try allocator.alloc([]const u8, 0);
+    defer allocator.free(path_env);
+
+    var entries = std.ArrayList([]const u8).empty;
+    errdefer {
+        for (entries.items) |entry| allocator.free(entry);
+        entries.deinit(allocator);
+    }
+    var parts = std.mem.splitScalar(u8, path_env, std.fs.path.delimiter);
+    const io = std.Io.Threaded.global_single_threaded.io();
+    while (parts.next()) |raw_dir| {
+        const dir = if (raw_dir.len == 0) "." else raw_dir;
+        if (try resolveCommandInDir(allocator, io, dir, command)) |candidate| try entries.append(allocator, candidate);
+    }
+    return entries.toOwnedSlice(allocator);
+}
+
+fn freeStringSlice(allocator: std.mem.Allocator, values: []const []const u8) void {
+    for (values) |value| allocator.free(value);
+    allocator.free(values);
 }
 
 fn firstNonEmptyLine(text: []const u8) ?[]const u8 {

@@ -91,8 +91,9 @@ fn detectUpdateActionFromContext(
     managed_by_bun: bool,
     is_windows: bool,
 ) !?UpdateAction {
-    if (managed_by_npm) return .npm_global_latest;
-    if (managed_by_bun) return .bun_global_latest;
+    const inherited_managed_env = inheritedManagedEnvForDevBinary(current_exe, managed_by_npm, managed_by_bun);
+    if (managed_by_npm and !inherited_managed_env) return .npm_global_latest;
+    if (managed_by_bun and !inherited_managed_env) return .bun_global_latest;
 
     if (current_exe) |exe_path| {
         if (try standaloneUpdateAction(allocator, exe_path, codex_home, is_windows)) |action| return action;
@@ -101,6 +102,29 @@ fn detectUpdateActionFromContext(
         }
     }
     return null;
+}
+
+pub fn inheritedManagedEnvForDevBinary(current_exe: ?[]const u8, managed_by_npm: bool, managed_by_bun: bool) bool {
+    if (!managed_by_npm and !managed_by_bun) return false;
+    const exe_path = current_exe orelse return false;
+    return pathLooksLikeDevBuild(exe_path);
+}
+
+fn pathLooksLikeDevBuild(path: []const u8) bool {
+    var previous: ?[]const u8 = null;
+    var parts = std.mem.tokenizeAny(u8, path, "/\\");
+    while (parts.next()) |part| {
+        if (std.mem.eql(u8, part, "zig-out") or std.mem.eql(u8, part, ".zig-cache")) return true;
+        if (previous) |prev| {
+            if (std.mem.eql(u8, prev, "target") and
+                (std.mem.eql(u8, part, "debug") or std.mem.eql(u8, part, "release")))
+            {
+                return true;
+            }
+        }
+        previous = part;
+    }
+    return false;
 }
 
 fn standaloneUpdateAction(
@@ -196,6 +220,30 @@ test "update detection maps install context to actions" {
         true,
         false,
     )).?);
+    try std.testing.expectEqual(null, try detectUpdateActionFromContext(
+        allocator,
+        true,
+        "/Users/alice/dev/codex-zig-port/zig-out/bin/codex-zig",
+        null,
+        true,
+        false,
+        false,
+    ));
+    try std.testing.expect(inheritedManagedEnvForDevBinary(
+        "/Users/alice/dev/codex/target/debug/codex",
+        true,
+        false,
+    ));
+    try std.testing.expect(inheritedManagedEnvForDevBinary(
+        "/Users/alice/dev/codex-zig-port/zig-out/bin/codex-zig",
+        true,
+        false,
+    ));
+    try std.testing.expect(!inheritedManagedEnvForDevBinary(
+        "/opt/homebrew/bin/codex",
+        true,
+        false,
+    ));
 }
 
 test "update detection maps standalone release layout" {
