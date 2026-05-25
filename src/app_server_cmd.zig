@@ -6932,6 +6932,36 @@ const COLLABORATION_MODE_LIST_RESPONSE_TS =
     \\
     ;
 
+const PERMISSION_PROFILE_LIST_PARAMS_TS =
+    GENERATED_TS_HEADER ++
+    \\export interface PermissionProfileListParams {
+    \\  cursor?: string | null;
+    \\  limit?: number | null;
+    \\  cwd?: string | null;
+    \\}
+    \\
+    ;
+
+const PERMISSION_PROFILE_SUMMARY_TS =
+    GENERATED_TS_HEADER ++
+    \\export interface PermissionProfileSummary {
+    \\  id: string;
+    \\  description: string | null;
+    \\}
+    \\
+    ;
+
+const PERMISSION_PROFILE_LIST_RESPONSE_TS =
+    GENERATED_TS_HEADER ++
+    \\import type { PermissionProfileSummary } from "./PermissionProfileSummary";
+    \\
+    \\export interface PermissionProfileListResponse {
+    \\  data: PermissionProfileSummary[];
+    \\  nextCursor: string | null;
+    \\}
+    \\
+    ;
+
 const COLLABORATION_MODE_MASK_TS =
     GENERATED_TS_HEADER ++
     \\import type { ModeKind } from "../ModeKind";
@@ -7867,6 +7897,7 @@ const THREAD_START_PARAMS_TS =
     \\  approvalPolicy?: "untrusted" | "on-failure" | "on-request" | "never" | null;
     \\  approvalsReviewer?: "user" | "auto_review" | "guardian_subagent" | null;
     \\  sandbox?: "read-only" | "workspace-write" | "danger-full-access" | null;
+    \\  permissions?: string | null;
     \\  config?: Record<string, unknown> | null;
     \\  serviceName?: string | null;
     \\  baseInstructions?: string | null;
@@ -8414,7 +8445,6 @@ const TURN_START_PARAMS_TS =
     \\import type { ReasoningEffort } from "../ReasoningEffort";
     \\import type { ReasoningSummary } from "../ReasoningSummary";
     \\import type { ApprovalsReviewer } from "./ApprovalsReviewer";
-    \\import type { PermissionProfileSelectionParams } from "./PermissionProfileSelectionParams";
     \\import type { SandboxPolicy } from "./SandboxPolicy";
     \\import type { UserInput } from "./UserInput";
     \\
@@ -8433,7 +8463,7 @@ const TURN_START_PARAMS_TS =
     \\  approvalsReviewer?: ApprovalsReviewer | null;
     \\  sandbox?: "read-only" | "workspace-write" | "danger-full-access" | null;
     \\  sandboxPolicy?: SandboxPolicy | null;
-    \\  permissions?: PermissionProfileSelectionParams | null;
+    \\  permissions?: string | null;
     \\  outputSchema?: unknown | null;
     \\}
     \\
@@ -10426,6 +10456,7 @@ const CLIENT_REQUEST_TS =
     \\import type { McpServerToolCallParams } from "./v2/McpServerToolCallParams";
     \\import type { ModelListParams } from "./v2/ModelListParams";
     \\import type { ModelProviderCapabilitiesReadParams } from "./v2/ModelProviderCapabilitiesReadParams";
+    \\import type { PermissionProfileListParams } from "./v2/PermissionProfileListParams";
     \\import type { PluginInstallParams } from "./v2/PluginInstallParams";
     \\import type { PluginListParams } from "./v2/PluginListParams";
     \\import type { PluginReadParams } from "./v2/PluginReadParams";
@@ -10675,6 +10706,10 @@ const CLIENT_REQUEST_TS =
     \\  | {
     \\      method: "model/list";
     \\      params?: ModelListParams | null;
+    \\    }
+    \\  | {
+    \\      method: "permissionProfile/list";
+    \\      params?: PermissionProfileListParams | null;
     \\    }
     \\  | {
     \\      method: "experimentalFeature/list";
@@ -10932,6 +10967,7 @@ const CLIENT_RESPONSE_TS =
     \\import type { MemoryResetResponse } from "./v2/MemoryResetResponse";
     \\import type { ModelListResponse } from "./v2/ModelListResponse";
     \\import type { ModelProviderCapabilitiesReadResponse } from "./v2/ModelProviderCapabilitiesReadResponse";
+    \\import type { PermissionProfileListResponse } from "./v2/PermissionProfileListResponse";
     \\import type { ProcessKillResponse } from "./v2/ProcessKillResponse";
     \\import type { ProcessResizePtyResponse } from "./v2/ProcessResizePtyResponse";
     \\import type { ProcessSpawnResponse } from "./v2/ProcessSpawnResponse";
@@ -11238,6 +11274,11 @@ const CLIENT_RESPONSE_TS =
     \\      id: RequestId;
     \\      method: "model/list";
     \\      result: ModelListResponse;
+    \\    }
+    \\  | {
+    \\      id: RequestId;
+    \\      method: "permissionProfile/list";
+    \\      result: PermissionProfileListResponse;
     \\    }
     \\  | {
     \\      id: RequestId;
@@ -12137,6 +12178,9 @@ const V2_INDEX_TS =
     \\export type { CollaborationModeListParams } from "./CollaborationModeListParams";
     \\export type { CollaborationModeListResponse } from "./CollaborationModeListResponse";
     \\export type { CollaborationModeMask } from "./CollaborationModeMask";
+    \\export type { PermissionProfileListParams } from "./PermissionProfileListParams";
+    \\export type { PermissionProfileListResponse } from "./PermissionProfileListResponse";
+    \\export type { PermissionProfileSummary } from "./PermissionProfileSummary";
     \\export type { ExperimentalFeature } from "./ExperimentalFeature";
     \\export type { ExperimentalFeatureEnablement } from "./ExperimentalFeatureEnablement";
     \\export type { ExperimentalFeatureEnablementSetParams } from "./ExperimentalFeatureEnablementSetParams";
@@ -18047,6 +18091,62 @@ const COLLABORATION_MODE_LIST_RESPONSE_JSON_SCHEMA =
     \\
 ;
 
+const PERMISSION_PROFILE_LIST_PARAMS_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "PermissionProfileListParams",
+    \\  "type": "object",
+    \\  "properties": {
+    \\    "cursor": { "type": ["string", "null"] },
+    \\    "limit": { "type": ["integer", "null"], "minimum": 0 },
+    \\    "cwd": { "type": ["string", "null"] }
+    \\  },
+    \\  "additionalProperties": true
+    \\}
+    \\
+;
+
+const PERMISSION_PROFILE_SUMMARY_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "PermissionProfileSummary",
+    \\  "type": "object",
+    \\  "required": ["id"],
+    \\  "properties": {
+    \\    "id": { "type": "string" },
+    \\    "description": { "type": ["string", "null"] }
+    \\  },
+    \\  "additionalProperties": false
+    \\}
+    \\
+;
+
+const PERMISSION_PROFILE_LIST_RESPONSE_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "PermissionProfileListResponse",
+    \\  "type": "object",
+    \\  "required": ["data"],
+    \\  "properties": {
+    \\    "data": { "type": "array", "items": { "$ref": "#/$defs/PermissionProfileSummary" } },
+    \\    "nextCursor": { "type": ["string", "null"] }
+    \\  },
+    \\  "$defs": {
+    \\    "PermissionProfileSummary": {
+    \\      "type": "object",
+    \\      "required": ["id"],
+    \\      "properties": {
+    \\        "id": { "type": "string" },
+    \\        "description": { "type": ["string", "null"] }
+    \\      },
+    \\      "additionalProperties": false
+    \\    }
+    \\  },
+    \\  "additionalProperties": false
+    \\}
+    \\
+;
+
 const MODEL_LIST_PARAMS_JSON_SCHEMA =
     \\{
     \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -19597,6 +19697,7 @@ const THREAD_START_PARAMS_JSON_SCHEMA =
     \\    "approvalPolicy": { "enum": ["untrusted", "on-failure", "on-request", "never", null] },
     \\    "approvalsReviewer": { "enum": ["user", "auto_review", "guardian_subagent", null] },
     \\    "sandbox": { "enum": ["read-only", "workspace-write", "danger-full-access", null] },
+    \\    "permissions": { "type": ["string", "null"] },
     \\    "config": { "type": ["object", "null"] },
     \\    "serviceName": { "type": ["string", "null"] },
     \\    "baseInstructions": { "type": ["string", "null"] },
@@ -20041,12 +20142,7 @@ const TURN_START_PARAMS_JSON_SCHEMA =
     \\        { "type": "null" }
     \\      ]
     \\    },
-    \\    "permissions": {
-    \\      "oneOf": [
-    \\        { "$ref": "PermissionProfileSelectionParams.json" },
-    \\        { "type": "null" }
-    \\      ]
-    \\    },
+    \\    "permissions": { "type": ["string", "null"] },
     \\    "outputSchema": true
     \\  },
     \\  "$defs": {
@@ -23981,6 +24077,33 @@ const APP_SERVER_PROTOCOL_SCHEMA_BUNDLE =
     \\      },
     \\      "additionalProperties": true
     \\    },
+    \\    "PermissionProfileListParams": {
+    \\      "type": "object",
+    \\      "properties": {
+    \\        "cursor": { "type": ["string", "null"] },
+    \\        "limit": { "type": ["integer", "null"], "minimum": 0 },
+    \\        "cwd": { "type": ["string", "null"] }
+    \\      },
+    \\      "additionalProperties": true
+    \\    },
+    \\    "PermissionProfileSummary": {
+    \\      "type": "object",
+    \\      "required": ["id"],
+    \\      "properties": {
+    \\        "id": { "type": "string" },
+    \\        "description": { "type": ["string", "null"] }
+    \\      },
+    \\      "additionalProperties": false
+    \\    },
+    \\    "PermissionProfileListResponse": {
+    \\      "type": "object",
+    \\      "required": ["data"],
+    \\      "properties": {
+    \\        "data": { "type": "array", "items": { "$ref": "#/$defs/PermissionProfileSummary" } },
+    \\        "nextCursor": { "type": ["string", "null"] }
+    \\      },
+    \\      "additionalProperties": false
+    \\    },
     \\    "ExperimentalFeatureListParams": {
     \\      "type": "object",
     \\      "properties": {
@@ -25267,6 +25390,7 @@ const APP_SERVER_PROTOCOL_SCHEMA_BUNDLE =
     \\        "approvalPolicy": { "enum": ["untrusted", "on-failure", "on-request", "never", null] },
     \\        "approvalsReviewer": { "enum": ["user", "auto_review", "guardian_subagent", null] },
     \\        "sandbox": { "enum": ["read-only", "workspace-write", "danger-full-access", null] },
+    \\        "permissions": { "type": ["string", "null"] },
     \\        "config": { "type": ["object", "null"] },
     \\        "serviceName": { "type": ["string", "null"] },
     \\        "baseInstructions": { "type": ["string", "null"] },
@@ -25589,12 +25713,7 @@ const APP_SERVER_PROTOCOL_SCHEMA_BUNDLE =
     \\            { "type": "null" }
     \\          ]
     \\        },
-    \\        "permissions": {
-    \\          "oneOf": [
-    \\            { "$ref": "#/$defs/PermissionProfileSelectionParams" },
-    \\            { "type": "null" }
-    \\          ]
-    \\        },
+    \\        "permissions": { "type": ["string", "null"] },
     \\        "outputSchema": true
     \\      },
     \\      "additionalProperties": true
@@ -27066,6 +27185,9 @@ const APP_SERVER_JSON_SCHEMA_FILES = [_]SchemaFile{
     .{ .name = "CollaborationModeListParams.json", .contents = COLLABORATION_MODE_LIST_PARAMS_JSON_SCHEMA },
     .{ .name = "CollaborationMode.json", .contents = COLLABORATION_MODE_JSON_SCHEMA },
     .{ .name = "CollaborationModeListResponse.json", .contents = COLLABORATION_MODE_LIST_RESPONSE_JSON_SCHEMA },
+    .{ .name = "PermissionProfileListParams.json", .contents = PERMISSION_PROFILE_LIST_PARAMS_JSON_SCHEMA },
+    .{ .name = "PermissionProfileSummary.json", .contents = PERMISSION_PROFILE_SUMMARY_JSON_SCHEMA },
+    .{ .name = "PermissionProfileListResponse.json", .contents = PERMISSION_PROFILE_LIST_RESPONSE_JSON_SCHEMA },
     .{ .name = "ModelListParams.json", .contents = MODEL_LIST_PARAMS_JSON_SCHEMA },
     .{ .name = "ModelUpgradeInfo.json", .contents = MODEL_UPGRADE_INFO_JSON_SCHEMA },
     .{ .name = "ModelAvailabilityNux.json", .contents = MODEL_AVAILABILITY_NUX_JSON_SCHEMA },
@@ -27377,6 +27499,9 @@ const APP_SERVER_JSON_SCHEMA_VERSIONED_ALIASES = [_][]const u8{
     "v2/ModelProviderCapabilitiesReadResponse.json",
     "v2/ModelReroutedNotification.json",
     "v2/ModelVerificationNotification.json",
+    "v2/PermissionProfileListParams.json",
+    "v2/PermissionProfileListResponse.json",
+    "v2/PermissionProfileSummary.json",
     "v2/PermissionProfileModificationParams.json",
     "v2/PermissionProfileSelectionParams.json",
     "v2/PlanDeltaNotification.json",
@@ -27774,6 +27899,9 @@ const APP_SERVER_TS_FILES = [_]SchemaFile{
     .{ .name = "v2/CollaborationModeListParams.ts", .contents = COLLABORATION_MODE_LIST_PARAMS_TS },
     .{ .name = "v2/CollaborationMode.ts", .contents = COLLABORATION_MODE_TS },
     .{ .name = "v2/CollaborationModeListResponse.ts", .contents = COLLABORATION_MODE_LIST_RESPONSE_TS },
+    .{ .name = "v2/PermissionProfileListParams.ts", .contents = PERMISSION_PROFILE_LIST_PARAMS_TS },
+    .{ .name = "v2/PermissionProfileSummary.ts", .contents = PERMISSION_PROFILE_SUMMARY_TS },
+    .{ .name = "v2/PermissionProfileListResponse.ts", .contents = PERMISSION_PROFILE_LIST_RESPONSE_TS },
     .{ .name = "v2/ModelListParams.ts", .contents = MODEL_LIST_PARAMS_TS },
     .{ .name = "v2/ModelUpgradeInfo.ts", .contents = MODEL_UPGRADE_INFO_TS },
     .{ .name = "v2/ModelAvailabilityNux.ts", .contents = MODEL_AVAILABILITY_NUX_TS },
@@ -29267,6 +29395,9 @@ fn handleJsonRpcLine(allocator: std.mem.Allocator, state: *AppServerState, line:
     }
     if (isCollaborationModeMethod(method)) {
         return try handleCollaborationModeMethod(allocator, id_value.?, method, object.get("params"));
+    }
+    if (isPermissionProfileMethod(method)) {
+        return try handlePermissionProfileMethod(allocator, state, id_value.?, method, object.get("params"));
     }
     if (isExperimentalFeatureMethod(method)) {
         return try handleExperimentalFeatureMethod(allocator, state, id_value.?, method, object.get("params"));
@@ -33229,7 +33360,7 @@ fn handleTurnStart(
         return try renderJsonRpcErrorForFailure(allocator, id_value, "turn/start failed to load config requirements", err);
     };
     defer runtime_requirements.deinit(allocator);
-    validateTurnScalarRequirementOverrides(allocator, object, runtime_requirements) catch |err| switch (err) {
+    validateTurnScalarRequirementOverrides(allocator, cfg.codex_home, project_cwd, object, runtime_requirements) catch |err| switch (err) {
         error.InvalidTurnContextOverride => return try renderJsonRpcError(allocator, id_value, -32602, "invalid turn context override"),
         else => return try renderRuntimeRequirementOverrideError(allocator, id_value, err),
     };
@@ -35715,6 +35846,8 @@ fn applyReviewStartFeatureOverrides(
 
 fn validateTurnScalarRequirementOverrides(
     allocator: std.mem.Allocator,
+    codex_home: []const u8,
+    cwd: []const u8,
     params: std.json.ObjectMap,
     requirements: ConfigRequirementsReadRequirements,
 ) !void {
@@ -35740,7 +35873,7 @@ fn validateTurnScalarRequirementOverrides(
         if (params.get("sandbox")) |sandbox| {
             if (sandbox != .null) return error.InvalidTurnContextOverride;
         }
-        var profile = parseTurnStartPermissionSelection(allocator, permissions_value.?) catch return error.InvalidTurnContextOverride;
+        var profile = parseTurnStartPermissionSelection(allocator, codex_home, cwd, permissions_value.?) catch return error.InvalidTurnContextOverride;
         defer profile.deinit(allocator);
         try validateRuntimeSandboxModeAllowed(profile.mode, requirements);
     } else if (params.get("sandboxPolicy")) |sandbox_policy| {
@@ -35803,7 +35936,9 @@ fn applyTurnStartRuntimeConfigOverrides(
         if (params.get("sandbox")) |sandbox| {
             if (sandbox != .null) return error.InvalidTurnContextOverride;
         }
-        var profile = parseTurnStartPermissionSelection(allocator, permissions_value.?) catch return error.InvalidTurnContextOverride;
+        const permission_profile_cwd = try turnContextProjectConfigCwd(allocator, thread, params);
+        defer allocator.free(permission_profile_cwd);
+        var profile = parseTurnStartPermissionSelection(allocator, cfg.codex_home, permission_profile_cwd, permissions_value.?) catch return error.InvalidTurnContextOverride;
         defer profile.deinit(allocator);
         cfg.sandbox_mode = profile.mode;
     } else if (params.get("sandboxPolicy")) |sandbox_policy| {
@@ -35944,34 +36079,9 @@ fn applyTurnStartRuntimeOverrides(
         if (params.get("sandbox")) |sandbox| {
             if (sandbox != .null) return error.InvalidTurnContextOverride;
         }
-        var profile = parseTurnStartPermissionSelection(allocator, permissions_value.?) catch return error.InvalidTurnContextOverride;
+        var profile = parseTurnStartPermissionSelection(allocator, cfg.codex_home, thread.cwd, permissions_value.?) catch return error.InvalidTurnContextOverride;
         defer profile.deinit(allocator);
-        cfg.sandbox_mode = profile.mode;
-        var roots = try loadedThreadRootsFromProfile(allocator, thread.cwd, profile.additional_writable_roots.items);
-        var roots_moved = false;
-        errdefer if (!roots_moved) roots.deinit(allocator);
-        var read_denied_roots = try loadedThreadRootsFromProfile(allocator, thread.cwd, profile.read_denied_roots.items);
-        var read_denied_roots_moved = false;
-        errdefer if (!read_denied_roots_moved) read_denied_roots.deinit(allocator);
-        var read_denied_globs = try loadedThreadGlobsFromProfile(allocator, thread.cwd, profile.read_denied_globs.items);
-        var read_denied_globs_moved = false;
-        errdefer if (!read_denied_globs_moved) read_denied_globs.deinit(allocator);
-        try replaceLoadedThreadSandboxProfile(
-            allocator,
-            thread,
-            profile.mode,
-            roots,
-            read_denied_roots,
-            read_denied_globs,
-            profile.include_cwd_write_root,
-            profile.network_enabled,
-            profile.exclude_tmpdir_env_var,
-            profile.exclude_slash_tmp,
-            false,
-        );
-        roots_moved = true;
-        read_denied_roots_moved = true;
-        read_denied_globs_moved = true;
+        try applySandboxPermissionProfileToLoadedThread(allocator, cfg, thread, &profile);
     } else if (params.get("sandboxPolicy")) |sandbox_policy| {
         if (sandbox_policy != .null and params.get("sandbox") != null and params.get("sandbox").? != .null) return error.InvalidTurnContextOverride;
         if (sandbox_policy != .null) {
@@ -36111,6 +36221,40 @@ fn applyTurnStartRuntimeOverrides(
     try applyLoadedThreadOssModeToConfig(allocator, cfg, thread);
 }
 
+fn applySandboxPermissionProfileToLoadedThread(
+    allocator: std.mem.Allocator,
+    cfg: *config.Config,
+    thread: *LoadedThread,
+    profile: *const config.SandboxPermissionProfile,
+) !void {
+    cfg.sandbox_mode = profile.mode;
+    var roots = try loadedThreadRootsFromProfile(allocator, thread.cwd, profile.additional_writable_roots.items);
+    var roots_moved = false;
+    errdefer if (!roots_moved) roots.deinit(allocator);
+    var read_denied_roots = try loadedThreadRootsFromProfile(allocator, thread.cwd, profile.read_denied_roots.items);
+    var read_denied_roots_moved = false;
+    errdefer if (!read_denied_roots_moved) read_denied_roots.deinit(allocator);
+    var read_denied_globs = try loadedThreadGlobsFromProfile(allocator, thread.cwd, profile.read_denied_globs.items);
+    var read_denied_globs_moved = false;
+    errdefer if (!read_denied_globs_moved) read_denied_globs.deinit(allocator);
+    try replaceLoadedThreadSandboxProfile(
+        allocator,
+        thread,
+        profile.mode,
+        roots,
+        read_denied_roots,
+        read_denied_globs,
+        profile.include_cwd_write_root,
+        profile.network_enabled,
+        profile.exclude_tmpdir_env_var,
+        profile.exclude_slash_tmp,
+        false,
+    );
+    roots_moved = true;
+    read_denied_roots_moved = true;
+    read_denied_globs_moved = true;
+}
+
 fn turnContextProjectConfigCwd(
     allocator: std.mem.Allocator,
     thread: *const LoadedThread,
@@ -36195,15 +36339,26 @@ fn parseTurnStartSandboxPolicyWritableRoots(allocator: std.mem.Allocator, object
 
 fn parseTurnStartPermissionSelection(
     allocator: std.mem.Allocator,
+    codex_home: []const u8,
+    cwd: []const u8,
     value: std.json.Value,
 ) !config.SandboxPermissionProfile {
-    if (value != .object) return error.InvalidTurnContextOverride;
-    const type_value = value.object.get("type") orelse return error.InvalidTurnContextOverride;
-    if (type_value != .string or !std.mem.eql(u8, type_value.string, "profile")) return error.InvalidTurnContextOverride;
-    const id_value = value.object.get("id") orelse return error.InvalidTurnContextOverride;
-    if (id_value != .string or id_value.string.len == 0) return error.InvalidTurnContextOverride;
+    var modifications_value: ?std.json.Value = null;
+    const profile_id = switch (value) {
+        .string => |id| id,
+        .object => |object| blk: {
+            const type_value = object.get("type") orelse return error.InvalidTurnContextOverride;
+            if (type_value != .string or !std.mem.eql(u8, type_value.string, "profile")) return error.InvalidTurnContextOverride;
+            const id_value = object.get("id") orelse return error.InvalidTurnContextOverride;
+            if (id_value != .string) return error.InvalidTurnContextOverride;
+            modifications_value = object.get("modifications");
+            break :blk id_value.string;
+        },
+        else => return error.InvalidTurnContextOverride,
+    };
+    if (profile_id.len == 0) return error.InvalidTurnContextOverride;
 
-    var profile = config.loadSandboxPermissionProfileWithOptions(allocator, id_value.string, .{
+    var profile = loadSandboxPermissionProfileFromAppServerConfigStack(allocator, codex_home, cwd, profile_id, .{
         .allow_read_denied_globs = true,
     }) catch |err| switch (err) {
         error.OutOfMemory => return err,
@@ -36211,7 +36366,7 @@ fn parseTurnStartPermissionSelection(
     };
     errdefer profile.deinit(allocator);
 
-    try applyTurnStartPermissionModifications(allocator, &profile, value.object.get("modifications"));
+    try applyTurnStartPermissionModifications(allocator, &profile, modifications_value);
     return profile;
 }
 
@@ -40254,12 +40409,36 @@ fn handleThreadStart(
         return renderJsonRpcErrorForFailure(allocator, id_value, "thread/start failed to apply config requirements", err);
     };
 
-    applyThreadStartProjectTrustAndConfig(allocator, &cfg, params) catch |err| {
+    var start_permission_profile: ?config.SandboxPermissionProfile = null;
+    defer if (start_permission_profile) |*profile| profile.deinit(allocator);
+    if (params) |object| {
+        const permissions_value = object.get("permissions");
+        const has_permissions = permissions_value != null and permissions_value.? != .null;
+        if (has_permissions) {
+            if (object.get("sandbox")) |sandbox| {
+                if (sandbox != .null) return renderJsonRpcError(allocator, id_value, -32602, "invalid thread context override");
+            }
+            const permission_profile_cwd = threadStartCwd(allocator, params) catch |err| {
+                return renderJsonRpcErrorForFailure(allocator, id_value, "thread/start failed to resolve cwd", err);
+            };
+            defer allocator.free(permission_profile_cwd);
+            start_permission_profile = parseTurnStartPermissionSelection(allocator, cfg.codex_home, permission_profile_cwd, permissions_value.?) catch {
+                return renderJsonRpcError(allocator, id_value, -32602, "invalid thread context override");
+            };
+            validateRuntimeSandboxModeAllowed(start_permission_profile.?.mode, runtime_requirements) catch |err| {
+                return renderRuntimeRequirementOverrideError(allocator, id_value, err);
+            };
+            cfg.sandbox_mode = start_permission_profile.?.mode;
+        }
+    }
+
+    applyThreadStartProjectTrustAndConfig(allocator, &cfg, params, if (start_permission_profile) |*profile| profile else null) catch |err| {
         return renderJsonRpcErrorForFailure(allocator, id_value, "thread/start failed to load project config", err);
     };
     applyThreadRequestConfigOverrides(allocator, &cfg, request_config, paramPresent(params, "model")) catch |err| {
         return renderJsonRpcErrorForFailure(allocator, id_value, "thread/start failed to apply config override", err);
     };
+    if (start_permission_profile) |profile| cfg.sandbox_mode = profile.mode;
     applyRuntimeScalarRequirementsToConfigWithRequirements(&cfg, runtime_requirements) catch |err| {
         return renderJsonRpcErrorForFailure(allocator, id_value, "thread/start failed to apply config requirements", err);
     };
@@ -40278,6 +40457,11 @@ fn handleThreadStart(
     };
     var thread_moved = false;
     errdefer if (!thread_moved) thread.deinit(allocator);
+    if (start_permission_profile) |*profile| {
+        applySandboxPermissionProfileToLoadedThread(allocator, &cfg, &thread, profile) catch |err| {
+            return renderJsonRpcErrorForFailure(allocator, id_value, "thread/start failed to apply permission profile", err);
+        };
+    }
     applyRuntimeScalarRequirementsToLoadedThreadWithRequirements(allocator, &thread, runtime_requirements) catch |err| {
         return renderJsonRpcErrorForFailure(allocator, id_value, "thread/start failed to apply runtime requirements", err);
     };
@@ -40820,6 +41004,7 @@ fn applyThreadStartProjectTrustAndConfig(
     allocator: std.mem.Allocator,
     cfg: *config.Config,
     params: ?std.json.ObjectMap,
+    start_permission_profile: ?*const config.SandboxPermissionProfile,
 ) !void {
     const requested_cwd = optionalStringParam(params, "cwd") orelse return;
     const cwd = try realPathFileAllocPlain(allocator, requested_cwd);
@@ -40831,9 +41016,8 @@ fn applyThreadStartProjectTrustAndConfig(
     var user_config_bytes = try config.readConfigTomlFile(allocator, config_path);
     defer if (user_config_bytes) |bytes| allocator.free(bytes);
 
-    if (!(try threadStartProjectTrustedByConfig(allocator, user_config_bytes orelse "", cwd)) and
-        threadStartShouldTrustProject(params, cfg.*))
-    {
+    const should_trust_project = try threadStartShouldTrustProject(allocator, cwd, params, cfg.*, start_permission_profile);
+    if (!(try threadStartProjectTrustedByConfig(allocator, user_config_bytes orelse "", cwd)) and should_trust_project) {
         try persistThreadStartProjectTrust(allocator, config_path, user_config_bytes orelse "", cwd);
         if (user_config_bytes) |bytes| allocator.free(bytes);
         user_config_bytes = null;
@@ -40878,12 +41062,48 @@ fn threadStartProjectTrustedByConfig(
     return trusted_ancestors.items.len > 0;
 }
 
-fn threadStartShouldTrustProject(params: ?std.json.ObjectMap, cfg: config.Config) bool {
+fn threadStartShouldTrustProject(
+    allocator: std.mem.Allocator,
+    cwd: []const u8,
+    params: ?std.json.ObjectMap,
+    cfg: config.Config,
+    start_permission_profile: ?*const config.SandboxPermissionProfile,
+) !bool {
     if (optionalStringParam(params, "sandbox")) |sandbox| {
         return std.mem.eql(u8, sandbox, "workspace-write") or
             std.mem.eql(u8, sandbox, "danger-full-access");
     }
+    if (start_permission_profile) |profile| {
+        return sandboxPermissionProfileTrustsProject(allocator, cwd, profile);
+    }
     return cfg.sandbox_mode == .workspace_write or cfg.sandbox_mode == .danger_full_access;
+}
+
+fn sandboxPermissionProfileTrustsProject(
+    allocator: std.mem.Allocator,
+    cwd: []const u8,
+    profile: *const config.SandboxPermissionProfile,
+) !bool {
+    if (profile.mode == .danger_full_access) return true;
+    if (profile.mode != .workspace_write) return false;
+    if (profile.include_cwd_write_root) return true;
+
+    for (profile.additional_writable_roots.items) |root| {
+        const resolved = if (std.fs.path.isAbsolute(root))
+            try std.fs.path.resolve(allocator, &.{root})
+        else
+            try std.fs.path.resolve(allocator, &.{ cwd, root });
+        defer allocator.free(resolved);
+        if (pathWithinOrEqual(resolved, cwd)) return true;
+    }
+    return false;
+}
+
+fn pathWithinOrEqual(parent: []const u8, child: []const u8) bool {
+    if (!std.mem.startsWith(u8, child, parent)) return false;
+    if (child.len == parent.len) return true;
+    if (parent.len == 0) return false;
+    return parent[parent.len - 1] == std.fs.path.sep or child[parent.len] == std.fs.path.sep;
 }
 
 fn persistThreadStartProjectTrust(
@@ -40904,11 +41124,13 @@ fn persistThreadStartProjectTrust(
 }
 
 fn resolveThreadStartProjectTrustTarget(allocator: std.mem.Allocator, cwd: []const u8) ![]const u8 {
+    if (try resolveProjectTrustRepoRoot(allocator, cwd)) |repo_root| return repo_root;
+    return threadStartProjectTrustSearchBase(allocator, cwd);
+}
+
+fn resolveProjectTrustRepoRoot(allocator: std.mem.Allocator, cwd: []const u8) !?[]const u8 {
     var current = try threadStartProjectTrustSearchBase(allocator, cwd);
     errdefer allocator.free(current);
-
-    const fallback = try allocator.dupe(u8, current);
-    defer allocator.free(fallback);
 
     while (true) {
         const dot_git_path = try std.fs.path.join(allocator, &.{ current, ".git" });
@@ -40934,7 +41156,7 @@ fn resolveThreadStartProjectTrustTarget(allocator: std.mem.Allocator, cwd: []con
     }
 
     allocator.free(current);
-    return allocator.dupe(u8, fallback);
+    return null;
 }
 
 fn threadStartProjectTrustSearchBase(allocator: std.mem.Allocator, cwd: []const u8) ![]const u8 {
@@ -59770,8 +59992,16 @@ fn parseConfigReadProfileSection(allocator: std.mem.Allocator, line: []const u8)
 
 fn profileSectionNameEnd(remainder: []const u8) ?usize {
     if (remainder.len == 0) return null;
-    if (remainder[0] != '"') {
+    if (remainder[0] != '"' and remainder[0] != '\'') {
         return std.mem.indexOfScalar(u8, remainder, '.') orelse remainder.len;
+    }
+
+    if (remainder[0] == '\'') {
+        var index: usize = 1;
+        while (index < remainder.len) : (index += 1) {
+            if (remainder[index] == '\'') return index + 1;
+        }
+        return null;
     }
 
     var index: usize = 1;
@@ -59886,27 +60116,9 @@ fn parseConfigReadTomlDottedPath(allocator: std.mem.Allocator, raw: []const u8) 
         if (index >= raw.len) break;
 
         const component_start = index;
-        if (raw[index] == '"') {
-            index += 1;
-            var escaped = false;
-            var found_close = false;
-            while (index < raw.len) : (index += 1) {
-                const byte = raw[index];
-                if (escaped) {
-                    escaped = false;
-                    continue;
-                }
-                if (byte == '\\') {
-                    escaped = true;
-                    continue;
-                }
-                if (byte == '"') {
-                    index += 1;
-                    found_close = true;
-                    break;
-                }
-            }
-            if (!found_close) return error.InvalidConfigReadProfileDottedKey;
+        if (raw[index] == '"' or raw[index] == '\'') {
+            const component_end = profileSectionNameEnd(raw[index..]) orelse return error.InvalidConfigReadProfileDottedKey;
+            index += component_end;
         } else {
             while (index < raw.len and raw[index] != '.') index += 1;
         }
@@ -60997,8 +61209,25 @@ fn parseConfigReadAppPathComponent(allocator: std.mem.Allocator, raw_name: []con
         if (name_end != raw_name.len) return null;
         return try config.parseTomlString(allocator, raw_name) orelse error.InvalidConfigReadAppSection;
     }
+    if (raw_name[0] == '\'') {
+        const name_end = profileSectionNameEnd(raw_name) orelse return error.InvalidConfigReadAppSection;
+        if (name_end != raw_name.len) return null;
+        return try parseConfigReadTomlLiteralString(allocator, raw_name);
+    }
     if (std.mem.indexOfScalar(u8, raw_name, '.') != null) return null;
     return @as(?[]const u8, try allocator.dupe(u8, raw_name));
+}
+
+fn parseConfigReadTomlLiteralString(allocator: std.mem.Allocator, rhs: []const u8) ![]const u8 {
+    if (rhs.len < 2 or rhs[0] != '\'') return error.InvalidTomlString;
+    var index: usize = 1;
+    while (index < rhs.len) : (index += 1) {
+        if (rhs[index] == '\'') {
+            if (index + 1 != rhs.len) return error.InvalidTomlString;
+            return allocator.dupe(u8, rhs[1..index]);
+        }
+    }
+    return error.InvalidTomlString;
 }
 
 fn findConfigReadAppIndex(apps: []const ConfigReadApp, name: []const u8) ?usize {
@@ -61671,18 +61900,7 @@ fn configReadTrustedProjectAncestors(
     cwd: []const u8,
     user_config_bytes: []const u8,
 ) !std.ArrayList([]const u8) {
-    var ancestors = std.ArrayList([]const u8).empty;
-    errdefer ancestors.deinit(allocator);
-
-    var current = cwd;
-    while (true) {
-        try ancestors.append(allocator, current);
-        if (try configReadProjectTrusted(allocator, user_config_bytes, current)) return ancestors;
-        current = std.fs.path.dirname(current) orelse break;
-    }
-
-    ancestors.clearRetainingCapacity();
-    return ancestors;
+    return configReadTrustedProjectAncestorsFromLayers(allocator, cwd, null, user_config_bytes);
 }
 
 fn loadConfigReadProjectLayer(
@@ -61869,9 +62087,7 @@ fn loadConfigReadProjectLayer(
 }
 
 fn configReadProjectTrusted(allocator: std.mem.Allocator, user_config_bytes: []const u8, cwd: []const u8) !bool {
-    const trust_level = try config.namedSectionStringValue(allocator, user_config_bytes, "projects.", cwd, "trust_level");
-    defer if (trust_level) |value| allocator.free(value);
-    return if (trust_level) |value| std.mem.eql(u8, value, "trusted") else false;
+    return configReadProjectTrustedFromLayers(allocator, null, user_config_bytes, cwd);
 }
 
 fn configReadSectionForLine(line: []const u8, active_profile: ?[]const u8) ConfigReadSection {
@@ -66269,6 +66485,689 @@ fn handleCollaborationModeList(
     return renderJsonRpcResult(allocator, id_value, result);
 }
 
+fn isPermissionProfileMethod(method: []const u8) bool {
+    return std.mem.eql(u8, method, "permissionProfile/list");
+}
+
+fn handlePermissionProfileMethod(
+    allocator: std.mem.Allocator,
+    state: *const AppServerState,
+    id_value: std.json.Value,
+    method: []const u8,
+    params_value: ?std.json.Value,
+) ![]const u8 {
+    if (std.mem.eql(u8, method, "permissionProfile/list")) {
+        return handlePermissionProfileList(allocator, state, id_value, params_value);
+    }
+    return renderJsonRpcError(allocator, id_value, -32601, "unknown permission profile method");
+}
+
+const built_in_permission_profile_ids = [_][]const u8{
+    ":read-only",
+    ":workspace",
+    ":danger-full-access",
+};
+
+const PermissionProfileSummaryEntry = struct {
+    id: []const u8,
+    description: ?[]const u8 = null,
+
+    fn deinit(self: *PermissionProfileSummaryEntry, allocator: std.mem.Allocator) void {
+        allocator.free(self.id);
+        if (self.description) |value| allocator.free(value);
+    }
+};
+
+const PermissionProfileCatalog = struct {
+    items: std.ArrayList(PermissionProfileSummaryEntry) = .empty,
+
+    fn deinit(self: *PermissionProfileCatalog, allocator: std.mem.Allocator) void {
+        for (self.items.items) |*item| item.deinit(allocator);
+        self.items.deinit(allocator);
+    }
+};
+
+fn handlePermissionProfileList(
+    allocator: std.mem.Allocator,
+    state: *const AppServerState,
+    id_value: std.json.Value,
+    params_value: ?std.json.Value,
+) ![]const u8 {
+    const params = switch (optionalPermissionProfileListParams(params_value)) {
+        .object => |object| object,
+        .empty => null,
+        .message => |message| return renderJsonRpcError(allocator, id_value, -32602, message),
+    };
+
+    var cursor: ?[]const u8 = null;
+    var limit: ?usize = null;
+    var cwd: ?[]const u8 = null;
+    if (params) |object| {
+        if (object.get("cursor")) |value| {
+            if (value != .null) {
+                if (value != .string) return renderJsonRpcError(allocator, id_value, -32602, "cursor must be a string or null");
+                cursor = value.string;
+            }
+        }
+        if (object.get("limit")) |value| {
+            limit = switch (value) {
+                .null => null,
+                .integer => |integer| blk: {
+                    if (integer < 0) return renderJsonRpcError(allocator, id_value, -32602, "limit must be a non-negative integer or null");
+                    break :blk @intCast(integer);
+                },
+                .number_string => |number| std.fmt.parseUnsigned(usize, number, 10) catch {
+                    return renderJsonRpcError(allocator, id_value, -32602, "limit must be a non-negative integer or null");
+                },
+                else => return renderJsonRpcError(allocator, id_value, -32602, "limit must be a non-negative integer or null"),
+            };
+        }
+        if (object.get("cwd")) |value| {
+            if (value != .null) {
+                if (value != .string) return renderJsonRpcError(allocator, id_value, -32602, "cwd must be a string or null");
+                cwd = value.string;
+            }
+        }
+    }
+
+    var cfg = loadAppServerConfigWithOptions(allocator, state, .{}) catch |err| {
+        return renderJsonRpcErrorForFailure(allocator, id_value, "permissionProfile/list failed to load config", err);
+    };
+    defer cfg.deinit(allocator);
+
+    var layers = loadPermissionProfileConfigLayerBytes(allocator, cfg.codex_home, cwd) catch |err| {
+        return renderJsonRpcErrorForFailure(allocator, id_value, "permissionProfile/list failed to load profiles", err);
+    };
+    defer layers.deinit(allocator);
+    var catalog = loadPermissionProfileCatalog(allocator, layers.items.items) catch |err| {
+        return renderJsonRpcErrorForFailure(allocator, id_value, "permissionProfile/list failed to load profiles", err);
+    };
+    defer catalog.deinit(allocator);
+    std.mem.sort(PermissionProfileSummaryEntry, catalog.items.items, {}, permissionProfileSummaryLessThan);
+
+    const total = built_in_permission_profile_ids.len + catalog.items.items.len;
+    const start = if (cursor) |value|
+        std.fmt.parseUnsigned(usize, value, 10) catch {
+            const message = try std.fmt.allocPrint(allocator, "invalid cursor: {s}", .{value});
+            defer allocator.free(message);
+            return renderJsonRpcError(allocator, id_value, -32600, message);
+        }
+    else
+        0;
+
+    if (start > total) {
+        const message = try std.fmt.allocPrint(allocator, "cursor {d} exceeds total permission profiles {d}", .{ start, total });
+        defer allocator.free(message);
+        return renderJsonRpcError(allocator, id_value, -32600, message);
+    }
+
+    const effective_limit = @min(@max(limit orelse total, 1), total);
+    const end = @min(start + effective_limit, total);
+
+    var result = std.ArrayList(u8).empty;
+    defer result.deinit(allocator);
+    try result.appendSlice(allocator, "{\"data\":[");
+    var index = start;
+    while (index < end) : (index += 1) {
+        if (index > start) try result.appendSlice(allocator, ",");
+        try appendPermissionProfileSummaryAt(allocator, &result, catalog.items.items, index);
+    }
+    try result.appendSlice(allocator, "],\"nextCursor\":");
+    if (end < total) {
+        const next_cursor = try std.fmt.allocPrint(allocator, "{d}", .{end});
+        defer allocator.free(next_cursor);
+        try appendJsonString(allocator, &result, next_cursor);
+    } else {
+        try result.appendSlice(allocator, "null");
+    }
+    try result.appendSlice(allocator, "}");
+
+    return renderJsonRpcResult(allocator, id_value, result.items);
+}
+
+fn optionalPermissionProfileListParams(params_value: ?std.json.Value) OptionalObjectParams {
+    const params = params_value orelse return .empty;
+    if (params == .null) return .empty;
+    if (params != .object) return .{ .message = "permissionProfile/list params must be an object" };
+    return .{ .object = params.object };
+}
+
+fn loadPermissionProfileCatalog(
+    allocator: std.mem.Allocator,
+    layer_bytes: []const []const u8,
+) !PermissionProfileCatalog {
+    var catalog = PermissionProfileCatalog{};
+    errdefer catalog.deinit(allocator);
+
+    for (layer_bytes) |bytes| {
+        try parsePermissionProfileConfigBytes(allocator, &catalog, bytes);
+    }
+
+    return catalog;
+}
+
+const PermissionProfileConfigLayerBytes = struct {
+    items: std.ArrayList([]const u8) = .empty,
+
+    fn deinit(self: *PermissionProfileConfigLayerBytes, allocator: std.mem.Allocator) void {
+        for (self.items.items) |bytes| allocator.free(bytes);
+        self.items.deinit(allocator);
+    }
+};
+
+fn loadSandboxPermissionProfileFromAppServerConfigStack(
+    allocator: std.mem.Allocator,
+    codex_home: []const u8,
+    cwd: []const u8,
+    profile_id: []const u8,
+    options: config.SandboxPermissionProfileOptions,
+) !config.SandboxPermissionProfile {
+    var layers = try loadPermissionProfileConfigLayerBytes(allocator, codex_home, cwd);
+    defer layers.deinit(allocator);
+    return config.loadSandboxPermissionProfileFromConfigLayerBytesWithOptions(
+        allocator,
+        profile_id,
+        layers.items.items,
+        options,
+    );
+}
+
+fn loadPermissionProfileConfigLayerBytes(
+    allocator: std.mem.Allocator,
+    codex_home: []const u8,
+    cwd: ?[]const u8,
+) !PermissionProfileConfigLayerBytes {
+    var layers = PermissionProfileConfigLayerBytes{};
+    errdefer layers.deinit(allocator);
+
+    const system_config_path = try systemConfigPath(allocator);
+    defer allocator.free(system_config_path);
+    const system_config_bytes = try appendPermissionProfileLayerBytes(allocator, &layers, try config.readConfigTomlFile(allocator, system_config_path));
+
+    const user_config_path = try config.configTomlPath(allocator, codex_home);
+    defer allocator.free(user_config_path);
+    const user_config_bytes = try appendPermissionProfileLayerBytes(allocator, &layers, try config.readConfigTomlFile(allocator, user_config_path));
+
+    if (cwd) |project_cwd| {
+        const resolved_project_cwd = try resolvePermissionProfileCwd(allocator, project_cwd);
+        defer allocator.free(resolved_project_cwd);
+        var trusted_ancestors = try configReadTrustedProjectAncestorsFromLayers(allocator, resolved_project_cwd, system_config_bytes, user_config_bytes);
+        defer trusted_ancestors.deinit(allocator);
+        var ancestor_index = trusted_ancestors.items.len;
+        while (ancestor_index > 0) {
+            ancestor_index -= 1;
+            const ancestor = trusted_ancestors.items[ancestor_index];
+            const dot_codex_folder = try std.fs.path.join(allocator, &.{ ancestor, ".codex" });
+            defer allocator.free(dot_codex_folder);
+            if (std.mem.eql(u8, dot_codex_folder, codex_home)) continue;
+
+            const project_config_path = try std.fs.path.join(allocator, &.{ dot_codex_folder, "config.toml" });
+            defer allocator.free(project_config_path);
+            _ = try appendPermissionProfileLayerBytes(allocator, &layers, try config.readConfigTomlFile(allocator, project_config_path));
+        }
+    }
+
+    const managed_config_path = try managedConfigPath(allocator);
+    defer allocator.free(managed_config_path);
+    _ = try appendPermissionProfileLayerBytes(allocator, &layers, try config.readConfigTomlFile(allocator, managed_config_path));
+
+    return layers;
+}
+
+fn appendPermissionProfileLayerBytes(
+    allocator: std.mem.Allocator,
+    layers: *PermissionProfileConfigLayerBytes,
+    bytes_opt: ?[]const u8,
+) !?[]const u8 {
+    const bytes = bytes_opt orelse return null;
+    errdefer allocator.free(bytes);
+    try layers.items.append(allocator, bytes);
+    return bytes;
+}
+
+fn configReadTrustedProjectAncestorsFromLayers(
+    allocator: std.mem.Allocator,
+    cwd: []const u8,
+    system_config_bytes: ?[]const u8,
+    user_config_bytes: ?[]const u8,
+) !std.ArrayList([]const u8) {
+    var ancestors = std.ArrayList([]const u8).empty;
+    errdefer ancestors.deinit(allocator);
+
+    const project_root = try configReadProjectRootForCwd(allocator, cwd, system_config_bytes, user_config_bytes);
+    defer allocator.free(project_root);
+
+    const project_root_trust = try configReadProjectTrustLevelFromLayers(allocator, system_config_bytes, user_config_bytes, project_root);
+    const repo_root = try resolveProjectTrustRepoRoot(allocator, cwd);
+    defer if (repo_root) |root| allocator.free(root);
+    const repo_root_trust = if (repo_root) |root|
+        try configReadProjectTrustLevelFromLayers(allocator, system_config_bytes, user_config_bytes, root)
+    else
+        .unknown;
+
+    var chain = std.ArrayList([]const u8).empty;
+    defer chain.deinit(allocator);
+    var current = cwd;
+    while (true) {
+        try chain.append(allocator, current);
+        if (std.mem.eql(u8, current, project_root)) break;
+        const parent = std.fs.path.dirname(current) orelse break;
+        if (std.mem.eql(u8, parent, current)) break;
+        current = parent;
+    }
+
+    var trusted_root_to_leaf = std.ArrayList([]const u8).empty;
+    defer trusted_root_to_leaf.deinit(allocator);
+    var effective_trust = repo_root_trust;
+    var index = chain.items.len;
+    while (index > 0) {
+        index -= 1;
+        const path = chain.items[index];
+        const direct_trust = try configReadProjectTrustLevelFromLayers(allocator, system_config_bytes, user_config_bytes, path);
+        if (direct_trust != .unknown) {
+            effective_trust = direct_trust;
+        } else if (index == chain.items.len - 1 and project_root_trust != .unknown) {
+            effective_trust = project_root_trust;
+        }
+        if (effective_trust == .trusted) try trusted_root_to_leaf.append(allocator, path);
+    }
+
+    index = trusted_root_to_leaf.items.len;
+    while (index > 0) {
+        index -= 1;
+        try ancestors.append(allocator, trusted_root_to_leaf.items[index]);
+    }
+
+    return ancestors;
+}
+
+fn configReadProjectRootForCwd(
+    allocator: std.mem.Allocator,
+    cwd: []const u8,
+    system_config_bytes: ?[]const u8,
+    user_config_bytes: ?[]const u8,
+) ![]const u8 {
+    var markers = try configReadProjectRootMarkers(allocator, system_config_bytes, user_config_bytes);
+    defer markers.deinit(allocator);
+    if (markers.items.len == 0) return allocator.dupe(u8, cwd);
+
+    var current = try allocator.dupe(u8, cwd);
+    errdefer allocator.free(current);
+
+    while (true) {
+        if (try configReadDirHasProjectRootMarker(allocator, current, markers.items)) return current;
+
+        const parent = std.fs.path.dirname(current) orelse break;
+        if (std.mem.eql(u8, parent, current)) break;
+        const next = try allocator.dupe(u8, parent);
+        allocator.free(current);
+        current = next;
+    }
+
+    allocator.free(current);
+    return allocator.dupe(u8, cwd);
+}
+
+fn configReadProjectRootMarkers(
+    allocator: std.mem.Allocator,
+    system_config_bytes: ?[]const u8,
+    user_config_bytes: ?[]const u8,
+) !config.StringList {
+    var markers: ?config.StringList = null;
+    errdefer if (markers) |*existing| existing.deinit(allocator);
+
+    if (system_config_bytes) |bytes| {
+        markers = try config.topLevelStringArrayValue(allocator, bytes, "project_root_markers");
+    }
+    if (user_config_bytes) |bytes| {
+        if (try config.topLevelStringArrayValue(allocator, bytes, "project_root_markers")) |user_markers| {
+            if (markers) |*existing| existing.deinit(allocator);
+            markers = user_markers;
+        }
+    }
+
+    if (markers) |value| return value;
+    return stringListFromLabels(allocator, &.{".git"});
+}
+
+fn configReadDirHasProjectRootMarker(
+    allocator: std.mem.Allocator,
+    dir: []const u8,
+    markers: []const []const u8,
+) !bool {
+    for (markers) |marker| {
+        if (marker.len == 0) continue;
+        const marker_path = try std.fs.path.join(allocator, &.{ dir, marker });
+        defer allocator.free(marker_path);
+        if (configReadPathExists(marker_path)) return true;
+    }
+    return false;
+}
+
+fn configReadPathExists(path: []const u8) bool {
+    _ = std.Io.Dir.cwd().statFile(std.Io.Threaded.global_single_threaded.io(), path, .{
+        .follow_symlinks = false,
+    }) catch return false;
+    return true;
+}
+
+const ConfigReadProjectTrustLevel = enum {
+    unknown,
+    trusted,
+    untrusted,
+};
+
+fn configReadProjectTrustedFromLayers(
+    allocator: std.mem.Allocator,
+    system_config_bytes: ?[]const u8,
+    user_config_bytes: ?[]const u8,
+    cwd: []const u8,
+) !bool {
+    return (try configReadProjectTrustLevelFromLayers(allocator, system_config_bytes, user_config_bytes, cwd)) == .trusted;
+}
+
+fn configReadProjectTrustLevelFromLayers(
+    allocator: std.mem.Allocator,
+    system_config_bytes: ?[]const u8,
+    user_config_bytes: ?[]const u8,
+    cwd: []const u8,
+) !ConfigReadProjectTrustLevel {
+    var trust_level: ?[]const u8 = null;
+    defer if (trust_level) |value| allocator.free(value);
+
+    if (system_config_bytes) |bytes| {
+        trust_level = try config.namedSectionStringValue(allocator, bytes, "projects.", cwd, "trust_level");
+    }
+    if (user_config_bytes) |bytes| {
+        if (try config.namedSectionStringValue(allocator, bytes, "projects.", cwd, "trust_level")) |value| {
+            if (trust_level) |existing| allocator.free(existing);
+            trust_level = value;
+        }
+    }
+
+    return if (trust_level) |value|
+        if (std.mem.eql(u8, value, "trusted"))
+            .trusted
+        else if (std.mem.eql(u8, value, "untrusted"))
+            .untrusted
+        else
+            .unknown
+    else
+        .unknown;
+}
+
+fn resolvePermissionProfileCwd(allocator: std.mem.Allocator, raw: []const u8) ![]const u8 {
+    return realPathFileAllocPlain(allocator, raw);
+}
+
+fn parsePermissionProfileConfigBytes(
+    allocator: std.mem.Allocator,
+    catalog: *PermissionProfileCatalog,
+    bytes: []const u8,
+) !void {
+    var current_section: ?[]const u8 = null;
+    var multiline_string: ?TomlMultilineStringKind = null;
+    var layer_profiles = std.ArrayList([]const u8).empty;
+    defer {
+        for (layer_profiles.items) |profile_id| allocator.free(profile_id);
+        layer_profiles.deinit(allocator);
+    }
+
+    var iter = std.mem.splitScalar(u8, bytes, '\n');
+    while (iter.next()) |line_raw| {
+        if (tomlLineIsMultilineStringBody(&multiline_string, line_raw)) continue;
+        const line_without_comment = stripTomlLineComment(line_raw);
+        const line = std.mem.trim(u8, line_without_comment, " \t\r");
+        if (line.len == 0 or line[0] == '#') continue;
+        if (line[0] == '[') {
+            current_section = configWriteTomlSectionPath(line);
+            if (current_section) |section| {
+                var section_path = (parseConfigReadTomlDottedPath(allocator, section) catch |err| switch (err) {
+                    error.InvalidConfigReadProfileDottedKey, error.InvalidTomlString => null,
+                    else => return err,
+                }) orelse continue;
+                defer section_path.deinit(allocator);
+                try applyPermissionProfileTomlPath(allocator, catalog, &layer_profiles, section_path.items, null);
+            }
+            continue;
+        }
+        const eq = tomlAssignmentEqualsIndex(line) orelse continue;
+        const lhs = std.mem.trim(u8, line[0..eq], " \t");
+        const rhs = std.mem.trim(u8, line[eq + 1 ..], " \t");
+        var path = (configWriteAssignmentPath(allocator, current_section, lhs) catch |err| switch (err) {
+            error.InvalidConfigReadProfileDottedKey, error.InvalidConfigReadAppSection, error.InvalidTomlString => null,
+            else => return err,
+        }) orelse continue;
+        defer path.deinit(allocator);
+
+        if (permissionProfileTomlPathIsDescription(path.items)) {
+            if (permissionProfileMultilineStringKind(rhs)) |kind| {
+                if (!tomlMultilineStringValueClosed(rhs, kind)) {
+                    var collected = std.ArrayList(u8).empty;
+                    errdefer collected.deinit(allocator);
+                    try collected.appendSlice(allocator, rhs);
+
+                    var closed = false;
+                    while (iter.next()) |body_line_raw| {
+                        try collected.append(allocator, '\n');
+                        try collected.appendSlice(allocator, body_line_raw);
+                        if (std.mem.indexOf(u8, body_line_raw, kind.delimiter()) != null) {
+                            closed = true;
+                            break;
+                        }
+                    }
+                    if (!closed) return error.InvalidTomlString;
+
+                    const multiline_rhs = try collected.toOwnedSlice(allocator);
+                    defer allocator.free(multiline_rhs);
+                    try applyPermissionProfileTomlPath(allocator, catalog, &layer_profiles, path.items, multiline_rhs);
+                    continue;
+                }
+            }
+        }
+
+        try applyPermissionProfileTomlPath(allocator, catalog, &layer_profiles, path.items, rhs);
+        observeTomlMultilineStringOpen(&multiline_string, line_without_comment);
+    }
+}
+
+fn permissionProfileTomlPathIsDescription(path_items: []const []const u8) bool {
+    return path_items.len == 3 and
+        std.mem.eql(u8, path_items[0], "permissions") and
+        std.mem.eql(u8, path_items[2], "description");
+}
+
+fn permissionProfileMultilineStringKind(rhs_raw: []const u8) ?TomlMultilineStringKind {
+    const rhs = std.mem.trim(u8, rhs_raw, " \t");
+    if (std.mem.startsWith(u8, rhs, "\"\"\"")) return .basic;
+    if (std.mem.startsWith(u8, rhs, "'''")) return .literal;
+    return null;
+}
+
+fn tomlMultilineStringValueClosed(rhs_raw: []const u8, kind: TomlMultilineStringKind) bool {
+    const rhs = std.mem.trim(u8, rhs_raw, " \t");
+    const delimiter = kind.delimiter();
+    return std.mem.indexOfPos(u8, rhs, delimiter.len, delimiter) != null;
+}
+
+fn applyPermissionProfileTomlPath(
+    allocator: std.mem.Allocator,
+    catalog: *PermissionProfileCatalog,
+    layer_profiles: *std.ArrayList([]const u8),
+    path_items: []const []const u8,
+    rhs: ?[]const u8,
+) !void {
+    if (path_items.len == 1 and std.mem.eql(u8, path_items[0], "permissions")) {
+        const value = rhs orelse return;
+        try applyPermissionProfilesInlineTable(allocator, catalog, layer_profiles, value);
+        return;
+    }
+
+    if (path_items.len < 2 or !std.mem.eql(u8, path_items[0], "permissions")) return;
+    const profile_id = path_items[1];
+    const value = rhs orelse {
+        _ = try touchPermissionProfileEntryForLayer(allocator, catalog, layer_profiles, profile_id);
+        return;
+    };
+
+    if (path_items.len == 3 and std.mem.eql(u8, path_items[2], "description")) {
+        try setPermissionProfileDescriptionFromToml(allocator, catalog, layer_profiles, profile_id, value);
+        return;
+    }
+
+    if (path_items.len == 2) {
+        try applyPermissionProfileInlineTable(allocator, catalog, layer_profiles, profile_id, value);
+        return;
+    }
+
+    _ = try touchPermissionProfileEntryForLayer(allocator, catalog, layer_profiles, profile_id);
+}
+
+fn applyPermissionProfilesInlineTable(
+    allocator: std.mem.Allocator,
+    catalog: *PermissionProfileCatalog,
+    layer_profiles: *std.ArrayList([]const u8),
+    raw: []const u8,
+) !void {
+    const body = try configReadInlineTableBody(raw);
+    var field_start: usize = 0;
+    while (try nextConfigReadInlineTableField(body, &field_start)) |field_raw| {
+        const field = std.mem.trim(u8, field_raw, " \t\r\n");
+        if (field.len == 0) continue;
+        const eq = tomlAssignmentEqualsIndex(field) orelse continue;
+        const profile_id = (try parseConfigReadInlineFieldKey(allocator, field[0..eq])) orelse continue;
+        defer allocator.free(profile_id);
+
+        const value = std.mem.trim(u8, field[eq + 1 ..], " \t\r\n");
+        try applyPermissionProfileInlineTable(allocator, catalog, layer_profiles, profile_id, value);
+    }
+}
+
+fn applyPermissionProfileInlineTable(
+    allocator: std.mem.Allocator,
+    catalog: *PermissionProfileCatalog,
+    layer_profiles: *std.ArrayList([]const u8),
+    profile_id: []const u8,
+    raw: []const u8,
+) !void {
+    const body = try configReadInlineTableBody(raw);
+    _ = try touchPermissionProfileEntryForLayer(allocator, catalog, layer_profiles, profile_id);
+    var field_start: usize = 0;
+    while (try nextConfigReadInlineTableField(body, &field_start)) |field_raw| {
+        const field = std.mem.trim(u8, field_raw, " \t\r\n");
+        if (field.len == 0) continue;
+        const eq = tomlAssignmentEqualsIndex(field) orelse continue;
+        const key = (try parseConfigReadInlineFieldKey(allocator, field[0..eq])) orelse continue;
+        defer allocator.free(key);
+        if (!std.mem.eql(u8, key, "description")) continue;
+        try setPermissionProfileDescriptionFromToml(allocator, catalog, layer_profiles, profile_id, field[eq + 1 ..]);
+    }
+}
+
+fn ensurePermissionProfileEntry(
+    allocator: std.mem.Allocator,
+    catalog: *PermissionProfileCatalog,
+    profile_id: []const u8,
+) !usize {
+    for (catalog.items.items, 0..) |entry, index| {
+        if (std.mem.eql(u8, entry.id, profile_id)) return index;
+    }
+
+    const owned_id = try allocator.dupe(u8, profile_id);
+    errdefer allocator.free(owned_id);
+    try catalog.items.append(allocator, .{ .id = owned_id });
+    return catalog.items.items.len - 1;
+}
+
+fn touchPermissionProfileEntryForLayer(
+    allocator: std.mem.Allocator,
+    catalog: *PermissionProfileCatalog,
+    layer_profiles: *std.ArrayList([]const u8),
+    profile_id: []const u8,
+) !usize {
+    const index = try ensurePermissionProfileEntry(allocator, catalog, profile_id);
+    for (layer_profiles.items) |seen_id| {
+        if (std.mem.eql(u8, seen_id, profile_id)) return index;
+    }
+
+    const owned_id = try allocator.dupe(u8, profile_id);
+    errdefer allocator.free(owned_id);
+    try layer_profiles.append(allocator, owned_id);
+    return index;
+}
+
+fn setPermissionProfileDescriptionFromToml(
+    allocator: std.mem.Allocator,
+    catalog: *PermissionProfileCatalog,
+    layer_profiles: *std.ArrayList([]const u8),
+    profile_id: []const u8,
+    rhs_raw: []const u8,
+) !void {
+    const rhs = std.mem.trim(u8, rhs_raw, " \t\r\n");
+    const description = try parsePermissionProfileDescriptionString(allocator, rhs) orelse return error.InvalidTomlString;
+    errdefer allocator.free(description);
+    const index = try touchPermissionProfileEntryForLayer(allocator, catalog, layer_profiles, profile_id);
+    if (catalog.items.items[index].description) |existing| allocator.free(existing);
+    catalog.items.items[index].description = description;
+}
+
+fn parsePermissionProfileDescriptionString(allocator: std.mem.Allocator, rhs: []const u8) !?[]const u8 {
+    if (std.mem.startsWith(u8, rhs, "\"\"\"")) return try config.parseTomlStringValue(allocator, rhs);
+    if (std.mem.startsWith(u8, rhs, "'''")) return try parsePermissionProfileMultilineLiteralString(allocator, rhs);
+    if (rhs.len > 0 and rhs[0] == '\'') return try parsePermissionProfileLiteralString(allocator, rhs);
+    return try config.parseTomlString(allocator, rhs);
+}
+
+fn parsePermissionProfileLiteralString(allocator: std.mem.Allocator, rhs: []const u8) ![]const u8 {
+    return parseConfigReadTomlLiteralString(allocator, rhs);
+}
+
+fn parsePermissionProfileMultilineLiteralString(allocator: std.mem.Allocator, rhs: []const u8) ![]const u8 {
+    if (!std.mem.startsWith(u8, rhs, "'''")) return error.InvalidTomlString;
+
+    var start: usize = 3;
+    if (start < rhs.len and rhs[start] == '\n') {
+        start += 1;
+    } else if (start + 1 < rhs.len and rhs[start] == '\r' and rhs[start + 1] == '\n') {
+        start += 2;
+    }
+
+    const end = std.mem.indexOfPos(u8, rhs, start, "'''") orelse return error.InvalidTomlString;
+    return allocator.dupe(u8, rhs[start..end]);
+}
+
+fn permissionProfileSummaryLessThan(_: void, lhs: PermissionProfileSummaryEntry, rhs: PermissionProfileSummaryEntry) bool {
+    return std.mem.lessThan(u8, lhs.id, rhs.id);
+}
+
+fn appendPermissionProfileSummaryAt(
+    allocator: std.mem.Allocator,
+    result: *std.ArrayList(u8),
+    custom_profiles: []const PermissionProfileSummaryEntry,
+    index: usize,
+) !void {
+    if (index < built_in_permission_profile_ids.len) {
+        try appendPermissionProfileSummaryJson(allocator, result, built_in_permission_profile_ids[index], null);
+        return;
+    }
+
+    const custom = custom_profiles[index - built_in_permission_profile_ids.len];
+    try appendPermissionProfileSummaryJson(allocator, result, custom.id, custom.description);
+}
+
+fn appendPermissionProfileSummaryJson(
+    allocator: std.mem.Allocator,
+    result: *std.ArrayList(u8),
+    id: []const u8,
+    description: ?[]const u8,
+) !void {
+    try result.appendSlice(allocator, "{\"id\":");
+    try appendJsonString(allocator, result, id);
+    try result.appendSlice(allocator, ",\"description\":");
+    try appendOptionalJsonString(allocator, result, description);
+    try result.appendSlice(allocator, "}");
+}
+
 fn isExperimentalFeatureMethod(method: []const u8) bool {
     return std.mem.eql(u8, method, "experimentalFeature/list") or
         std.mem.eql(u8, method, "experimentalFeature/enablement/set");
@@ -68243,7 +69142,7 @@ test "runtime scalar requirements reject explicit lifecycle overrides" {
     defer turn_params.deinit();
     try std.testing.expectError(
         error.RuntimeSandboxModeDisallowed,
-        validateTurnScalarRequirementOverrides(allocator, turn_params.value.object, requirements),
+        validateTurnScalarRequirementOverrides(allocator, "/tmp/codex-zig-test", "/tmp/codex-zig-test", turn_params.value.object, requirements),
     );
 }
 

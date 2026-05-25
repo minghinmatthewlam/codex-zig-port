@@ -117,7 +117,7 @@ def request_input_texts_by_role(body):
 
 
 def experimental_api_field_cases(thread_id: str):
-    permission_profile = {"type": "profile", "id": ":workspace"}
+    permission_profile = ":workspace"
     turn_input = [{"type": "text", "text": "field gate"}]
     return [
         (
@@ -5814,6 +5814,45 @@ def run_thread_start_project_trust_rpc_smoke(binary: Path) -> None:
         shutil.rmtree(nested_home, ignore_errors=True)
         shutil.rmtree(repo_root, ignore_errors=True)
 
+    submodule_home = Path(tempfile.mkdtemp(prefix="codex-zig-thread-trust-submodule-home-", dir="/tmp"))
+    submodule_repo = Path(tempfile.mkdtemp(prefix="codex-zig-thread-trust-submodule-", dir="/tmp"))
+    submodule_nested = submodule_repo / "nested" / "project"
+    submodule_git_store = Path(tempfile.mkdtemp(prefix="codex-zig-thread-trust-submodule-git-", dir="/tmp"))
+    submodule_git_dir = submodule_git_store / ".git" / "modules" / submodule_repo.name
+    try:
+        submodule_home.joinpath("config.toml").write_text(
+            'sandbox_mode = "read-only"\n',
+            encoding="utf-8",
+        )
+        submodule_repo.joinpath(".codex").mkdir()
+        submodule_repo.joinpath(".codex", "config.toml").write_text(
+            'approval_policy = "on-request"\n',
+            encoding="utf-8",
+        )
+        submodule_git_dir.mkdir(parents=True)
+        submodule_repo.joinpath(".git").write_text(
+            f"gitdir: {submodule_git_dir}\n",
+            encoding="utf-8",
+        )
+        submodule_nested.mkdir(parents=True)
+
+        submodule_start = rpc(
+            submodule_home,
+            "thread-start-submodule-git-file-trust",
+            {"cwd": str(submodule_nested), "sandbox": "workspace-write", "ephemeral": True},
+        )
+        assert submodule_start["id"] == "thread-start-submodule-git-file-trust"
+        assert submodule_start["result"]["approvalPolicy"] == "on-request"
+        submodule_config_toml = submodule_home.joinpath("config.toml").read_text(encoding="utf-8")
+        trusted_submodule_section = f'[projects."{toml_quoted_key(str(submodule_repo.resolve()))}"]'
+        trusted_submodule_nested_section = f'[projects."{toml_quoted_key(str(submodule_nested.resolve()))}"]'
+        assert trusted_submodule_section in submodule_config_toml
+        assert trusted_submodule_nested_section not in submodule_config_toml
+    finally:
+        shutil.rmtree(submodule_home, ignore_errors=True)
+        shutil.rmtree(submodule_repo, ignore_errors=True)
+        shutil.rmtree(submodule_git_store, ignore_errors=True)
+
     worktree_home = Path(tempfile.mkdtemp(prefix="codex-zig-thread-trust-worktree-home-", dir="/tmp"))
     main_repo = Path(tempfile.mkdtemp(prefix="codex-zig-thread-trust-main-repo-", dir="/tmp"))
     worktree = Path(tempfile.mkdtemp(prefix="codex-zig-thread-trust-worktree-", dir="/tmp"))
@@ -7867,7 +7906,7 @@ def run_turn_start_rpc_smoke(binary: Path) -> None:
                         "params": {
                             "threadId": thread_id,
                             "sandboxPolicy": {"type": "readOnly"},
-                            "permissions": {"type": "profile", "id": ":workspace"},
+                            "permissions": ":workspace",
                             "input": [
                                 {
                                     "type": "text",
@@ -7898,7 +7937,7 @@ def run_turn_start_rpc_smoke(binary: Path) -> None:
                         "params": {
                             "threadId": thread_id,
                             "sandbox": "workspace-write",
-                            "permissions": {"type": "profile", "id": ":workspace"},
+                            "permissions": ":workspace",
                             "input": [
                                 {
                                     "type": "text",
@@ -8778,7 +8817,7 @@ def run_turn_start_rpc_smoke(binary: Path) -> None:
                         "params": {
                             "threadId": thread_id,
                             "approvalPolicy": "never",
-                            "permissions": {"type": "profile", "id": ":workspace"},
+                            "permissions": ":workspace",
                             "input": [
                                 {
                                     "type": "text",
@@ -36983,9 +37022,828 @@ def run_collaboration_mode_rpc_smoke(binary: Path) -> None:
         shutil.rmtree(codex_home, ignore_errors=True)
 
 
+def run_permission_profile_rpc_smoke(binary: Path) -> None:
+    codex_home = Path(tempfile.mkdtemp(prefix="codex-zig-app-server-permissions-", dir="/tmp"))
+    workspace = Path(tempfile.mkdtemp(prefix="codex-zig-permission-profile-project-", dir="/tmp")).resolve()
+    (workspace / ".git").mkdir()
+    symlink_parent = Path(
+        tempfile.mkdtemp(prefix="codex-zig-permission-profile-symlink-", dir="/tmp")
+    ).resolve()
+    workspace_symlink = symlink_parent / "workspace-link"
+    workspace_symlink.symlink_to(workspace, target_is_directory=True)
+    project_dot_codex = workspace / ".codex"
+    project_dot_codex.mkdir(parents=True)
+    child_workspace = workspace / "nested"
+    child_dot_codex = child_workspace / ".codex"
+    child_dot_codex.mkdir(parents=True)
+    grandchild_workspace = child_workspace / "grandchild"
+    grandchild_dot_codex = grandchild_workspace / ".codex"
+    grandchild_dot_codex.mkdir(parents=True)
+    linked_main = Path(tempfile.mkdtemp(prefix="codex-zig-permission-profile-main-", dir="/tmp")).resolve()
+    linked_worktree = Path(tempfile.mkdtemp(prefix="codex-zig-permission-profile-worktree-", dir="/tmp")).resolve()
+    linked_main_git = linked_main / ".git"
+    linked_worktree_git_dir = linked_main_git / "worktrees" / "linked"
+    linked_worktree_git_dir.mkdir(parents=True)
+    (linked_worktree / ".git").write_text(
+        f"gitdir: {linked_worktree_git_dir}\n",
+        encoding="utf-8",
+    )
+    linked_worktree_dot_codex = linked_worktree / ".codex"
+    linked_worktree_dot_codex.mkdir()
+    linked_worktree_dot_codex.joinpath("config.toml").write_text(
+        "\n".join(
+            [
+                "[permissions.worktree]",
+                'description = "Linked worktree profile."',
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    permission_start_workspace = Path(
+        tempfile.mkdtemp(prefix="codex-zig-permission-profile-start-", dir="/tmp")
+    ).resolve()
+    (permission_start_workspace / ".git").mkdir()
+    permission_start_dot_codex = permission_start_workspace / ".codex"
+    permission_start_dot_codex.mkdir(parents=True)
+    unrelated_write_workspace = Path(
+        tempfile.mkdtemp(prefix="codex-zig-permission-profile-untrusted-", dir="/tmp")
+    ).resolve()
+    (unrelated_write_workspace / ".git").mkdir()
+    unrelated_write_root = Path(
+        tempfile.mkdtemp(prefix="codex-zig-permission-profile-extra-root-", dir="/tmp")
+    ).resolve()
+    system_config_path = codex_home / "system_config.toml"
+    managed_config_path = codex_home / "managed_config.toml"
+    codex_home.joinpath("config.toml").write_text(
+        "\n".join(
+            [
+                'default_permissions = "dev"',
+                "",
+                "[permissions.dev]",
+                'description = "Day-to-day coding work."',
+                "",
+                "[permissions.dev.filesystem]",
+                '":root" = "read"',
+                '":workspace_roots" = "write"',
+                "",
+                "[permissions.audit]",
+                'description = "Inspect without writes."',
+                "",
+                "[permissions.audit.filesystem]",
+                '":workspace_roots" = "read"',
+                "",
+                f'[projects."{toml_quoted_key(str(workspace))}"]',
+                'trust_level = "trusted"',
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    system_config_path.write_text(
+        "\n".join(
+            [
+                "[permissions.audit]",
+                'description = "System audit profile."',
+                "",
+                "[permissions.system]",
+                'description = "System profile."',
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    managed_config_path.write_text(
+        "\n".join(
+            [
+                "[permissions.dev]",
+                'description = "Managed coding work."',
+                "",
+                "[permissions.managed]",
+                'description = "Managed profile."',
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    project_dot_codex.joinpath("config.toml").write_text(
+        "\n".join(
+            [
+                "[permissions.project]",
+                'description = "Parent project profile."',
+                "",
+                "[permissions.project.filesystem]",
+                '":root" = "read"',
+                '":workspace_roots" = "write"',
+                "",
+                "[permissions.project.network]",
+                "enabled = true",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    child_dot_codex.joinpath("config.toml").write_text(
+        "\n".join(
+            [
+                "[permissions.project]",
+                'description = "Child project profile."',
+                "",
+                "[permissions.project.filesystem]",
+                '":root" = "read"',
+                '":workspace_roots" = "write"',
+                "",
+                "[permissions.project.network]",
+                "enabled = true",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    grandchild_dot_codex.joinpath("config.toml").write_text(
+        "\n".join(
+            [
+                "[permissions.grandchild]",
+                'description = "Grandchild project profile."',
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    permission_start_dot_codex.joinpath("config.toml").write_text(
+        "\n".join(
+            [
+                'approval_policy = "on-request"',
+                'model_reasoning_effort = "high"',
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    env = os.environ.copy()
+    env["CODEX_HOME"] = str(codex_home)
+    env["CODEX_APP_SERVER_SYSTEM_CONFIG_PATH"] = str(system_config_path)
+    env["CODEX_APP_SERVER_MANAGED_CONFIG_PATH"] = str(managed_config_path)
+    proc = subprocess.Popen(
+        [str(binary), "app-server"],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        env=env,
+    )
+
+    def rpc(request_id: str, params: object = _OMIT) -> dict:
+        payload = {"jsonrpc": "2.0", "id": request_id, "method": "permissionProfile/list"}
+        if params is not _OMIT:
+            payload["params"] = params
+        write_json_line(proc, payload)
+        return read_json_line(proc, 5)
+
+    def profile_by_id(response: dict, profile_id: str) -> dict:
+        for profile in response["result"]["data"]:
+            if profile["id"] == profile_id:
+                return profile
+        raise AssertionError(f"missing permission profile {profile_id}")
+
+    try:
+        write_json_line(
+            proc,
+            {
+                "jsonrpc": "2.0",
+                "id": "initialize-permission-profiles",
+                "method": "initialize",
+                "params": {
+                    "clientInfo": {"name": "app-server-smoke", "version": "0"},
+                    "capabilities": EXPERIMENTAL_API_CAPABILITIES,
+                },
+            },
+        )
+        assert read_json_line(proc, 5)["id"] == "initialize-permission-profiles"
+
+        user_profiles = rpc("permission-profiles-user", {})
+        assert user_profiles["id"] == "permission-profiles-user"
+        assert user_profiles["result"] == {
+            "data": [
+                {"id": ":read-only", "description": None},
+                {"id": ":workspace", "description": None},
+                {"id": ":danger-full-access", "description": None},
+                {"id": "audit", "description": "Inspect without writes."},
+                {"id": "dev", "description": "Managed coding work."},
+                {"id": "managed", "description": "Managed profile."},
+                {"id": "system", "description": "System profile."},
+            ],
+            "nextCursor": None,
+        }
+
+        omitted = rpc("permission-profiles-omitted")
+        assert omitted["id"] == "permission-profiles-omitted"
+        assert omitted["result"] == user_profiles["result"]
+
+        null_params = rpc("permission-profiles-null", None)
+        assert null_params["id"] == "permission-profiles-null"
+        assert null_params["result"] == user_profiles["result"]
+
+        first_page = rpc(
+            "permission-profiles-project-first",
+            {"cwd": str(workspace), "limit": 3},
+        )
+        assert first_page["id"] == "permission-profiles-project-first"
+        assert first_page["result"] == {
+            "data": [
+                {"id": ":read-only", "description": None},
+                {"id": ":workspace", "description": None},
+                {"id": ":danger-full-access", "description": None},
+            ],
+            "nextCursor": "3",
+        }
+
+        second_page = rpc(
+            "permission-profiles-project-second",
+            {"cwd": str(workspace), "cursor": "3", "limit": 5},
+        )
+        assert second_page["id"] == "permission-profiles-project-second"
+        assert second_page["result"] == {
+            "data": [
+                {"id": "audit", "description": "Inspect without writes."},
+                {"id": "dev", "description": "Managed coding work."},
+                {"id": "managed", "description": "Managed profile."},
+                {"id": "project", "description": "Parent project profile."},
+                {"id": "system", "description": "System profile."},
+            ],
+            "nextCursor": None,
+        }
+
+        relative_page = rpc(
+            "permission-profiles-project-relative",
+            {"cwd": os.path.relpath(workspace, Path.cwd())},
+        )
+        assert relative_page["id"] == "permission-profiles-project-relative"
+        assert profile_by_id(relative_page, "project") == {
+            "id": "project",
+            "description": "Parent project profile.",
+        }
+
+        symlink_page = rpc(
+            "permission-profiles-project-symlink",
+            {"cwd": str(workspace_symlink)},
+        )
+        assert symlink_page["id"] == "permission-profiles-project-symlink"
+        assert profile_by_id(symlink_page, "project") == {
+            "id": "project",
+            "description": "Parent project profile.",
+        }
+
+        nested_page = rpc(
+            "permission-profiles-project-nested",
+            {"cwd": str(child_workspace)},
+        )
+        assert nested_page["id"] == "permission-profiles-project-nested"
+        assert profile_by_id(nested_page, "project") == {
+            "id": "project",
+            "description": "Child project profile.",
+        }
+
+        codex_home.joinpath("config.toml").write_text(
+            "\n".join(
+                [
+                    'default_permissions = "dev"',
+                    "",
+                    "[permissions.dev]",
+                    'description = "Day-to-day coding work."',
+                    "",
+                    f'[projects."{toml_quoted_key(str(linked_main))}"]',
+                    'trust_level = "trusted"',
+                    "",
+                ]
+            ),
+            encoding="utf-8",
+        )
+        linked_worktree_page = rpc(
+            "permission-profiles-linked-worktree",
+            {"cwd": str(linked_worktree)},
+        )
+        assert linked_worktree_page["id"] == "permission-profiles-linked-worktree"
+        assert profile_by_id(linked_worktree_page, "worktree") == {
+            "id": "worktree",
+            "description": "Linked worktree profile.",
+        }
+        codex_home.joinpath("config.toml").write_text(
+            "\n".join(
+                [
+                    'default_permissions = "dev"',
+                    "",
+                    "[permissions.dev]",
+                    'description = "Day-to-day coding work."',
+                    "",
+                    "[permissions.dev.filesystem]",
+                    '":root" = "read"',
+                    '":workspace_roots" = "write"',
+                    "",
+                    "[permissions.audit]",
+                    'description = "Inspect without writes."',
+                    "",
+                    "[permissions.audit.filesystem]",
+                    '":workspace_roots" = "read"',
+                    "",
+                    f'[projects."{toml_quoted_key(str(workspace))}"]',
+                    'trust_level = "trusted"',
+                    "",
+                ]
+            ),
+            encoding="utf-8",
+        )
+
+        write_json_line(
+            proc,
+            {
+                "jsonrpc": "2.0",
+                "id": "thread-start-project-permission-profile",
+                "method": "thread/start",
+                "params": {
+                    "cwd": str(workspace),
+                    "permissions": "project",
+                },
+            },
+        )
+        thread_start = read_json_line(proc, 5)
+        assert thread_start["id"] == "thread-start-project-permission-profile"
+        assert "error" not in thread_start, thread_start
+        started_thread = thread_start["result"]["thread"]
+        assert thread_start["result"]["sandbox"] == {
+            "type": "workspaceWrite",
+            "writableRoots": [],
+            "networkAccess": True,
+            "excludeTmpdirEnvVar": True,
+            "excludeSlashTmp": True,
+        }
+        thread_profile = thread_start["result"]["permissionProfile"]
+        assert thread_profile["type"] == "managed"
+        assert thread_profile["network"] == {"enabled": True}
+        assert {
+            "path": {"type": "special", "value": {"kind": "project_roots"}},
+            "access": "write",
+        } in thread_profile["fileSystem"]["entries"]
+        assert_thread_started_notification(read_json_line(proc, 5), started_thread)
+
+        codex_home.joinpath("config.toml").write_text(
+            "\n".join(
+                [
+                    'sandbox_mode = "read-only"',
+                    'model_reasoning_effort = "low"',
+                    "",
+                ]
+            ),
+            encoding="utf-8",
+        )
+        write_json_line(
+            proc,
+            {
+                "jsonrpc": "2.0",
+                "id": "thread-start-elevated-permission-trust",
+                "method": "thread/start",
+                "params": {
+                    "cwd": str(permission_start_workspace),
+                    "permissions": ":workspace",
+                    "ephemeral": True,
+                },
+            },
+        )
+        permission_trust_start = read_json_line(proc, 5)
+        assert permission_trust_start["id"] == "thread-start-elevated-permission-trust"
+        assert "error" not in permission_trust_start, permission_trust_start
+        assert permission_trust_start["result"]["approvalPolicy"] == "on-request"
+        assert permission_trust_start["result"]["reasoningEffort"] == "high"
+        assert permission_trust_start["result"]["sandbox"] == {
+            "type": "workspaceWrite",
+            "writableRoots": [],
+            "networkAccess": False,
+            "excludeTmpdirEnvVar": False,
+            "excludeSlashTmp": False,
+        }
+        permission_trust_config = codex_home.joinpath("config.toml").read_text(
+            encoding="utf-8"
+        )
+        trusted_permission_workspace = (
+            f'[projects."{toml_quoted_key(str(permission_start_workspace))}"]'
+        )
+        assert trusted_permission_workspace in permission_trust_config
+        assert_thread_started_notification(
+            read_json_line(proc, 5),
+            permission_trust_start["result"]["thread"],
+        )
+
+        codex_home.joinpath("config.toml").write_text(
+            "\n".join(
+                [
+                    "[permissions.extra_only.filesystem]",
+                    '":root" = "read"',
+                    f'"{toml_quoted_key(str(unrelated_write_root))}" = "write"',
+                    "",
+                    "[permissions.extra_only.network]",
+                    "enabled = false",
+                    "",
+                ]
+            ),
+            encoding="utf-8",
+        )
+        write_json_line(
+            proc,
+            {
+                "jsonrpc": "2.0",
+                "id": "thread-start-unrelated-writable-root-no-trust",
+                "method": "thread/start",
+                "params": {
+                    "cwd": str(unrelated_write_workspace),
+                    "permissions": "extra_only",
+                    "ephemeral": True,
+                },
+            },
+        )
+        unrelated_write_start = read_json_line(proc, 5)
+        assert unrelated_write_start["id"] == "thread-start-unrelated-writable-root-no-trust"
+        assert "error" not in unrelated_write_start, unrelated_write_start
+        assert unrelated_write_start["result"]["sandbox"]["type"] == "workspaceWrite"
+        assert str(unrelated_write_root) in unrelated_write_start["result"]["sandbox"][
+            "writableRoots"
+        ]
+        unrelated_write_config = codex_home.joinpath("config.toml").read_text(
+            encoding="utf-8"
+        )
+        untrusted_workspace_section = (
+            f'[projects."{toml_quoted_key(str(unrelated_write_workspace))}"]'
+        )
+        assert untrusted_workspace_section not in unrelated_write_config
+        assert_thread_started_notification(
+            read_json_line(proc, 5),
+            unrelated_write_start["result"]["thread"],
+        )
+
+        codex_home.joinpath("config.toml").write_text(
+            "\n".join(
+                [
+                    'default_permissions = "dev"',
+                    "",
+                    "[permissions.dev]",
+                    'description = "Day-to-day coding work."',
+                    "",
+                    "[permissions.audit]",
+                    'description = "Inspect without writes."',
+                    "",
+                    f'[projects."{toml_quoted_key(str(workspace))}"]',
+                    'trust_level = "trusted"',
+                    "",
+                    f'[projects."{toml_quoted_key(str(child_workspace))}"]',
+                    'trust_level = "untrusted"',
+                    "",
+                ]
+            ),
+            encoding="utf-8",
+        )
+        child_untrusted_page = rpc(
+            "permission-profiles-project-child-untrusted",
+            {"cwd": str(child_workspace)},
+        )
+        assert child_untrusted_page["id"] == "permission-profiles-project-child-untrusted"
+        assert profile_by_id(child_untrusted_page, "project") == {
+            "id": "project",
+            "description": "Parent project profile.",
+        }
+        grandchild_untrusted_page = rpc(
+            "permission-profiles-project-grandchild-untrusted",
+            {"cwd": str(grandchild_workspace)},
+        )
+        assert (
+            grandchild_untrusted_page["id"]
+            == "permission-profiles-project-grandchild-untrusted"
+        )
+        assert profile_by_id(grandchild_untrusted_page, "project") == {
+            "id": "project",
+            "description": "Parent project profile.",
+        }
+        assert "grandchild" not in [
+            profile["id"] for profile in grandchild_untrusted_page["result"]["data"]
+        ]
+
+        nested_checkout = workspace / "nested-checkout"
+        nested_checkout_dot_codex = nested_checkout / ".codex"
+        (nested_checkout / ".git").mkdir(parents=True)
+        nested_checkout_dot_codex.mkdir()
+        nested_checkout_dot_codex.joinpath("config.toml").write_text(
+            "\n".join(
+                [
+                    "[permissions.nested_checkout]",
+                    'description = "Nested checkout profile."',
+                    "",
+                ]
+            ),
+            encoding="utf-8",
+        )
+        nested_checkout_page = rpc(
+            "permission-profiles-project-nested-checkout",
+            {"cwd": str(nested_checkout)},
+        )
+        assert nested_checkout_page["id"] == "permission-profiles-project-nested-checkout"
+        nested_checkout_ids = [
+            profile["id"] for profile in nested_checkout_page["result"]["data"]
+        ]
+        assert "project" not in nested_checkout_ids
+        assert "nested_checkout" not in nested_checkout_ids
+
+        system_config_path.write_text(
+            "\n".join(
+                [
+                    "[permissions.audit]",
+                    'description = "System audit profile."',
+                    "",
+                    "[permissions.system]",
+                    'description = "System profile."',
+                    "",
+                    f'[projects."{toml_quoted_key(str(workspace))}"]',
+                    'trust_level = "trusted"',
+                    "",
+                ]
+            ),
+            encoding="utf-8",
+        )
+        codex_home.joinpath("config.toml").write_text(
+            "\n".join(
+                [
+                    'default_permissions = "dev"',
+                    "",
+                    "[permissions.dev]",
+                    'description = "Day-to-day coding work."',
+                    "",
+                    "[permissions.audit]",
+                    'description = "Inspect without writes."',
+                    "",
+                ]
+            ),
+            encoding="utf-8",
+        )
+        system_trusted_page = rpc(
+            "permission-profiles-project-system-trusted",
+            {"cwd": str(workspace)},
+        )
+        assert system_trusted_page["id"] == "permission-profiles-project-system-trusted"
+        assert profile_by_id(system_trusted_page, "project") == {
+            "id": "project",
+            "description": "Parent project profile.",
+        }
+
+        codex_home.joinpath("config.toml").write_text(
+            "\n".join(
+                [
+                    'default_permissions = "dev"',
+                    "",
+                    "[permissions.dev]",
+                    'description = "Day-to-day coding work."',
+                    "",
+                    "[permissions.audit]",
+                    'description = "Inspect without writes."',
+                    "",
+                    f'[projects."{toml_quoted_key(str(workspace))}"]',
+                    'trust_level = "untrusted"',
+                    "",
+                ]
+            ),
+            encoding="utf-8",
+        )
+        user_untrusted_page = rpc(
+            "permission-profiles-project-user-untrusted",
+            {"cwd": str(workspace)},
+        )
+        assert user_untrusted_page["id"] == "permission-profiles-project-user-untrusted"
+        assert "project" not in [
+            profile["id"] for profile in user_untrusted_page["result"]["data"]
+        ]
+
+        system_config_path.write_text(
+            "\n".join(
+                [
+                    "[permissions.dev]",
+                    'description = "System coding work."',
+                    "",
+                ]
+            ),
+            encoding="utf-8",
+        )
+        managed_config_path.write_text(
+            "\n".join(
+                [
+                    "[permissions.dev.network]",
+                    "enabled = true",
+                    "",
+                ]
+            ),
+            encoding="utf-8",
+        )
+        codex_home.joinpath("config.toml").write_text(
+            "\n".join(
+                [
+                    "[permissions.dev]",
+                    'description = "User coding work."',
+                    "",
+                    "[permissions.dev.filesystem]",
+                    '":root" = "read"',
+                    '":workspace_roots" = "write"',
+                    "",
+                ]
+            ),
+            encoding="utf-8",
+        )
+        description_reset_page = rpc("permission-profiles-description-reset", {})
+        assert description_reset_page["id"] == "permission-profiles-description-reset"
+        assert profile_by_id(description_reset_page, "dev") == {
+            "id": "dev",
+            "description": "User coding work.",
+        }
+        write_json_line(
+            proc,
+            {
+                "jsonrpc": "2.0",
+                "id": "thread-start-layered-permission-profile",
+                "method": "thread/start",
+                "params": {
+                    "cwd": str(workspace),
+                    "permissions": "dev",
+                    "ephemeral": True,
+                },
+            },
+        )
+        layered_permission_start = read_json_line(proc, 5)
+        assert layered_permission_start["id"] == "thread-start-layered-permission-profile"
+        assert "error" not in layered_permission_start, layered_permission_start
+        assert layered_permission_start["result"]["sandbox"] == {
+            "type": "workspaceWrite",
+            "writableRoots": [],
+            "networkAccess": True,
+            "excludeTmpdirEnvVar": True,
+            "excludeSlashTmp": True,
+        }
+        assert layered_permission_start["result"]["permissionProfile"]["network"] == {
+            "enabled": True
+        }
+        assert_thread_started_notification(
+            read_json_line(proc, 5),
+            layered_permission_start["result"]["thread"],
+        )
+
+        custom_root = workspace / "custom-root"
+        custom_child = custom_root / "child"
+        custom_dot_codex = custom_root / ".codex"
+        custom_dot_codex.mkdir(parents=True)
+        custom_child.mkdir()
+        (custom_root / ".codex-root").write_text("", encoding="utf-8")
+        custom_dot_codex.joinpath("config.toml").write_text(
+            "\n".join(
+                [
+                    "[permissions.custom_root]",
+                    'description = "Custom marker project profile."',
+                    "",
+                ]
+            ),
+            encoding="utf-8",
+        )
+        codex_home.joinpath("config.toml").write_text(
+            "\n".join(
+                [
+                    'project_root_markers = [".codex-root"]',
+                    "",
+                    'default_permissions = "dev"',
+                    "",
+                    "[permissions.dev]",
+                    'description = "Day-to-day coding work."',
+                    "",
+                    f'[projects."{toml_quoted_key(str(custom_root))}"]',
+                    'trust_level = "trusted"',
+                    "",
+                ]
+            ),
+            encoding="utf-8",
+        )
+        custom_marker_page = rpc(
+            "permission-profiles-project-custom-marker",
+            {"cwd": str(custom_child)},
+        )
+        assert custom_marker_page["id"] == "permission-profiles-project-custom-marker"
+        assert profile_by_id(custom_marker_page, "custom_root") == {
+            "id": "custom_root",
+            "description": "Custom marker project profile.",
+        }
+
+        system_config_path.unlink()
+        managed_config_path.unlink()
+        codex_home.joinpath("config.toml").write_text(
+            (
+                'permissions = { inline = { description = "Root inline profile." }, '
+                'bare = {} }\n'
+            ),
+            encoding="utf-8",
+        )
+        inline_profiles = rpc("permission-profiles-inline-root", {})
+        assert inline_profiles["id"] == "permission-profiles-inline-root"
+        assert inline_profiles["result"] == {
+            "data": [
+                {"id": ":read-only", "description": None},
+                {"id": ":workspace", "description": None},
+                {"id": ":danger-full-access", "description": None},
+                {"id": "bare", "description": None},
+                {"id": "inline", "description": "Root inline profile."},
+            ],
+            "nextCursor": None,
+        }
+
+        codex_home.joinpath("config.toml").write_text(
+            "\n".join(
+                [
+                    "[permissions.literal]",
+                    "description = 'Literal profile.'",
+                    "",
+                    "[permissions.block_multiline]",
+                    'description = """',
+                    "Block profile.",
+                    '"""',
+                    "",
+                    "[permissions.literal_multiline]",
+                    "description = '''",
+                    "Literal block profile.",
+                    "'''",
+                    "",
+                    "[permissions.multiline]",
+                    'description = """Multiline profile."""',
+                    "",
+                    "[permissions.'quoted.name']",
+                    "description = 'Quoted profile.'",
+                    "",
+                ]
+            ),
+            encoding="utf-8",
+        )
+        toml_string_profiles = rpc("permission-profiles-toml-strings", {})
+        assert toml_string_profiles["id"] == "permission-profiles-toml-strings"
+        assert toml_string_profiles["result"] == {
+            "data": [
+                {"id": ":read-only", "description": None},
+                {"id": ":workspace", "description": None},
+                {"id": ":danger-full-access", "description": None},
+                {"id": "block_multiline", "description": "Block profile.\n"},
+                {"id": "literal", "description": "Literal profile."},
+                {"id": "literal_multiline", "description": "Literal block profile.\n"},
+                {"id": "multiline", "description": "Multiline profile."},
+                {"id": "quoted.name", "description": "Quoted profile."},
+            ],
+            "nextCursor": None,
+        }
+
+        invalid_cursor = rpc("permission-profiles-invalid-cursor", {"cursor": "bad"})
+        assert invalid_cursor["id"] == "permission-profiles-invalid-cursor"
+        assert invalid_cursor["error"]["code"] == -32600
+        assert invalid_cursor["error"]["message"] == "invalid cursor: bad"
+
+        codex_home.joinpath("config.toml").write_text(
+            'permissions.bad = "not a table"\n',
+            encoding="utf-8",
+        )
+        invalid_profile_scalar = rpc("permission-profiles-invalid-profile-scalar", {})
+        assert invalid_profile_scalar["id"] == "permission-profiles-invalid-profile-scalar"
+        assert invalid_profile_scalar["error"]["code"] == -32603
+        assert "permissionProfile/list failed to load profiles" in invalid_profile_scalar["error"]["message"]
+
+        codex_home.joinpath("config.toml").write_text(
+            "[permissions.bad]\ndescription = 123\n",
+            encoding="utf-8",
+        )
+        invalid_profile_description = rpc("permission-profiles-invalid-profile-description", {})
+        assert invalid_profile_description["id"] == "permission-profiles-invalid-profile-description"
+        assert invalid_profile_description["error"]["code"] == -32603
+        assert "permissionProfile/list failed to load profiles" in invalid_profile_description["error"]["message"]
+
+        invalid_params = rpc("permission-profiles-invalid-params", [])
+        assert invalid_params["id"] == "permission-profiles-invalid-params"
+        assert invalid_params["error"]["code"] == -32602
+        assert invalid_params["error"]["message"] == "permissionProfile/list params must be an object"
+    finally:
+        if proc.poll() is None:
+            assert proc.stdin is not None
+            proc.stdin.close()
+            proc.kill()
+            proc.wait(timeout=5)
+        shutil.rmtree(codex_home, ignore_errors=True)
+        shutil.rmtree(workspace, ignore_errors=True)
+        shutil.rmtree(symlink_parent, ignore_errors=True)
+        shutil.rmtree(linked_main, ignore_errors=True)
+        shutil.rmtree(linked_worktree, ignore_errors=True)
+        shutil.rmtree(permission_start_workspace, ignore_errors=True)
+        shutil.rmtree(unrelated_write_workspace, ignore_errors=True)
+        shutil.rmtree(unrelated_write_root, ignore_errors=True)
+
+
 def run_config_read_rpc_smoke(binary: Path) -> None:
     codex_home = Path(tempfile.mkdtemp(prefix="codex-zig-app-server-config-", dir="/tmp"))
     workspace = Path(tempfile.mkdtemp(prefix="codex-zig-app-server-project-", dir="/tmp"))
+    (workspace / ".git").mkdir()
     project_dot_codex = workspace / ".codex"
     project_dot_codex.mkdir(parents=True)
     (project_dot_codex / "config.toml").write_text(
@@ -48849,6 +49707,31 @@ def run_json_schema_smoke(binary: Path) -> None:
             ]
             == "#/$defs/ModelVerification"
         )
+        permission_profile_list_params = json.loads(
+            (out_dir / "PermissionProfileListParams.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        assert permission_profile_list_params["title"] == "PermissionProfileListParams"
+        assert permission_profile_list_params["properties"]["limit"]["minimum"] == 0
+        assert permission_profile_list_params["properties"]["cwd"]["type"] == [
+            "string",
+            "null",
+        ]
+        permission_profile_summary = json.loads(
+            (out_dir / "PermissionProfileSummary.json").read_text(encoding="utf-8")
+        )
+        assert permission_profile_summary["required"] == ["id"]
+        permission_profile_list_response = json.loads(
+            (out_dir / "PermissionProfileListResponse.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        assert permission_profile_list_response["required"] == ["data"]
+        assert (
+            permission_profile_list_response["properties"]["data"]["items"]["$ref"]
+            == "#/$defs/PermissionProfileSummary"
+        )
         experimental_feature_list_params = json.loads(
             (out_dir / "ExperimentalFeatureListParams.json").read_text(
                 encoding="utf-8"
@@ -49241,6 +50124,10 @@ def run_json_schema_smoke(binary: Path) -> None:
             "pragmatic",
             None,
         ]
+        assert thread_start_params_schema["properties"]["permissions"]["type"] == [
+            "string",
+            "null",
+        ]
         thread_start_response_schema = json.loads(
             (out_dir / "ThreadStartResponse.json").read_text(encoding="utf-8")
         )
@@ -49475,8 +50362,8 @@ def run_json_schema_smoke(binary: Path) -> None:
             == "SandboxPolicy.json"
         )
         assert (
-            turn_start_params_schema["properties"]["permissions"]["oneOf"][0]["$ref"]
-            == "PermissionProfileSelectionParams.json"
+            turn_start_params_schema["properties"]["permissions"]["type"]
+            == ["string", "null"]
         )
         permission_selection_schema = json.loads(
             (out_dir / "PermissionProfileSelectionParams.json").read_text(
@@ -50438,6 +51325,9 @@ def run_json_schema_smoke(binary: Path) -> None:
         assert "ModelReroutedNotification" in bundle["$defs"]
         assert "ModelVerification" in bundle["$defs"]
         assert "ModelVerificationNotification" in bundle["$defs"]
+        assert "PermissionProfileListParams" in bundle["$defs"]
+        assert "PermissionProfileSummary" in bundle["$defs"]
+        assert "PermissionProfileListResponse" in bundle["$defs"]
         assert "ExperimentalFeatureListParams" in bundle["$defs"]
         assert "ExperimentalFeatureStage" in bundle["$defs"]
         assert "ExperimentalFeature" in bundle["$defs"]
@@ -50766,6 +51656,10 @@ def run_json_schema_smoke(binary: Path) -> None:
         assert bundle["$defs"]["ModelListItem"]["properties"]["serviceTiers"][
             "items"
         ]["$ref"] == "#/$defs/ModelServiceTier"
+        assert bundle["$defs"]["PermissionProfileListResponse"]["properties"][
+            "data"
+        ]["items"]["$ref"] == "#/$defs/PermissionProfileSummary"
+        assert bundle["$defs"]["PermissionProfileListResponse"]["required"] == ["data"]
         assert (
             bundle["$defs"]["ModelReroutedNotification"]["properties"]["reason"][
                 "$ref"
@@ -51089,6 +51983,10 @@ def run_json_schema_smoke(binary: Path) -> None:
             "memory_consolidation",
             None,
         ]
+        assert bundle["$defs"]["ThreadStartParams"]["properties"]["permissions"]["type"] == [
+            "string",
+            "null",
+        ]
         assert "TurnStartParams" in bundle["$defs"]
         assert "UserInput" in bundle["$defs"]
         assert (
@@ -51110,10 +52008,8 @@ def run_json_schema_smoke(binary: Path) -> None:
             == "#/$defs/SandboxPolicy"
         )
         assert (
-            bundle["$defs"]["TurnStartParams"]["properties"]["permissions"]["oneOf"][0][
-                "$ref"
-            ]
-            == "#/$defs/PermissionProfileSelectionParams"
+            bundle["$defs"]["TurnStartParams"]["properties"]["permissions"]["type"]
+            == ["string", "null"]
         )
         assert "PermissionProfileSelectionParams" in bundle["$defs"]
         assert (
@@ -51535,7 +52431,7 @@ def run_typescript_generation_smoke(binary: Path) -> None:
         )
         assert (
             'import type { PermissionProfileSelectionParams } from "./PermissionProfileSelectionParams";'
-            in turn_start_params
+            not in turn_start_params
         )
         assert 'import type { SandboxPolicy } from "./SandboxPolicy";' in (
             turn_start_params
@@ -51547,6 +52443,7 @@ def run_typescript_generation_smoke(binary: Path) -> None:
         assert "personality?: Personality | null;" in turn_start_params
         assert "approvalsReviewer?: ApprovalsReviewer | null;" in turn_start_params
         assert "sandboxPolicy?: SandboxPolicy | null;" in turn_start_params
+        assert "permissions?: string | null;" in turn_start_params
         turn_steer_params = (out_dir / "v2" / "TurnSteerParams.ts").read_text(
             encoding="utf-8"
         )
@@ -51723,6 +52620,8 @@ def run_typescript_generation_smoke(binary: Path) -> None:
         assert "params?: CollaborationModeListParams | null;" in client_request
         assert 'method: "model/list";' in client_request
         assert "params?: ModelListParams | null;" in client_request
+        assert 'method: "permissionProfile/list";' in client_request
+        assert "params?: PermissionProfileListParams | null;" in client_request
         assert 'method: "experimentalFeature/list";' in client_request
         assert "params?: ExperimentalFeatureListParams | null;" in client_request
         assert 'method: "experimentalFeature/enablement/set";' in client_request
@@ -52971,6 +53870,8 @@ def run_typescript_generation_smoke(binary: Path) -> None:
         assert "result: CollaborationModeListResponse;" in client_response
         assert 'method: "model/list";' in client_response
         assert "result: ModelListResponse;" in client_response
+        assert 'method: "permissionProfile/list";' in client_response
+        assert "result: PermissionProfileListResponse;" in client_response
         assert 'method: "experimentalFeature/list";' in client_response
         assert "result: ExperimentalFeatureListResponse;" in client_response
         assert 'method: "experimentalFeature/enablement/set";' in client_response
@@ -53177,6 +54078,26 @@ def run_typescript_generation_smoke(binary: Path) -> None:
         )
         assert "data: Model[];" in model_list_response
         assert "nextCursor: string | null;" in model_list_response
+        permission_profile_list_params = (
+            out_dir / "v2" / "PermissionProfileListParams.ts"
+        ).read_text(encoding="utf-8")
+        assert "cursor?: string | null;" in permission_profile_list_params
+        assert "limit?: number | null;" in permission_profile_list_params
+        assert "cwd?: string | null;" in permission_profile_list_params
+        permission_profile_summary = (
+            out_dir / "v2" / "PermissionProfileSummary.ts"
+        ).read_text(encoding="utf-8")
+        assert "id: string;" in permission_profile_summary
+        assert "description: string | null;" in permission_profile_summary
+        permission_profile_list_response = (
+            out_dir / "v2" / "PermissionProfileListResponse.ts"
+        ).read_text(encoding="utf-8")
+        assert (
+            'import type { PermissionProfileSummary } from "./PermissionProfileSummary";'
+            in permission_profile_list_response
+        )
+        assert "data: PermissionProfileSummary[];" in permission_profile_list_response
+        assert "nextCursor: string | null;" in permission_profile_list_response
         model_reroute_reason = (
             out_dir / "v2" / "ModelRerouteReason.ts"
         ).read_text(encoding="utf-8")
@@ -54182,6 +55103,7 @@ def run_typescript_generation_smoke(binary: Path) -> None:
         assert 'import type { Personality } from "../Personality";' in thread_start_params
         assert "model?: string | null;" in thread_start_params
         assert "personality?: Personality | null;" in thread_start_params
+        assert "permissions?: string | null;" in thread_start_params
         assert (
             'threadSource?: "user" | "subagent" | "memory_consolidation" | null;'
             in thread_start_params
@@ -54361,10 +55283,7 @@ def run_typescript_generation_smoke(binary: Path) -> None:
         assert "personality?: Personality | null;" in turn_start_params
         assert "approvalsReviewer?: ApprovalsReviewer | null;" in turn_start_params
         assert "sandboxPolicy?: SandboxPolicy | null;" in turn_start_params
-        assert (
-            "permissions?: PermissionProfileSelectionParams | null;"
-            in turn_start_params
-        )
+        assert "permissions?: string | null;" in turn_start_params
         turn_start_response = (out_dir / "v2" / "TurnStartResponse.ts").read_text(
             encoding="utf-8"
         )
@@ -55384,6 +56303,18 @@ def run_typescript_generation_smoke(binary: Path) -> None:
         )
         assert (
             'export type { CollaborationModeListResponse } from "./CollaborationModeListResponse";'
+            in v2_index
+        )
+        assert (
+            'export type { PermissionProfileListParams } from "./PermissionProfileListParams";'
+            in v2_index
+        )
+        assert (
+            'export type { PermissionProfileListResponse } from "./PermissionProfileListResponse";'
+            in v2_index
+        )
+        assert (
+            'export type { PermissionProfileSummary } from "./PermissionProfileSummary";'
             in v2_index
         )
         assert (
@@ -56445,6 +57376,8 @@ def main() -> None:
     print("app-server-turn-auth-failure-preserves-runtime-overrides-e2e: ok")
     run_collaboration_mode_rpc_smoke(binary)
     print("app-server-collaboration-mode-rpc-e2e: ok")
+    run_permission_profile_rpc_smoke(binary)
+    print("app-server-permission-profile-rpc-e2e: ok")
     run_config_read_rpc_smoke(binary)
     run_config_read_empty_layers_rpc_smoke(binary)
     print("app-server-config-read-rpc-e2e: ok")
