@@ -91,7 +91,8 @@ versus API-key auth mode, performs the `responses` upgrade handshake, and
 reports HTTP 101 plus reasoning/model-cache header presence. It also applies
 Rust's immediate close-frame grace window after a successful upgrade and warns
 with close code/reason details when the stream closes immediately. Standalone
-release-cache diagnostics remain planned exact-depth parity.
+installs now report the release-cache entry count from the parent `releases`
+directory.
 
 Current app-server `hooks/list` coverage: user `$CODEX_HOME/config.toml`,
 `$CODEX_HOME/hooks.json`, per-cwd `.codex/config.toml`, and per-cwd
