@@ -33,6 +33,10 @@ pub fn remotePluginFeatureEnabled(bytes: []const u8) bool {
     return featureEnabled(bytes, "remote_plugin", false);
 }
 
+pub fn pluginSharingFeatureEnabled(bytes: []const u8) bool {
+    return featureEnabled(bytes, "plugin_sharing", false);
+}
+
 pub fn enabledPluginIds(allocator: std.mem.Allocator, bytes: []const u8) ![]const []const u8 {
     var ids = std.ArrayList([]const u8).empty;
     errdefer {

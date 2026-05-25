@@ -23803,6 +23803,103 @@ description: Summarize plugin smoke threads
         ]
         assert detail["mcpServers"] == ["demo"]
 
+        suggested_root = repo / "plugins" / "suggested-plugin"
+        not_mentioned_root = repo / "plugins" / "not-mentioned"
+        suggested_root.joinpath(".codex-plugin").mkdir(parents=True)
+        not_mentioned_root.joinpath(".codex-plugin").mkdir(parents=True)
+        suggested_root.joinpath(".codex-plugin", "plugin.json").write_text(
+            json.dumps(
+                {
+                    "name": "suggested-plugin",
+                    "interface": {"displayName": "Suggested Plugin"},
+                }
+            ),
+            encoding="utf-8",
+        )
+        not_mentioned_root.joinpath(".codex-plugin", "plugin.json").write_text(
+            json.dumps(
+                {
+                    "name": "not-mentioned",
+                    "interface": {"displayName": "Not Mentioned"},
+                }
+            ),
+            encoding="utf-8",
+        )
+        repo.joinpath(".agents", "plugins", "marketplace.json").write_text(
+            json.dumps(
+                {
+                    "name": "local-market",
+                    "interface": {"displayName": "Local Marketplace"},
+                    "plugins": [
+                        {
+                            "name": "enabled-plugin",
+                            "source": {
+                                "source": "local",
+                                "path": "./plugins/enabled-plugin",
+                            },
+                            "category": "Developer tools",
+                        },
+                        {
+                            "name": "suggested-plugin",
+                            "source": {
+                                "source": "local",
+                                "path": "./plugins/suggested-plugin",
+                            },
+                        },
+                        {
+                            "name": "not-mentioned",
+                            "source": {
+                                "source": "local",
+                                "path": "./plugins/not-mentioned",
+                            },
+                        },
+                    ],
+                }
+            ),
+            encoding="utf-8",
+        )
+        plugin_installed = request_stdio_app_server(
+            binary,
+            {
+                "jsonrpc": "2.0",
+                "id": "plugin-installed",
+                "method": "plugin/installed",
+                "params": {
+                    "cwds": [str(repo)],
+                    "installSuggestionPluginNames": ["suggested-plugin"],
+                },
+            },
+            env,
+        )
+        assert plugin_installed["id"] == "plugin-installed"
+        installed_result = plugin_installed["result"]
+        assert installed_result["marketplaceLoadErrors"] == []
+        assert "featuredPluginIds" not in installed_result
+        assert len(installed_result["marketplaces"]) == 1
+        installed_marketplace = installed_result["marketplaces"][0]
+        assert installed_marketplace["name"] == "local-market"
+        installed_names = [
+            plugin["name"] for plugin in installed_marketplace["plugins"]
+        ]
+        assert installed_names == ["enabled-plugin", "suggested-plugin"]
+        assert installed_marketplace["plugins"][0]["installed"] is True
+        assert installed_marketplace["plugins"][0]["enabled"] is True
+        assert installed_marketplace["plugins"][1]["installed"] is False
+        assert installed_marketplace["plugins"][1]["enabled"] is False
+
+        plugin_installed_empty_params = request_stdio_app_server(
+            binary,
+            {
+                "jsonrpc": "2.0",
+                "id": "plugin-installed-empty-params",
+                "method": "plugin/installed",
+                "params": None,
+            },
+            env,
+        )
+        assert plugin_installed_empty_params["id"] == "plugin-installed-empty-params"
+        assert plugin_installed_empty_params["result"]["marketplaces"] == []
+
         plugin_uninstall = request_stdio_app_server(
             binary,
             {
@@ -48654,6 +48751,8 @@ def run_json_schema_smoke(binary: Path) -> None:
             "MarketplaceUpgradeResponse",
             "PluginInstallParams",
             "PluginInstallResponse",
+            "PluginInstalledParams",
+            "PluginInstalledResponse",
             "PluginListParams",
             "PluginListResponse",
             "PluginReadParams",
@@ -48763,6 +48862,19 @@ def run_json_schema_smoke(binary: Path) -> None:
         assert "DISABLED_BY_ADMIN" in plugin_list_response["$defs"][
             "PluginAvailability"
         ]["enum"]
+        plugin_installed_response = json.loads(
+            (out_dir / "v2" / "PluginInstalledResponse.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        assert plugin_installed_response["required"] == [
+            "marketplaces",
+            "marketplaceLoadErrors",
+        ]
+        assert (
+            plugin_installed_response["properties"]["marketplaces"]["items"]["$ref"]
+            == "#/$defs/PluginMarketplaceEntry"
+        )
         plugin_read_response = json.loads(
             (out_dir / "v2" / "PluginReadResponse.json").read_text(encoding="utf-8")
         )
@@ -52495,6 +52607,7 @@ def run_typescript_generation_smoke(binary: Path) -> None:
             "MarketplaceRemoveParams",
             "MarketplaceUpgradeParams",
             "PluginInstallParams",
+            "PluginInstalledParams",
             "PluginListParams",
             "PluginReadParams",
             "PluginShareDeleteParams",
@@ -52557,6 +52670,7 @@ def run_typescript_generation_smoke(binary: Path) -> None:
             ("marketplace/remove", "MarketplaceRemoveParams"),
             ("marketplace/upgrade", "MarketplaceUpgradeParams"),
             ("plugin/list", "PluginListParams"),
+            ("plugin/installed", "PluginInstalledParams"),
             ("plugin/read", "PluginReadParams"),
             ("plugin/skill/read", "PluginSkillReadParams"),
             ("plugin/share/save", "PluginShareSaveParams"),
@@ -52776,6 +52890,10 @@ def run_typescript_generation_smoke(binary: Path) -> None:
                 'import type { AbsolutePathBuf } from "../AbsolutePathBuf";',
                 "marketplaceKinds?: PluginListMarketplaceKind[] | null;",
             ],
+            "PluginInstalledParams": [
+                'import type { AbsolutePathBuf } from "../AbsolutePathBuf";',
+                "installSuggestionPluginNames?: string[] | null;",
+            ],
             "PluginSharePrincipal": [
                 'import type { PluginSharePrincipalType } from "./PluginSharePrincipalType";',
                 "principalId: string;",
@@ -52813,6 +52931,10 @@ def run_typescript_generation_smoke(binary: Path) -> None:
                 'import type { MarketplaceLoadErrorInfo } from "./MarketplaceLoadErrorInfo";',
                 "marketplaces: PluginMarketplaceEntry[];",
                 "featuredPluginIds: string[];",
+            ],
+            "PluginInstalledResponse": [
+                'import type { MarketplaceLoadErrorInfo } from "./MarketplaceLoadErrorInfo";',
+                "marketplaces: PluginMarketplaceEntry[];",
             ],
             "PluginReadResponse": [
                 'import type { PluginDetail } from "./PluginDetail";',
@@ -53820,6 +53942,7 @@ def run_typescript_generation_smoke(binary: Path) -> None:
             ("marketplace/remove", "MarketplaceRemoveResponse"),
             ("marketplace/upgrade", "MarketplaceUpgradeResponse"),
             ("plugin/list", "PluginListResponse"),
+            ("plugin/installed", "PluginInstalledResponse"),
             ("plugin/read", "PluginReadResponse"),
             ("plugin/skill/read", "PluginSkillReadResponse"),
             ("plugin/share/save", "PluginShareSaveResponse"),
@@ -56228,6 +56351,8 @@ def run_typescript_generation_smoke(binary: Path) -> None:
             "PluginInstallParams",
             "PluginInstallPolicy",
             "PluginInstallResponse",
+            "PluginInstalledParams",
+            "PluginInstalledResponse",
             "PluginInterface",
             "PluginListMarketplaceKind",
             "PluginListParams",

@@ -4707,6 +4707,17 @@ const PLUGIN_LIST_PARAMS_TS =
     \\
     ;
 
+const PLUGIN_INSTALLED_PARAMS_TS =
+    GENERATED_TS_HEADER ++
+    \\import type { AbsolutePathBuf } from "../AbsolutePathBuf";
+    \\
+    \\export interface PluginInstalledParams {
+    \\  cwds?: AbsolutePathBuf[] | null;
+    \\  installSuggestionPluginNames?: string[] | null;
+    \\}
+    \\
+    ;
+
 const PLUGIN_READ_PARAMS_TS =
     GENERATED_TS_HEADER ++
     \\import type { AbsolutePathBuf } from "../AbsolutePathBuf";
@@ -5075,6 +5086,18 @@ const PLUGIN_LIST_RESPONSE_TS =
     \\  marketplaces: PluginMarketplaceEntry[];
     \\  marketplaceLoadErrors: MarketplaceLoadErrorInfo[];
     \\  featuredPluginIds: string[];
+    \\}
+    \\
+    ;
+
+const PLUGIN_INSTALLED_RESPONSE_TS =
+    GENERATED_TS_HEADER ++
+    \\import type { MarketplaceLoadErrorInfo } from "./MarketplaceLoadErrorInfo";
+    \\import type { PluginMarketplaceEntry } from "./PluginMarketplaceEntry";
+    \\
+    \\export interface PluginInstalledResponse {
+    \\  marketplaces: PluginMarketplaceEntry[];
+    \\  marketplaceLoadErrors: MarketplaceLoadErrorInfo[];
     \\}
     \\
     ;
@@ -10458,6 +10481,7 @@ const CLIENT_REQUEST_TS =
     \\import type { ModelProviderCapabilitiesReadParams } from "./v2/ModelProviderCapabilitiesReadParams";
     \\import type { PermissionProfileListParams } from "./v2/PermissionProfileListParams";
     \\import type { PluginInstallParams } from "./v2/PluginInstallParams";
+    \\import type { PluginInstalledParams } from "./v2/PluginInstalledParams";
     \\import type { PluginListParams } from "./v2/PluginListParams";
     \\import type { PluginReadParams } from "./v2/PluginReadParams";
     \\import type { PluginShareDeleteParams } from "./v2/PluginShareDeleteParams";
@@ -10572,6 +10596,10 @@ const CLIENT_REQUEST_TS =
     \\  | {
     \\      method: "plugin/list";
     \\      params: PluginListParams;
+    \\    }
+    \\  | {
+    \\      method: "plugin/installed";
+    \\      params: PluginInstalledParams;
     \\    }
     \\  | {
     \\      method: "plugin/read";
@@ -10973,6 +11001,7 @@ const CLIENT_RESPONSE_TS =
     \\import type { ProcessSpawnResponse } from "./v2/ProcessSpawnResponse";
     \\import type { ProcessWriteStdinResponse } from "./v2/ProcessWriteStdinResponse";
     \\import type { PluginInstallResponse } from "./v2/PluginInstallResponse";
+    \\import type { PluginInstalledResponse } from "./v2/PluginInstalledResponse";
     \\import type { PluginListResponse } from "./v2/PluginListResponse";
     \\import type { PluginReadResponse } from "./v2/PluginReadResponse";
     \\import type { PluginShareDeleteResponse } from "./v2/PluginShareDeleteResponse";
@@ -11104,6 +11133,11 @@ const CLIENT_RESPONSE_TS =
     \\      id: RequestId;
     \\      method: "plugin/list";
     \\      result: PluginListResponse;
+    \\    }
+    \\  | {
+    \\      id: RequestId;
+    \\      method: "plugin/installed";
+    \\      result: PluginInstalledResponse;
     \\    }
     \\  | {
     \\      id: RequestId;
@@ -12260,6 +12294,8 @@ const V2_INDEX_TS =
     \\export type { PluginInstallParams } from "./PluginInstallParams";
     \\export type { PluginInstallPolicy } from "./PluginInstallPolicy";
     \\export type { PluginInstallResponse } from "./PluginInstallResponse";
+    \\export type { PluginInstalledParams } from "./PluginInstalledParams";
+    \\export type { PluginInstalledResponse } from "./PluginInstalledResponse";
     \\export type { PluginInterface } from "./PluginInterface";
     \\export type { PluginListMarketplaceKind } from "./PluginListMarketplaceKind";
     \\export type { PluginListParams } from "./PluginListParams";
@@ -15023,6 +15059,20 @@ const PLUGIN_LIST_PARAMS_JSON_SCHEMA =
     \\
 ;
 
+const PLUGIN_INSTALLED_PARAMS_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "PluginInstalledParams",
+    \\  "type": "object",
+    \\  "properties": {
+    \\    "cwds": { "type": ["array", "null"], "items": { "type": "string" } },
+    \\    "installSuggestionPluginNames": { "type": ["array", "null"], "items": { "type": "string" } }
+    \\  },
+    \\  "additionalProperties": true
+    \\}
+    \\
+;
+
 const PLUGIN_READ_PARAMS_JSON_SCHEMA =
     \\{
     \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -15205,6 +15255,25 @@ const PLUGIN_LIST_RESPONSE_JSON_SCHEMA =
     \\    "marketplaces": { "type": "array", "items": { "$ref": "#/$defs/PluginMarketplaceEntry" } },
     \\    "marketplaceLoadErrors": { "type": "array", "items": { "$ref": "#/$defs/MarketplaceLoadErrorInfo" } },
     \\    "featuredPluginIds": { "type": "array", "items": { "type": "string" } }
+    \\  },
+    \\  "$defs": {
+    \\
+++ PLUGIN_SCHEMA_COMMON_DEFS_JSON ++
+    \\  },
+    \\  "additionalProperties": false
+    \\}
+    \\
+;
+
+const PLUGIN_INSTALLED_RESPONSE_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "PluginInstalledResponse",
+    \\  "type": "object",
+    \\  "required": ["marketplaces", "marketplaceLoadErrors"],
+    \\  "properties": {
+    \\    "marketplaces": { "type": "array", "items": { "$ref": "#/$defs/PluginMarketplaceEntry" } },
+    \\    "marketplaceLoadErrors": { "type": "array", "items": { "$ref": "#/$defs/MarketplaceLoadErrorInfo" } }
     \\  },
     \\  "$defs": {
     \\
@@ -27070,6 +27139,8 @@ const APP_SERVER_JSON_SCHEMA_FILES = [_]SchemaFile{
     .{ .name = "v2/MarketplaceUpgradeResponse.json", .contents = MARKETPLACE_UPGRADE_RESPONSE_JSON_SCHEMA },
     .{ .name = "v2/PluginInstallParams.json", .contents = PLUGIN_INSTALL_PARAMS_JSON_SCHEMA },
     .{ .name = "v2/PluginInstallResponse.json", .contents = PLUGIN_INSTALL_RESPONSE_JSON_SCHEMA },
+    .{ .name = "v2/PluginInstalledParams.json", .contents = PLUGIN_INSTALLED_PARAMS_JSON_SCHEMA },
+    .{ .name = "v2/PluginInstalledResponse.json", .contents = PLUGIN_INSTALLED_RESPONSE_JSON_SCHEMA },
     .{ .name = "v2/PluginListParams.json", .contents = PLUGIN_LIST_PARAMS_JSON_SCHEMA },
     .{ .name = "v2/PluginListResponse.json", .contents = PLUGIN_LIST_RESPONSE_JSON_SCHEMA },
     .{ .name = "v2/PluginReadParams.json", .contents = PLUGIN_READ_PARAMS_JSON_SCHEMA },
@@ -27717,6 +27788,8 @@ const APP_SERVER_TS_FILES = [_]SchemaFile{
     .{ .name = "v2/PluginHookSummary.ts", .contents = PLUGIN_HOOK_SUMMARY_TS },
     .{ .name = "v2/PluginInstallPolicy.ts", .contents = PLUGIN_INSTALL_POLICY_TS },
     .{ .name = "v2/PluginInstallResponse.ts", .contents = PLUGIN_INSTALL_RESPONSE_TS },
+    .{ .name = "v2/PluginInstalledParams.ts", .contents = PLUGIN_INSTALLED_PARAMS_TS },
+    .{ .name = "v2/PluginInstalledResponse.ts", .contents = PLUGIN_INSTALLED_RESPONSE_TS },
     .{ .name = "v2/PluginInterface.ts", .contents = PLUGIN_INTERFACE_TS },
     .{ .name = "v2/PluginListMarketplaceKind.ts", .contents = PLUGIN_LIST_MARKETPLACE_KIND_TS },
     .{ .name = "v2/PluginListParams.ts", .contents = PLUGIN_LIST_PARAMS_TS },
@@ -47230,6 +47303,7 @@ fn validateOptionalStringArrayField(object: std.json.ObjectMap, field: []const u
 
 fn isPluginMethod(method: []const u8) bool {
     return std.mem.eql(u8, method, "plugin/list") or
+        std.mem.eql(u8, method, "plugin/installed") or
         std.mem.eql(u8, method, "plugin/read") or
         std.mem.eql(u8, method, "plugin/skill/read") or
         std.mem.eql(u8, method, "plugin/share/save") or
@@ -47249,6 +47323,9 @@ fn handlePluginMethod(
 ) ![]const u8 {
     if (std.mem.eql(u8, method, "plugin/list")) {
         return handlePluginList(allocator, state, id_value, params_value);
+    }
+    if (std.mem.eql(u8, method, "plugin/installed")) {
+        return handlePluginInstalled(allocator, state, id_value, params_value);
     }
     if (std.mem.eql(u8, method, "plugin/read")) {
         return handlePluginRead(allocator, state, id_value, params_value);
@@ -47290,6 +47367,7 @@ fn handlePluginMethod(
 
 fn validatePluginParams(method: []const u8, params_value: ?std.json.Value) ?[]const u8 {
     if (std.mem.eql(u8, method, "plugin/list")) return validatePluginListParams(params_value);
+    if (std.mem.eql(u8, method, "plugin/installed")) return validatePluginInstalledParams(params_value);
     if (std.mem.eql(u8, method, "plugin/read")) return validatePluginReadLikeParams(params_value);
     if (std.mem.eql(u8, method, "plugin/skill/read")) return validatePluginSkillReadParams(params_value);
     if (std.mem.eql(u8, method, "plugin/share/save")) return validatePluginShareSaveParams(params_value);
@@ -47299,6 +47377,15 @@ fn validatePluginParams(method: []const u8, params_value: ?std.json.Value) ?[]co
     if (std.mem.eql(u8, method, "plugin/install")) return validatePluginReadLikeParams(params_value);
     if (std.mem.eql(u8, method, "plugin/uninstall")) return validatePluginUninstallParams(params_value);
     return "unknown plugin method";
+}
+
+fn validatePluginInstalledParams(params_value: ?std.json.Value) ?[]const u8 {
+    const params = params_value orelse return null;
+    if (params == .null) return null;
+    if (params != .object) return "plugin/installed params must be an object";
+    const object = params.object;
+    if (validateOptionalStringArrayField(object, "cwds")) |message| return message;
+    return validateOptionalStringArrayField(object, "installSuggestionPluginNames");
 }
 
 fn validatePluginListParams(params_value: ?std.json.Value) ?[]const u8 {
@@ -47991,6 +48078,64 @@ fn handlePluginList(allocator: std.mem.Allocator, state: *AppServerState, id_val
     return renderJsonRpcResult(allocator, id_value, result);
 }
 
+fn handlePluginInstalled(allocator: std.mem.Allocator, state: *AppServerState, id_value: std.json.Value, params_value: ?std.json.Value) ![]const u8 {
+    const params = parsePluginInstalledParams(allocator, params_value) catch |err| switch (err) {
+        error.InvalidPluginInstalledParams => return renderJsonRpcError(allocator, id_value, -32602, "plugin/installed params must be an object"),
+        error.InvalidPluginListCwds => return renderJsonRpcError(allocator, id_value, -32602, "cwds must be an array of strings or null"),
+        error.InvalidPluginListCwdPath => return renderJsonRpcError(allocator, id_value, -32600, "Invalid request: plugin/installed cwds must be absolute paths"),
+        error.InvalidPluginInstalledSuggestions => return renderJsonRpcError(allocator, id_value, -32602, "installSuggestionPluginNames must be an array of strings or null"),
+        else => return err,
+    };
+    defer params.deinit(allocator);
+
+    const codex_home = resolveCodexHome(allocator) catch |err| {
+        return renderJsonRpcErrorForFailure(allocator, id_value, "plugin/installed failed", err);
+    };
+    defer allocator.free(codex_home);
+
+    const config_path = config.configTomlPath(allocator, codex_home) catch |err| {
+        return renderJsonRpcErrorForFailure(allocator, id_value, "plugin/installed failed", err);
+    };
+    defer allocator.free(config_path);
+    const config_bytes = config.readConfigTomlFile(allocator, config_path) catch |err| {
+        return renderJsonRpcErrorForFailure(allocator, id_value, "plugin/installed failed", err);
+    };
+    defer if (config_bytes) |bytes| allocator.free(bytes);
+    const raw_config_bytes = config_bytes orelse "";
+
+    var remote_marketplaces_json: ?[]const u8 = null;
+    defer if (remote_marketplaces_json) |json| allocator.free(json);
+    if (plugin_config.pluginsFeatureEnabled(raw_config_bytes)) {
+        const remote_sources = pluginInstalledRemoteSources(raw_config_bytes);
+        if (!remote_sources.isEmpty()) {
+            remote_marketplaces_json = fetchRemotePluginListMarketplaces(allocator, remote_sources) catch null;
+        }
+    }
+
+    const list_result = plugin_list.renderResponseWithRemoteMarketplacesForProduct(
+        allocator,
+        codex_home,
+        raw_config_bytes,
+        params.cwds,
+        true,
+        pluginProductRestrictionForSessionSource(state.session_source),
+        remote_marketplaces_json,
+    ) catch |err| {
+        return renderJsonRpcErrorForFailure(allocator, id_value, "plugin/installed failed", err);
+    };
+    defer allocator.free(list_result);
+
+    const result = plugin_list.renderInstalledResponseFromListResponse(
+        allocator,
+        list_result,
+        params.install_suggestion_plugin_names,
+    ) catch |err| {
+        return renderJsonRpcErrorForFailure(allocator, id_value, "plugin/installed failed", err);
+    };
+    defer allocator.free(result);
+    return renderJsonRpcResult(allocator, id_value, result);
+}
+
 fn parsePluginListParams(allocator: std.mem.Allocator, params_value: ?std.json.Value) !ParsedPluginListParams {
     const params = params_value orelse return .{ .cwds = try allocator.alloc([]const u8, 0), .marketplace_kinds = .{} };
     if (params == .null) return .{ .cwds = try allocator.alloc([]const u8, 0), .marketplace_kinds = .{} };
@@ -48014,6 +48159,37 @@ fn parsePluginListCwds(allocator: std.mem.Allocator, value_opt: ?std.json.Value)
         cwds[index] = item.string;
     }
     return cwds;
+}
+
+fn parsePluginInstalledParams(allocator: std.mem.Allocator, params_value: ?std.json.Value) !ParsedPluginInstalledParams {
+    const params = params_value orelse return emptyPluginInstalledParams(allocator);
+    if (params == .null) return emptyPluginInstalledParams(allocator);
+    if (params != .object) return error.InvalidPluginInstalledParams;
+
+    const cwds = try parsePluginListCwds(allocator, params.object.get("cwds"));
+    errdefer allocator.free(cwds);
+    const suggestions = try parsePluginInstalledSuggestions(allocator, params.object.get("installSuggestionPluginNames"));
+    return .{ .cwds = cwds, .install_suggestion_plugin_names = suggestions };
+}
+
+fn emptyPluginInstalledParams(allocator: std.mem.Allocator) !ParsedPluginInstalledParams {
+    const cwds = try allocator.alloc([]const u8, 0);
+    errdefer allocator.free(cwds);
+    const suggestions = try allocator.alloc([]const u8, 0);
+    return .{ .cwds = cwds, .install_suggestion_plugin_names = suggestions };
+}
+
+fn parsePluginInstalledSuggestions(allocator: std.mem.Allocator, value_opt: ?std.json.Value) ![]const []const u8 {
+    const value = value_opt orelse return allocator.alloc([]const u8, 0);
+    if (value == .null) return allocator.alloc([]const u8, 0);
+    if (value != .array) return error.InvalidPluginInstalledSuggestions;
+    const names = try allocator.alloc([]const u8, value.array.items.len);
+    errdefer allocator.free(names);
+    for (value.array.items, 0..) |item, index| {
+        if (item != .string) return error.InvalidPluginInstalledSuggestions;
+        names[index] = item.string;
+    }
+    return names;
 }
 
 fn parsePluginListMarketplaceKinds(value_opt: ?std.json.Value) !PluginListMarketplaceKinds {
@@ -48233,6 +48409,23 @@ const ParsedPluginListParams = struct {
         allocator.free(self.cwds);
     }
 };
+
+const ParsedPluginInstalledParams = struct {
+    cwds: []const []const u8,
+    install_suggestion_plugin_names: []const []const u8,
+
+    fn deinit(self: ParsedPluginInstalledParams, allocator: std.mem.Allocator) void {
+        allocator.free(self.cwds);
+        allocator.free(self.install_suggestion_plugin_names);
+    }
+};
+
+fn pluginInstalledRemoteSources(config_bytes: []const u8) remote_plugin.MarketplaceSources {
+    return .{
+        .global = plugin_config.remotePluginFeatureEnabled(config_bytes),
+        .shared_with_me = plugin_config.pluginSharingFeatureEnabled(config_bytes),
+    };
+}
 
 const PluginListMarketplaceKinds = struct {
     explicit: bool = false,
@@ -70188,6 +70381,22 @@ test "app-server plugin methods validate params" {
     );
     defer allocator.free(relative_cwd.?);
     try std.testing.expect(std.mem.indexOf(u8, relative_cwd.?, "\"code\":-32600") != null);
+
+    const relative_installed_cwd = try handleJsonRpcLine(
+        allocator,
+        &state,
+        "{\"jsonrpc\":\"2.0\",\"id\":\"bad-plugin-installed-cwd\",\"method\":\"plugin/installed\",\"params\":{\"cwds\":[\"relative-root\"]}}",
+    );
+    defer allocator.free(relative_installed_cwd.?);
+    try std.testing.expect(std.mem.indexOf(u8, relative_installed_cwd.?, "\"code\":-32600") != null);
+
+    const invalid_installed_suggestions = try handleJsonRpcLine(
+        allocator,
+        &state,
+        "{\"jsonrpc\":\"2.0\",\"id\":\"bad-plugin-installed-suggestions\",\"method\":\"plugin/installed\",\"params\":{\"installSuggestionPluginNames\":[7]}}",
+    );
+    defer allocator.free(invalid_installed_suggestions.?);
+    try std.testing.expect(std.mem.indexOf(u8, invalid_installed_suggestions.?, "\"code\":-32602") != null);
 }
 
 test "external agent import runtime refresh matches Rust item set" {

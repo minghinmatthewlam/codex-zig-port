@@ -484,6 +484,94 @@ pub fn responseHasMarketplaceName(allocator: std.mem.Allocator, response_json: [
     return false;
 }
 
+pub fn renderInstalledResponseFromListResponse(
+    allocator: std.mem.Allocator,
+    response_json: []const u8,
+    install_suggestion_plugin_names: []const []const u8,
+) ![]const u8 {
+    var parsed = try std.json.parseFromSlice(std.json.Value, allocator, response_json, .{ .allocate = .alloc_always });
+    defer parsed.deinit();
+    if (parsed.value != .object) return error.InvalidPluginListResponseJson;
+
+    var out = std.ArrayList(u8).empty;
+    errdefer out.deinit(allocator);
+    try out.appendSlice(allocator, "{\"marketplaces\":[");
+
+    var marketplace_count: usize = 0;
+    if (parsed.value.object.get("marketplaces")) |marketplaces| {
+        if (marketplaces != .array) return error.InvalidPluginListResponseJson;
+        for (marketplaces.array.items) |marketplace| {
+            if (marketplace != .object) continue;
+            const plugins = marketplace.object.get("plugins") orelse continue;
+            if (plugins != .array) continue;
+
+            var plugin_items = std.ArrayList(u8).empty;
+            defer plugin_items.deinit(allocator);
+            var plugin_count: usize = 0;
+            for (plugins.array.items) |plugin| {
+                if (plugin != .object) continue;
+                const name = stringField(plugin.object, "name") orelse continue;
+                const installed = boolField(plugin.object, "installed") orelse false;
+                if (!installed and !containsString(install_suggestion_plugin_names, name)) continue;
+
+                if (plugin_count > 0) try plugin_items.append(allocator, ',');
+                const raw_plugin = try std.json.Stringify.valueAlloc(allocator, plugin, .{});
+                defer allocator.free(raw_plugin);
+                try plugin_items.appendSlice(allocator, raw_plugin);
+                plugin_count += 1;
+            }
+            if (plugin_count == 0) continue;
+
+            try appendCommaIfNeeded(allocator, &out, &marketplace_count);
+            try out.appendSlice(allocator, "{\"name\":");
+            try appendRawJsonFieldOrNull(allocator, &out, marketplace.object, "name");
+            try out.appendSlice(allocator, ",\"path\":");
+            try appendRawJsonFieldOrNull(allocator, &out, marketplace.object, "path");
+            try out.appendSlice(allocator, ",\"interface\":");
+            try appendRawJsonFieldOrNull(allocator, &out, marketplace.object, "interface");
+            try out.appendSlice(allocator, ",\"plugins\":[");
+            try out.appendSlice(allocator, plugin_items.items);
+            try out.appendSlice(allocator, "]}");
+        }
+    }
+
+    try out.appendSlice(allocator, "],\"marketplaceLoadErrors\":");
+    if (parsed.value.object.get("marketplaceLoadErrors")) |load_errors| {
+        if (load_errors == .array) {
+            const raw_load_errors = try std.json.Stringify.valueAlloc(allocator, load_errors, .{});
+            defer allocator.free(raw_load_errors);
+            try out.appendSlice(allocator, raw_load_errors);
+        } else {
+            try out.appendSlice(allocator, "[]");
+        }
+    } else {
+        try out.appendSlice(allocator, "[]");
+    }
+    try out.appendSlice(allocator, "}");
+    return out.toOwnedSlice(allocator);
+}
+
+fn boolField(object: std.json.ObjectMap, field: []const u8) ?bool {
+    const value = object.get(field) orelse return null;
+    if (value != .bool) return null;
+    return value.bool;
+}
+
+fn appendRawJsonFieldOrNull(
+    allocator: std.mem.Allocator,
+    out: *std.ArrayList(u8),
+    object: std.json.ObjectMap,
+    field: []const u8,
+) !void {
+    const value = object.get(field) orelse {
+        try out.appendSlice(allocator, "null");
+        return;
+    };
+    const raw = try std.json.Stringify.valueAlloc(allocator, value, .{});
+    defer allocator.free(raw);
+    try out.appendSlice(allocator, raw);
+}
+
 pub fn renderConfiguredResponse(
     allocator: std.mem.Allocator,
     codex_home: []const u8,
