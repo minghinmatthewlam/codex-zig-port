@@ -12,6 +12,12 @@ const mcp_cmd = @import("mcp_cmd.zig");
 const sqlite = @import("sqlite.zig");
 const update_cmd = @import("update_cmd.zig");
 
+const PACKAGE_METADATA_FILENAME = "codex-package.json";
+const CODEX_PATH_DIRNAME = "codex-path";
+const CODEX_RESOURCES_DIRNAME = "codex-resources";
+const STANDALONE_PACKAGES_DIRNAME = "standalone";
+const RELEASES_DIRNAME = "releases";
+
 pub const Options = struct {
     profile: ?[]const u8 = null,
     runtime_overrides: config.RuntimeOverrides = .{},
@@ -143,6 +149,17 @@ const ConfigLoad = struct {
     err: ?anyerror = null,
     codex_home: ?[]const u8 = null,
     cwd: []const u8,
+};
+
+const SearchCommand = struct {
+    command: []const u8,
+    provider: []const u8,
+    bundled: bool,
+    owned: bool = false,
+
+    fn deinit(self: SearchCommand, allocator: std.mem.Allocator) void {
+        if (self.owned) allocator.free(self.command);
+    }
 };
 
 const PathHealth = enum {
@@ -534,10 +551,38 @@ fn runtimeCheck(allocator: std.mem.Allocator, codex_version: []const u8) !Check 
 }
 
 fn searchCheck(allocator: std.mem.Allocator) !Check {
-    var check = Check.init("runtime.search", "search", .ok, "search is OK (system)");
-    try check.addDetail(allocator, "search provider", "system");
-    try check.addDetail(allocator, "search command", "rg");
-    const rg_path = resolveCommandOnPath(allocator, "rg") catch |err| {
+    var search_command = try searchCommandForCurrentInstall(allocator);
+    defer search_command.deinit(allocator);
+
+    var check = Check.init(
+        "runtime.search",
+        "search",
+        .ok,
+        try std.fmt.allocPrint(allocator, "search is OK ({s})", .{search_command.provider}),
+    );
+    try check.addDetail(allocator, "search command", search_command.command);
+    try check.addDetail(allocator, "search provider", search_command.provider);
+
+    if (search_command.bundled) {
+        const metadata = std.Io.Dir.cwd().statFile(std.Io.Threaded.global_single_threaded.io(), search_command.command, .{}) catch |err| {
+            check.status = .warning;
+            check.summary = "search command could not be verified";
+            try check.addDetailFmt(allocator, "search command readiness", "{s}", .{@errorName(err)});
+            check.remediation = "Install ripgrep or repair the bundled Codex package.";
+            return check;
+        };
+        if (metadata.kind == .file) {
+            try check.addDetail(allocator, "search command readiness", "file exists");
+        } else {
+            check.status = .warning;
+            check.summary = "search command could not be verified";
+            try check.addDetail(allocator, "search command readiness", "path is not a file");
+            check.remediation = "Install ripgrep or repair the bundled Codex package.";
+        }
+        return check;
+    }
+
+    const rg_path = resolveCommandOnPath(allocator, search_command.command) catch |err| {
         check.status = .warning;
         check.summary = "search command could not be verified";
         try check.addDetailFmt(allocator, "search command readiness", "{s}", .{@errorName(err)});
@@ -567,6 +612,117 @@ fn searchCheck(allocator: std.mem.Allocator) !Check {
         check.remediation = "Install ripgrep or repair the bundled Codex package.";
     }
     return check;
+}
+
+fn searchCommandForCurrentInstall(allocator: std.mem.Allocator) !SearchCommand {
+    const io = std.Io.Threaded.global_single_threaded.io();
+    const current_exe = std.process.executablePathAlloc(io, allocator) catch null;
+    defer if (current_exe) |path| allocator.free(path);
+
+    const codex_home = config.resolveCodexHome(allocator) catch null;
+    defer if (codex_home) |path| allocator.free(path);
+
+    return searchCommandForInstall(allocator, current_exe, codex_home);
+}
+
+fn searchCommandForInstall(allocator: std.mem.Allocator, current_exe: ?[]const u8, codex_home: ?[]const u8) !SearchCommand {
+    if (current_exe) |exe_path| {
+        if (try packageLayoutRgCommand(allocator, exe_path)) |command| {
+            return .{ .command = command, .provider = "bundled", .bundled = true, .owned = true };
+        }
+        if (try standaloneResourceRgCommand(allocator, exe_path, codex_home)) |command| {
+            return .{ .command = command, .provider = "bundled", .bundled = true, .owned = true };
+        }
+    }
+
+    return .{ .command = defaultRgCommand(), .provider = "system", .bundled = false };
+}
+
+fn packageLayoutRgCommand(allocator: std.mem.Allocator, exe_path: []const u8) !?[]const u8 {
+    const package_dir = (try packageLayoutRoot(allocator, exe_path)) orelse return null;
+    defer allocator.free(package_dir);
+
+    const path_dir = try std.fs.path.join(allocator, &.{ package_dir, CODEX_PATH_DIRNAME });
+    defer allocator.free(path_dir);
+    const rg_command = try std.fs.path.join(allocator, &.{ path_dir, defaultRgCommand() });
+    if (pathIsRegularFile(rg_command)) return rg_command;
+    allocator.free(rg_command);
+    return null;
+}
+
+fn standaloneResourceRgCommand(allocator: std.mem.Allocator, exe_path: []const u8, codex_home: ?[]const u8) !?[]const u8 {
+    const home = codex_home orelse return null;
+    const release_dir = (try standaloneReleaseDir(allocator, exe_path, home)) orelse return null;
+    defer allocator.free(release_dir);
+
+    const resources_dir = try std.fs.path.join(allocator, &.{ release_dir, CODEX_RESOURCES_DIRNAME });
+    defer allocator.free(resources_dir);
+    const rg_command = try std.fs.path.join(allocator, &.{ resources_dir, defaultRgCommand() });
+    if (pathIsRegularFile(rg_command)) return rg_command;
+    allocator.free(rg_command);
+    return null;
+}
+
+fn standaloneReleaseDir(allocator: std.mem.Allocator, exe_path: []const u8, codex_home: []const u8) !?[]const u8 {
+    const canonical_exe = canonicalizeDoctorPath(allocator, exe_path) catch return null;
+    defer allocator.free(canonical_exe);
+    const canonical_home = canonicalizeDoctorPath(allocator, codex_home) catch return null;
+    defer allocator.free(canonical_home);
+
+    const package_dir = try packageLayoutRootFromCanonicalExe(allocator, canonical_exe);
+    defer if (package_dir) |path| allocator.free(path);
+    const release_dir = if (package_dir) |path|
+        try allocator.dupe(u8, path)
+    else if (std.fs.path.dirname(canonical_exe)) |dir|
+        try allocator.dupe(u8, dir)
+    else
+        return null;
+    errdefer allocator.free(release_dir);
+
+    const releases_root = try std.fs.path.join(allocator, &.{ canonical_home, "packages", STANDALONE_PACKAGES_DIRNAME, RELEASES_DIRNAME });
+    defer allocator.free(releases_root);
+    if (!pathStartsWithBoundary(release_dir, releases_root)) {
+        allocator.free(release_dir);
+        return null;
+    }
+
+    return release_dir;
+}
+
+fn packageLayoutRoot(allocator: std.mem.Allocator, exe_path: []const u8) !?[]const u8 {
+    const canonical_exe = canonicalizeDoctorPath(allocator, exe_path) catch return null;
+    defer allocator.free(canonical_exe);
+    return packageLayoutRootFromCanonicalExe(allocator, canonical_exe);
+}
+
+fn packageLayoutRootFromCanonicalExe(allocator: std.mem.Allocator, canonical_exe: []const u8) !?[]const u8 {
+    const bin_dir = std.fs.path.dirname(canonical_exe) orelse return null;
+    if (!std.mem.eql(u8, std.fs.path.basename(bin_dir), "bin")) return null;
+    const package_dir = std.fs.path.dirname(bin_dir) orelse return null;
+    const metadata = try std.fs.path.join(allocator, &.{ package_dir, PACKAGE_METADATA_FILENAME });
+    defer allocator.free(metadata);
+    if (!pathIsRegularFile(metadata)) return null;
+    const owned = try allocator.dupe(u8, package_dir);
+    return owned;
+}
+
+fn canonicalizeDoctorPath(allocator: std.mem.Allocator, path: []const u8) ![:0]u8 {
+    const io = std.Io.Threaded.global_single_threaded.io();
+    if (std.fs.path.isAbsolute(path)) {
+        return std.Io.Dir.realPathFileAbsoluteAlloc(io, path, allocator);
+    }
+    return std.Io.Dir.cwd().realPathFileAlloc(io, path, allocator);
+}
+
+fn pathStartsWithBoundary(path: []const u8, prefix: []const u8) bool {
+    if (!std.mem.startsWith(u8, path, prefix)) return false;
+    if (path.len == prefix.len) return true;
+    if (prefix.len == 0) return false;
+    return path[prefix.len] == std.fs.path.sep;
+}
+
+fn defaultRgCommand() []const u8 {
+    return if (builtin.os.tag == .windows) "rg.exe" else "rg";
 }
 
 fn configCheck(allocator: std.mem.Allocator, cfg_load: ConfigLoad, args: ParsedArgs) !Check {
@@ -2479,6 +2635,54 @@ test "doctor provider route labels redact probed path" {
     const rendered = try redactedProviderRouteLabel(std.testing.allocator, "https://api.openai.com/v1/");
     defer std.testing.allocator.free(rendered);
     try std.testing.expectEqualStrings("https://api.openai.com/v1/<redacted>", rendered);
+}
+
+test "doctor search command uses package codex-path rg" {
+    const allocator = std.testing.allocator;
+    var dir = std.testing.tmpDir(.{});
+    defer dir.cleanup();
+    const io = std.Io.Threaded.global_single_threaded.io();
+    try dir.dir.createDirPath(io, "pkg/bin");
+    try dir.dir.createDirPath(io, "pkg/codex-path");
+    try dir.dir.writeFile(io, .{ .sub_path = "pkg/codex-package.json", .data = "{}" });
+    try dir.dir.writeFile(io, .{ .sub_path = "pkg/bin/codex-zig", .data = "" });
+    try dir.dir.writeFile(io, .{ .sub_path = "pkg/codex-path/rg", .data = "" });
+
+    const root = try dir.dir.realPathFileAlloc(io, ".", allocator);
+    defer allocator.free(root);
+    const exe_path = try std.fs.path.join(allocator, &.{ root, "pkg", "bin", "codex-zig" });
+    defer allocator.free(exe_path);
+
+    const search = try searchCommandForInstall(allocator, exe_path, null);
+    defer search.deinit(allocator);
+
+    try std.testing.expect(search.bundled);
+    try std.testing.expectEqualStrings("bundled", search.provider);
+    try std.testing.expect(std.mem.endsWith(u8, search.command, "pkg/codex-path/rg"));
+}
+
+test "doctor search command uses standalone bundled resources rg" {
+    const allocator = std.testing.allocator;
+    var dir = std.testing.tmpDir(.{});
+    defer dir.cleanup();
+    const io = std.Io.Threaded.global_single_threaded.io();
+    try dir.dir.createDirPath(io, "codex-home/packages/standalone/releases/1.2.3/codex-resources");
+    try dir.dir.writeFile(io, .{ .sub_path = "codex-home/packages/standalone/releases/1.2.3/codex-zig", .data = "" });
+    try dir.dir.writeFile(io, .{ .sub_path = "codex-home/packages/standalone/releases/1.2.3/codex-resources/rg", .data = "" });
+
+    const root = try dir.dir.realPathFileAlloc(io, ".", allocator);
+    defer allocator.free(root);
+    const codex_home = try std.fs.path.join(allocator, &.{ root, "codex-home" });
+    defer allocator.free(codex_home);
+    const exe_path = try std.fs.path.join(allocator, &.{ root, "codex-home", "packages", "standalone", "releases", "1.2.3", "codex-zig" });
+    defer allocator.free(exe_path);
+
+    const search = try searchCommandForInstall(allocator, exe_path, codex_home);
+    defer search.deinit(allocator);
+
+    try std.testing.expect(search.bundled);
+    try std.testing.expectEqualStrings("bundled", search.provider);
+    try std.testing.expect(std.mem.endsWith(u8, search.command, "codex-resources/rg"));
 }
 
 test "doctor websocket endpoint uses responses path and websocket display scheme" {
