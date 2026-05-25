@@ -2313,6 +2313,28 @@ def write_json_line(proc: subprocess.Popen[str], payload: dict) -> None:
     proc.stdin.flush()
 
 
+def write_turn_steer_text(
+    proc: subprocess.Popen[str],
+    request_id: str,
+    thread_id: str,
+    turn_id: str,
+    text: str,
+) -> None:
+    write_json_line(
+        proc,
+        {
+            "jsonrpc": "2.0",
+            "id": request_id,
+            "method": "turn/steer",
+            "params": {
+                "threadId": thread_id,
+                "expectedTurnId": turn_id,
+                "input": [{"type": "text", "text": text}],
+            },
+        },
+    )
+
+
 def assert_thread_started_notification(notification: dict, expected_thread: dict) -> None:
     assert notification["jsonrpc"] == "2.0"
     assert notification["method"] == "thread/started"
@@ -16169,6 +16191,204 @@ def run_turn_command_approval_request_smoke(binary: Path) -> None:
         shutil.rmtree(codex_home, ignore_errors=True)
 
 
+def run_turn_steer_during_approval_smoke(binary: Path) -> None:
+    server, base_url = start_turn_responses_server()
+    codex_home = Path(tempfile.mkdtemp(prefix="codex-zig-app-server-steer-approval-home-", dir="/tmp"))
+    try:
+        codex_home.joinpath("config.toml").write_text(
+            f'openai_base_url = "{base_url}"\nmodel = "gpt-turn-steer-approval"\n',
+            encoding="utf-8",
+        )
+        env = os.environ.copy()
+        env["CODEX_HOME"] = str(codex_home)
+        env["OPENAI_API_KEY"] = "test-api-key"
+        env.pop("CODEX_ACCESS_TOKEN", None)
+
+        proc = subprocess.Popen(
+            [str(binary), "app-server"],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            env=env,
+        )
+        try:
+            write_json_line(
+                proc,
+                {
+                    "jsonrpc": "2.0",
+                    "id": "initialize",
+                    "method": "initialize",
+                    "params": {
+                        "clientInfo": {"name": "app-server-smoke", "version": "0"},
+                        "capabilities": {},
+                    },
+                },
+            )
+            assert read_json_line(proc, 5)["id"] == "initialize"
+
+            with tempfile.TemporaryDirectory(prefix="codex-zig-turn-steer-approval-", dir="/tmp") as cwd:
+                write_json_line(
+                    proc,
+                    {
+                        "jsonrpc": "2.0",
+                        "id": "thread-start-for-steer-approval",
+                        "method": "thread/start",
+                        "params": {
+                            "cwd": cwd,
+                            "approvalPolicy": "on-request",
+                            "sandbox": "danger-full-access",
+                        },
+                    },
+                )
+                thread_start = read_json_line(proc, 5)
+                assert thread_start["id"] == "thread-start-for-steer-approval"
+                thread = thread_start["result"]["thread"]
+                thread_id = thread["id"]
+                assert_thread_started_notification(read_json_line(proc, 5), thread)
+
+                steer_call = {
+                    "type": "response.output_item.done",
+                    "item": {
+                        "type": "function_call",
+                        "call_id": "call-steer-during-approval",
+                        "name": "exec_command",
+                        "arguments": json.dumps(
+                            {
+                                "cmd": "printf steer-tool-output",
+                                "workdir": cwd,
+                                "shell": "/bin/sh",
+                            },
+                            separators=(",", ":"),
+                        ),
+                    },
+                }
+                server.response_payloads.append(
+                    (
+                        f"data: {json.dumps(steer_call, separators=(',', ':'))}\n\n"
+                        "data: [DONE]\n\n"
+                    ).encode()
+                )
+
+                write_json_line(
+                    proc,
+                    {
+                        "jsonrpc": "2.0",
+                        "id": "turn-start-steer-approval",
+                        "method": "turn/start",
+                        "params": {
+                            "threadId": thread_id,
+                            "input": [{"type": "text", "text": "start pending approval turn"}],
+                        },
+                    },
+                )
+                turn_start = read_json_line(proc, 5)
+                assert turn_start["id"] == "turn-start-steer-approval"
+                turn_id = turn_start["result"]["turn"]["id"]
+                approval_request = read_turn_server_request_after_opening(
+                    proc,
+                    thread_id,
+                    turn_id,
+                    "item/commandExecution/requestApproval",
+                )
+                assert approval_request["params"]["itemId"] == "call-steer-during-approval"
+
+                write_json_line(
+                    proc,
+                    {
+                        "jsonrpc": "2.0",
+                        "id": "steer-during-approval-experimental-metadata",
+                        "method": "turn/steer",
+                        "params": {
+                            "threadId": thread_id,
+                            "expectedTurnId": turn_id,
+                            "responsesapiClientMetadata": {"surface": "smoke"},
+                            "input": [
+                                {
+                                    "type": "text",
+                                    "text": "metadata should be gated",
+                                }
+                            ],
+                        },
+                    },
+                )
+                metadata_gate = read_json_line(proc, 5)
+                assert metadata_gate["id"] == "steer-during-approval-experimental-metadata"
+                assert metadata_gate["error"]["code"] == -32600
+                assert (
+                    metadata_gate["error"]["message"]
+                    == "turn/steer.responsesapiClientMetadata requires experimentalApi capability"
+                )
+
+                write_turn_steer_text(
+                    proc,
+                    "steer-during-approval",
+                    thread_id,
+                    turn_id,
+                    "steer while approval pending",
+                )
+                steer_response = read_json_line(proc, 5)
+                assert steer_response["id"] == "steer-during-approval"
+                assert steer_response["result"] == {"turnId": turn_id}
+
+                write_json_line(
+                    proc,
+                    {
+                        "jsonrpc": "2.0",
+                        "id": approval_request["id"],
+                        "result": {"decision": "accept"},
+                    },
+                )
+                resolved = read_json_line(proc, 5)
+                assert resolved["method"] == "serverRequest/resolved"
+                assert resolved["params"]["requestId"] == approval_request["id"]
+                messages = read_json_lines_until(
+                    proc,
+                    5,
+                    lambda seen: any(
+                        message.get("method") == "turn/completed"
+                        and message["params"]["turn"]["id"] == turn_id
+                        for message in seen
+                    )
+                    and any(
+                        message.get("method") == "thread/status/changed"
+                        and message["params"]["status"] == {"type": "idle"}
+                        for message in seen
+                    ),
+                )
+                assert any(
+                    message.get("method") == "item/commandExecution/outputDelta"
+                    and message["params"]["itemId"] == "call-steer-during-approval"
+                    and "steer-tool-output" in message["params"]["delta"]
+                    for message in messages
+                )
+
+                assert len(server.request_bodies) == 2
+                followup = server.request_bodies[1]
+                user_texts = request_input_texts_by_role(followup).get("user", [])
+                assert "start pending approval turn" in user_texts
+                assert "steer while approval pending" in user_texts
+                assert any(
+                    item.get("type") == "function_call_output"
+                    and item.get("call_id") == "call-steer-during-approval"
+                    and "steer-tool-output" in item.get("output", "")
+                    for item in followup["input"]
+                )
+
+            proc.stdin.close()
+            proc.wait(timeout=5)
+            if proc.returncode != 0:
+                raise AssertionError(f"app-server exited {proc.returncode}: {proc.stderr.read()}")
+        finally:
+            if proc.poll() is None:
+                proc.kill()
+                proc.wait(timeout=5)
+    finally:
+        server.shutdown()
+        server.server_close()
+        shutil.rmtree(codex_home, ignore_errors=True)
+
+
 def run_turn_request_permissions_smoke(binary: Path) -> None:
     server, base_url = start_turn_responses_server()
     codex_home = Path(tempfile.mkdtemp(prefix="codex-zig-app-server-permissions-home-", dir="/tmp"))
@@ -16361,6 +16581,17 @@ def run_turn_request_permissions_smoke(binary: Path) -> None:
                     if tool.get("type") == "function"
                 )
 
+                write_turn_steer_text(
+                    proc,
+                    "steer-during-permission-request",
+                    thread_id,
+                    turn_id,
+                    "steer while permissions pending",
+                )
+                permission_steer_response = read_json_line(proc, 5)
+                assert permission_steer_response["id"] == "steer-during-permission-request"
+                assert permission_steer_response["result"] == {"turnId": turn_id}
+
                 write_json_line(
                     proc,
                     {
@@ -16406,6 +16637,9 @@ def run_turn_request_permissions_smoke(binary: Path) -> None:
                     encoding="utf-8"
                 ) == "permission-granted"
                 permission_followup = server.request_bodies[1]
+                permission_user_texts = request_input_texts_by_role(permission_followup).get("user", [])
+                assert "request write access" in permission_user_texts
+                assert "steer while permissions pending" in permission_user_texts
                 assert any(
                     item.get("type") == "function_call_output"
                     and item.get("call_id") == "call-request-permissions"
@@ -16650,6 +16884,17 @@ def run_turn_request_user_input_smoke(binary: Path) -> None:
                 assert request_user_input_tool is not None
                 assert "Plan mode" in request_user_input_tool["description"]
 
+                write_turn_steer_text(
+                    proc,
+                    "steer-during-user-input-request",
+                    thread_id,
+                    turn_id,
+                    "steer while user input pending",
+                )
+                user_input_steer_response = read_json_line(proc, 5)
+                assert user_input_steer_response["id"] == "steer-during-user-input-request"
+                assert user_input_steer_response["result"] == {"turnId": turn_id}
+
                 write_json_line(
                     proc,
                     {
@@ -16689,6 +16934,9 @@ def run_turn_request_user_input_smoke(binary: Path) -> None:
                     for message in messages
                 )
                 followup_request = server.request_bodies[1]
+                user_input_texts = request_input_texts_by_role(followup_request).get("user", [])
+                assert "ask for a decision" in user_input_texts
+                assert "steer while user input pending" in user_input_texts
                 assert any(
                     item.get("type") == "function_call_output"
                     and item.get("call_id") == "call-request-user-input"
@@ -56101,6 +56349,8 @@ def main() -> None:
     print("app-server-turn-tool-cwd-e2e: ok")
     run_turn_command_approval_request_smoke(binary)
     print("app-server-turn-command-approval-request-e2e: ok")
+    run_turn_steer_during_approval_smoke(binary)
+    print("app-server-turn-steer-during-approval-e2e: ok")
     run_turn_request_permissions_smoke(binary)
     print("app-server-turn-request-permissions-e2e: ok")
     run_turn_request_user_input_smoke(binary)
