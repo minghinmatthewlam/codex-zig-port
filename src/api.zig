@@ -481,7 +481,7 @@ fn headerValueFromHttpHeaders(
     return null;
 }
 
-fn buildProviderUrl(
+pub fn buildProviderUrl(
     allocator: std.mem.Allocator,
     base_url: []const u8,
     path: []const u8,
@@ -513,7 +513,7 @@ fn buildProviderUrl(
     return url.toOwnedSlice(allocator);
 }
 
-fn appendProviderHeaders(
+pub fn appendProviderHeaders(
     allocator: std.mem.Allocator,
     headers: *std.ArrayList(std.http.Header),
     owned_env_values: *std.ArrayList([]const u8),

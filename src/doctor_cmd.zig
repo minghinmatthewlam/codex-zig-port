@@ -1,6 +1,7 @@
 const std = @import("std");
 const builtin = @import("builtin");
 
+const api = @import("api.zig");
 const auth = @import("auth.zig");
 const cli_utils = @import("cli_utils.zig");
 const config = @import("config.zig");
@@ -196,6 +197,29 @@ const RolloutNote = struct {
     total_bytes: u64,
 };
 
+const provider_reachability_timeout_ms = 15_000;
+
+const ReachabilityAuth = struct {
+    credentials: ?auth.Credentials = null,
+    mode_label: []const u8,
+
+    fn deinit(self: *ReachabilityAuth, allocator: std.mem.Allocator) void {
+        if (self.credentials) |*credentials| credentials.deinit(allocator);
+        allocator.free(self.mode_label);
+    }
+};
+
+const HttpStatusProbeContext = struct {
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    method: std.http.Method,
+    url: []const u8,
+    headers: []const std.http.Header,
+    done: std.Io.Event = .unset,
+    status: ?std.http.Status = null,
+    err: ?anyerror = null,
+};
+
 pub fn runWithOptions(allocator: std.mem.Allocator, args: *std.process.Args.Iterator, options: Options) !void {
     var arena = std.heap.ArenaAllocator.init(allocator);
     defer arena.deinit();
@@ -387,6 +411,7 @@ fn buildReport(allocator: std.mem.Allocator, args: ParsedArgs, codex_version: []
     try checks.append(allocator, try sandboxCheck(allocator, cfg_load));
     try checks.append(allocator, try updatesCheck(allocator));
     try checks.append(allocator, try networkCheck(allocator));
+    try checks.append(allocator, try providerReachabilityCheck(allocator, cfg_load));
     try checks.append(allocator, try appServerCheck(allocator, cfg_load));
     try checks.append(allocator, try terminalCheck(allocator));
     try checks.append(allocator, try stateCheck(allocator, cfg_load));
@@ -768,6 +793,287 @@ fn networkCheck(allocator: std.mem.Allocator) !Check {
         }
     }
     return check;
+}
+
+fn providerReachabilityCheck(allocator: std.mem.Allocator, cfg_load: ConfigLoad) !Check {
+    if (cfg_load.cfg == null) {
+        var check = Check.init("network.provider_reachability", "reachability", .warning, "provider reachability skipped because config failed");
+        check.remediation = "Fix config loading first.";
+        return check;
+    }
+
+    const cfg = cfg_load.cfg.?;
+    const provider_name = cfg.model_provider_id orelse "openai";
+    var check = Check.init("network.provider_reachability", "reachability", .ok, "active provider endpoints are reachable over HTTP");
+    try check.addDetail(allocator, "model provider", provider_name);
+    try check.addDetail(allocator, "wire API", @tagName(cfg.model_provider_wire_api));
+    try check.addDetailFmt(allocator, "connect timeout", "{d} ms", .{provider_reachability_timeout_ms});
+
+    var reachability_auth = try loadReachabilityAuth(allocator, &cfg);
+    defer reachability_auth.deinit(allocator);
+    try check.addDetail(allocator, "reachability mode", reachability_auth.mode_label);
+
+    var headers = std.ArrayList(std.http.Header).empty;
+    defer headers.deinit(allocator);
+    var auth_header: ?[]const u8 = null;
+    defer if (auth_header) |value| allocator.free(value);
+    var provider_env_header_values = std.ArrayList([]const u8).empty;
+    defer {
+        for (provider_env_header_values.items) |value| allocator.free(value);
+        provider_env_header_values.deinit(allocator);
+    }
+
+    try headers.append(allocator, .{ .name = "Accept", .value = "*/*" });
+    try headers.append(allocator, .{ .name = "User-Agent", .value = "codex-zig-port/0.0.1" });
+    if (reachability_auth.credentials) |credentials| {
+        if (credentials.mode != .local_oss and credentials.mode != .provider_no_auth) {
+            auth_header = try auth.authorizationHeader(allocator, credentials);
+            try headers.append(allocator, .{ .name = "Authorization", .value = auth_header.? });
+        }
+        if (credentials.account_id) |account_id| {
+            try headers.append(allocator, .{ .name = "ChatGPT-Account-ID", .value = account_id });
+        }
+        if (credentials.fedramp) {
+            try headers.append(allocator, .{ .name = "X-OpenAI-Fedramp", .value = "true" });
+        }
+    }
+    try api.appendProviderHeaders(allocator, &headers, &provider_env_header_values, cfg);
+
+    const base_url = providerReachabilityBaseUrl(&cfg, reachability_auth.credentials);
+    const base_key = try std.fmt.allocPrint(allocator, "{s} API base URL", .{provider_name});
+    const base_status = httpStatusProbeWithTimeout(allocator, .GET, base_url, headers.items, provider_reachability_timeout_ms) catch |err| {
+        return try providerReachabilityFailure(allocator, check, base_key, err);
+    };
+    try check.addDetailFmt(allocator, base_key, "{s} reachable (HTTP {d})", .{ base_url, @intFromEnum(base_status) });
+    if (!providerBaseStatusReachable(base_status)) {
+        check.status = .warning;
+        check.summary = "provider base URL returned an unexpected HTTP status";
+        check.remediation = "Check provider base URL, proxy, VPN, and network configuration.";
+        try check.addIssue(allocator, .{
+            .severity = .warning,
+            .cause = "provider base URL returned an unexpected HTTP status",
+            .measured = try std.fmt.allocPrint(allocator, "HTTP {d}", .{@intFromEnum(base_status)}),
+            .expected = "HTTP status below 500",
+            .remedy = check.remediation,
+            .fields = try allocator.dupe([]const u8, &.{base_key}),
+        });
+    }
+
+    const route_path = providerWireRoutePath(cfg.model_provider_wire_api);
+    const route_url = try api.buildProviderUrl(allocator, base_url, route_path, cfg.model_provider_query_params);
+    defer allocator.free(route_url);
+    const route_key = try std.fmt.allocPrint(allocator, "{s} API route probe", .{provider_name});
+    const route_label = try redactedProviderRouteLabel(allocator, base_url);
+    const route_status = httpStatusProbeWithTimeout(allocator, .GET, route_url, headers.items, provider_reachability_timeout_ms) catch |err| {
+        return try providerReachabilityFailure(allocator, check, route_key, err);
+    };
+    if (providerRouteStatusReachable(route_status)) {
+        try check.addDetailFmt(allocator, route_key, "{s} route exists (HTTP {d})", .{ route_label, @intFromEnum(route_status) });
+    } else {
+        try check.addDetailFmt(allocator, route_key, "{s} route returned HTTP {d}", .{ route_label, @intFromEnum(route_status) });
+        check.status = .warning;
+        check.summary = "active provider route returned an unexpected HTTP status";
+        check.remediation = "Check the active model provider base URL and wire API configuration.";
+        try check.addIssue(allocator, .{
+            .severity = .warning,
+            .cause = "active provider route returned an unexpected HTTP status",
+            .measured = try std.fmt.allocPrint(allocator, "HTTP {d}", .{@intFromEnum(route_status)}),
+            .expected = "HTTP 2xx, 400, 401, 403, or 405",
+            .remedy = check.remediation,
+            .fields = try allocator.dupe([]const u8, &.{route_key}),
+        });
+    }
+
+    return check;
+}
+
+fn providerReachabilityFailure(
+    allocator: std.mem.Allocator,
+    check: Check,
+    field: []const u8,
+    err: anyerror,
+) !Check {
+    var failed = check;
+    failed.status = .warning;
+    failed.summary = "active provider endpoints could not be reached over HTTP";
+    failed.remediation = "Check provider base URL, proxy, VPN, and network configuration.";
+    try failed.addDetailFmt(allocator, field, "probe failed ({s})", .{@errorName(err)});
+    try failed.addIssue(allocator, .{
+        .severity = .warning,
+        .cause = "active provider endpoint probe failed",
+        .measured = @errorName(err),
+        .expected = "reachable HTTP endpoint",
+        .remedy = failed.remediation,
+        .fields = try allocator.dupe([]const u8, &.{field}),
+    });
+    return failed;
+}
+
+fn loadReachabilityAuth(allocator: std.mem.Allocator, cfg: *const config.Config) !ReachabilityAuth {
+    if (providerHasDedicatedAuth(cfg) or !cfg.model_provider_requires_openai_auth) {
+        var credentials = auth.loadForConfig(allocator, cfg) catch |err| {
+            return .{ .mode_label = try std.fmt.allocPrint(allocator, "unauthenticated ({s})", .{@errorName(err)}) };
+        };
+        errdefer credentials.deinit(allocator);
+        return .{
+            .credentials = credentials,
+            .mode_label = try reachabilityModeLabel(allocator, credentials),
+        };
+    }
+
+    if (try env.getOwned(allocator, "OPENAI_API_KEY")) |api_key| {
+        if (std.mem.trim(u8, api_key, " \t\r\n").len > 0) {
+            return .{
+                .credentials = .{ .mode = .api_key, .token = api_key },
+                .mode_label = try allocator.dupe(u8, "API key auth"),
+            };
+        }
+        allocator.free(api_key);
+    }
+
+    if (try auth.loadActiveStoredWithMode(allocator, cfg.codex_home, cfg.cli_auth_credentials_store_mode)) |stored| {
+        var credentials = stored;
+        errdefer credentials.deinit(allocator);
+        return .{
+            .credentials = credentials,
+            .mode_label = try reachabilityModeLabel(allocator, credentials),
+        };
+    }
+
+    if (try env.getOwned(allocator, "CODEX_ACCESS_TOKEN")) |access_token| {
+        if (std.mem.trim(u8, access_token, " \t\r\n").len > 0) {
+            return .{
+                .credentials = .{ .mode = .agent_identity, .token = access_token },
+                .mode_label = try allocator.dupe(u8, "access token auth"),
+            };
+        }
+        allocator.free(access_token);
+    }
+
+    return .{ .mode_label = try allocator.dupe(u8, "unauthenticated") };
+}
+
+fn providerHasDedicatedAuth(cfg: *const config.Config) bool {
+    return cfg.model_provider_env_key != null or
+        cfg.model_provider_bearer_token != null or
+        cfg.model_provider_auth_command != null;
+}
+
+fn reachabilityModeLabel(allocator: std.mem.Allocator, credentials: auth.Credentials) ![]const u8 {
+    return allocator.dupe(u8, switch (credentials.mode) {
+        .chatgpt, .chatgpt_auth_tokens => "ChatGPT auth",
+        .agent_identity => "access token auth",
+        .api_key => "API key auth",
+        .local_oss, .provider_no_auth => "no auth required",
+    });
+}
+
+fn providerReachabilityBaseUrl(cfg: *const config.Config, credentials: ?auth.Credentials) []const u8 {
+    if (credentials) |creds| {
+        return switch (creds.mode) {
+            .chatgpt, .chatgpt_auth_tokens, .agent_identity => cfg.chatgpt_base_url,
+            .api_key, .local_oss, .provider_no_auth => cfg.openai_base_url,
+        };
+    }
+    return cfg.openai_base_url;
+}
+
+fn providerWireRoutePath(wire_api: config.ModelProviderWireApi) []const u8 {
+    return switch (wire_api) {
+        .responses => "responses",
+    };
+}
+
+fn providerBaseStatusReachable(status: std.http.Status) bool {
+    const code = @intFromEnum(status);
+    return code >= 200 and code < 500;
+}
+
+fn providerRouteStatusReachable(status: std.http.Status) bool {
+    const code = @intFromEnum(status);
+    return (code >= 200 and code < 300) or
+        code == 400 or
+        code == 401 or
+        code == 403 or
+        code == 405;
+}
+
+fn redactedProviderRouteLabel(allocator: std.mem.Allocator, base_url: []const u8) ![]const u8 {
+    return std.fmt.allocPrint(allocator, "{s}/<redacted>", .{std.mem.trimEnd(u8, base_url, "/")});
+}
+
+fn httpStatusProbeWithTimeout(
+    allocator: std.mem.Allocator,
+    method: std.http.Method,
+    url: []const u8,
+    headers: []const std.http.Header,
+    timeout_ms: u64,
+) !std.http.Status {
+    var io_instance: std.Io.Threaded = .init(allocator, .{ .async_limit = .limited(1) });
+    defer io_instance.deinit();
+    const io = io_instance.io();
+    var context = HttpStatusProbeContext{
+        .allocator = allocator,
+        .io = io,
+        .method = method,
+        .url = url,
+        .headers = headers,
+    };
+    var future = try io.concurrent(httpStatusProbeTimeoutWorker, .{&context});
+    const deadline = doctorRequestDeadline(io, timeout_ms);
+    while (true) {
+        context.done.waitTimeout(io, .{ .deadline = deadline }) catch |err| switch (err) {
+            error.Timeout => {
+                if (context.done.isSet()) break;
+                const now = std.Io.Clock.Timestamp.now(io, .awake);
+                if (std.Io.Clock.Timestamp.compare(now, .lt, deadline)) continue;
+                _ = future.cancel(io);
+                return error.Timeout;
+            },
+            else => |e| {
+                _ = future.cancel(io);
+                return e;
+            },
+        };
+        break;
+    }
+    _ = future.await(io);
+    if (context.status) |status| return status;
+    return context.err orelse error.Canceled;
+}
+
+fn httpStatusProbeTimeoutWorker(context: *HttpStatusProbeContext) void {
+    defer context.done.set(context.io);
+    context.status = httpStatusProbeWithIo(context.allocator, context.io, context.method, context.url, context.headers) catch |err| {
+        context.err = err;
+        return;
+    };
+}
+
+fn httpStatusProbeWithIo(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    method: std.http.Method,
+    url: []const u8,
+    headers: []const std.http.Header,
+) !std.http.Status {
+    var client = std.http.Client{ .allocator = allocator, .io = io };
+    defer client.deinit();
+    const result = try client.fetch(.{
+        .location = .{ .url = url },
+        .method = method,
+        .extra_headers = headers,
+        .keep_alive = false,
+    });
+    return result.status;
+}
+
+fn doctorRequestDeadline(io: std.Io, timeout_ms: u64) std.Io.Clock.Timestamp {
+    const timeout_ms_i64 = std.math.cast(i64, timeout_ms) orelse std.math.maxInt(i64);
+    return std.Io.Clock.Timestamp.fromNow(io, .{
+        .raw = std.Io.Duration.fromMilliseconds(timeout_ms_i64),
+        .clock = .awake,
+    });
 }
 
 fn appServerCheck(allocator: std.mem.Allocator, cfg_load: ConfigLoad) !Check {
@@ -1764,6 +2070,24 @@ test "doctor human report renders diagnostic notes" {
 
 test "doctor rejects local strict-config flag like Rust" {
     try std.testing.expectError(error.UnknownDoctorOption, parseArgs(std.testing.allocator, &.{ "--strict-config", "--help" }, .{}));
+}
+
+test "doctor provider reachability classifies HTTP statuses" {
+    try std.testing.expect(providerBaseStatusReachable(@enumFromInt(404)));
+    try std.testing.expect(!providerBaseStatusReachable(@enumFromInt(500)));
+    try std.testing.expect(providerRouteStatusReachable(@enumFromInt(200)));
+    try std.testing.expect(providerRouteStatusReachable(@enumFromInt(400)));
+    try std.testing.expect(providerRouteStatusReachable(@enumFromInt(401)));
+    try std.testing.expect(providerRouteStatusReachable(@enumFromInt(403)));
+    try std.testing.expect(providerRouteStatusReachable(@enumFromInt(405)));
+    try std.testing.expect(!providerRouteStatusReachable(@enumFromInt(404)));
+    try std.testing.expect(!providerRouteStatusReachable(@enumFromInt(500)));
+}
+
+test "doctor provider route labels redact probed path" {
+    const rendered = try redactedProviderRouteLabel(std.testing.allocator, "https://api.openai.com/v1/");
+    defer std.testing.allocator.free(rendered);
+    try std.testing.expectEqualStrings("https://api.openai.com/v1/<redacted>", rendered);
 }
 
 test "doctor JSON redacts local paths" {
