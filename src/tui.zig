@@ -29,6 +29,8 @@ const tools = @import("tools.zig");
 
 const agents_filename = "AGENTS.md";
 const mention_file_limit = 128 * 1024;
+const max_user_input_text_chars: usize = 1 << 20;
+const max_user_input_text_stored_bytes: usize = max_user_input_text_chars * 4;
 const remote_line_limit = 16 * 1024 * 1024;
 const remote_history_page_limit = 100;
 const terminal_title_limit = 240;
@@ -357,11 +359,13 @@ pub fn runWithOptions(allocator: std.mem.Allocator, options: Options) !void {
     if (options.initial_prompt) |initial_prompt| {
         const prompt = std.mem.trim(u8, initial_prompt, " \t\r\n");
         if (prompt.len > 0) {
-            runPrompt(allocator, cfg, &credentials, &transcript, session_path, prompt, options.additional_writable_roots, pending_input_images, feature_overrides, &state.subagents) catch |err| {
-                std.debug.print("\nerror: {s}\n", .{@errorName(err)});
-            };
-            refreshLocalRemoteControlSnapshot(allocator, &local_remote_server, cwd, &transcript);
-            pending_input_images = &.{};
+            if (!rejectUserInputTooLarge(prompt)) {
+                runPrompt(allocator, cfg, &credentials, &transcript, session_path, prompt, options.additional_writable_roots, pending_input_images, feature_overrides, &state.subagents) catch |err| {
+                    std.debug.print("\nerror: {s}\n", .{@errorName(err)});
+                };
+                refreshLocalRemoteControlSnapshot(allocator, &local_remote_server, cwd, &transcript);
+                pending_input_images = &.{};
+            }
         }
     }
 
@@ -397,6 +401,10 @@ pub fn runWithOptions(allocator: std.mem.Allocator, options: Options) !void {
                     if (remote_prompt_opt) |remote_prompt| {
                         defer allocator.free(remote_prompt);
                         std.debug.print("\nremote › {s}\n", .{remote_prompt});
+                        if (rejectUserInputTooLarge(remote_prompt)) {
+                            prompt_visible = false;
+                            continue;
+                        }
                         const input_images = pending_input_images;
                         pending_input_images = &.{};
                         runUserPrompt(allocator, cfg, &credentials, &transcript, session_path, cwd, remote_prompt, options.additional_writable_roots, &state, input_images, feature_overrides) catch |err| {
@@ -474,6 +482,7 @@ fn handleInteractivePromptLine(
             .quit => true,
         };
     }
+    if (rejectUserInputTooLarge(prompt)) return false;
 
     const input_images = pending_input_images.*;
     pending_input_images.* = &.{};
@@ -481,6 +490,77 @@ fn handleInteractivePromptLine(
         std.debug.print("\nerror: {s}\n", .{@errorName(err)});
     };
     return false;
+}
+
+fn userInputTooLarge(prompt: []const u8) ?usize {
+    const actual_chars = std.unicode.utf8CountCodepoints(prompt) catch prompt.len;
+    return if (actual_chars > max_user_input_text_chars) actual_chars else null;
+}
+
+fn rejectUserInputTooLarge(prompt: []const u8) bool {
+    if (userInputTooLarge(prompt)) |actual_chars| {
+        printUserInputTooLargeMessage(actual_chars);
+        return true;
+    }
+    return false;
+}
+
+fn printUserInputTooLargeMessage(actual_chars: usize) void {
+    std.debug.print("Message exceeds the maximum length of {d} characters ({d} provided).\n", .{
+        max_user_input_text_chars,
+        actual_chars,
+    });
+}
+
+const RemoteTuiInputLine = union(enum) {
+    eof,
+    line: []u8,
+    too_large: usize,
+};
+
+fn readRemoteTuiInputLine(
+    allocator: std.mem.Allocator,
+    reader: *std.Io.Reader,
+) !RemoteTuiInputLine {
+    var line = std.ArrayList(u8).empty;
+    errdefer line.deinit(allocator);
+
+    var char_count: usize = 0;
+    var byte_count: usize = 0;
+    var oversized = false;
+    while (true) {
+        const byte = reader.takeByte() catch |err| switch (err) {
+            error.EndOfStream => {
+                if (oversized) return .{ .too_large = char_count };
+                if (line.items.len == 0) return .eof;
+                return .{ .line = try line.toOwnedSlice(allocator) };
+            },
+            else => |e| return e,
+        };
+
+        if (byte == '\n') {
+            if (oversized) return .{ .too_large = char_count };
+            return .{ .line = try line.toOwnedSlice(allocator) };
+        }
+        if (byte == '\r') continue;
+
+        byte_count += 1;
+        if (utf8CodepointStartsAt(byte)) {
+            char_count += 1;
+        }
+
+        if (!oversized and (char_count > max_user_input_text_chars or byte_count > max_user_input_text_stored_bytes)) {
+            oversized = true;
+            line.deinit(allocator);
+            line = .empty;
+            if (char_count <= max_user_input_text_chars) char_count = max_user_input_text_chars + 1;
+        }
+        if (!oversized) try line.append(allocator, byte);
+    }
+}
+
+fn utf8CodepointStartsAt(byte: u8) bool {
+    return (byte & 0b1100_0000) != 0b1000_0000;
 }
 
 fn printLocalRemoteControlLinks(server: *const local_remote_control.Server) void {
@@ -664,10 +744,12 @@ fn runRemoteTui(allocator: std.mem.Allocator, options: Options, remote: []const 
     if (options.initial_prompt) |initial_prompt| {
         const prompt = std.mem.trim(u8, initial_prompt, " \t\r\n");
         if (prompt.len > 0) {
-            runRemotePrompt(allocator, &transport, thread_id, prompt, pending_input_image_paths, remote_state.overrides, remote_state.service_tier_cleared, remote_state.additional_writable_roots, remote_state.effective_sandbox_mode, remote_state.effectiveWorkspaceSandbox()) catch |err| {
-                std.debug.print("\nerror: {s}\n", .{@errorName(err)});
-            };
-            pending_input_image_paths = &.{};
+            if (!rejectUserInputTooLarge(prompt)) {
+                runRemotePrompt(allocator, &transport, thread_id, prompt, pending_input_image_paths, remote_state.overrides, remote_state.service_tier_cleared, remote_state.additional_writable_roots, remote_state.effective_sandbox_mode, remote_state.effectiveWorkspaceSandbox()) catch |err| {
+                    std.debug.print("\nerror: {s}\n", .{@errorName(err)});
+                };
+                pending_input_image_paths = &.{};
+            }
         }
     }
 
@@ -675,8 +757,16 @@ fn runRemoteTui(allocator: std.mem.Allocator, options: Options, remote: []const 
     var stdin_reader = std.Io.File.stdin().reader(io, &stdin_buffer);
     while (true) {
         std.debug.print("\n› ", .{});
-        const line_opt = try stdin_reader.interface.takeDelimiter('\n');
-        const line = line_opt orelse break;
+        const line_result = try readRemoteTuiInputLine(allocator, &stdin_reader.interface);
+        const line = switch (line_result) {
+            .eof => break,
+            .too_large => |actual_chars| {
+                printUserInputTooLargeMessage(actual_chars);
+                continue;
+            },
+            .line => |value| value,
+        };
+        defer allocator.free(line);
         const prompt = std.mem.trim(u8, line, " \t\r\n");
         if (prompt.len == 0) continue;
         if (std.mem.eql(u8, prompt, "q")) break;
@@ -688,6 +778,7 @@ fn runRemoteTui(allocator: std.mem.Allocator, options: Options, remote: []const 
             if (action == .quit) break;
             continue;
         }
+        if (rejectUserInputTooLarge(prompt)) continue;
         const input_image_paths = pending_input_image_paths;
         pending_input_image_paths = &.{};
         runRemotePrompt(allocator, &transport, thread_id, prompt, input_image_paths, remote_state.overrides, remote_state.service_tier_cleared, remote_state.additional_writable_roots, remote_state.effective_sandbox_mode, remote_state.effectiveWorkspaceSandbox()) catch |err| {
@@ -2576,6 +2667,7 @@ fn runSidePrompt(
         std.debug.print("usage: /side <prompt>\n", .{});
         return;
     }
+    if (rejectUserInputTooLarge(trimmed)) return;
 
     var side_transcript = try transcript.clone(allocator);
     defer side_transcript.deinit(allocator);
@@ -3021,6 +3113,7 @@ fn handleSlashCommand(
     }
 
     if (std.ascii.eqlIgnoreCase(parts.name, "review")) {
+        if (parts.args.len != 0 and rejectUserInputTooLarge(parts.args)) return .handled;
         const review_prompt = if (parts.args.len == 0)
             try review.buildUncommittedPrompt(allocator)
         else

@@ -996,6 +996,104 @@ def send_line(master_fd: int, line: str) -> None:
     os.write(master_fd, line.encode() + b"\n")
 
 
+def run_tui_oversized_input_smoke(
+    binary: Path,
+    env: dict[str, str],
+    workspace: Path,
+    port: int,
+    server: "MockResponsesServer",
+) -> None:
+    start_requests = len(server.request_bodies)
+    max_user_input_text_chars = 1 << 20
+    oversized_text = "x" * (max_user_input_text_chars + 1)
+    oversized_side_command = f"/side {oversized_text}"
+    proc = subprocess.Popen(
+        [
+            str(binary),
+            "--no-alt-screen",
+            "-c",
+            f"chatgpt_base_url=http://127.0.0.1:{port}",
+            "-c",
+            f"openai_base_url=http://127.0.0.1:{port}",
+        ],
+        cwd=workspace,
+        env=env,
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+    )
+    assert proc.stdin is not None
+    assert proc.stdout is not None
+    try:
+        output, _ = proc.communicate(
+            oversized_text + "\n" + oversized_side_command + "\n/quit\n",
+            timeout=20,
+        )
+    except subprocess.TimeoutExpired as exc:
+        proc.kill()
+        output, _ = proc.communicate()
+        raise AssertionError(f"oversized-input TUI smoke timed out:\n{output}") from exc
+    if proc.returncode != 0:
+        raise AssertionError(f"oversized-input TUI smoke exited {proc.returncode}:\n{output}")
+    expected = (
+        f"Message exceeds the maximum length of {max_user_input_text_chars} "
+        f"characters ({max_user_input_text_chars + 1} provided)."
+    )
+    if output.count(expected) < 2:
+        raise AssertionError(f"missing two oversized-input errors {expected!r}:\n{output}")
+    if len(server.request_bodies) != start_requests:
+        raise AssertionError("oversized TUI input unexpectedly reached the Responses API")
+
+    allowed_side_prefix = "side question "
+    allowed_side_text = allowed_side_prefix + (
+        "y" * (max_user_input_text_chars - len(allowed_side_prefix))
+    )
+    allowed_start_requests = len(server.request_bodies)
+    allowed_proc = subprocess.Popen(
+        [
+            str(binary),
+            "--no-alt-screen",
+            "-c",
+            f"chatgpt_base_url=http://127.0.0.1:{port}",
+            "-c",
+            f"openai_base_url=http://127.0.0.1:{port}",
+        ],
+        cwd=workspace,
+        env=env,
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+    )
+    assert allowed_proc.stdin is not None
+    assert allowed_proc.stdout is not None
+    try:
+        allowed_output, _ = allowed_proc.communicate(
+            f"/side {allowed_side_text}\n/quit\n",
+            timeout=25,
+        )
+    except subprocess.TimeoutExpired as exc:
+        allowed_proc.kill()
+        allowed_output, _ = allowed_proc.communicate()
+        raise AssertionError(
+            f"max-sized /side TUI smoke timed out:\n{allowed_output}"
+        ) from exc
+    if allowed_proc.returncode != 0:
+        raise AssertionError(
+            f"max-sized /side TUI smoke exited {allowed_proc.returncode}:\n"
+            f"{allowed_output}"
+        )
+    if "Message exceeds the maximum length" in allowed_output:
+        raise AssertionError(f"max-sized /side prompt was rejected:\n{allowed_output}")
+    allowed_bodies = server.request_bodies[allowed_start_requests:]
+    if not any(
+        latest_user_text(body.get("input", [])) == allowed_side_text
+        for body in allowed_bodies
+    ):
+        raise AssertionError("max-sized /side prompt did not reach the Responses API")
+
+
 def wait_for_path(path: Path, proc: subprocess.Popen[str], timeout: float) -> None:
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
@@ -1006,6 +1104,91 @@ def wait_for_path(path: Path, proc: subprocess.Popen[str], timeout: float) -> No
             raise AssertionError(f"process exited before {path} appeared:\n{stderr}")
         time.sleep(0.05)
     raise AssertionError(f"timed out waiting for {path}")
+
+
+def run_remote_tui_oversized_input_smoke(
+    binary: Path,
+    env: dict[str, str],
+    workspace: Path,
+    port: int,
+    server: "MockResponsesServer",
+) -> None:
+    socket_dir = Path(tempfile.mkdtemp(prefix="codex-zig-remote-limit-sock-", dir="/tmp"))
+    remote_home = Path(tempfile.mkdtemp(prefix="codex-zig-remote-limit-home-", dir="/tmp"))
+    socket_path = socket_dir / "app-server.sock"
+    max_user_input_text_chars = 1 << 20
+    oversized_text = chr(0x1F642) * (max_user_input_text_chars + 2)
+
+    app_env = os.environ.copy()
+    app_env["CODEX_HOME"] = str(remote_home)
+    app_env["OPENAI_API_KEY"] = "remote-limit-api-key"
+    app_env.pop("CODEX_ACCESS_TOKEN", None)
+    remote_home.joinpath("config.toml").write_text(
+        f'openai_base_url = "http://127.0.0.1:{port}"\n'
+        'model = "gpt-remote-limit"\n',
+        encoding="utf-8",
+    )
+
+    app_server = subprocess.Popen(
+        [str(binary), "app-server", "--listen", f"unix://{socket_path}"],
+        cwd=remote_home,
+        env=app_env,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    try:
+        wait_for_path(socket_path, app_server, 5)
+        start_requests = len(server.request_bodies)
+        proc = subprocess.Popen(
+            [
+                str(binary),
+                "--remote",
+                f"unix://{socket_path}",
+                "--no-alt-screen",
+            ],
+            cwd=workspace,
+            env=env,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+        )
+        assert proc.stdin is not None
+        assert proc.stdout is not None
+        try:
+            output, _ = proc.communicate(oversized_text + "\nq\n", timeout=25)
+        except subprocess.TimeoutExpired as exc:
+            proc.kill()
+            output, _ = proc.communicate()
+            raise AssertionError(
+                f"remote oversized-input TUI smoke timed out:\n{output}"
+            ) from exc
+        if proc.returncode != 0:
+            raise AssertionError(
+                f"remote oversized-input TUI smoke exited {proc.returncode}:\n"
+                f"{output}"
+            )
+        expected = (
+            f"Message exceeds the maximum length of {max_user_input_text_chars} "
+            f"characters ({max_user_input_text_chars + 2} provided)."
+        )
+        if expected not in output:
+            raise AssertionError(f"missing remote oversized-input error {expected!r}:\n{output}")
+        if len(server.request_bodies) != start_requests:
+            raise AssertionError(
+                "oversized remote TUI input unexpectedly reached the Responses API"
+            )
+    finally:
+        app_server.terminate()
+        try:
+            app_server.wait(timeout=2)
+        except subprocess.TimeoutExpired:
+            app_server.kill()
+            app_server.wait(timeout=2)
+        shutil.rmtree(socket_dir, ignore_errors=True)
+        shutil.rmtree(remote_home, ignore_errors=True)
 
 
 def wait_for_websocket_bind(proc: subprocess.Popen[str], timeout: float) -> tuple[str, int]:
@@ -7349,6 +7532,8 @@ def run_e2e(binary: Path) -> str:
             run_debug_clear_memories_smoke(binary, env, workspace)
             run_debug_stub_smoke(binary, env, workspace, port)
             run_initial_image_smoke(binary, env, workspace, port, server)
+            run_tui_oversized_input_smoke(binary, env, workspace, port, server)
+            run_remote_tui_oversized_input_smoke(binary, env, workspace, port, server)
             run_apply_command_smoke(binary, env, workspace, port, server)
             run_cloud_apply_command_smoke(binary, env, workspace, port, server)
             run_remote_fork_smoke(binary, env, workspace, port, server)
