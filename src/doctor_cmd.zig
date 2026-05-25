@@ -555,7 +555,9 @@ fn installationCheck(allocator: std.mem.Allocator, codex_version: []const u8, sh
     const managed_by_bun = raw_managed_by_bun and !inherited_managed_env;
     const update_action = try update_cmd.detectCurrentUpdateAction(allocator);
 
-    try check.addDetail(allocator, "install context", installContextLabel(update_action));
+    const install_context = try installContextDetail(allocator, update_action, exe);
+    defer allocator.free(install_context);
+    try check.addDetail(allocator, "install context", install_context);
     if (inherited_managed_env) {
         try check.addDetail(allocator, "ignored inherited package-manager launch env", "true");
     }
@@ -2662,6 +2664,92 @@ fn installContextLabel(action: ?update_cmd.UpdateAction) []const u8 {
     };
 }
 
+fn installContextDetail(allocator: std.mem.Allocator, action: ?update_cmd.UpdateAction, exe_path: ?[]const u8) ![]u8 {
+    const exe = exe_path orelse return allocator.dupe(u8, installContextLabel(action));
+    if (action) |resolved_action| switch (resolved_action) {
+        .standalone_unix => return standaloneContextDetail(allocator, exe, "unix"),
+        .standalone_windows => return standaloneContextDetail(allocator, exe, "windows"),
+        else => {
+            const method = installContextLabel(resolved_action);
+            if (try packageLayoutMethodContextDetail(allocator, exe, method)) |detail| return detail;
+            return allocator.dupe(u8, method);
+        },
+    };
+
+    if (try packageLayoutMethodContextDetail(allocator, exe, "other")) |detail| return detail;
+    return allocator.dupe(u8, "other");
+}
+
+fn standaloneContextDetail(allocator: std.mem.Allocator, exe_path: []const u8, platform: []const u8) ![]u8 {
+    if (try packageLayoutStandaloneContextDetail(allocator, exe_path, platform)) |detail| return detail;
+    if (try standaloneReleaseContextDetail(allocator, exe_path, platform)) |detail| return detail;
+    if (std.mem.eql(u8, platform, "windows")) {
+        return allocator.dupe(u8, "standalone (windows)");
+    }
+    return allocator.dupe(u8, "standalone (unix)");
+}
+
+fn packageLayoutMethodContextDetail(allocator: std.mem.Allocator, exe_path: []const u8, method: []const u8) !?[]u8 {
+    const package_dir = (try packageLayoutRoot(allocator, exe_path)) orelse return null;
+    defer allocator.free(package_dir);
+    const bin_dir = try std.fs.path.join(allocator, &.{ package_dir, "bin" });
+    defer allocator.free(bin_dir);
+    const resources_dir = try optionalChildDirDisplay(allocator, package_dir, CODEX_RESOURCES_DIRNAME);
+    defer allocator.free(resources_dir);
+    const path_dir = try optionalChildDirDisplay(allocator, package_dir, CODEX_PATH_DIRNAME);
+    defer allocator.free(path_dir);
+    const detail = try std.fmt.allocPrint(
+        allocator,
+        "{s} (package {s}, bin {s}, resources {s}, path {s})",
+        .{ method, package_dir, bin_dir, resources_dir, path_dir },
+    );
+    return detail;
+}
+
+fn packageLayoutStandaloneContextDetail(allocator: std.mem.Allocator, exe_path: []const u8, platform: []const u8) !?[]u8 {
+    const package_dir = (try packageLayoutRoot(allocator, exe_path)) orelse return null;
+    defer allocator.free(package_dir);
+    const bin_dir = try std.fs.path.join(allocator, &.{ package_dir, "bin" });
+    defer allocator.free(bin_dir);
+    const resources_dir = try optionalChildDirDisplay(allocator, package_dir, CODEX_RESOURCES_DIRNAME);
+    defer allocator.free(resources_dir);
+    const path_dir = try optionalChildDirDisplay(allocator, package_dir, CODEX_PATH_DIRNAME);
+    defer allocator.free(path_dir);
+    const detail = try std.fmt.allocPrint(
+        allocator,
+        "standalone ({s}, package {s}, bin {s}, resources {s}, path {s})",
+        .{ platform, package_dir, bin_dir, resources_dir, path_dir },
+    );
+    return detail;
+}
+
+fn standaloneReleaseContextDetail(allocator: std.mem.Allocator, exe_path: []const u8, platform: []const u8) !?[]u8 {
+    const codex_home = config.resolveCodexHome(allocator) catch return null;
+    defer allocator.free(codex_home);
+    const release_dir = (try standaloneReleaseDir(allocator, exe_path, codex_home)) orelse return null;
+    defer allocator.free(release_dir);
+    const resources_dir = try optionalChildDirDisplay(allocator, release_dir, CODEX_RESOURCES_DIRNAME);
+    defer allocator.free(resources_dir);
+    const detail = try std.fmt.allocPrint(
+        allocator,
+        "standalone ({s}, release {s}, resources {s})",
+        .{ platform, release_dir, resources_dir },
+    );
+    return detail;
+}
+
+fn optionalChildDirDisplay(allocator: std.mem.Allocator, parent: []const u8, child_name: []const u8) ![]u8 {
+    const path = try std.fs.path.join(allocator, &.{ parent, child_name });
+    if (pathIsDirectory(path)) return path;
+    allocator.free(path);
+    return allocator.dupe(u8, "none");
+}
+
+fn pathIsDirectory(path: []const u8) bool {
+    const metadata = std.Io.Dir.cwd().statFile(std.Io.Threaded.global_single_threaded.io(), path, .{}) catch return false;
+    return metadata.kind == .directory;
+}
+
 fn applyNpmRootDiagnostics(allocator: std.mem.Allocator, check: *Check, surface: NpmDiagnosticSurface) !void {
     const npm_root = try npmGlobalRootCheck(allocator);
     defer npm_root.deinit(allocator);
@@ -3115,6 +3203,58 @@ test "doctor standalone release cache detail counts sibling releases" {
 
     try std.testing.expect(std.mem.startsWith(u8, detail, "2 entries in "));
     try std.testing.expect(std.mem.endsWith(u8, detail, "codex-home/packages/standalone/releases"));
+}
+
+test "doctor install context describes package layout paths" {
+    const allocator = std.testing.allocator;
+    var dir = std.testing.tmpDir(.{});
+    defer dir.cleanup();
+    const io = std.Io.Threaded.global_single_threaded.io();
+    try dir.dir.createDirPath(io, "pkg/bin");
+    try dir.dir.createDirPath(io, "pkg/codex-resources");
+    try dir.dir.createDirPath(io, "pkg/codex-path");
+    try dir.dir.writeFile(io, .{ .sub_path = "pkg/codex-package.json", .data = "{}" });
+    try dir.dir.writeFile(io, .{ .sub_path = "pkg/bin/codex-zig", .data = "" });
+
+    const root = try dir.dir.realPathFileAlloc(io, ".", allocator);
+    defer allocator.free(root);
+    const exe_path = try std.fs.path.join(allocator, &.{ root, "pkg", "bin", "codex-zig" });
+    defer allocator.free(exe_path);
+
+    const detail = try installContextDetail(allocator, .npm_global_latest, exe_path);
+    defer allocator.free(detail);
+
+    try std.testing.expect(std.mem.startsWith(u8, detail, "npm (package "));
+    try std.testing.expect(std.mem.indexOf(u8, detail, "pkg, bin ") != null);
+    try std.testing.expect(std.mem.indexOf(u8, detail, "pkg/bin") != null);
+    try std.testing.expect(std.mem.indexOf(u8, detail, "pkg/codex-resources") != null);
+    try std.testing.expect(std.mem.indexOf(u8, detail, "pkg/codex-path") != null);
+}
+
+test "doctor install context describes standalone package layout paths" {
+    const allocator = std.testing.allocator;
+    var dir = std.testing.tmpDir(.{});
+    defer dir.cleanup();
+    const io = std.Io.Threaded.global_single_threaded.io();
+    try dir.dir.createDirPath(io, "codex-home/packages/standalone/releases/1.2.3/bin");
+    try dir.dir.createDirPath(io, "codex-home/packages/standalone/releases/1.2.3/codex-resources");
+    try dir.dir.createDirPath(io, "codex-home/packages/standalone/releases/1.2.3/codex-path");
+    try dir.dir.writeFile(io, .{ .sub_path = "codex-home/packages/standalone/releases/1.2.3/codex-package.json", .data = "{}" });
+    try dir.dir.writeFile(io, .{ .sub_path = "codex-home/packages/standalone/releases/1.2.3/bin/codex-zig", .data = "" });
+
+    const root = try dir.dir.realPathFileAlloc(io, ".", allocator);
+    defer allocator.free(root);
+    const exe_path = try std.fs.path.join(allocator, &.{ root, "codex-home", "packages", "standalone", "releases", "1.2.3", "bin", "codex-zig" });
+    defer allocator.free(exe_path);
+
+    const detail = try installContextDetail(allocator, .standalone_unix, exe_path);
+    defer allocator.free(detail);
+
+    try std.testing.expect(std.mem.startsWith(u8, detail, "standalone (unix, package "));
+    try std.testing.expect(std.mem.indexOf(u8, detail, "1.2.3, bin ") != null);
+    try std.testing.expect(std.mem.indexOf(u8, detail, "1.2.3/bin") != null);
+    try std.testing.expect(std.mem.indexOf(u8, detail, "1.2.3/codex-resources") != null);
+    try std.testing.expect(std.mem.indexOf(u8, detail, "1.2.3/codex-path") != null);
 }
 
 test "doctor npm root comparison detects match" {
