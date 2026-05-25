@@ -212,6 +212,10 @@ Zig TUI help in `src/tui.zig`, and the broader narrative tracker in
   interactive options after the prompt-like name are consumed as options, and
   extra bare arguments or unknown flags after a prompt-like name are rejected
   instead of being joined into a synthetic prompt.
+- Root help/version handling now wins over semantic flag validation in the same
+  user-visible cases as Rust, including unknown strict-config overrides,
+  dangerous-bypass approval conflicts, invalid pre-help `-C` directories, and
+  root remote flags on subcommand help paths.
 
 ### App-Server Daemon and Remote Control
 
