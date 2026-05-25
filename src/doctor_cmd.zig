@@ -191,6 +191,11 @@ const RolloutStats = struct {
     }
 };
 
+const RolloutNote = struct {
+    files: u64,
+    total_bytes: u64,
+};
+
 pub fn runWithOptions(allocator: std.mem.Allocator, args: *std.process.Args.Iterator, options: Options) !void {
     var arena = std.heap.ArenaAllocator.init(allocator);
     defer arena.deinit();
@@ -227,7 +232,6 @@ pub fn printHelp() void {
         \\Options:
         \\  -c, --config <key=value>
         \\                          Override a supported config value
-        \\      --strict-config     Error on unknown config fields
         \\      --json              Emit a redacted machine-readable report
         \\      --enable FEATURE    Enable a feature for this invocation
         \\      --summary           Only show grouped rows and final counts
@@ -284,10 +288,6 @@ fn parseArgs(allocator: std.mem.Allocator, argv: []const []const u8, options: Op
             parsed.ascii = true;
             continue;
         }
-        if (std.mem.eql(u8, arg, "--strict-config")) {
-            parsed.strict_config = true;
-            continue;
-        }
         if (std.mem.eql(u8, arg, "--config") or std.mem.eql(u8, arg, "-c")) {
             index += 1;
             if (index >= argv.len) return error.MissingConfigOptionValue;
@@ -341,8 +341,7 @@ fn helpPreflight(argv: []const []const u8) bool {
             std.mem.eql(u8, arg, "--summary") or
             std.mem.eql(u8, arg, "--all") or
             std.mem.eql(u8, arg, "--no-color") or
-            std.mem.eql(u8, arg, "--ascii") or
-            std.mem.eql(u8, arg, "--strict-config"))
+            std.mem.eql(u8, arg, "--ascii"))
         {
             continue;
         }
@@ -1125,6 +1124,7 @@ fn renderHumanReport(allocator: std.mem.Allocator, report: Report, args: ParsedA
         try out.print(allocator, " - {s}", .{platform});
     }
     try out.appendSlice(allocator, "\n\n");
+    const notes_count = try appendHumanNotes(allocator, &out, report);
 
     const groups = [_]struct {
         title: []const u8,
@@ -1162,17 +1162,100 @@ fn renderHumanReport(allocator: std.mem.Allocator, report: Report, args: ParsedA
     const counts = statusCounts(report.checks);
     const separator = if (args.ascii) "-------------------------------------------------------------" else "-------------------------------------------------------------";
     try out.print(allocator, "\n{s}\n", .{separator});
-    try out.print(
-        allocator,
-        "{d} ok | {d} warn | {d} fail {s}\n\n",
-        .{ counts.ok, counts.warning, counts.fail, overallHumanLabel(report.overall_status) },
-    );
+    if (notes_count > 0) {
+        try out.print(
+            allocator,
+            "{d} ok | {d} notes | {d} warn | {d} fail {s}\n\n",
+            .{ counts.ok, notes_count, counts.warning, counts.fail, overallHumanLabel(report.overall_status) },
+        );
+    } else {
+        try out.print(
+            allocator,
+            "{d} ok | {d} warn | {d} fail {s}\n\n",
+            .{ counts.ok, counts.warning, counts.fail, overallHumanLabel(report.overall_status) },
+        );
+    }
     if (args.summary) {
         try out.appendSlice(allocator, "Run codex doctor without --summary for detailed diagnostics.\n--all expand truncated lists  --json redacted report\n");
     } else {
         try out.appendSlice(allocator, "--summary compact output  --all expand truncated lists\n--json redacted report\n");
     }
     return out.toOwnedSlice(allocator);
+}
+
+fn appendHumanNotes(allocator: std.mem.Allocator, out: *std.ArrayList(u8), report: Report) !usize {
+    var count: usize = 0;
+    if (activeRolloutNote(report)) |note| {
+        try appendNotesHeader(allocator, out, &count);
+        try out.print(allocator, "   [!!] rollouts     {d} active files - ", .{note.files});
+        try appendHumanByteSize(allocator, out, note.total_bytes);
+        try out.appendSlice(allocator, " on disk\n");
+    }
+    if (sandboxUnrestrictedNote(report)) {
+        try appendNotesHeader(allocator, out, &count);
+        try out.appendSlice(allocator, "   [!!] sandbox      filesystem unrestricted - network enabled\n");
+    }
+    if (mixedAuthSignalsNote(report)) {
+        try appendNotesHeader(allocator, out, &count);
+        try out.appendSlice(allocator, "   [!!] auth         mixed auth signals: ChatGPT login plus API key env var\n");
+    }
+    if (count > 0) {
+        try out.appendSlice(allocator, "-------------------------------------------------------------\n\n");
+    }
+    return count;
+}
+
+fn appendNotesHeader(allocator: std.mem.Allocator, out: *std.ArrayList(u8), count: *usize) !void {
+    if (count.* == 0) try out.appendSlice(allocator, "Notes\n");
+    count.* += 1;
+}
+
+fn activeRolloutNote(report: Report) ?RolloutNote {
+    const value = detailValue(report, "state", "active rollout files") orelse return null;
+    const note = parseRolloutStatsDetail(value) orelse return null;
+    if (note.files < 1000 and note.total_bytes < 1024 * 1024 * 1024) return null;
+    return note;
+}
+
+fn parseRolloutStatsDetail(value: []const u8) ?RolloutNote {
+    const files_suffix = " files";
+    const files_end = std.mem.indexOf(u8, value, files_suffix) orelse return null;
+    const files = std.fmt.parseInt(u64, std.mem.trim(u8, value[0..files_end], " \t,"), 10) catch return null;
+    const after_files_start = files_end + " files, ".len;
+    if (after_files_start > value.len) return null;
+    const after_files = value[after_files_start..];
+    const bytes_suffix = " total bytes";
+    const bytes_end = std.mem.indexOf(u8, after_files, bytes_suffix) orelse return null;
+    const total_bytes = std.fmt.parseInt(u64, std.mem.trim(u8, after_files[0..bytes_end], " \t,"), 10) catch return null;
+    return .{ .files = files, .total_bytes = total_bytes };
+}
+
+fn sandboxUnrestrictedNote(report: Report) bool {
+    const fs_sandbox = detailValue(report, "sandbox", "filesystem sandbox") orelse return false;
+    return std.mem.eql(u8, fs_sandbox, "danger-full-access") or
+        std.mem.eql(u8, fs_sandbox, "unrestricted");
+}
+
+fn mixedAuthSignalsNote(report: Report) bool {
+    const env_vars = detailValue(report, "auth", "auth env vars present") orelse return false;
+    const source = detailValue(report, "auth", "auth source") orelse return false;
+    return std.mem.indexOf(u8, env_vars, "OPENAI_API_KEY") != null and
+        std.mem.indexOf(u8, source, "ChatGPT") != null;
+}
+
+fn appendHumanByteSize(allocator: std.mem.Allocator, out: *std.ArrayList(u8), bytes: u64) !void {
+    const gib: u64 = 1024 * 1024 * 1024;
+    const mib: u64 = 1024 * 1024;
+    const kib: u64 = 1024;
+    if (bytes >= gib) return appendScaledByteSize(allocator, out, bytes, gib, "GB");
+    if (bytes >= mib) return appendScaledByteSize(allocator, out, bytes, mib, "MB");
+    if (bytes >= kib) return appendScaledByteSize(allocator, out, bytes, kib, "KB");
+    try out.print(allocator, "{d} B", .{bytes});
+}
+
+fn appendScaledByteSize(allocator: std.mem.Allocator, out: *std.ArrayList(u8), bytes: u64, unit: u64, suffix: []const u8) !void {
+    const scaled: u128 = (@as(u128, bytes) * 100 + unit / 2) / unit;
+    try out.print(allocator, "{d}.{d:0>2} {s}", .{ scaled / 100, scaled % 100, suffix });
 }
 
 fn groupHasChecks(report: Report, keys: []const []const u8) bool {
@@ -1644,6 +1727,43 @@ test "doctor human summary hides detail rows" {
     const rendered = try renderHumanReport(scratch, report, .{ .summary = true });
     try std.testing.expect(std.mem.indexOf(u8, rendered, "Codex Doctor v0.0.1") != null);
     try std.testing.expect(std.mem.indexOf(u8, rendered, "platform") == null);
+}
+
+test "doctor human report renders diagnostic notes" {
+    const allocator = std.testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    const scratch = arena.allocator();
+
+    var runtime = Check.init("runtime.provenance", "runtime", .ok, "running Zig port");
+    try runtime.addDetail(scratch, "platform", "macos-aarch64");
+    var state = Check.init("state.paths", "state", .ok, "state paths and databases are inspectable");
+    try state.addDetail(scratch, "active rollout files", "2254 files, 3829577508 total bytes, 1699013 average bytes");
+    var sandbox = Check.init("sandbox.helpers", "sandbox", .ok, "sandbox configuration is readable");
+    try sandbox.addDetail(scratch, "filesystem sandbox", "danger-full-access");
+    var auth_check = Check.init("auth.credentials", "auth", .ok, "auth is configured");
+    try auth_check.addDetail(scratch, "auth env vars present", "OPENAI_API_KEY");
+    try auth_check.addDetail(scratch, "auth source", "ChatGPT token from auth.json");
+
+    const checks = try scratch.dupe(Check, &.{ runtime, state, sandbox, auth_check });
+    const report = Report{
+        .generated_at = "1s since unix epoch",
+        .overall_status = .ok,
+        .codex_version = "0.0.1",
+        .checks = checks,
+    };
+
+    const rendered = try renderHumanReport(scratch, report, .{ .summary = true });
+    try std.testing.expect(std.mem.indexOf(u8, rendered, "Notes") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rendered, "rollouts") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rendered, "3.57 GB") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rendered, "sandbox") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rendered, "mixed auth signals") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rendered, "3 notes") != null);
+}
+
+test "doctor rejects local strict-config flag like Rust" {
+    try std.testing.expectError(error.UnknownDoctorOption, parseArgs(std.testing.allocator, &.{ "--strict-config", "--help" }, .{}));
 }
 
 test "doctor JSON redacts local paths" {

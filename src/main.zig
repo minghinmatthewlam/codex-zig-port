@@ -1137,8 +1137,7 @@ fn doctorTailHasHelp(args: []const []const u8) bool {
             std.mem.eql(u8, arg, "--summary") or
             std.mem.eql(u8, arg, "--all") or
             std.mem.eql(u8, arg, "--no-color") or
-            std.mem.eql(u8, arg, "--ascii") or
-            std.mem.eql(u8, arg, "--strict-config"))
+            std.mem.eql(u8, arg, "--ascii"))
         {
             continue;
         }
@@ -3728,7 +3727,6 @@ test "root semantic checks defer to help and version tails" {
     try std.testing.expect(try rootArgsTailHasHelpOrVersion(std.testing.allocator, &.{ "--remote", "ws://127.0.0.1:1", "sandbox", "--config", "bogus", "macos", "--help" }));
     try std.testing.expect(try rootArgsTailHasHelpOrVersion(std.testing.allocator, &.{ "--remote", "ws://127.0.0.1:1", "sandbox", "macos", "--config", "bogus", "--help" }));
     try std.testing.expect(try rootArgsTailHasHelpOrVersion(std.testing.allocator, &.{ "--strict-config", "-c", "foo.bar=1", "doctor", "--help" }));
-    try std.testing.expect(try rootArgsTailHasHelpOrVersion(std.testing.allocator, &.{ "doctor", "--strict-config", "-c", "foo.bar=1", "--help" }));
     try std.testing.expect(try rootArgsTailHasHelpOrVersion(std.testing.allocator, &.{ "--remote", "ws://127.0.0.1:1", "doctor", "--json", "--help", "--summary" }));
     try std.testing.expect(try rootArgsTailHasHelpOrVersion(std.testing.allocator, &.{ "--remote", "ws://127.0.0.1:1", "doctor", "--config", "bogus", "--help" }));
     try std.testing.expect(try rootArgsTailHasHelpOrVersion(std.testing.allocator, &.{ "--remote", "ws://127.0.0.1:1", "doctor", "--enable", "definitely-not-a-feature", "--help" }));
@@ -3809,6 +3807,7 @@ test "root semantic checks defer to help and version tails" {
     try std.testing.expect(!(try rootArgsTailHasHelpOrVersion(std.testing.allocator, &.{ "-C", "does-not-exist", "app-server", "--session-source", "--help" })));
     try std.testing.expect(!(try rootArgsTailHasHelpOrVersion(std.testing.allocator, &.{ "-C", "does-not-exist", "app-server", "generate-ts", "--out", "src", "--help" })));
     try std.testing.expect(!(try rootArgsTailHasHelpOrVersion(std.testing.allocator, &.{ "-C", "does-not-exist", "app-server", "daemon", "--remote-control", "--help" })));
+    try std.testing.expect(!(try rootArgsTailHasHelpOrVersion(std.testing.allocator, &.{ "doctor", "--strict-config", "-c", "foo.bar=1", "--help" })));
     try std.testing.expect(!(try rootArgsTailHasHelpOrVersion(std.testing.allocator, &.{ "--remote", "ws://127.0.0.1:1", "doctor", "--config", "--help" })));
     try std.testing.expect(!(try rootArgsTailHasHelpOrVersion(std.testing.allocator, &.{ "-C", "does-not-exist", "doctor", "unexpected", "--help" })));
     try std.testing.expect(!(try rootArgsTailHasHelpOrVersion(std.testing.allocator, &.{ "--remote", "ws://127.0.0.1:1", "sessions", "--version" })));
