@@ -516,12 +516,33 @@ pub const TokenUsageInfo = struct {
     model_context_window: ?i64 = null,
 };
 
+pub const PendingUserInput = struct {
+    prompt: []const u8,
+    input_images: []const []const u8 = &.{},
+
+    pub fn deinit(self: *PendingUserInput, allocator: std.mem.Allocator) void {
+        allocator.free(self.prompt);
+        for (self.input_images) |image| allocator.free(image);
+        if (self.input_images.len > 0) allocator.free(self.input_images);
+    }
+};
+
+pub const PendingInputCallback = struct {
+    ctx: *anyopaque,
+    on_drain_pending_input: *const fn (
+        ctx: *anyopaque,
+        allocator: std.mem.Allocator,
+        out: *std.ArrayList(PendingUserInput),
+    ) anyerror!void,
+};
+
 pub const TurnOptions = struct {
     auto_approve: bool = false,
     prompt_for_approval: bool = true,
     approval_callback: ?tools.ApprovalCallback = null,
     request_permissions_callback: ?RequestPermissionsCallback = null,
     request_user_input_callback: ?RequestUserInputCallback = null,
+    pending_input_callback: ?PendingInputCallback = null,
     goal_tool_callback: ?GoalToolCallback = null,
     mcp_elicitation_callback: ?mcp_runtime.ElicitationCallback = null,
     json_events: bool = false,
@@ -1380,9 +1401,29 @@ pub fn runTurnWithOptions(
                 try transcript.appendFunctionOutput(allocator, tool_result.call_id, tool_result.output);
             }
         }
+
+        try drainPendingUserInput(allocator, transcript, options.pending_input_callback);
     }
 
     return error.TooManyToolRounds;
+}
+
+fn drainPendingUserInput(
+    allocator: std.mem.Allocator,
+    transcript: *Transcript,
+    callback_opt: ?PendingInputCallback,
+) !void {
+    const callback = callback_opt orelse return;
+    var pending = std.ArrayList(PendingUserInput).empty;
+    defer {
+        for (pending.items) |*item| item.deinit(allocator);
+        pending.deinit(allocator);
+    }
+
+    try callback.on_drain_pending_input(callback.ctx, allocator, &pending);
+    for (pending.items) |item| {
+        try transcript.appendUserMessageWithImages(allocator, item.prompt, item.input_images);
+    }
 }
 
 fn recordResponseTokenUsage(
@@ -2187,6 +2228,7 @@ fn subagentChildTurnOptions(allocator: std.mem.Allocator, options: TurnOptions) 
     child_options.approval_callback = null;
     child_options.request_permissions_callback = null;
     child_options.request_user_input_callback = null;
+    child_options.pending_input_callback = null;
     child_options.goal_tool_callback = null;
     child_options.mcp_elicitation_callback = null;
     child_options.stream_text = false;
@@ -3663,6 +3705,16 @@ fn testPlanUpdated(ctx: *anyopaque, state: *const plan_tool.State) anyerror!void
     _ = state;
 }
 
+fn testDrainPendingInput(
+    ctx: *anyopaque,
+    allocator: std.mem.Allocator,
+    out: *std.ArrayList(PendingUserInput),
+) anyerror!void {
+    _ = ctx;
+    _ = allocator;
+    _ = out;
+}
+
 test "subagent child turn options clear parent scoped callbacks and features" {
     const allocator = std.testing.allocator;
     var feature_overrides = features_cmd.FeatureOverrides{};
@@ -3682,6 +3734,10 @@ test "subagent child turn options clear parent scoped callbacks and features" {
             .ctx = &ctx,
             .on_plan_updated = testPlanUpdated,
         },
+        .pending_input_callback = .{
+            .ctx = &ctx,
+            .on_drain_pending_input = testDrainPendingInput,
+        },
         .background_terminal_owner = "parent-thread",
         .subagent_runtime = &runtime,
         .feature_overrides = feature_overrides,
@@ -3692,6 +3748,7 @@ test "subagent child turn options clear parent scoped callbacks and features" {
 
     try std.testing.expect(!child_options.prompt_for_approval);
     try std.testing.expect(child_options.plan_update_callback == null);
+    try std.testing.expect(child_options.pending_input_callback == null);
     try std.testing.expect(child_options.background_terminal_owner == null);
     try std.testing.expect(child_options.subagent_runtime == null);
     try std.testing.expectEqual(false, child_options.feature_overrides.get("multi_agent").?);
