@@ -81,9 +81,12 @@ unrestricted sandbox/network posture, and mixed ChatGPT/API-key auth signals.
 Doctor-local `--strict-config` is rejected like Rust while root
 `--strict-config doctor` remains supported. Bounded active-provider HTTP
 reachability probes now check the configured base URL and provider models route.
-Rust's deeper WebSocket reachability, bundled-search layout, detailed
-installation probes, and standalone release-cache diagnostics remain planned
-exact-depth parity.
+Bounded Responses WebSocket reachability now honors provider
+`supports_websockets` and `websocket_connect_timeout_ms`, resolves ChatGPT
+versus API-key auth mode, performs the `responses` upgrade handshake, and
+reports HTTP 101 plus reasoning/model-cache header presence. Rust's immediate
+close-frame inspection, bundled-search layout, detailed installation probes,
+and standalone release-cache diagnostics remain planned exact-depth parity.
 
 Current app-server `hooks/list` coverage: user `$CODEX_HOME/config.toml`,
 `$CODEX_HOME/hooks.json`, per-cwd `.codex/config.toml`, and per-cwd
