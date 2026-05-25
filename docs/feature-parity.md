@@ -44,7 +44,11 @@ app-server smoke.
   the normal-turn response, active status, and `turn/started` notification
   before provider completion, and `turn/start` / `turn/steer` now enforce
   Rust's 1 MiB text-character input limit with structured `input_too_large`
-  JSON-RPC errors. True async turn state and same-turn control remain open.
+  JSON-RPC errors. Regular app-server turns can now accept `turn/steer` while a
+  server-request approval, permission request, or `request_user_input` prompt is
+  pending; accepted steer input is injected into the same model turn after the
+  pending tool/request result. True async turn state, provider-flight steering,
+  and broad same-turn control remain open.
 - Local and remote TUI prompt submission now enforce the same 1 MiB
   text-character input limit before starting a model turn, with friendly
   terminal errors and pending image attachments preserved on rejection. Current
