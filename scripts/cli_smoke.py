@@ -12576,7 +12576,6 @@ def run_prompt_global_flag_smoke(binary: Path) -> None:
             (("--strict-config", "-c", "foo.bar=1", "sandbox", "--help"), "Usage: codex-zig sandbox"),
             (("--strict-config", "-c", "foo.bar=1", "sandbox", "help", "macos"), "Usage: codex-zig sandbox macos"),
             (("--strict-config", "-c", "foo.bar=1", "doctor", "--help"), "Usage:"),
-            (("doctor", "--strict-config", "-c", "foo.bar=1", "--help"), "Usage:"),
             (("--remote", "ws://127.0.0.1:1", "doctor", "--json", "--help", "--summary"), "Usage:"),
             (("--remote", "ws://127.0.0.1:1", "doctor", "--config", "bogus", "--help"), "Usage:"),
             (("--remote", "ws://127.0.0.1:1", "doctor", "--enable", "definitely-not-a-feature", "--help"), "Usage:"),
@@ -12790,6 +12789,10 @@ def run_prompt_global_flag_smoke(binary: Path) -> None:
             (
                 ("--remote", "ws://127.0.0.1:1", "doctor", "--config", "--help"),
                 "RemoteModeUnsupportedForSubcommand",
+            ),
+            (
+                ("doctor", "--strict-config", "-c", "foo.bar=1", "--help"),
+                "UnknownDoctorOption",
             ),
             (
                 ("--remote", "ws://127.0.0.1:1", "sessions", "10", "--help"),
