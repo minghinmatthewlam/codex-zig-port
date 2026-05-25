@@ -198,6 +198,7 @@ const RolloutNote = struct {
 };
 
 const provider_reachability_timeout_ms = 15_000;
+const responses_websockets_v2_beta_header_value = "responses_websockets=2026-02-06";
 
 const ReachabilityAuth = struct {
     credentials: ?auth.Credentials = null,
@@ -207,6 +208,19 @@ const ReachabilityAuth = struct {
         if (self.credentials) |*credentials| credentials.deinit(allocator);
         allocator.free(self.mode_label);
     }
+};
+
+const WebSocketEndpoint = struct {
+    request_url: []const u8,
+    display_url: []const u8,
+};
+
+const WebSocketProbe = struct {
+    status: std.http.Status,
+    accept_valid: bool,
+    reasoning_included: bool,
+    models_etag_present: bool,
+    server_model_present: bool,
 };
 
 const HttpStatusProbeContext = struct {
@@ -411,6 +425,7 @@ fn buildReport(allocator: std.mem.Allocator, args: ParsedArgs, codex_version: []
     try checks.append(allocator, try sandboxCheck(allocator, cfg_load));
     try checks.append(allocator, try updatesCheck(allocator));
     try checks.append(allocator, try networkCheck(allocator));
+    try checks.append(allocator, try websocketReachabilityCheck(allocator, cfg_load));
     try checks.append(allocator, try providerReachabilityCheck(allocator, cfg_load));
     try checks.append(allocator, try appServerCheck(allocator, cfg_load));
     try checks.append(allocator, try terminalCheck(allocator));
@@ -793,6 +808,337 @@ fn networkCheck(allocator: std.mem.Allocator) !Check {
         }
     }
     return check;
+}
+
+fn websocketReachabilityCheck(allocator: std.mem.Allocator, cfg_load: ConfigLoad) !Check {
+    if (cfg_load.cfg == null) {
+        var check = Check.init("network.websocket_reachability", "websocket", .warning, "Responses WebSocket skipped because config failed");
+        check.remediation = "Fix config loading first.";
+        return check;
+    }
+
+    const cfg = cfg_load.cfg.?;
+    const provider_id = cfg.model_provider_id orelse "openai";
+    var check = Check.init("network.websocket_reachability", "websocket", .ok, "Responses WebSocket handshake succeeded");
+    try check.addDetail(allocator, "model provider", provider_id);
+    try check.addDetail(allocator, "provider name", providerDisplayName(provider_id));
+    try check.addDetail(allocator, "wire API", @tagName(cfg.model_provider_wire_api));
+    try check.addDetail(allocator, "supports websockets", boolString(cfg.model_provider_supports_websockets));
+    try addProxyEnvDetail(allocator, &check);
+
+    if (!cfg.model_provider_supports_websockets) {
+        check.summary = "Responses WebSocket is not enabled for the active provider";
+        return check;
+    }
+
+    try check.addDetailFmt(allocator, "connect timeout", "{d} ms", .{cfg.model_provider_websocket_connect_timeout_ms});
+
+    var websocket_auth = try loadWebSocketAuth(allocator, &cfg);
+    defer websocket_auth.deinit(allocator);
+    try check.addDetail(allocator, "auth mode", websocket_auth.mode_label);
+
+    const base_url = providerReachabilityBaseUrl(&cfg, websocket_auth.credentials);
+    const endpoint = buildWebSocketEndpoint(allocator, base_url, cfg.model_provider_query_params) catch |err| {
+        return try websocketProbeWarning(allocator, check, "Responses WebSocket endpoint could not be built", "endpoint build failed", err);
+    };
+    defer {
+        allocator.free(endpoint.request_url);
+        allocator.free(endpoint.display_url);
+    }
+    try check.addDetail(allocator, "endpoint", endpoint.display_url);
+
+    var headers = std.ArrayList(std.http.Header).empty;
+    defer headers.deinit(allocator);
+    var auth_header: ?[]const u8 = null;
+    defer if (auth_header) |value| allocator.free(value);
+    var provider_env_header_values = std.ArrayList([]const u8).empty;
+    defer {
+        for (provider_env_header_values.items) |value| allocator.free(value);
+        provider_env_header_values.deinit(allocator);
+    }
+
+    try headers.append(allocator, .{ .name = "Upgrade", .value = "websocket" });
+    try headers.append(allocator, .{ .name = "Sec-WebSocket-Version", .value = "13" });
+    try headers.append(allocator, .{ .name = "OpenAI-Beta", .value = responses_websockets_v2_beta_header_value });
+    if (websocket_auth.credentials) |credentials| {
+        if (credentials.mode != .local_oss and credentials.mode != .provider_no_auth) {
+            auth_header = try auth.authorizationHeader(allocator, credentials);
+            try headers.append(allocator, .{ .name = "Authorization", .value = auth_header.? });
+        }
+        if (credentials.account_id) |account_id| {
+            try headers.append(allocator, .{ .name = "ChatGPT-Account-ID", .value = account_id });
+        }
+        if (credentials.fedramp) {
+            try headers.append(allocator, .{ .name = "X-OpenAI-Fedramp", .value = "true" });
+        }
+    }
+    try api.appendProviderHeaders(allocator, &headers, &provider_env_header_values, cfg);
+
+    const probe = websocketProbeWithTimeout(allocator, endpoint.request_url, headers.items, cfg.model_provider_websocket_connect_timeout_ms) catch |err| {
+        if (err == error.Timeout) {
+            return try websocketProbeWarning(allocator, check, "Responses WebSocket timed out; HTTPS fallback may still work", "handshake timed out", err);
+        }
+        return try websocketProbeWarning(allocator, check, "Responses WebSocket failed; HTTPS fallback may still work", "handshake transport error", err);
+    };
+
+    try check.addDetailFmt(allocator, "handshake result", "HTTP {d}{s}", .{
+        @intFromEnum(probe.status),
+        if (probe.status == .switching_protocols) " Switching Protocols" else "",
+    });
+    try check.addDetail(allocator, "reasoning header", boolString(probe.reasoning_included));
+    try check.addDetail(allocator, "models etag present", boolString(probe.models_etag_present));
+    try check.addDetail(allocator, "server model present", boolString(probe.server_model_present));
+    if (probe.status != .switching_protocols) {
+        check.status = .warning;
+        check.summary = "Responses WebSocket failed; HTTPS fallback may still work";
+        check.remediation = "Check proxy, VPN, firewall, DNS, custom CA, and WebSocket policy support.";
+        try check.addDetailFmt(allocator, "handshake API error", "HTTP {d}", .{@intFromEnum(probe.status)});
+    } else if (!probe.accept_valid) {
+        check.status = .warning;
+        check.summary = "Responses WebSocket failed; HTTPS fallback may still work";
+        check.remediation = "Check proxy, VPN, firewall, DNS, custom CA, and WebSocket policy support.";
+        try check.addDetail(allocator, "handshake stream error", "invalid Sec-WebSocket-Accept header");
+    }
+    return check;
+}
+
+fn websocketProbeWarning(
+    allocator: std.mem.Allocator,
+    check: Check,
+    summary: []const u8,
+    detail_prefix: []const u8,
+    err: anyerror,
+) !Check {
+    var failed = check;
+    failed.status = .warning;
+    failed.summary = summary;
+    failed.remediation = "Check proxy, VPN, firewall, DNS, custom CA, and WebSocket policy support.";
+    try failed.addDetailFmt(allocator, detail_prefix, "{s}", .{@errorName(err)});
+    return failed;
+}
+
+fn loadWebSocketAuth(allocator: std.mem.Allocator, cfg: *const config.Config) !ReachabilityAuth {
+    if (providerHasDedicatedAuth(cfg) or !cfg.model_provider_requires_openai_auth) {
+        var credentials = auth.loadForConfig(allocator, cfg) catch |err| {
+            return .{ .mode_label = try std.fmt.allocPrint(allocator, "none ({s})", .{@errorName(err)}) };
+        };
+        errdefer credentials.deinit(allocator);
+        return .{
+            .credentials = credentials,
+            .mode_label = try allocator.dupe(u8, websocketAuthModeName(credentials)),
+        };
+    }
+
+    if (try auth.loadActiveStoredWithMode(allocator, cfg.codex_home, cfg.cli_auth_credentials_store_mode)) |stored| {
+        var credentials = stored;
+        errdefer credentials.deinit(allocator);
+        return .{
+            .credentials = credentials,
+            .mode_label = try allocator.dupe(u8, websocketAuthModeName(credentials)),
+        };
+    }
+
+    if (try env.getOwned(allocator, "CODEX_ACCESS_TOKEN")) |access_token| {
+        if (std.mem.trim(u8, access_token, " \t\r\n").len > 0) {
+            const credentials = auth.Credentials{ .mode = .agent_identity, .token = access_token };
+            return .{
+                .credentials = credentials,
+                .mode_label = try allocator.dupe(u8, websocketAuthModeName(credentials)),
+            };
+        }
+        allocator.free(access_token);
+    }
+
+    if (try env.getOwned(allocator, "OPENAI_API_KEY")) |api_key| {
+        if (std.mem.trim(u8, api_key, " \t\r\n").len > 0) {
+            const credentials = auth.Credentials{ .mode = .api_key, .token = api_key };
+            return .{
+                .credentials = credentials,
+                .mode_label = try allocator.dupe(u8, websocketAuthModeName(credentials)),
+            };
+        }
+        allocator.free(api_key);
+    }
+
+    return .{ .mode_label = try allocator.dupe(u8, "none") };
+}
+
+fn websocketAuthModeName(credentials: auth.Credentials) []const u8 {
+    return switch (credentials.mode) {
+        .chatgpt => "chatgpt",
+        .chatgpt_auth_tokens => "chatgpt_auth_tokens",
+        .agent_identity => "agent_identity",
+        .api_key => "api_key",
+        .local_oss, .provider_no_auth => "none",
+    };
+}
+
+fn providerDisplayName(provider_id: []const u8) []const u8 {
+    if (std.ascii.eqlIgnoreCase(provider_id, "openai")) return "OpenAI";
+    return provider_id;
+}
+
+fn addProxyEnvDetail(allocator: std.mem.Allocator, check: *Check) !void {
+    var names = std.ArrayList([]const u8).empty;
+    defer names.deinit(allocator);
+    inline for (&.{ "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY", "http_proxy", "https_proxy", "all_proxy", "no_proxy" }) |name| {
+        if (try envPresent(allocator, name)) try names.append(allocator, name);
+    }
+    try check.addDetail(allocator, "proxy env vars", try joinOrNone(allocator, names.items));
+}
+
+fn buildWebSocketEndpoint(
+    allocator: std.mem.Allocator,
+    base_url: []const u8,
+    query_params: ?config.StringMap,
+) !WebSocketEndpoint {
+    if (!std.ascii.startsWithIgnoreCase(base_url, "https://") and
+        !std.ascii.startsWithIgnoreCase(base_url, "http://"))
+    {
+        return error.UnsupportedWebSocketEndpointScheme;
+    }
+    const request_url = try api.buildProviderUrl(allocator, base_url, "responses", query_params);
+    errdefer allocator.free(request_url);
+    const display_url = try redactedWebSocketEndpointLabel(allocator, base_url);
+    return .{ .request_url = request_url, .display_url = display_url };
+}
+
+fn redactedWebSocketEndpointLabel(allocator: std.mem.Allocator, base_url: []const u8) ![]const u8 {
+    const trimmed = std.mem.trimEnd(u8, base_url, "/");
+    if (std.ascii.startsWithIgnoreCase(trimmed, "https://")) {
+        return std.fmt.allocPrint(allocator, "wss://{s}/<redacted>", .{trimmed["https://".len..]});
+    }
+    if (std.ascii.startsWithIgnoreCase(trimmed, "http://")) {
+        return std.fmt.allocPrint(allocator, "ws://{s}/<redacted>", .{trimmed["http://".len..]});
+    }
+    return error.UnsupportedWebSocketEndpointScheme;
+}
+
+fn websocketProbeWithTimeout(
+    allocator: std.mem.Allocator,
+    url: []const u8,
+    headers: []const std.http.Header,
+    timeout_ms: u64,
+) !WebSocketProbe {
+    var io_instance: std.Io.Threaded = .init(allocator, .{ .async_limit = .limited(1) });
+    defer io_instance.deinit();
+    const io = io_instance.io();
+    var context = WebSocketProbeContext{
+        .allocator = allocator,
+        .io = io,
+        .url = url,
+        .headers = headers,
+    };
+    var future = try io.concurrent(websocketProbeTimeoutWorker, .{&context});
+    const deadline = doctorRequestDeadline(io, timeout_ms);
+    while (true) {
+        context.done.waitTimeout(io, .{ .deadline = deadline }) catch |err| switch (err) {
+            error.Timeout => {
+                if (context.done.isSet()) break;
+                const now = std.Io.Clock.Timestamp.now(io, .awake);
+                if (std.Io.Clock.Timestamp.compare(now, .lt, deadline)) continue;
+                _ = future.cancel(io);
+                return error.Timeout;
+            },
+            else => |e| {
+                _ = future.cancel(io);
+                return e;
+            },
+        };
+        break;
+    }
+    _ = future.await(io);
+    if (context.probe) |probe| return probe;
+    return context.err orelse error.Canceled;
+}
+
+const WebSocketProbeContext = struct {
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    url: []const u8,
+    headers: []const std.http.Header,
+    done: std.Io.Event = .unset,
+    probe: ?WebSocketProbe = null,
+    err: ?anyerror = null,
+};
+
+fn websocketProbeTimeoutWorker(context: *WebSocketProbeContext) void {
+    defer context.done.set(context.io);
+    context.probe = websocketProbeWithIo(context.allocator, context.io, context.url, context.headers) catch |err| {
+        context.err = err;
+        return;
+    };
+}
+
+fn websocketProbeWithIo(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    url: []const u8,
+    headers: []const std.http.Header,
+) !WebSocketProbe {
+    var nonce: [16]u8 = undefined;
+    try io.randomSecure(&nonce);
+    var key_buffer: [24]u8 = undefined;
+    const websocket_key = std.base64.standard.Encoder.encode(&key_buffer, &nonce);
+    const expected_accept = try websocketAcceptValue(allocator, websocket_key);
+    defer allocator.free(expected_accept);
+
+    var probe_headers = std.ArrayList(std.http.Header).empty;
+    defer probe_headers.deinit(allocator);
+    try probe_headers.appendSlice(allocator, headers);
+    try probe_headers.append(allocator, .{ .name = "Sec-WebSocket-Key", .value = websocket_key });
+
+    var client = std.http.Client{ .allocator = allocator, .io = io };
+    defer client.deinit();
+    const uri = try std.Uri.parse(url);
+    var request = try client.request(.GET, uri, .{
+        .redirect_behavior = .unhandled,
+        .keep_alive = false,
+        .headers = .{
+            .connection = .{ .override = "Upgrade" },
+            .user_agent = .{ .override = "codex-zig-port/0.0.1" },
+        },
+        .extra_headers = probe_headers.items,
+    });
+    defer request.deinit();
+    try request.sendBodiless();
+    var response_head_buffer: [8192]u8 = undefined;
+    const response = try request.receiveHead(&response_head_buffer);
+    return .{
+        .status = response.head.status,
+        .accept_valid = headerValueEquals(response.head, "sec-websocket-accept", expected_accept),
+        .reasoning_included = headerPresent(response.head, "x-reasoning-included"),
+        .models_etag_present = headerPresent(response.head, "x-models-etag"),
+        .server_model_present = headerPresent(response.head, "openai-model") or headerPresent(response.head, "x-openai-model"),
+    };
+}
+
+fn headerPresent(head: std.http.Client.Response.Head, name: []const u8) bool {
+    var iterator = head.iterateHeaders();
+    while (iterator.next()) |header| {
+        if (std.ascii.eqlIgnoreCase(header.name, name) and header.value.len > 0) return true;
+    }
+    return false;
+}
+
+fn headerValueEquals(head: std.http.Client.Response.Head, name: []const u8, expected: []const u8) bool {
+    var iterator = head.iterateHeaders();
+    while (iterator.next()) |header| {
+        if (std.ascii.eqlIgnoreCase(header.name, name) and std.mem.eql(u8, header.value, expected)) return true;
+    }
+    return false;
+}
+
+fn websocketAcceptValue(allocator: std.mem.Allocator, key: []const u8) ![]const u8 {
+    const magic = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
+    const combined = try std.fmt.allocPrint(allocator, "{s}{s}", .{ key, magic });
+    defer allocator.free(combined);
+    var digest: [std.crypto.hash.Sha1.digest_length]u8 = undefined;
+    std.crypto.hash.Sha1.hash(combined, &digest, .{});
+    const encoded_len = std.base64.standard.Encoder.calcSize(digest.len);
+    const encoded = try allocator.alloc(u8, encoded_len);
+    _ = std.base64.standard.Encoder.encode(encoded, &digest);
+    return encoded;
 }
 
 fn providerReachabilityCheck(allocator: std.mem.Allocator, cfg_load: ConfigLoad) !Check {
@@ -2071,6 +2417,27 @@ test "doctor provider route labels redact probed path" {
     const rendered = try redactedProviderRouteLabel(std.testing.allocator, "https://api.openai.com/v1/");
     defer std.testing.allocator.free(rendered);
     try std.testing.expectEqualStrings("https://api.openai.com/v1/<redacted>", rendered);
+}
+
+test "doctor websocket endpoint uses responses path and websocket display scheme" {
+    const allocator = std.testing.allocator;
+    var entries = [_]config.StringMapEntry{
+        .{ .key = "api-version", .value = "2025-04-01-preview" },
+    };
+    const query_params = config.StringMap{ .entries = entries[0..] };
+    const endpoint = try buildWebSocketEndpoint(allocator, "https://chatgpt.com/backend-api/codex", query_params);
+    defer {
+        allocator.free(endpoint.request_url);
+        allocator.free(endpoint.display_url);
+    }
+    try std.testing.expectEqualStrings("https://chatgpt.com/backend-api/codex/responses?api-version=2025-04-01-preview", endpoint.request_url);
+    try std.testing.expectEqualStrings("wss://chatgpt.com/backend-api/codex/<redacted>", endpoint.display_url);
+}
+
+test "doctor websocket accept value matches RFC example" {
+    const rendered = try websocketAcceptValue(std.testing.allocator, "dGhlIHNhbXBsZSBub25jZQ==");
+    defer std.testing.allocator.free(rendered);
+    try std.testing.expectEqualStrings("s3pPLMBiTxaQ9kYGzzhZRbK+xOo=", rendered);
 }
 
 test "doctor JSON redacts local paths" {
