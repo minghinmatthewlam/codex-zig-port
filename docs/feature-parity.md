@@ -1,6 +1,6 @@
 # Feature Parity Gap List
 
-Last checked: 2026-05-24.
+Last checked: 2026-05-25.
 
 This file tracks user-facing feature parity against the local Rust Codex CLI
 reference, not CI, release, OSS hygiene, byte-for-byte fixture parity, or
@@ -9,7 +9,7 @@ purely internal generator parity. The current reference is:
 - Rust checkout: `/Users/matthewlam/dev/codex` at
   `5381240f57fe326b13bc81325f3c61596592fc7a`
 - Installed Rust CLI: `codex-cli 0.133.0`
-- Zig checkout: `7fb445b81a1c84d323d1d1183ae7a05e9c131772`
+- Zig checkout: `3f98f86f358d07f09addd0055f0b244b9a9214f5`
 - Zig CLI: `codex-zig 0.0.1`
 
 The source evidence for this pass was the Rust and Zig root help output,
@@ -17,7 +17,10 @@ targeted subcommand help output, Rust CLI command definitions in
 `codex-rs/cli/src/main.rs`, Rust TUI slash-command definitions in
 `codex-rs/tui/src/slash_command.rs`, Zig command dispatch in `src/main.zig`,
 Zig TUI help in `src/tui.zig`, and the broader narrative tracker in
-`docs/parity.md`.
+`docs/parity.md`. App-server turn input-size parity was checked against
+Rust's `turn_processor.rs`, `protocol/v2/turn.rs`, and
+`MAX_USER_INPUT_TEXT_CHARS` definition, then verified through the Zig stdio
+app-server smoke.
 
 ## Priority Rules
 
@@ -39,8 +42,9 @@ Zig TUI help in `src/tui.zig`, and the broader narrative tracker in
   synchronous; Rust supports active turn state, interruption, steering, richer
   lifecycle events, and same-turn control. App-server `turn/start` now sends
   the normal-turn response, active status, and `turn/started` notification
-  before provider completion, but true async turn state and same-turn control
-  remain open.
+  before provider completion, and `turn/start` / `turn/steer` now enforce
+  Rust's 1 MiB text-character input limit with structured `input_too_large`
+  JSON-RPC errors. True async turn state and same-turn control remain open.
 - Add robust user interruption and steering behavior in the TUI, including
   queued input while a turn is running, `/compact` interactions, active tool
   interruption, and accurate background-process cleanup.
@@ -270,9 +274,9 @@ Zig TUI help in `src/tui.zig`, and the broader narrative tracker in
   Remaining remote-control parity is the full Rust websocket/cloud connection
   backend behind the reported connecting status.
 - Close app-server active-turn feature gaps needed by desktop clients:
-  real async turns, active turn status, interruption, steering, server-request
-  dispatch, remaining lifecycle notification depth, and non-stdio deferred
-  command responses.
+  real async turns, durable active-turn tracking, interruption, steering,
+  server-request dispatch, remaining lifecycle notification depth, and
+  non-stdio deferred command responses.
 
 ### Plugin CLI and TUI User Flows
 
