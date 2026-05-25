@@ -12423,7 +12423,6 @@ def run_yolo_approval_conflict_smoke(binary: Path) -> None:
                 "--dangerously-bypass-approvals-and-sandbox",
                 "--ask-for-approval",
                 "never",
-                "--help",
             ],
             cwd=temp_root,
             env=os.environ.copy(),
@@ -12562,6 +12561,85 @@ def run_prompt_global_flag_smoke(binary: Path) -> None:
             (("prompt-token", "--help", "--version"), "Codex Zig"),
             (("prompt-token", "--model", "gpt-5", "--help"), "Codex Zig"),
             (("prompt-token", "--search", "--version"), "codex-zig 0.0.1"),
+            (("prompt-token", "--config", "approval_policy=bogus", "--help"), "Codex Zig"),
+            (("prompt-token", "--enable", "definitely-not-a-feature", "--help"), "Codex Zig"),
+            (("prompt-token", "--enable", "definitely-not-a-feature", "--version"), "codex-zig 0.0.1"),
+            (("--config", "approval_policy=bogus", "--help"), "Codex Zig"),
+            (("--enable", "definitely-not-a-feature", "--help"), "Codex Zig"),
+            (("--strict-config", "-c", "foo.bar=1", "--help"), "Codex Zig"),
+            (("--strict-config", "-c", "foo.bar=1", "prompt-token", "--help"), "Codex Zig"),
+            (("--yolo", "-a", "never", "--help"), "Codex Zig"),
+            (("--yolo", "prompt-token", "-a", "never", "--help"), "Codex Zig"),
+            (("-C", "does-not-exist", "sandbox", "--help"), "Usage: codex-zig sandbox"),
+            (("--remote", "ws://127.0.0.1:1", "sandbox", "--help"), "Usage: codex-zig sandbox"),
+            (("--remote", "ws://127.0.0.1:1", "sandbox", "macos", "--help"), "Usage: codex-zig sandbox macos"),
+            (("--strict-config", "-c", "foo.bar=1", "sandbox", "--help"), "Usage: codex-zig sandbox"),
+            (("--strict-config", "-c", "foo.bar=1", "sandbox", "help", "macos"), "Usage: codex-zig sandbox macos"),
+            (("--strict-config", "-c", "foo.bar=1", "doctor", "--help"), "Usage:"),
+            (("doctor", "--strict-config", "-c", "foo.bar=1", "--help"), "Usage:"),
+            (("--remote", "ws://127.0.0.1:1", "doctor", "--json", "--help", "--summary"), "Usage:"),
+            (("--remote", "ws://127.0.0.1:1", "doctor", "--config", "bogus", "--help"), "Usage:"),
+            (("--remote", "ws://127.0.0.1:1", "doctor", "--enable", "definitely-not-a-feature", "--help"), "Usage:"),
+            (("--remote", "ws://127.0.0.1:1", "doctor", "--help", "--bad"), "Usage:"),
+            (("--strict-config", "-c", "foo.bar=1", "review", "--help"), "codex-zig review"),
+            (("review", "--strict-config", "-c", "foo.bar=1", "--help"), "codex-zig review"),
+            (("-C", "does-not-exist", "review", "--help"), "codex-zig review"),
+            (("--remote", "ws://127.0.0.1:1", "review", "--help"), "codex-zig review"),
+            (("--remote", "ws://127.0.0.1:1", "review", "--config", "bogus", "--help"), "codex-zig review"),
+            (("--remote", "ws://127.0.0.1:1", "review", "--enable", "definitely-not-a-feature", "--help"), "codex-zig review"),
+            (("--remote", "ws://127.0.0.1:1", "review", "--base=", "--help"), "codex-zig review"),
+            (("--remote", "ws://127.0.0.1:1", "review", "--uncommitted", "--base", "main", "--help"), "codex-zig review"),
+            (("--strict-config", "-c", "foo.bar=1", "review", "--title", "summary", "--help"), "codex-zig review"),
+            (("--remote", "ws://127.0.0.1:1", "exec", "help", "review"), "Usage:"),
+            (("--remote", "ws://127.0.0.1:1", "exec", "--image", str(temp_root / "missing.png"), "--help"), "codex-zig exec"),
+            (("--remote", "ws://127.0.0.1:1", "exec", "--enable", "definitely-not-a-feature", "--help"), "codex-zig exec"),
+            (("--remote", "ws://127.0.0.1:1", "exec", "--config", "approval_policy=bogus", "--help"), "codex-zig exec"),
+            (("--remote", "ws://127.0.0.1:1", "exec", "resume", "--last", "--help"), "codex-zig exec resume"),
+            (("--remote", "ws://127.0.0.1:1", "exec-server", "--strict-config", "--help"), "codex-zig exec-server"),
+            (("--remote", "ws://127.0.0.1:1", "exec-server", "--help", "--bad"), "codex-zig exec-server"),
+            (("--remote", "ws://127.0.0.1:1", "exec-server", "--remote", "ws://127.0.0.1:2", "--help"), "codex-zig exec-server"),
+            (("--remote", "ws://127.0.0.1:1", "login", "status", "--help", "--no-browser"), "codex-zig login"),
+            (("--remote", "ws://127.0.0.1:1", "login", "--help", "--bad"), "codex-zig login"),
+            (("--remote", "ws://127.0.0.1:1", "login", "--with-api-key", "--device-auth", "--help"), "codex-zig login"),
+            (("-C", "does-not-exist", "resume", "--last", "--help"), "codex-zig resume"),
+            (("-C", "does-not-exist", "resume", "session-id", "follow-up", "--help"), "codex-zig resume"),
+            (("-C", "does-not-exist", "resume", "--include-non-interactive", "--help"), "codex-zig resume"),
+            (("-C", "does-not-exist", "resume", "--help", "--bad"), "codex-zig resume"),
+            (("-C", "does-not-exist", "fork", "--last", "--help"), "codex-zig fork"),
+            (("-C", "does-not-exist", "fork", "session-id", "follow-up", "--help"), "codex-zig fork"),
+            (("--strict-config", "-c", "foo.bar=1", "remote-fork", "--last", "--help"), "codex-zig remote-fork CODE"),
+            (("--strict-config", "-c", "foo.bar=1", "plugin", "add", "--marketplace", "debug", "--help"), "Usage:"),
+            (("--strict-config", "-c", "foo.bar=1", "plugin", "help", "marketplace", "add"), "Usage:"),
+            (("--remote", "ws://127.0.0.1:1", "mcp", "help", "add"), "Usage:"),
+            (("--remote", "ws://127.0.0.1:1", "features", "list", "--enable", "apps", "--help"), "codex-zig features list"),
+            (("--remote", "ws://127.0.0.1:1", "features", "list", "--enable", "definitely-not-a-feature", "--help"), "codex-zig features list"),
+            (("--remote", "ws://127.0.0.1:1", "features", "enable", "definitely-not-a-feature", "--help"), "codex-zig features enable"),
+            (("--remote", "ws://127.0.0.1:1", "debug", "prompt-input", "--image", str(temp_root / "missing.png"), "--help"), "codex-zig debug prompt-input"),
+            (("--remote", "ws://127.0.0.1:1", "debug", "app-server", "help", "send-message-v2"), "Usage:"),
+            (("-C", "does-not-exist", "debug", "trace-reduce", "--output", "out.json", "--help"), "codex-zig debug trace-reduce"),
+            (("-C", "does-not-exist", "app-server", "--session-source", "vscode", "--help"), "codex-zig app-server"),
+            (("--remote", "ws://127.0.0.1:1", "app-server", "--ws-auth", "capability-token", "--help"), "codex-zig app-server"),
+            (("--remote", "ws://127.0.0.1:1", "app-server", "--ws-max-clock-skew-seconds", "30", "--help"), "codex-zig app-server"),
+            (("--strict-config", "app-server", "proxy", "--help"), "codex-zig app-server proxy"),
+            (("app-server", "--strict-config", "proxy", "--help"), "codex-zig app-server proxy"),
+            (("-C", "does-not-exist", "app-server", "proxy", "--sock", str(temp_root / "app.sock"), "--help"), "codex-zig app-server proxy"),
+            (("--strict-config", "app-server", "daemon", "bootstrap", "--remote-control", "--help"), "codex-zig app-server daemon bootstrap"),
+            (("app-server", "--strict-config", "daemon", "bootstrap", "--remote-control", "--help"), "codex-zig app-server daemon bootstrap"),
+            (("-C", "does-not-exist", "app-server", "daemon", "bootstrap", "--remote-control", "--help"), "codex-zig app-server daemon bootstrap"),
+            (("--remote", "ws://127.0.0.1:1", "responses-api-proxy", "--port", "0", "--help"), "codex-zig responses-api-proxy"),
+            (("--remote", "ws://127.0.0.1:1", "sandbox", "--enable", "definitely-not-a-feature", "macos", "--help"), "codex-zig sandbox macos"),
+            (("--remote", "ws://127.0.0.1:1", "sandbox", "macos", "--enable", "definitely-not-a-feature", "--help"), "codex-zig sandbox macos"),
+            (("--remote", "ws://127.0.0.1:1", "sandbox", "macos", "--help", "--bad"), "codex-zig sandbox macos"),
+            (("--remote", "ws://127.0.0.1:1", "sandbox", "--config", "bogus", "macos", "--help"), "codex-zig sandbox macos"),
+            (("--remote", "ws://127.0.0.1:1", "sandbox", "macos", "--config", "bogus", "--help"), "codex-zig sandbox macos"),
+            (("--remote", "ws://127.0.0.1:1", "remote-control", "--enable", "definitely-not-a-feature", "--help"), "codex-zig remote-control"),
+            (("--remote", "ws://127.0.0.1:1", "remote-control", "--config", "bogus", "--help"), "codex-zig remote-control"),
+            (("--strict-config", "-c", "foo.bar=1", "update", "--help", "--bad"), "codex-zig update"),
+            (("--strict-config", "-c", "foo.bar=1", "logout", "--help", "--bad"), "codex-zig logout"),
+            (("--strict-config", "-c", "foo.bar=1", "completion", "zsh", "--help"), "codex-zig completion"),
+            (("-C", "does-not-exist", "apply", "--help", "--bad"), "codex-zig apply"),
+            (("-C", "does-not-exist", "apply", "--config", "bogus", "--help"), "codex-zig apply"),
+            (("--remote", "ws://127.0.0.1:1", "cloud", "exec", "--env", "env-id", "--help"), "Usage:"),
         ):
             result = subprocess.run(
                 [str(binary.resolve()), *args],
@@ -12608,6 +12686,214 @@ def run_prompt_global_flag_smoke(binary: Path) -> None:
         assert "Codex Zig" not in flag_result.stderr
 
         for args, expected_error in (
+            (("sandbox", "macos", "--sandbox", "bogus", "--help"), "UnknownSandboxOption"),
+            (("sandbox", "macos", "--add-dir", "/tmp", "--help"), "UnknownSandboxOption"),
+            (("login", "--experimental_port", "bogus", "--help"), "UnknownLoginOption"),
+            (("login", "--experimental_state", "forced", "--help"), "UnknownLoginOption"),
+            (("login", "--no-browser", "--help"), "UnknownLoginOption"),
+        ):
+            result = subprocess.run(
+                [str(binary.resolve()), *args],
+                cwd=temp_root,
+                env=env,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                timeout=5,
+                check=False,
+            )
+            assert result.returncode != 0
+            assert result.stdout == ""
+            assert expected_error in result.stderr
+            assert "Usage:" not in result.stderr
+
+        unknown_value_result = subprocess.run(
+            [str(binary.resolve()), "prompt-token", "--cd", "--bad"],
+            cwd=temp_root,
+            env=env,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=5,
+            check=False,
+        )
+        assert unknown_value_result.returncode != 0
+        assert unknown_value_result.stdout == ""
+        assert "unexpected argument '--bad' found" in unknown_value_result.stderr
+        assert "Codex Zig" not in unknown_value_result.stderr
+
+        for args, expected_error in (
+            (
+                ("--remote", "ws://127.0.0.1:1", "sandbox", "macos", "echo", "--help"),
+                "RemoteModeUnsupportedForSubcommand",
+            ),
+            (
+                ("--remote", "ws://127.0.0.1:1", "sandbox", "macos", "echo", "--version"),
+                "RemoteModeUnsupportedForSubcommand",
+            ),
+            (
+                ("--remote", "ws://127.0.0.1:1", "sandbox", "--version"),
+                "RemoteModeUnsupportedForSubcommand",
+            ),
+            (
+                ("--remote", "ws://127.0.0.1:1", "sandbox", "bogus", "--help"),
+                "RemoteModeUnsupportedForSubcommand",
+            ),
+            (
+                ("--strict-config", "-c", "foo.bar=1", "sandbox", "bogus", "--help"),
+                "`--strict-config` is not supported for `codex-zig sandbox`",
+            ),
+            (
+                ("--remote", "ws://127.0.0.1:1", "sessions", "--version"),
+                "RemoteModeUnsupportedForSubcommand",
+            ),
+            (
+                ("--remote", "ws://127.0.0.1:1", "sessions", "--json", "--help"),
+                "RemoteModeUnsupportedForSubcommand",
+            ),
+            (
+                ("--remote", "ws://127.0.0.1:1", "exec", "review", "--version"),
+                "RemoteModeUnsupportedForSubcommand",
+            ),
+            (
+                ("--remote", "ws://127.0.0.1:1", "exec", "--base", "main", "--help"),
+                "RemoteModeUnsupportedForSubcommand",
+            ),
+            (
+                ("--remote", "ws://127.0.0.1:1", "debug", "--base", "main", "help", "models"),
+                "RemoteModeUnsupportedForSubcommand",
+            ),
+            (
+                ("--remote", "ws://127.0.0.1:1", "cloud", "exec", "--version"),
+                "RemoteModeUnsupportedForSubcommand",
+            ),
+            (
+                ("--remote", "ws://127.0.0.1:1", "cloud", "exec", "--color", "red", "--help"),
+                "RemoteModeUnsupportedForSubcommand",
+            ),
+            (
+                ("--remote", "ws://127.0.0.1:1", "cloud", "exec", "--env", "env-id", "--attempts", "5", "--help"),
+                "RemoteModeUnsupportedForSubcommand",
+            ),
+            (
+                ("--strict-config", "-c", "foo.bar=1", "sandbox", "macos", "echo", "--help"),
+                "`--strict-config` is not supported for `codex-zig sandbox`",
+            ),
+            (
+                ("--remote", "ws://127.0.0.1:1", "doctor", "--config", "--help"),
+                "RemoteModeUnsupportedForSubcommand",
+            ),
+            (
+                ("--remote", "ws://127.0.0.1:1", "sessions", "10", "--help"),
+                "RemoteModeUnsupportedForSubcommand",
+            ),
+            (
+                ("--remote", "ws://127.0.0.1:1", "review", "--version"),
+                "RemoteModeUnsupportedForSubcommand",
+            ),
+            (
+                ("--remote", "ws://127.0.0.1:1", "review", "--bad", "--help"),
+                "RemoteModeUnsupportedForSubcommand",
+            ),
+            (
+                ("--remote", "ws://127.0.0.1:1", "mcp", "add", "server", "echo", "--help"),
+                "RemoteModeUnsupportedForSubcommand",
+            ),
+            (
+                ("--remote", "ws://127.0.0.1:1", "app-server", "--ws-auth", "bogus", "--help"),
+                "RemoteModeUnsupportedForSubcommand",
+            ),
+            (
+                ("--remote", "ws://127.0.0.1:1", "app-server", "--ws-max-clock-skew-seconds", "bogus", "--help"),
+                "RemoteModeUnsupportedForSubcommand",
+            ),
+            (
+                ("--remote", "ws://127.0.0.1:1", "responses-api-proxy", "--port", "bogus", "--help"),
+                "RemoteModeUnsupportedForSubcommand",
+            ),
+            (
+                ("--strict-config", "-c", "foo.bar=1", "plugin", "add", "sample", "extra", "--help"),
+                "`--strict-config` is not supported for `codex-zig plugin`",
+            ),
+            (
+                ("--strict-config", "-c", "foo.bar=1", "plugin", "add", "--marketplace", "--help"),
+                "`--strict-config` is not supported for `codex-zig plugin`",
+            ),
+            (
+                ("--strict-config", "-c", "foo.bar=1", "review", "--base", "--help"),
+                "unknown configuration field `foo.bar` in -c/--config override",
+            ),
+            (
+                ("-C", "does-not-exist", "debug", "trace-reduce", "--output", "--help"),
+                "FileNotFound",
+            ),
+            (
+                ("--remote", "ws://127.0.0.1:1", "login", "--experimental_port", "bogus", "--help"),
+                "RemoteModeUnsupportedForSubcommand",
+            ),
+            (
+                ("-C", "does-not-exist", "debug", "clear-memories", "--bundled", "--help"),
+                "FileNotFound",
+            ),
+            (
+                ("-C", "does-not-exist", "app-server", "--session-source", "--help"),
+                "FileNotFound",
+            ),
+            (
+                ("-C", "does-not-exist", "app-server", "generate-ts", "--out", "src", "--help"),
+                "FileNotFound",
+            ),
+            (
+                ("-C", "does-not-exist", "app-server", "daemon", "--remote-control", "--help"),
+                "FileNotFound",
+            ),
+            (
+                ("app-server", "daemon", "start", "help"),
+                "unexpected argument 'help' found",
+            ),
+            (
+                ("app-server", "--strict-config", "daemon", "start"),
+                "`--strict-config` is not supported for `codex-zig app-server daemon start`",
+            ),
+            (
+                ("--strict-config", "app-server", "daemon", "start", "help"),
+                "unexpected argument 'help' found",
+            ),
+            (
+                ("app-server", "daemon", "help", "bogus", "extra"),
+                "unrecognized subcommand 'bogus'",
+            ),
+            (
+                ("remote-fork", "one", "two", "--help"),
+                "UnexpectedSessionCommandArgument",
+            ),
+            (
+                ("remote-control", "start", "help"),
+                "UnexpectedRemoteControlArgument",
+            ),
+            (
+                ("remote-control", "help", "start", "extra"),
+                "UnexpectedRemoteControlArgument",
+            ),
+        ):
+            command_arg_help = subprocess.run(
+                [str(binary.resolve()), *args],
+                cwd=temp_root,
+                env=env,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                timeout=5,
+                check=False,
+            )
+            assert command_arg_help.returncode != 0
+            assert command_arg_help.stdout == ""
+            assert expected_error in command_arg_help.stderr
+
+        for args, expected_error in (
+            (("-C", "--help"), "MissingCdOptionValue"),
+            (("--model", "--help"), "MissingModelOptionValue"),
+            (("--remote", "--help"), "MissingRemoteOptionValue"),
             (("prompt-token", "--cd", "--help"), "MissingCdOptionValue"),
             (("prompt-token", "--model", "--help"), "MissingModelOptionValue"),
             (("prompt-token", "--image", "--help"), "MissingImageOptionValue"),
