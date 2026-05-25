@@ -1704,15 +1704,17 @@ def run_help_command_smoke(
         capture_output=True,
         check=True,
     )
-    if "codex-zig help [COMMAND]" not in root_result.stderr:
-        raise AssertionError(
-            f"expected root help command in output:\n{root_result.stderr}"
-        )
-    if "codex-zig --remote unix://PATH" not in root_result.stderr:
+    if "Usage: codex-zig [OPTIONS] [PROMPT]" not in root_result.stderr:
+        raise AssertionError(f"expected root usage in output:\n{root_result.stderr}")
+    if "codex-zig [OPTIONS] <COMMAND> [ARGS]" not in root_result.stderr:
+        raise AssertionError(f"expected root command usage in output:\n{root_result.stderr}")
+    if "help            Print this message or the help of the given subcommand(s)" not in root_result.stderr:
+        raise AssertionError(f"expected root help command in output:\n{root_result.stderr}")
+    if "--remote <ADDR>" not in root_result.stderr:
         raise AssertionError(f"expected remote flag help output:\n{root_result.stderr}")
-    if "codex-zig --remote-control" not in root_result.stderr:
-        raise AssertionError(f"expected remote-control flag help output:\n{root_result.stderr}")
-    if "codex-zig --dangerously-bypass-approvals-and-sandbox" not in root_result.stderr:
+    if "remote-control  [experimental] Manage the app-server daemon with remote control enabled" not in root_result.stderr:
+        raise AssertionError(f"expected remote-control command help output:\n{root_result.stderr}")
+    if "--dangerously-bypass-approvals-and-sandbox" not in root_result.stderr:
         raise AssertionError(
             f"expected dangerous bypass flag help output:\n{root_result.stderr}"
         )
