@@ -75,8 +75,11 @@ readiness probing, config load, auth presence, MCP config parsing, sandbox
 config, proxy and custom-CA network env checks, passive app-server daemon state
 and control-socket reachability, terminal streams, state paths, config-backed
 `log_dir`/`sqlite_home` reporting, Rust runtime DB paths for state/log/goals,
-read-only SQLite integrity probes for existing runtime DBs, and active/archived
-rollout file stats. Rust's deeper provider reachability, WebSocket,
+read-only SQLite integrity probes for existing runtime DBs, active/archived
+rollout file stats, and Rust-shaped human notes for large rollout storage,
+unrestricted sandbox/network posture, and mixed ChatGPT/API-key auth signals.
+Doctor-local `--strict-config` is rejected like Rust while root
+`--strict-config doctor` remains supported. Rust's deeper provider reachability, WebSocket,
 bundled-search layout, detailed installation probes, and standalone
 release-cache diagnostics remain planned exact-depth parity.
 
