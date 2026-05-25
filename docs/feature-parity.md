@@ -9,7 +9,7 @@ purely internal generator parity. The current reference is:
 - Rust checkout: `/Users/matthewlam/dev/codex` at
   `5381240f57fe326b13bc81325f3c61596592fc7a`
 - Installed Rust CLI: `codex-cli 0.133.0`
-- Zig checkout: `3f98f86f358d07f09addd0055f0b244b9a9214f5`
+- Zig checkout: `2925717f68b2ea4b290e2520c361f67cff3abea7`
 - Zig CLI: `codex-zig 0.0.1`
 
 The source evidence for this pass was the Rust and Zig root help output,
@@ -45,6 +45,13 @@ app-server smoke.
   before provider completion, and `turn/start` / `turn/steer` now enforce
   Rust's 1 MiB text-character input limit with structured `input_too_large`
   JSON-RPC errors. True async turn state and same-turn control remain open.
+- Local and remote TUI prompt submission now enforce the same 1 MiB
+  text-character input limit before starting a model turn, with friendly
+  terminal errors and pending image attachments preserved on rejection. Current
+  coverage includes local normal input, initial prompts, defensive local
+  remote-control submissions, `/side` / `/btw` args, custom `/review` args,
+  remote initial prompts, and remote stdin prompts including oversized
+  multibyte input that must be drained without exiting the TUI.
 - Add robust user interruption and steering behavior in the TUI, including
   queued input while a turn is running, `/compact` interactions, active tool
   interruption, and accurate background-process cleanup.
