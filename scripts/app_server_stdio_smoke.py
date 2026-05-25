@@ -1979,6 +1979,11 @@ class PluginBackendHandler(BaseHTTPRequestHandler):
             "plugins~Plugin_00000000000000000000000000000000"
         )
         detail_with_downloads_path = detail_path + "?includeDownloadUrls=true"
+        checkout_detail_path = (
+            "/backend-api/ps/plugins/"
+            "plugins~Plugin_22222222222222222222222222222222"
+            "?includeDownloadUrls=true"
+        )
         bundle_path = "/bundles/linear.tar.gz"
         list_path = "/backend-api/ps/plugins/list?scope=GLOBAL&limit=200"
         installed_path = "/backend-api/ps/plugins/installed?scope=GLOBAL"
@@ -2053,6 +2058,7 @@ class PluginBackendHandler(BaseHTTPRequestHandler):
             "id": "plugins~Plugin_00000000000000000000000000000000",
             "name": "linear",
             "scope": "WORKSPACE",
+            "discoverability": "PRIVATE",
             "creator_account_user_id": "user-owner",
             "creator_name": "Owner",
             "share_url": "https://chatgpt.example/plugins/share/share-key-1",
@@ -2085,9 +2091,21 @@ class PluginBackendHandler(BaseHTTPRequestHandler):
                 "skills": [],
             },
         }
+        checkout_plugin = dict(workspace_plugin)
+        checkout_plugin["id"] = "plugins~Plugin_22222222222222222222222222222222"
+        checkout_plugin["release"] = dict(workspace_plugin["release"])
+        checkout_plugin["release"]["version"] = "1.2.3"
+        checkout_plugin["release"]["bundle_download_url"] = (
+            f"http://{self.headers['Host']}/bundles/linear.tar.gz"
+        )
         if self.path == detail_path or self.path == detail_with_downloads_path:
             body = json.dumps(
                 plugin,
+                separators=(",", ":"),
+            ).encode("utf-8")
+        elif self.path == checkout_detail_path:
+            body = json.dumps(
+                checkout_plugin,
                 separators=(",", ":"),
             ).encode("utf-8")
         elif self.path == list_path:
@@ -24339,6 +24357,7 @@ description: Summarize plugin smoke threads
 [features]
 plugins = true
 remote_plugin = true
+plugin_sharing = true
 """,
             encoding="utf-8",
         )
@@ -24368,6 +24387,10 @@ remote_plugin = true
         remote_env.pop("OPENAI_API_KEY", None)
         remote_env.pop("CODEX_ACCESS_TOKEN", None)
         remote_env["CODEX_HOME"] = str(remote_home)
+        checkout_home = remote_home / "home"
+        checkout_home.mkdir()
+        remote_env["HOME"] = str(checkout_home)
+        remote_env["USERPROFILE"] = str(checkout_home)
         remote_env["CODEX_TEST_ALLOW_HTTP_REMOTE_PLUGIN_BUNDLE_DOWNLOADS"] = "1"
         remote_plugin_list = request_stdio_app_server(
             binary,
@@ -24812,6 +24835,110 @@ remote_plugin = true
                 "authorization": f"Bearer {access_token}",
                 "account_id": "acct_123",
             }
+        ]
+
+        checkout_plugin_id = "plugins~Plugin_22222222222222222222222222222222"
+        checked_out_plugin = checkout_home / "plugins" / "linear"
+        checkout_marketplace_path = (
+            checkout_home / ".agents" / "plugins" / "marketplace.json"
+        )
+        PluginBackendHandler.requests = []
+        plugin_share_checkout = request_stdio_app_server(
+            binary,
+            {
+                "jsonrpc": "2.0",
+                "id": "plugin-share-checkout",
+                "method": "plugin/share/checkout",
+                "params": {
+                    "remotePluginId": checkout_plugin_id,
+                },
+            },
+            remote_env,
+        )
+        assert plugin_share_checkout["id"] == "plugin-share-checkout"
+        assert plugin_share_checkout["result"] == {
+            "remotePluginId": checkout_plugin_id,
+            "pluginId": "linear@codex-curated",
+            "pluginName": "linear",
+            "pluginPath": str(checked_out_plugin),
+            "marketplaceName": "codex-curated",
+            "marketplacePath": str(checkout_marketplace_path),
+            "remoteVersion": "1.2.3",
+        }
+        assert checked_out_plugin.joinpath(".codex-plugin", "plugin.json").is_file()
+        assert checked_out_plugin.joinpath("skills", "plan-work", "SKILL.md").is_file()
+        checkout_marketplace = json.loads(
+            checkout_marketplace_path.read_text(encoding="utf-8")
+        )
+        assert checkout_marketplace["name"] == "codex-curated"
+        assert checkout_marketplace["interface"]["displayName"] == "Personal"
+        assert checkout_marketplace["plugins"] == [
+            {
+                "name": "linear",
+                "source": {"source": "local", "path": "./plugins/linear"},
+                "policy": {
+                    "installation": "AVAILABLE",
+                    "authentication": "ON_USE",
+                },
+            }
+        ]
+        checkout_mapping = json.loads(share_mapping.read_text(encoding="utf-8"))
+        assert checkout_mapping == {
+            "localPluginPathsByRemotePluginId": {
+                checkout_plugin_id: str(checked_out_plugin)
+            }
+        }
+        assert PluginBackendHandler.requests == [
+            {
+                "path": (
+                    "/backend-api/ps/plugins/"
+                    "plugins~Plugin_22222222222222222222222222222222"
+                    "?includeDownloadUrls=true"
+                ),
+                "authorization": f"Bearer {access_token}",
+                "account_id": "acct_123",
+            },
+            {
+                "path": "/bundles/linear.tar.gz",
+                "authorization": None,
+                "account_id": None,
+            },
+        ]
+
+        checked_out_plugin.joinpath("local-edit.txt").write_text(
+            "keep local edits",
+            encoding="utf-8",
+        )
+        PluginBackendHandler.requests = []
+        plugin_share_checkout_again = request_stdio_app_server(
+            binary,
+            {
+                "jsonrpc": "2.0",
+                "id": "plugin-share-checkout-again",
+                "method": "plugin/share/checkout",
+                "params": {
+                    "remotePluginId": checkout_plugin_id,
+                },
+            },
+            remote_env,
+        )
+        assert plugin_share_checkout_again["id"] == "plugin-share-checkout-again"
+        assert plugin_share_checkout_again["result"]["pluginPath"] == str(
+            checked_out_plugin
+        )
+        assert checked_out_plugin.joinpath("local-edit.txt").read_text(
+            encoding="utf-8"
+        ) == "keep local edits"
+        assert PluginBackendHandler.requests == [
+            {
+                "path": (
+                    "/backend-api/ps/plugins/"
+                    "plugins~Plugin_22222222222222222222222222222222"
+                    "?includeDownloadUrls=true"
+                ),
+                "authorization": f"Bearer {access_token}",
+                "account_id": "acct_123",
+            },
         ]
 
         current_cache = (
@@ -48765,6 +48892,8 @@ def run_json_schema_smoke(binary: Path) -> None:
             "PluginShareUpdateTargetsResponse",
             "PluginShareListParams",
             "PluginShareListResponse",
+            "PluginShareCheckoutParams",
+            "PluginShareCheckoutResponse",
             "PluginShareDeleteParams",
             "PluginShareDeleteResponse",
             "PluginUninstallParams",
@@ -48927,6 +49056,30 @@ def run_json_schema_smoke(binary: Path) -> None:
         assert plugin_share_list_response["properties"]["data"]["items"]["$ref"] == (
             "#/$defs/PluginShareListItem"
         )
+        plugin_share_checkout_params = json.loads(
+            (out_dir / "v2" / "PluginShareCheckoutParams.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        assert plugin_share_checkout_params["required"] == ["remotePluginId"]
+        plugin_share_checkout_response = json.loads(
+            (out_dir / "v2" / "PluginShareCheckoutResponse.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        assert plugin_share_checkout_response["required"] == [
+            "remotePluginId",
+            "pluginId",
+            "pluginName",
+            "pluginPath",
+            "marketplaceName",
+            "marketplacePath",
+            "remoteVersion",
+        ]
+        assert plugin_share_checkout_response["properties"]["remoteVersion"]["type"] == [
+            "string",
+            "null",
+        ]
         plugin_share_delete_response = json.loads(
             (out_dir / "v2" / "PluginShareDeleteResponse.json").read_text(
                 encoding="utf-8"
@@ -52610,6 +52763,7 @@ def run_typescript_generation_smoke(binary: Path) -> None:
             "PluginInstalledParams",
             "PluginListParams",
             "PluginReadParams",
+            "PluginShareCheckoutParams",
             "PluginShareDeleteParams",
             "PluginShareListParams",
             "PluginShareSaveParams",
@@ -52676,6 +52830,7 @@ def run_typescript_generation_smoke(binary: Path) -> None:
             ("plugin/share/save", "PluginShareSaveParams"),
             ("plugin/share/updateTargets", "PluginShareUpdateTargetsParams"),
             ("plugin/share/list", "PluginShareListParams"),
+            ("plugin/share/checkout", "PluginShareCheckoutParams"),
             ("plugin/share/delete", "PluginShareDeleteParams"),
             ("plugin/install", "PluginInstallParams"),
             ("plugin/uninstall", "PluginUninstallParams"),
@@ -52955,6 +53110,16 @@ def run_typescript_generation_smoke(binary: Path) -> None:
             "PluginShareListResponse": [
                 'import type { PluginShareListItem } from "./PluginShareListItem";',
                 "data: PluginShareListItem[];",
+            ],
+            "PluginShareCheckoutParams": [
+                "remotePluginId: string;",
+            ],
+            "PluginShareCheckoutResponse": [
+                'import type { AbsolutePathBuf } from "../AbsolutePathBuf";',
+                "pluginId: string;",
+                "pluginPath: AbsolutePathBuf;",
+                "marketplacePath: AbsolutePathBuf;",
+                "remoteVersion: string | null;",
             ],
             "PluginShareDeleteResponse": [
                 "export type PluginShareDeleteResponse = Record<string, never>;",
@@ -53948,6 +54113,7 @@ def run_typescript_generation_smoke(binary: Path) -> None:
             ("plugin/share/save", "PluginShareSaveResponse"),
             ("plugin/share/updateTargets", "PluginShareUpdateTargetsResponse"),
             ("plugin/share/list", "PluginShareListResponse"),
+            ("plugin/share/checkout", "PluginShareCheckoutResponse"),
             ("plugin/share/delete", "PluginShareDeleteResponse"),
             ("plugin/install", "PluginInstallResponse"),
             ("plugin/uninstall", "PluginUninstallResponse"),
@@ -56360,6 +56526,8 @@ def run_typescript_generation_smoke(binary: Path) -> None:
             "PluginMarketplaceEntry",
             "PluginReadParams",
             "PluginReadResponse",
+            "PluginShareCheckoutParams",
+            "PluginShareCheckoutResponse",
             "PluginShareDeleteParams",
             "PluginShareDeleteResponse",
             "PluginShareContext",

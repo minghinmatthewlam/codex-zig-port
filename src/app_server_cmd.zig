@@ -4795,6 +4795,14 @@ const PLUGIN_SHARE_LIST_PARAMS_TS =
     \\
     ;
 
+const PLUGIN_SHARE_CHECKOUT_PARAMS_TS =
+    GENERATED_TS_HEADER ++
+    \\export interface PluginShareCheckoutParams {
+    \\  remotePluginId: string;
+    \\}
+    \\
+    ;
+
 const PLUGIN_SHARE_DELETE_PARAMS_TS =
     GENERATED_TS_HEADER ++
     \\export interface PluginShareDeleteParams {
@@ -5137,6 +5145,22 @@ const PLUGIN_SHARE_LIST_RESPONSE_TS =
     \\
     \\export interface PluginShareListResponse {
     \\  data: PluginShareListItem[];
+    \\}
+    \\
+    ;
+
+const PLUGIN_SHARE_CHECKOUT_RESPONSE_TS =
+    GENERATED_TS_HEADER ++
+    \\import type { AbsolutePathBuf } from "../AbsolutePathBuf";
+    \\
+    \\export interface PluginShareCheckoutResponse {
+    \\  remotePluginId: string;
+    \\  pluginId: string;
+    \\  pluginName: string;
+    \\  pluginPath: AbsolutePathBuf;
+    \\  marketplaceName: string;
+    \\  marketplacePath: AbsolutePathBuf;
+    \\  remoteVersion: string | null;
     \\}
     \\
     ;
@@ -10484,6 +10508,7 @@ const CLIENT_REQUEST_TS =
     \\import type { PluginInstalledParams } from "./v2/PluginInstalledParams";
     \\import type { PluginListParams } from "./v2/PluginListParams";
     \\import type { PluginReadParams } from "./v2/PluginReadParams";
+    \\import type { PluginShareCheckoutParams } from "./v2/PluginShareCheckoutParams";
     \\import type { PluginShareDeleteParams } from "./v2/PluginShareDeleteParams";
     \\import type { PluginShareListParams } from "./v2/PluginShareListParams";
     \\import type { PluginShareSaveParams } from "./v2/PluginShareSaveParams";
@@ -10620,6 +10645,10 @@ const CLIENT_REQUEST_TS =
     \\  | {
     \\      method: "plugin/share/list";
     \\      params: PluginShareListParams;
+    \\    }
+    \\  | {
+    \\      method: "plugin/share/checkout";
+    \\      params: PluginShareCheckoutParams;
     \\    }
     \\  | {
     \\      method: "plugin/share/delete";
@@ -11004,6 +11033,7 @@ const CLIENT_RESPONSE_TS =
     \\import type { PluginInstalledResponse } from "./v2/PluginInstalledResponse";
     \\import type { PluginListResponse } from "./v2/PluginListResponse";
     \\import type { PluginReadResponse } from "./v2/PluginReadResponse";
+    \\import type { PluginShareCheckoutResponse } from "./v2/PluginShareCheckoutResponse";
     \\import type { PluginShareDeleteResponse } from "./v2/PluginShareDeleteResponse";
     \\import type { PluginShareListResponse } from "./v2/PluginShareListResponse";
     \\import type { PluginShareSaveResponse } from "./v2/PluginShareSaveResponse";
@@ -11163,6 +11193,11 @@ const CLIENT_RESPONSE_TS =
     \\      id: RequestId;
     \\      method: "plugin/share/list";
     \\      result: PluginShareListResponse;
+    \\    }
+    \\  | {
+    \\      id: RequestId;
+    \\      method: "plugin/share/checkout";
+    \\      result: PluginShareCheckoutResponse;
     \\    }
     \\  | {
     \\      id: RequestId;
@@ -12303,6 +12338,8 @@ const V2_INDEX_TS =
     \\export type { PluginMarketplaceEntry } from "./PluginMarketplaceEntry";
     \\export type { PluginReadParams } from "./PluginReadParams";
     \\export type { PluginReadResponse } from "./PluginReadResponse";
+    \\export type { PluginShareCheckoutParams } from "./PluginShareCheckoutParams";
+    \\export type { PluginShareCheckoutResponse } from "./PluginShareCheckoutResponse";
     \\export type { PluginShareDeleteParams } from "./PluginShareDeleteParams";
     \\export type { PluginShareDeleteResponse } from "./PluginShareDeleteResponse";
     \\export type { PluginShareContext } from "./PluginShareContext";
@@ -15212,6 +15249,20 @@ const PLUGIN_SHARE_LIST_PARAMS_JSON_SCHEMA =
     \\
 ;
 
+const PLUGIN_SHARE_CHECKOUT_PARAMS_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "PluginShareCheckoutParams",
+    \\  "type": "object",
+    \\  "required": ["remotePluginId"],
+    \\  "properties": {
+    \\    "remotePluginId": { "type": "string" }
+    \\  },
+    \\  "additionalProperties": true
+    \\}
+    \\
+;
+
 const PLUGIN_SHARE_DELETE_PARAMS_JSON_SCHEMA =
     \\{
     \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -15361,6 +15412,26 @@ const PLUGIN_SHARE_LIST_RESPONSE_JSON_SCHEMA =
     \\  "$defs": {
     \\
 ++ PLUGIN_SCHEMA_COMMON_DEFS_JSON ++
+    \\  },
+    \\  "additionalProperties": false
+    \\}
+    \\
+;
+
+const PLUGIN_SHARE_CHECKOUT_RESPONSE_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "PluginShareCheckoutResponse",
+    \\  "type": "object",
+    \\  "required": ["remotePluginId", "pluginId", "pluginName", "pluginPath", "marketplaceName", "marketplacePath", "remoteVersion"],
+    \\  "properties": {
+    \\    "remotePluginId": { "type": "string" },
+    \\    "pluginId": { "type": "string" },
+    \\    "pluginName": { "type": "string" },
+    \\    "pluginPath": { "type": "string" },
+    \\    "marketplaceName": { "type": "string" },
+    \\    "marketplacePath": { "type": "string" },
+    \\    "remoteVersion": { "type": ["string", "null"] }
     \\  },
     \\  "additionalProperties": false
     \\}
@@ -27153,6 +27224,8 @@ const APP_SERVER_JSON_SCHEMA_FILES = [_]SchemaFile{
     .{ .name = "v2/PluginShareUpdateTargetsResponse.json", .contents = PLUGIN_SHARE_UPDATE_TARGETS_RESPONSE_JSON_SCHEMA },
     .{ .name = "v2/PluginShareListParams.json", .contents = PLUGIN_SHARE_LIST_PARAMS_JSON_SCHEMA },
     .{ .name = "v2/PluginShareListResponse.json", .contents = PLUGIN_SHARE_LIST_RESPONSE_JSON_SCHEMA },
+    .{ .name = "v2/PluginShareCheckoutParams.json", .contents = PLUGIN_SHARE_CHECKOUT_PARAMS_JSON_SCHEMA },
+    .{ .name = "v2/PluginShareCheckoutResponse.json", .contents = PLUGIN_SHARE_CHECKOUT_RESPONSE_JSON_SCHEMA },
     .{ .name = "v2/PluginShareDeleteParams.json", .contents = PLUGIN_SHARE_DELETE_PARAMS_JSON_SCHEMA },
     .{ .name = "v2/PluginShareDeleteResponse.json", .contents = PLUGIN_SHARE_DELETE_RESPONSE_JSON_SCHEMA },
     .{ .name = "v2/PluginUninstallParams.json", .contents = PLUGIN_UNINSTALL_PARAMS_JSON_SCHEMA },
@@ -27812,6 +27885,8 @@ const APP_SERVER_TS_FILES = [_]SchemaFile{
     .{ .name = "v2/PluginShareListParams.ts", .contents = PLUGIN_SHARE_LIST_PARAMS_TS },
     .{ .name = "v2/PluginShareListItem.ts", .contents = PLUGIN_SHARE_LIST_ITEM_TS },
     .{ .name = "v2/PluginShareListResponse.ts", .contents = PLUGIN_SHARE_LIST_RESPONSE_TS },
+    .{ .name = "v2/PluginShareCheckoutParams.ts", .contents = PLUGIN_SHARE_CHECKOUT_PARAMS_TS },
+    .{ .name = "v2/PluginShareCheckoutResponse.ts", .contents = PLUGIN_SHARE_CHECKOUT_RESPONSE_TS },
     .{ .name = "v2/PluginShareDeleteParams.ts", .contents = PLUGIN_SHARE_DELETE_PARAMS_TS },
     .{ .name = "v2/PluginShareDeleteResponse.ts", .contents = PLUGIN_SHARE_DELETE_RESPONSE_TS },
     .{ .name = "v2/PluginInstallParams.ts", .contents = PLUGIN_INSTALL_PARAMS_TS },
@@ -47309,6 +47384,7 @@ fn isPluginMethod(method: []const u8) bool {
         std.mem.eql(u8, method, "plugin/share/save") or
         std.mem.eql(u8, method, "plugin/share/updateTargets") or
         std.mem.eql(u8, method, "plugin/share/list") or
+        std.mem.eql(u8, method, "plugin/share/checkout") or
         std.mem.eql(u8, method, "plugin/share/delete") or
         std.mem.eql(u8, method, "plugin/install") or
         std.mem.eql(u8, method, "plugin/uninstall");
@@ -47342,6 +47418,9 @@ fn handlePluginMethod(
     if (std.mem.eql(u8, method, "plugin/share/list")) {
         return handlePluginShareList(allocator, id_value, params_value);
     }
+    if (std.mem.eql(u8, method, "plugin/share/checkout")) {
+        return handlePluginShareCheckout(allocator, state, id_value, params_value);
+    }
     if (std.mem.eql(u8, method, "plugin/share/delete")) {
         return handlePluginShareDelete(allocator, state, id_value, params_value);
     }
@@ -47373,6 +47452,7 @@ fn validatePluginParams(method: []const u8, params_value: ?std.json.Value) ?[]co
     if (std.mem.eql(u8, method, "plugin/share/save")) return validatePluginShareSaveParams(params_value);
     if (std.mem.eql(u8, method, "plugin/share/updateTargets")) return validatePluginShareUpdateTargetsParams(params_value);
     if (std.mem.eql(u8, method, "plugin/share/list")) return validateOptionalObjectParams(params_value);
+    if (std.mem.eql(u8, method, "plugin/share/checkout")) return validatePluginShareCheckoutParams(params_value);
     if (std.mem.eql(u8, method, "plugin/share/delete")) return validatePluginShareDeleteParams(params_value);
     if (std.mem.eql(u8, method, "plugin/install")) return validatePluginReadLikeParams(params_value);
     if (std.mem.eql(u8, method, "plugin/uninstall")) return validatePluginUninstallParams(params_value);
@@ -47566,6 +47646,37 @@ fn handlePluginShareList(allocator: std.mem.Allocator, id_value: std.json.Value,
     return renderJsonRpcResult(allocator, id_value, result);
 }
 
+fn handlePluginShareCheckout(allocator: std.mem.Allocator, state: *AppServerState, id_value: std.json.Value, params_value: ?std.json.Value) ![]const u8 {
+    if (validatePluginShareCheckoutParams(params_value)) |message| {
+        return renderJsonRpcError(allocator, id_value, -32602, message);
+    }
+    const remote_plugin_id = parsePluginShareCheckoutParams(params_value);
+    if (!remote_plugin.isValidRemotePluginId(remote_plugin_id)) {
+        return renderJsonRpcError(allocator, id_value, -32600, "invalid remote plugin id");
+    }
+
+    var context = loadRemotePluginShareContextForCheckout(allocator) catch |err| {
+        return renderRemotePluginShareContextError(allocator, id_value, "plugin/share/checkout", err);
+    };
+    defer context.deinit(allocator);
+
+    const result = remote_plugin.checkoutShare(
+        allocator,
+        context.cfg.chatgpt_base_url,
+        context.credentials,
+        context.cfg.codex_home,
+        remote_plugin_id,
+    ) catch |err| switch (err) {
+        error.RemotePluginShareCheckoutNotAvailable => return renderJsonRpcError(allocator, id_value, -32600, "remote plugin is not available for plugin/share/checkout"),
+        error.RemotePluginInvalidPluginPath => return renderJsonRpcError(allocator, id_value, -32600, "invalid plugin path for plugin/share/checkout"),
+        error.RemotePluginInsecureBundleDownloadUrl => return renderJsonRpcError(allocator, id_value, -32600, "Invalid request: remote plugin bundle URL must use HTTPS"),
+        else => return renderJsonRpcErrorForFailure(allocator, id_value, "plugin/share/checkout failed to check out remote plugin share", err),
+    };
+    defer result.deinit(allocator);
+    clearSkillsListCache(allocator, state);
+    return renderJsonRpcResult(allocator, id_value, result.response_json);
+}
+
 fn handlePluginShareUpdateTargets(allocator: std.mem.Allocator, state: *AppServerState, id_value: std.json.Value, params_value: ?std.json.Value) ![]const u8 {
     if (validatePluginShareUpdateTargetsParams(params_value)) |message| {
         return renderJsonRpcError(allocator, id_value, -32602, message);
@@ -47620,6 +47731,14 @@ const RemotePluginShareContext = struct {
 };
 
 fn loadRemotePluginShareContext(allocator: std.mem.Allocator) !RemotePluginShareContext {
+    return loadRemotePluginShareContextWithOptions(allocator, false);
+}
+
+fn loadRemotePluginShareContextForCheckout(allocator: std.mem.Allocator) !RemotePluginShareContext {
+    return loadRemotePluginShareContextWithOptions(allocator, true);
+}
+
+fn loadRemotePluginShareContextWithOptions(allocator: std.mem.Allocator, require_plugin_sharing: bool) !RemotePluginShareContext {
     var cfg = try config.loadWithOptions(allocator, .{});
     errdefer cfg.deinit(allocator);
 
@@ -47629,6 +47748,9 @@ fn loadRemotePluginShareContext(allocator: std.mem.Allocator) !RemotePluginShare
     defer if (config_bytes) |bytes| allocator.free(bytes);
     if (!plugin_config.pluginsFeatureEnabled(config_bytes orelse "")) {
         return error.RemotePluginShareFeatureDisabled;
+    }
+    if (require_plugin_sharing and !plugin_config.pluginSharingFeatureEnabled(config_bytes orelse "")) {
+        return error.RemotePluginSharingDisabled;
     }
 
     var credentials = auth_mod.loadCliAuthForConfig(allocator, &cfg) catch |err| switch (err) {
@@ -47652,6 +47774,9 @@ fn renderRemotePluginShareContextError(
 ) ![]const u8 {
     if (err == error.RemotePluginShareFeatureDisabled) {
         return renderJsonRpcError(allocator, id_value, -32600, "plugin sharing is not enabled");
+    }
+    if (err == error.RemotePluginSharingDisabled) {
+        return renderJsonRpcError(allocator, id_value, -32600, "plugin sharing is disabled");
     }
     if (err == error.RemotePluginShareAuthRequired) {
         return renderJsonRpcError(allocator, id_value, -32602, "chatgpt authentication required to share plugins");
@@ -47700,6 +47825,10 @@ fn parsePluginShareUpdateTargetsParams(params_value: ?std.json.Value) ParsedPlug
 }
 
 fn parsePluginShareDeleteParams(params_value: ?std.json.Value) []const u8 {
+    return params_value.?.object.get("remotePluginId").?.string;
+}
+
+fn parsePluginShareCheckoutParams(params_value: ?std.json.Value) []const u8 {
     return params_value.?.object.get("remotePluginId").?.string;
 }
 
@@ -47940,6 +48069,12 @@ fn validatePluginShareUpdateTargetsParams(params_value: ?std.json.Value) ?[]cons
 fn validatePluginShareDeleteParams(params_value: ?std.json.Value) ?[]const u8 {
     const params = params_value orelse return "plugin/share/delete params must be an object";
     if (params != .object) return "plugin/share/delete params must be an object";
+    return requireStringField(params.object, "remotePluginId");
+}
+
+fn validatePluginShareCheckoutParams(params_value: ?std.json.Value) ?[]const u8 {
+    const params = params_value orelse return "plugin/share/checkout params must be an object";
+    if (params != .object) return "plugin/share/checkout params must be an object";
     return requireStringField(params.object, "remotePluginId");
 }
 

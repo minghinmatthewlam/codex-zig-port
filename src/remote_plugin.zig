@@ -1,6 +1,7 @@
 const std = @import("std");
 
 const auth = @import("auth.zig");
+const env = @import("env.zig");
 const product_restriction = @import("product_restriction.zig");
 
 const MAX_REMOTE_DEFAULT_PROMPT_LEN = 128;
@@ -15,6 +16,7 @@ const RemotePluginDetailPayload = struct {
     id: []const u8,
     name: []const u8,
     scope: []const u8,
+    discoverability: ?[]const u8 = null,
     creator_account_user_id: ?[]const u8 = null,
     creator_name: ?[]const u8 = null,
     share_url: ?[]const u8 = null,
@@ -108,6 +110,24 @@ pub const InstallResult = struct {
     }
 };
 
+pub const CheckoutResult = struct {
+    response_json: []const u8,
+
+    pub fn deinit(self: CheckoutResult, allocator: std.mem.Allocator) void {
+        allocator.free(self.response_json);
+    }
+};
+
+const PersonalMarketplaceCheckout = struct {
+    marketplace_name: []const u8,
+    marketplace_path: []const u8,
+
+    fn deinit(self: PersonalMarketplaceCheckout, allocator: std.mem.Allocator) void {
+        allocator.free(self.marketplace_name);
+        allocator.free(self.marketplace_path);
+    }
+};
+
 const RemotePluginShareUpdateTargetsResponsePayload = struct {
     principals: []const RemotePluginSharePrincipalPayload,
 };
@@ -132,6 +152,7 @@ const RemotePluginInstalledItemPayload = struct {
     id: []const u8,
     name: ?[]const u8 = null,
     scope: ?[]const u8 = null,
+    discoverability: ?[]const u8 = null,
     creator_account_user_id: ?[]const u8 = null,
     creator_name: ?[]const u8 = null,
     share_url: ?[]const u8 = null,
@@ -308,6 +329,68 @@ pub fn install(
         .response_json = response_json,
         .installed_path = installed_path,
     };
+}
+
+pub fn checkoutShare(
+    allocator: std.mem.Allocator,
+    base_url: []const u8,
+    credentials: auth.Credentials,
+    codex_home: []const u8,
+    plugin_id: []const u8,
+) !CheckoutResult {
+    const detail_url = try pluginDetailWithDownloadUrlsUrl(allocator, base_url, plugin_id);
+    defer allocator.free(detail_url);
+    const detail_body = try fetchJsonBytes(allocator, detail_url, credentials);
+    defer allocator.free(detail_body);
+
+    var detail_parse = try parsePluginDetail(allocator, detail_body, plugin_id);
+    defer detail_parse.deinit();
+    const detail = detail_parse.value;
+    const scope = scopeFromApiValue(detail.scope) orelse return error.RemotePluginInvalidScope;
+    if (scope != .workspace or detail.share_url == null) return error.RemotePluginShareCheckoutNotAvailable;
+    if (!isSafePluginCacheSegment(detail.name)) return error.RemotePluginInvalidPluginPath;
+
+    const version = detail.release.version orelse return error.RemotePluginMissingReleaseVersion;
+    const bundle_url = detail.release.bundle_download_url orelse return error.RemotePluginMissingBundleDownloadUrl;
+    if (!isRemoteBundleDownloadUrlAllowed(bundle_url)) return error.RemotePluginInsecureBundleDownloadUrl;
+
+    const home = try checkoutHomeDir(allocator);
+    defer allocator.free(home);
+
+    var local_paths = try loadPluginShareLocalPaths(allocator, codex_home);
+    defer local_paths.deinit();
+
+    const local_plugin_path = try checkoutPluginPath(allocator, home, detail.name, plugin_id, local_paths);
+    defer allocator.free(local_plugin_path);
+    const already_checked_out = try pathExists(local_plugin_path);
+    if (!already_checked_out) {
+        try checkoutRemotePluginBundle(allocator, detail.name, version, bundle_url, local_plugin_path);
+    }
+    errdefer if (!already_checked_out) deleteCachePathIfPresent(local_plugin_path) catch {};
+
+    const marketplace = try updatePersonalMarketplaceForCheckout(
+        allocator,
+        home,
+        detail.name,
+        local_plugin_path,
+        try normalizedInstallPolicy(detail.installation_policy),
+        try normalizedAuthPolicy(detail.authentication_policy),
+        detail.release.interface.category,
+    );
+    defer marketplace.deinit(allocator);
+
+    try recordPluginShareLocalPath(allocator, codex_home, plugin_id, local_plugin_path);
+
+    const response_json = try renderCheckoutShareJson(
+        allocator,
+        plugin_id,
+        detail.name,
+        local_plugin_path,
+        marketplace.marketplace_name,
+        marketplace.marketplace_path,
+        detail.release.version,
+    );
+    return .{ .response_json = response_json };
 }
 
 pub fn fetchShareListJson(
@@ -1022,6 +1105,38 @@ fn renderShareSaveJson(allocator: std.mem.Allocator, remote_plugin_id: []const u
     return out.toOwnedSlice(allocator);
 }
 
+fn renderCheckoutShareJson(
+    allocator: std.mem.Allocator,
+    remote_plugin_id: []const u8,
+    plugin_name: []const u8,
+    plugin_path: []const u8,
+    marketplace_name_value: []const u8,
+    marketplace_path: []const u8,
+    remote_version: ?[]const u8,
+) ![]const u8 {
+    const plugin_id = try std.fmt.allocPrint(allocator, "{s}@{s}", .{ plugin_name, marketplace_name_value });
+    defer allocator.free(plugin_id);
+
+    var out = std.ArrayList(u8).empty;
+    errdefer out.deinit(allocator);
+    try out.appendSlice(allocator, "{\"remotePluginId\":");
+    try appendJsonString(allocator, &out, remote_plugin_id);
+    try out.appendSlice(allocator, ",\"pluginId\":");
+    try appendJsonString(allocator, &out, plugin_id);
+    try out.appendSlice(allocator, ",\"pluginName\":");
+    try appendJsonString(allocator, &out, plugin_name);
+    try out.appendSlice(allocator, ",\"pluginPath\":");
+    try appendJsonString(allocator, &out, plugin_path);
+    try out.appendSlice(allocator, ",\"marketplaceName\":");
+    try appendJsonString(allocator, &out, marketplace_name_value);
+    try out.appendSlice(allocator, ",\"marketplacePath\":");
+    try appendJsonString(allocator, &out, marketplace_path);
+    try out.appendSlice(allocator, ",\"remoteVersion\":");
+    try appendOptionalStringJson(allocator, &out, remote_version);
+    try out.appendSlice(allocator, "}");
+    return out.toOwnedSlice(allocator);
+}
+
 fn renderWorkspacePluginUploadUrlRequestJson(
     allocator: std.mem.Allocator,
     filename: []const u8,
@@ -1588,6 +1703,61 @@ fn loadPluginShareLocalPaths(allocator: std.mem.Allocator, codex_home: []const u
     return .{ .parsed = parsed };
 }
 
+fn checkoutHomeDir(allocator: std.mem.Allocator) ![]const u8 {
+    if (try env.getOwned(allocator, "HOME")) |home| return home;
+    if (try env.getOwned(allocator, "USERPROFILE")) |home| return home;
+    return error.RemotePluginMissingHome;
+}
+
+fn checkoutPluginPath(
+    allocator: std.mem.Allocator,
+    home: []const u8,
+    plugin_name: []const u8,
+    remote_plugin_id: []const u8,
+    local_paths: PluginShareLocalPaths,
+) ![]const u8 {
+    if (local_paths.get(remote_plugin_id)) |existing_path| {
+        try ensurePersonalMarketplacePath(home, existing_path);
+        return allocator.dupe(u8, existing_path);
+    }
+
+    const path = try std.fs.path.join(allocator, &.{ home, "plugins", plugin_name });
+    errdefer allocator.free(path);
+    try ensurePersonalMarketplacePath(home, path);
+    if (try pathExists(path)) return error.RemotePluginInvalidPluginPath;
+    return path;
+}
+
+fn pathExists(path: []const u8) !bool {
+    _ = std.Io.Dir.cwd().statFile(std.Io.Threaded.global_single_threaded.io(), path, .{}) catch |err| switch (err) {
+        error.FileNotFound => return false,
+        else => return err,
+    };
+    return true;
+}
+
+fn ensurePersonalMarketplacePath(home: []const u8, path: []const u8) !void {
+    _ = try personalMarketplaceRelativePath(home, path);
+}
+
+fn personalMarketplaceRelativePath(home: []const u8, path: []const u8) ![]const u8 {
+    if (!std.fs.path.isAbsolute(home) or !std.fs.path.isAbsolute(path)) return error.RemotePluginInvalidPluginPath;
+    const normalized_home = std.mem.trimEnd(u8, home, "/");
+    if (normalized_home.len == 0) return error.RemotePluginInvalidPluginPath;
+    if (path.len <= normalized_home.len or !std.mem.startsWith(u8, path, normalized_home) or path[normalized_home.len] != '/') {
+        return error.RemotePluginInvalidPluginPath;
+    }
+    const relative = path[normalized_home.len + 1 ..];
+    if (relative.len == 0) return error.RemotePluginInvalidPluginPath;
+    var components = std.mem.tokenizeScalar(u8, relative, '/');
+    while (components.next()) |component| {
+        if (component.len == 0 or std.mem.eql(u8, component, ".") or std.mem.eql(u8, component, "..")) {
+            return error.RemotePluginInvalidPluginPath;
+        }
+    }
+    return relative;
+}
+
 fn recordPluginShareLocalPath(allocator: std.mem.Allocator, codex_home: []const u8, remote_plugin_id: []const u8, plugin_path: []const u8) !void {
     var local_paths = try loadPluginShareLocalPaths(allocator, codex_home);
     defer local_paths.deinit();
@@ -1770,6 +1940,160 @@ fn gzipCompressed(allocator: std.mem.Allocator, payload: []const u8, max_bytes: 
 
     if (out.writer.end > max_bytes) return error.RemotePluginArchiveTooLarge;
     return out.toOwnedSlice();
+}
+
+fn checkoutRemotePluginBundle(
+    allocator: std.mem.Allocator,
+    plugin_name: []const u8,
+    plugin_version: []const u8,
+    bundle_url: []const u8,
+    local_plugin_path: []const u8,
+) !void {
+    const bundle = try fetchBytes(allocator, bundle_url, REMOTE_PLUGIN_SHARE_MAX_ARCHIVE_BYTES);
+    defer allocator.free(bundle);
+
+    const extract_root = try std.fmt.allocPrint(allocator, "{s}.download", .{local_plugin_path});
+    defer allocator.free(extract_root);
+    const staged_path = try std.fmt.allocPrint(allocator, "{s}.checkout", .{local_plugin_path});
+    defer allocator.free(staged_path);
+
+    try deleteCachePathIfPresent(extract_root);
+    try deleteCachePathIfPresent(staged_path);
+    errdefer deleteCachePathIfPresent(extract_root) catch {};
+    errdefer deleteCachePathIfPresent(staged_path) catch {};
+
+    try extractRemotePluginArchive(allocator, bundle, extract_root);
+    const extracted_plugin_root = try findExtractedPluginRoot(allocator, extract_root, plugin_name, plugin_version);
+    defer allocator.free(extracted_plugin_root);
+    try copyDirRecursive(allocator, extracted_plugin_root, staged_path);
+    std.Io.Dir.renameAbsolute(staged_path, local_plugin_path, std.Io.Threaded.global_single_threaded.io()) catch |err| return err;
+    try deleteCachePathIfPresent(extract_root);
+}
+
+fn updatePersonalMarketplaceForCheckout(
+    allocator: std.mem.Allocator,
+    home: []const u8,
+    plugin_name: []const u8,
+    local_plugin_path: []const u8,
+    install_policy: []const u8,
+    auth_policy: []const u8,
+    category: ?[]const u8,
+) !PersonalMarketplaceCheckout {
+    const marketplace_path = try std.fs.path.join(allocator, &.{ home, ".agents", "plugins", "marketplace.json" });
+    errdefer allocator.free(marketplace_path);
+
+    const relative = try personalMarketplaceRelativePath(home, local_plugin_path);
+    const relative_plugin_path = try std.fmt.allocPrint(allocator, "./{s}", .{relative});
+    defer allocator.free(relative_plugin_path);
+
+    const ExistingPlugin = struct {
+        raw: []const u8,
+    };
+    var existing_plugins = std.ArrayList(ExistingPlugin).empty;
+    defer {
+        for (existing_plugins.items) |entry| allocator.free(entry.raw);
+        existing_plugins.deinit(allocator);
+    }
+
+    var marketplace_name = try allocator.dupe(u8, "codex-curated");
+    errdefer allocator.free(marketplace_name);
+    var display_name = try allocator.dupe(u8, "Personal");
+    defer allocator.free(display_name);
+
+    const marketplace_bytes: ?[]const u8 = std.Io.Dir.cwd().readFileAlloc(
+        std.Io.Threaded.global_single_threaded.io(),
+        marketplace_path,
+        allocator,
+        .limited(1024 * 1024),
+    ) catch |err| switch (err) {
+        error.FileNotFound => null,
+        else => return err,
+    };
+    defer if (marketplace_bytes) |bytes| allocator.free(bytes);
+
+    if (marketplace_bytes) |bytes| {
+        var parsed = std.json.parseFromSlice(std.json.Value, allocator, bytes, .{ .allocate = .alloc_always }) catch return error.RemotePluginInvalidPluginPath;
+        defer parsed.deinit();
+        if (parsed.value != .object) return error.RemotePluginInvalidPluginPath;
+        if (stringField(parsed.value.object, "name")) |name| {
+            if (!isSafePluginCacheSegment(name)) return error.RemotePluginInvalidPluginPath;
+            const owned = try allocator.dupe(u8, name);
+            allocator.free(marketplace_name);
+            marketplace_name = owned;
+        }
+        if (parsed.value.object.get("interface")) |interface_value| {
+            if (interface_value == .object) {
+                if (stringField(interface_value.object, "displayName")) |name| {
+                    const owned = try allocator.dupe(u8, name);
+                    allocator.free(display_name);
+                    display_name = owned;
+                }
+            }
+        }
+        if (parsed.value.object.get("plugins")) |plugins| {
+            if (plugins != .array) return error.RemotePluginInvalidPluginPath;
+            for (plugins.array.items) |plugin| {
+                if (plugin != .object) continue;
+                const existing_name = stringField(plugin.object, "name") orelse continue;
+                if (std.mem.eql(u8, existing_name, plugin_name)) {
+                    if (!pluginSourcePathEquals(plugin.object, relative_plugin_path)) {
+                        return error.RemotePluginInvalidPluginPath;
+                    }
+                    continue;
+                }
+                const raw = try std.json.Stringify.valueAlloc(allocator, plugin, .{});
+                errdefer allocator.free(raw);
+                try existing_plugins.append(allocator, .{ .raw = raw });
+            }
+        }
+    }
+
+    var out = std.ArrayList(u8).empty;
+    defer out.deinit(allocator);
+    try out.appendSlice(allocator, "{\"name\":");
+    try appendJsonString(allocator, &out, marketplace_name);
+    try out.appendSlice(allocator, ",\"interface\":{\"displayName\":");
+    try appendJsonString(allocator, &out, display_name);
+    try out.appendSlice(allocator, "},\"plugins\":[");
+    var count: usize = 0;
+    for (existing_plugins.items) |entry| {
+        try appendCommaIfNeeded(allocator, &out, &count);
+        try out.appendSlice(allocator, entry.raw);
+    }
+    try appendCommaIfNeeded(allocator, &out, &count);
+    try out.appendSlice(allocator, "{\"name\":");
+    try appendJsonString(allocator, &out, plugin_name);
+    try out.appendSlice(allocator, ",\"source\":{\"source\":\"local\",\"path\":");
+    try appendJsonString(allocator, &out, relative_plugin_path);
+    try out.appendSlice(allocator, "},\"policy\":{\"installation\":");
+    try appendJsonString(allocator, &out, install_policy);
+    try out.appendSlice(allocator, ",\"authentication\":");
+    try appendJsonString(allocator, &out, auth_policy);
+    try out.appendSlice(allocator, "}");
+    if (category) |value| {
+        const trimmed = std.mem.trim(u8, value, " \t\r\n");
+        if (trimmed.len > 0) {
+            try out.appendSlice(allocator, ",\"category\":");
+            try appendJsonString(allocator, &out, trimmed);
+        }
+    }
+    try out.appendSlice(allocator, "}]}");
+    try out.append(allocator, '\n');
+
+    const parent = std.fs.path.dirname(marketplace_path) orelse return error.RemotePluginInvalidPluginPath;
+    try std.Io.Dir.cwd().createDirPath(std.Io.Threaded.global_single_threaded.io(), parent);
+    try std.Io.Dir.cwd().writeFile(std.Io.Threaded.global_single_threaded.io(), .{ .sub_path = marketplace_path, .data = out.items });
+    return .{
+        .marketplace_name = marketplace_name,
+        .marketplace_path = marketplace_path,
+    };
+}
+
+fn pluginSourcePathEquals(plugin: std.json.ObjectMap, expected_path: []const u8) bool {
+    const source = plugin.get("source") orelse return false;
+    if (source != .object) return false;
+    const path = stringField(source.object, "path") orelse return false;
+    return std.mem.eql(u8, path, expected_path);
 }
 
 fn installRemotePluginBundle(
@@ -2134,6 +2458,12 @@ fn containsString(values_opt: ?[]const []const u8, needle: []const u8) bool {
         if (std.mem.eql(u8, value, needle)) return true;
     }
     return false;
+}
+
+fn stringField(object: std.json.ObjectMap, field: []const u8) ?[]const u8 {
+    const value = object.get(field) orelse return null;
+    if (value != .string) return null;
+    return value.string;
 }
 
 fn stringArrayHasValues(values_opt: ?[]const []const u8) bool {
