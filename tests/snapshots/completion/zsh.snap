@@ -2,7 +2,7 @@
 # zsh completion for codex-zig
 _codex_zig() {
     local -a commands global_options shells
-    commands=(a app app-server apply auth-status cloud cloud-tasks completion debug doctor e exec exec-server execpolicy features fork help login logout mcp mcp-server plugin remote-control remote-fork review resume sandbox sessions update)
+    commands=(exec e review login logout mcp plugin mcp-server app-server remote-control app completion update doctor sandbox debug execpolicy apply a resume fork cloud responses-api-proxy stdio-to-uds exec-server features help)
     global_options=(--help -h --version -V --profile -p --profile-v2 --cd -C --add-dir --config -c --strict-config --model -m --image -i --enable --disable --oss --local-provider --ask-for-approval -a --approval-policy --sandbox -s --dangerously-bypass-approvals-and-sandbox --yolo --dangerously-bypass-hook-trust --search --remote --remote-auth-token-env --remote-control --remote-control-bind --no-alt-screen)
     shells=(bash elvish fish powershell zsh)
     if [[ $words[2] == completion ]]; then

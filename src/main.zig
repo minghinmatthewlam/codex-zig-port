@@ -2170,6 +2170,8 @@ fn runHelpCommand(allocator: std.mem.Allocator, args: *std.process.Args.Iterator
         printUpdateHelp();
     } else if (std.mem.eql(u8, target, "responses-api-proxy")) {
         responses_api_proxy.printHelp();
+    } else if (std.mem.eql(u8, target, "stdio-to-uds")) {
+        printStdioToUdsHelp();
     } else if (std.mem.eql(u8, target, "exec-server")) {
         exec_server_cmd.printHelp();
     } else if (std.mem.eql(u8, target, "remote-control")) {
@@ -3015,128 +3017,66 @@ fn parseRemoteForkCommandArgs(allocator: std.mem.Allocator, args: []const []cons
 
 fn printHelp() !void {
     std.debug.print(
-        \\Codex Zig
+        \\Codex Zig CLI
         \\
-        \\Usage:
-        \\  codex-zig              Start interactive TUI
-        \\  codex-zig resume       Pick a saved Zig session to resume
-        \\  codex-zig resume --last
-        \\                          Resume the latest saved Zig session
-        \\  codex-zig resume ID|PATH|last
-        \\                          Start interactive TUI from a saved session
-        \\  codex-zig fork         Pick a saved Zig session to fork
-        \\  codex-zig fork --last
-        \\                          Fork the latest saved Zig session
-        \\  codex-zig fork ID|PATH|last
-        \\                          Start interactive TUI from a forked session
-        \\  codex-zig remote-fork CODE
-        \\                          Import a remote fork claim and start a fork
-        \\  codex-zig sessions [N] List saved Zig sessions
-        \\  codex-zig exec PROMPT  Run one non-interactive turn
-        \\  codex-zig e PROMPT     Alias for exec
-        \\  codex-zig apply TASK_ID
-        \\                          Apply the latest diff from a Codex agent task
-        \\  codex-zig a TASK_ID    Alias for apply
-        \\  codex-zig login        Sign in with ChatGPT browser auth
-        \\  codex-zig login status Show login status
-        \\  codex-zig logout       Remove local Codex auth
-        \\  codex-zig review --uncommitted
-        \\                          Run a non-interactive code review
-        \\  codex-zig sandbox macos -- COMMAND
-        \\                          Run a command under macOS Seatbelt
-        \\  codex-zig features list
-        \\                          List known feature flags
-        \\  codex-zig completion [SHELL]
-        \\                          Generate shell completion scripts
-        \\  codex-zig debug prompt-input [PROMPT]
-        \\                          Print model-visible input JSON
-        \\  codex-zig execpolicy check --rules PATH COMMAND...
-        \\                          Check execpolicy files against a command
-        \\  codex-zig mcp list
-        \\                          List configured MCP servers
-        \\  codex-zig mcp-server
-        \\                          Run Codex as a stdio MCP server
-        \\  codex-zig app-server
-        \\                          Run the app-server JSON-RPC stdio transport
-        \\  codex-zig app [PATH]
-        \\                          Open a workspace in Codex Desktop
-        \\  codex-zig update       Update Codex to the latest version
-        \\  codex-zig cloud [COMMAND]
-        \\                          Browse Codex Cloud tasks
-        \\  codex-zig exec-server --listen stdio
-        \\                          Run the exec-server stdio JSON-RPC transport
-        \\  codex-zig plugin <COMMAND>
-        \\  codex-zig remote-control
-        \\                          Headless app-server remote control
-        \\  codex-zig auth-status  Check local Codex auth reuse
-        \\  codex-zig doctor       Diagnose local installation and config
-        \\  codex-zig help [COMMAND]
-        \\                          Print general or command-specific help
-        \\  codex-zig --profile NAME ...
-        \\                          Select a config profile for the command
-        \\  codex-zig --cd DIR ...
-        \\                          Use DIR as the working root
-        \\  codex-zig --add-dir DIR ...
-        \\                          Allow workspace-write shell tools to write DIR
-        \\  codex-zig --profile-v2 NAME ...
-        \\                          Layer CODEX_HOME/NAME.config.toml over base config
-        \\  codex-zig -c key=value ...
-        \\                          Override a supported config value
-        \\  codex-zig --strict-config ...
-        \\                          Error on unknown config fields
-        \\  codex-zig -m MODEL ...
-        \\                          Override model for the command
-        \\  codex-zig -i FILE ...
-        \\                          Attach image file(s) to the first interactive prompt
-        \\  codex-zig --enable FEATURE ...
-        \\                          Enable a feature for this invocation
-        \\  codex-zig --disable FEATURE ...
-        \\                          Disable a feature for this invocation
-        \\  codex-zig --oss --local-provider lmstudio ...
-        \\                          Use a local OSS provider
-        \\  codex-zig -a MODE ...
-        \\                          Override approval policy
-        \\  codex-zig -s MODE ...
-        \\                          Override sandbox mode
-        \\  codex-zig --yolo ...
-        \\                          Danger: approval=never and sandbox=danger-full-access
-        \\  codex-zig --dangerously-bypass-approvals-and-sandbox ...
-        \\                          Alias for --yolo
-        \\  codex-zig --dangerously-bypass-hook-trust ...
-        \\                          Run enabled hooks without persisted hook trust
-        \\  codex-zig --search ...
-        \\                          Enable live web search for Responses turns
-        \\  codex-zig --remote unix://PATH
-        \\                          Connect interactive TUI to a Unix app-server
-        \\  codex-zig --remote-auth-token-env ENV_VAR
-        \\                          Read bearer token env var for remote app-server
-        \\  codex-zig --remote-control
-        \\                          Start local remote-control server mode
-        \\  codex-zig --remote-control-bind ADDR
-        \\                          Bind local remote-control server
-        \\  codex-zig --no-alt-screen
-        \\                          Disable alternate-screen TUI mode
-        \\  codex-zig --version
-        \\                          Print version and exit
-        \\  codex-zig mock-demo    Run deterministic local tool demo
-        \\  codex-zig mock-apply-patch
-        \\                          Run deterministic apply_patch demo
-        \\  codex-zig mock-policy-demo
-        \\                          Run deterministic approval/sandbox demo
-        \\  codex-zig mock-sandbox-demo
-        \\                          Run deterministic macOS sandbox demo
+        \\If no subcommand is specified, options are forwarded to the interactive TUI.
         \\
-        \\Environment:
-        \\  CODEX_HOME             Override Codex home (default: ~/.codex)
-        \\  CODEX_ACCESS_TOKEN     Use an access token without auth.json
-        \\  CODEX_ZIG_MODEL        Override model
-        \\  CODEX_ZIG_BASE_URL     Override API base URL
-        \\  CODEX_ZIG_APPROVAL_POLICY
-        \\                         Override approval policy
-        \\  CODEX_ZIG_SANDBOX_MODE Override sandbox mode
-        \\  CODEX_ZIG_WEB_SEARCH   Override web search mode: disabled, cached, live
-        \\  CODEX_OSS_BASE_URL     Override local OSS Responses base URL
-        \\  CODEX_OSS_PORT         Override local OSS provider port
+        \\Usage: codex-zig [OPTIONS] [PROMPT]
+        \\       codex-zig [OPTIONS] <COMMAND> [ARGS]
+        \\
+        \\Commands:
+        \\  exec            Run Codex non-interactively [aliases: e]
+        \\  review          Run a code review non-interactively
+        \\  login           Manage login
+        \\  logout          Remove stored authentication credentials
+        \\  mcp             Manage external MCP servers for Codex
+        \\  plugin          Manage Codex plugins
+        \\  mcp-server      Start Codex as an MCP server (stdio)
+        \\  app-server      [experimental] Run the app server or related tooling
+        \\  remote-control  [experimental] Manage the app-server daemon with remote control enabled
+        \\  app             Launch the Codex desktop app
+        \\  completion      Generate shell completion scripts
+        \\  update          Update Codex to the latest version
+        \\  doctor          Diagnose local Codex installation, config, auth, and runtime health
+        \\  sandbox         Run commands within a Codex-provided sandbox
+        \\  debug           Debugging tools
+        \\  apply           Apply the latest diff produced by Codex agent as a git apply [aliases: a]
+        \\  resume          Resume a previous interactive session
+        \\  fork            Fork a previous interactive session
+        \\  cloud           [EXPERIMENTAL] Browse tasks from Codex Cloud and apply changes locally
+        \\  exec-server     [EXPERIMENTAL] Run the standalone exec-server service
+        \\  features        Inspect feature flags
+        \\  help            Print this message or the help of the given subcommand(s)
+        \\
+        \\Arguments:
+        \\  [PROMPT]        Optional user prompt to start the session
+        \\
+        \\Options:
+        \\  -c, --config <key=value>      Override a supported config value
+        \\      --enable <FEATURE>        Enable a feature for this invocation
+        \\      --disable <FEATURE>       Disable a feature for this invocation
+        \\      --remote <ADDR>           Connect the TUI to a remote app server endpoint
+        \\      --remote-auth-token-env <ENV_VAR>
+        \\                                Read bearer token env var for remote app-server
+        \\      --strict-config           Error on unknown config fields
+        \\  -i, --image <FILE>...         Attach image file(s) to the initial prompt
+        \\  -m, --model <MODEL>           Override model for the command
+        \\      --oss                     Use an open-source provider
+        \\      --local-provider <NAME>   Select the local OSS provider
+        \\  -p, --profile <NAME>          Select a config profile
+        \\      --profile-v2 <NAME>       Layer CODEX_HOME/NAME.config.toml over base config
+        \\  -s, --sandbox <MODE>          Select the sandbox policy
+        \\      --dangerously-bypass-approvals-and-sandbox
+        \\                                Skip approvals and sandboxing
+        \\      --dangerously-bypass-hook-trust
+        \\                                Run enabled hooks without persisted hook trust
+        \\  -C, --cd <DIR>                Use DIR as the working root
+        \\      --add-dir <DIR>           Allow workspace-write shell tools to write DIR
+        \\  -a, --ask-for-approval <MODE> Configure command approval behavior
+        \\      --search                  Enable live web search
+        \\      --no-alt-screen           Disable alternate-screen TUI mode
+        \\  -h, --help                    Print help
+        \\  -V, --version                 Print version
         \\
     , .{});
 }

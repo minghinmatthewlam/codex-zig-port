@@ -3,12 +3,12 @@ const std = @import("std");
 const cli_utils = @import("cli_utils.zig");
 
 const top_level_commands =
-    "a app app-server apply auth-status cloud cloud-tasks completion debug doctor e exec exec-server execpolicy features fork help login logout mcp mcp-server plugin remote-control remote-fork review resume sandbox sessions update";
+    "exec e review login logout mcp plugin mcp-server app-server remote-control app completion update doctor sandbox debug execpolicy apply a resume fork cloud responses-api-proxy stdio-to-uds exec-server features help";
 const global_options =
     "--help -h --version -V --profile -p --profile-v2 --cd -C --add-dir --config -c --strict-config --model -m --image -i --enable --disable --oss --local-provider --ask-for-approval -a --approval-policy --sandbox -s --dangerously-bypass-approvals-and-sandbox --yolo --dangerously-bypass-hook-trust --search --remote --remote-auth-token-env --remote-control --remote-control-bind --no-alt-screen";
 const shells = "bash elvish fish powershell zsh";
 const elvish_top_level_commands =
-    "'a' 'app' 'app-server' 'apply' 'auth-status' 'cloud' 'cloud-tasks' 'completion' 'debug' 'doctor' 'e' 'exec' 'exec-server' 'execpolicy' 'features' 'fork' 'help' 'login' 'logout' 'mcp' 'mcp-server' 'plugin' 'remote-control' 'remote-fork' 'review' 'resume' 'sandbox' 'sessions' 'update'";
+    "'exec' 'e' 'review' 'login' 'logout' 'mcp' 'plugin' 'mcp-server' 'app-server' 'remote-control' 'app' 'completion' 'update' 'doctor' 'sandbox' 'debug' 'execpolicy' 'apply' 'a' 'resume' 'fork' 'cloud' 'responses-api-proxy' 'stdio-to-uds' 'exec-server' 'features' 'help'";
 const elvish_global_options =
     "'--help' '-h' '--version' '-V' '--profile' '-p' '--profile-v2' '--cd' '-C' '--add-dir' '--config' '-c' '--strict-config' '--model' '-m' '--image' '-i' '--enable' '--disable' '--oss' '--local-provider' '--ask-for-approval' '-a' '--approval-policy' '--sandbox' '-s' '--dangerously-bypass-approvals-and-sandbox' '--yolo' '--dangerously-bypass-hook-trust' '--search' '--remote' '--remote-auth-token-env' '--remote-control' '--remote-control-bind' '--no-alt-screen'";
 const elvish_shells = "'bash' 'elvish' 'fish' 'powershell' 'zsh'";
@@ -259,11 +259,14 @@ test "completion renders bash by default shape" {
 
     try std.testing.expect(std.mem.indexOf(u8, rendered, "complete -F _codex_zig codex-zig") != null);
     try std.testing.expect(std.mem.indexOf(u8, rendered, "completion") != null);
-    try std.testing.expect(std.mem.indexOf(u8, rendered, "cloud-tasks") != null);
     try std.testing.expect(std.mem.indexOf(u8, rendered, "execpolicy") != null);
     try std.testing.expect(std.mem.indexOf(u8, rendered, "doctor") != null);
     try std.testing.expect(std.mem.indexOf(u8, rendered, "remote-control") != null);
-    try std.testing.expect(std.mem.indexOf(u8, rendered, "remote-fork") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rendered, "responses-api-proxy") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rendered, "stdio-to-uds") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rendered, "cloud-tasks") == null);
+    try std.testing.expect(std.mem.indexOf(u8, rendered, "remote-fork") == null);
+    try std.testing.expect(std.mem.indexOf(u8, rendered, "auth-status") == null);
     try std.testing.expect(std.mem.indexOf(u8, rendered, "--profile-v2") != null);
     try std.testing.expect(std.mem.indexOf(u8, rendered, "--strict-config") != null);
     try std.testing.expect(std.mem.indexOf(u8, rendered, "--remote-auth-token-env") != null);

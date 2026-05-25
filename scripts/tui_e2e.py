@@ -1806,16 +1806,21 @@ def run_help_command_smoke(
         check=True,
     )
     for command in [
-        'commands="a ',
+        'commands="exec e review',
         "app-server",
         "apply",
-        "cloud-tasks",
+        "responses-api-proxy",
+        "stdio-to-uds",
         "remote-control",
-        "remote-fork",
     ]:
         if command not in completion_result.stdout:
             raise AssertionError(
                 f"expected {command} in bash completion:\n{completion_result.stdout}"
+            )
+    for command in ["auth-status", "cloud-tasks", "remote-fork", "sessions"]:
+        if command in completion_result.stdout:
+            raise AssertionError(
+                f"did not expect {command} in bash completion:\n{completion_result.stdout}"
             )
 
 
