@@ -179,7 +179,7 @@ Zig TUI help in `src/tui.zig`, and the broader narrative tracker in
   active/archived rollout file stats, Rust-shaped human notes for large rollout
   storage, unrestricted sandbox/network posture, and mixed ChatGPT/API-key auth
   signals, bounded active-provider HTTP reachability probes for the base URL and
-  Responses route, and passive app-server daemon mode, pid, settings,
+  provider models route, and passive app-server daemon mode, pid, settings,
   update-loop path, and control-socket reachability reporting. Doctor-local
   `--strict-config` is rejected like Rust while root `--strict-config doctor` remains supported.
   Remaining doctor parity is exact diagnostic depth: Rust's full installation,
