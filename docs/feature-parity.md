@@ -286,6 +286,21 @@ app-server smoke.
   instead of falling back to the old Zig placeholder.
   Remaining remote-control parity is the full Rust websocket/cloud connection
   backend behind the reported connecting status.
+- App-server permission-profile coverage is implemented for desktop clients:
+  `permissionProfile/list` returns Rust's three built-in permission profile ids
+  first, includes system/user/trusted-project/legacy-managed
+  `[permissions.<id>]` profiles with optional descriptions sorted by id,
+  preserves layer precedence for duplicate profile ids, honors system or user
+  project trust with user override, bounds discovery at Rust-style
+  project-root markers (`project_root_markers`, default `.git`), skips
+  explicitly untrusted child project layers, includes trusted project-local
+  profiles when `cwd` is provided, honors linked-worktree main-root trust,
+  supports cursor/limit pagination, and emits
+  Rust-shaped invalid-cursor errors. `thread/start` and `turn/start`
+  permission-profile selection accept Rust's profile-id string wire shape, use
+  the same layer stack, and accept Rust's `:workspace_roots` filesystem key in
+  supported root-read profiles while returning protocol-level `project_roots`
+  entries.
 - Close app-server active-turn feature gaps needed by desktop clients:
   real async turns, durable active-turn tracking, interruption, steering,
   server-request dispatch, remaining lifecycle notification depth, and
