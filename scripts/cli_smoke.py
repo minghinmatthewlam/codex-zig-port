@@ -13005,7 +13005,7 @@ def run_sandbox_permission_profile_smoke(binary: Path) -> None:
         assert "--include-managed-config" in help_result.stderr
         assert ":read-only" in help_result.stderr
         assert ":workspace" in help_result.stderr
-        assert ":danger-no-sandbox" in help_result.stderr
+        assert ":danger-full-access" in help_result.stderr
         assert "--allow-unix-socket PATH" in help_result.stderr
         assert "--log-denials" in help_result.stderr
 
@@ -13411,7 +13411,7 @@ def run_sandbox_permission_profile_smoke(binary: Path) -> None:
                 "sandbox",
                 "macos",
                 "--permissions-profile",
-                ":danger-no-sandbox",
+                ":danger-full-access",
                 "--cd",
                 str(workspace),
                 "--",
@@ -13440,7 +13440,7 @@ def run_sandbox_permission_profile_smoke(binary: Path) -> None:
                 [
                     "[permissions.custom-profile.filesystem]",
                     '":root" = "read"',
-                    '":project_roots" = "write"',
+                    '":workspace_roots" = "write"',
                     f"{json.dumps(str(extra))} = \"write\"",
                     "",
                     "[permissions.custom-profile.network]",
@@ -13448,28 +13448,28 @@ def run_sandbox_permission_profile_smoke(binary: Path) -> None:
                     "",
                     "[permissions.no-network-profile.filesystem]",
                     '":root" = "read"',
-                    '":project_roots" = "write"',
+                    '":workspace_roots" = "write"',
                     "",
                     "[permissions.no-network-profile.network]",
                     "enabled = false",
                     "",
                     "[permissions.read-deny-profile.filesystem]",
                     '":root" = "read"',
-                    '":project_roots" = { "." = "write", "secret.txt" = "none" }',
+                    '":workspace_roots" = { "." = "write", "secret.txt" = "none" }',
                     "",
                     "[permissions.read-deny-profile.network]",
                     "enabled = true",
                     "",
                     "[permissions.glob-deny-profile.filesystem]",
                     '":root" = "read"',
-                    '":project_roots" = { "." = "write", "**/*.secret" = "none" }',
+                    '":workspace_roots" = { "." = "write", "**/*.secret" = "none" }',
                     "",
                     "[permissions.glob-deny-profile.network]",
                     "enabled = true",
                     "",
                     "[permissions.overlap-glob-deny-profile.filesystem]",
                     '":root" = "read"',
-                    '":project_roots" = { "." = "write", "nested" = "none", "**/*.secret" = "none" }',
+                    '":workspace_roots" = { "." = "write", "nested" = "none", "**/*.secret" = "none" }',
                     "",
                     "[permissions.overlap-glob-deny-profile.network]",
                     "enabled = true",

@@ -1379,7 +1379,7 @@ fn printMacosHelp() void {
         \\  -c, --config <key=value>
         \\                      Override a configuration value that would otherwise be loaded from `~/.codex/config.toml`
         \\  --permissions-profile NAME
-        \\                      Named permissions profile to apply from the active configuration stack (:read-only, :workspace, :danger-no-sandbox, or a supported custom [permissions] profile)
+        \\                      Named permissions profile to apply from the active configuration stack (:read-only, :workspace, :danger-full-access, or a supported custom [permissions] profile)
         \\  -C, --cd DIR        Working directory used for profile resolution and command execution
         \\  --enable FEATURE    Enable a feature (repeatable). Equivalent to `-c features.<name>=true`
         \\  --disable FEATURE   Disable a feature (repeatable). Equivalent to `-c features.<name>=false`
@@ -1496,7 +1496,7 @@ test "sandbox permission profile resolver supports Rust built-ins" {
     defer read_only.deinit(allocator);
     var workspace = (try config.loadSandboxPermissionProfile(allocator, ":workspace"));
     defer workspace.deinit(allocator);
-    var danger = (try config.loadSandboxPermissionProfile(allocator, ":danger-no-sandbox"));
+    var danger = (try config.loadSandboxPermissionProfile(allocator, ":danger-full-access"));
     defer danger.deinit(allocator);
 
     try std.testing.expectEqual(config.SandboxMode.read_only, read_only.mode);
