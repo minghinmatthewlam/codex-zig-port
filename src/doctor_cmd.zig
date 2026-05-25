@@ -242,6 +242,7 @@ const RolloutNote = struct {
 };
 
 const provider_reachability_timeout_ms = 15_000;
+const websocket_immediate_close_grace_ms = 250;
 const responses_websockets_v2_beta_header_value = "responses_websockets=2026-02-06";
 
 const ReachabilityAuth = struct {
@@ -259,12 +260,27 @@ const WebSocketEndpoint = struct {
     display_url: []const u8,
 };
 
+const WebSocketClose = struct {
+    code: []const u8,
+    reason: []const u8,
+
+    fn deinit(self: WebSocketClose, allocator: std.mem.Allocator) void {
+        allocator.free(self.code);
+        allocator.free(self.reason);
+    }
+};
+
 const WebSocketProbe = struct {
     status: std.http.Status,
     accept_valid: bool,
     reasoning_included: bool,
     models_etag_present: bool,
     server_model_present: bool,
+    immediate_close: ?WebSocketClose = null,
+
+    fn deinit(self: WebSocketProbe, allocator: std.mem.Allocator) void {
+        if (self.immediate_close) |close| close.deinit(allocator);
+    }
 };
 
 const HttpStatusProbeContext = struct {
@@ -1085,12 +1101,19 @@ fn websocketReachabilityCheck(allocator: std.mem.Allocator, cfg_load: ConfigLoad
     }
     try api.appendProviderHeaders(allocator, &headers, &provider_env_header_values, cfg);
 
-    const probe = websocketProbeWithTimeout(allocator, endpoint.request_url, headers.items, cfg.model_provider_websocket_connect_timeout_ms) catch |err| {
+    const probe = websocketProbeWithTimeout(
+        allocator,
+        endpoint.request_url,
+        headers.items,
+        cfg.model_provider_websocket_connect_timeout_ms,
+        websocket_immediate_close_grace_ms,
+    ) catch |err| {
         if (err == error.Timeout) {
             return try websocketProbeWarning(allocator, check, "Responses WebSocket timed out; HTTPS fallback may still work", "handshake timed out", err);
         }
         return try websocketProbeWarning(allocator, check, "Responses WebSocket failed; HTTPS fallback may still work", "handshake transport error", err);
     };
+    defer probe.deinit(allocator);
 
     try check.addDetailFmt(allocator, "handshake result", "HTTP {d}{s}", .{
         @intFromEnum(probe.status),
@@ -1109,6 +1132,12 @@ fn websocketReachabilityCheck(allocator: std.mem.Allocator, cfg_load: ConfigLoad
         check.summary = "Responses WebSocket failed; HTTPS fallback may still work";
         check.remediation = "Check proxy, VPN, firewall, DNS, custom CA, and WebSocket policy support.";
         try check.addDetail(allocator, "handshake stream error", "invalid Sec-WebSocket-Accept header");
+    } else if (probe.immediate_close) |close| {
+        check.status = .warning;
+        check.summary = "Responses WebSocket closed immediately after handshake";
+        check.remediation = "Check proxy, VPN, firewall, DNS, custom CA, and WebSocket policy support.";
+        try check.addDetail(allocator, "immediate close code", close.code);
+        try check.addDetail(allocator, "immediate close reason", close.reason);
     }
     return check;
 }
@@ -1230,8 +1259,9 @@ fn websocketProbeWithTimeout(
     url: []const u8,
     headers: []const std.http.Header,
     timeout_ms: u64,
+    immediate_close_timeout_ms: u64,
 ) !WebSocketProbe {
-    var io_instance: std.Io.Threaded = .init(allocator, .{ .async_limit = .limited(1) });
+    var io_instance: std.Io.Threaded = .init(allocator, .{ .async_limit = .limited(2) });
     defer io_instance.deinit();
     const io = io_instance.io();
     var context = WebSocketProbeContext{
@@ -1239,6 +1269,7 @@ fn websocketProbeWithTimeout(
         .io = io,
         .url = url,
         .headers = headers,
+        .immediate_close_timeout_ms = immediate_close_timeout_ms,
     };
     var future = try io.concurrent(websocketProbeTimeoutWorker, .{&context});
     const deadline = doctorRequestDeadline(io, timeout_ms);
@@ -1268,6 +1299,7 @@ const WebSocketProbeContext = struct {
     io: std.Io,
     url: []const u8,
     headers: []const std.http.Header,
+    immediate_close_timeout_ms: u64,
     done: std.Io.Event = .unset,
     probe: ?WebSocketProbe = null,
     err: ?anyerror = null,
@@ -1275,7 +1307,7 @@ const WebSocketProbeContext = struct {
 
 fn websocketProbeTimeoutWorker(context: *WebSocketProbeContext) void {
     defer context.done.set(context.io);
-    context.probe = websocketProbeWithIo(context.allocator, context.io, context.url, context.headers) catch |err| {
+    context.probe = websocketProbeWithIo(context.allocator, context.io, context.url, context.headers, context.immediate_close_timeout_ms) catch |err| {
         context.err = err;
         return;
     };
@@ -1286,6 +1318,7 @@ fn websocketProbeWithIo(
     io: std.Io,
     url: []const u8,
     headers: []const std.http.Header,
+    immediate_close_timeout_ms: u64,
 ) !WebSocketProbe {
     var nonce: [16]u8 = undefined;
     try io.randomSecure(&nonce);
@@ -1314,14 +1347,180 @@ fn websocketProbeWithIo(
     defer request.deinit();
     try request.sendBodiless();
     var response_head_buffer: [8192]u8 = undefined;
-    const response = try request.receiveHead(&response_head_buffer);
+    var response = try request.receiveHead(&response_head_buffer);
+    const status = response.head.status;
+    const accept_valid = headerValueEquals(response.head, "sec-websocket-accept", expected_accept);
+    const reasoning_included = headerPresent(response.head, "x-reasoning-included");
+    const models_etag_present = headerPresent(response.head, "x-models-etag");
+    const server_model_present = headerPresent(response.head, "openai-model") or headerPresent(response.head, "x-openai-model");
+    const immediate_close = if (status == .switching_protocols and accept_valid)
+        try readImmediateWebSocketCloseWithTimeout(allocator, io, &response, immediate_close_timeout_ms)
+    else
+        null;
     return .{
-        .status = response.head.status,
-        .accept_valid = headerValueEquals(response.head, "sec-websocket-accept", expected_accept),
-        .reasoning_included = headerPresent(response.head, "x-reasoning-included"),
-        .models_etag_present = headerPresent(response.head, "x-models-etag"),
-        .server_model_present = headerPresent(response.head, "openai-model") or headerPresent(response.head, "x-openai-model"),
+        .status = status,
+        .accept_valid = accept_valid,
+        .reasoning_included = reasoning_included,
+        .models_etag_present = models_etag_present,
+        .server_model_present = server_model_present,
+        .immediate_close = immediate_close,
     };
+}
+
+const WebSocketImmediateCloseContext = struct {
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    response: *std.http.Client.Response,
+    done: std.Io.Event = .unset,
+    immediate_close: ?WebSocketClose = null,
+    err: ?anyerror = null,
+};
+
+fn readImmediateWebSocketCloseWithTimeout(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    response: *std.http.Client.Response,
+    timeout_ms: u64,
+) !?WebSocketClose {
+    var context = WebSocketImmediateCloseContext{
+        .allocator = allocator,
+        .io = io,
+        .response = response,
+    };
+    var future = try io.concurrent(webSocketImmediateCloseTimeoutWorker, .{&context});
+    const deadline = doctorRequestDeadline(io, timeout_ms);
+    while (true) {
+        context.done.waitTimeout(io, .{ .deadline = deadline }) catch |err| switch (err) {
+            error.Timeout => {
+                if (context.done.isSet()) break;
+                const now = std.Io.Clock.Timestamp.now(io, .awake);
+                if (std.Io.Clock.Timestamp.compare(now, .lt, deadline)) continue;
+                _ = future.cancel(io);
+                if (context.immediate_close) |close| close.deinit(allocator);
+                return null;
+            },
+            else => |e| {
+                _ = future.cancel(io);
+                if (context.immediate_close) |close| close.deinit(allocator);
+                return e;
+            },
+        };
+        break;
+    }
+    _ = future.await(io);
+    if (context.immediate_close) |close| return close;
+    if (context.err) |err| switch (err) {
+        error.EndOfStream, error.Canceled => return null,
+        else => return err,
+    };
+    return null;
+}
+
+fn webSocketImmediateCloseTimeoutWorker(context: *WebSocketImmediateCloseContext) void {
+    defer context.done.set(context.io);
+    context.immediate_close = readImmediateWebSocketClose(context.allocator, context.response) catch |err| {
+        context.err = err;
+        return;
+    };
+}
+
+fn readImmediateWebSocketClose(allocator: std.mem.Allocator, response: *std.http.Client.Response) !?WebSocketClose {
+    var transfer_buffer: [1024]u8 = undefined;
+    const reader = response.reader(&transfer_buffer);
+    return readImmediateWebSocketCloseFrame(allocator, reader);
+}
+
+fn readImmediateWebSocketCloseFrame(allocator: std.mem.Allocator, reader: *std.Io.Reader) !?WebSocketClose {
+    const first = reader.takeByte() catch |err| switch (err) {
+        error.EndOfStream => return null,
+        else => return err,
+    };
+    const second = try reader.takeByte();
+    return readImmediateWebSocketCloseFrameAfterPrefix(allocator, first, second, reader);
+}
+
+fn readImmediateWebSocketCloseFrameAfterPrefix(
+    allocator: std.mem.Allocator,
+    first: u8,
+    second: u8,
+    reader: *std.Io.Reader,
+) !?WebSocketClose {
+    const fin = (first & 0x80) != 0;
+    const opcode = first & 0x0f;
+    const masked = (second & 0x80) != 0;
+    var payload_len: u64 = second & 0x7f;
+    if (payload_len == 126) {
+        payload_len = try reader.takeInt(u16, .big);
+    } else if (payload_len == 127) {
+        payload_len = try reader.takeInt(u64, .big);
+    }
+    if (!fin or opcode != 0x8) return null;
+    const payload_len_usize = std.math.cast(usize, payload_len) orelse return error.WebSocketFrameTooLarge;
+    if (payload_len_usize > 4096) return error.WebSocketFrameTooLarge;
+
+    var mask: [4]u8 = undefined;
+    if (masked) {
+        mask = (try reader.takeArray(4)).*;
+    }
+
+    const payload = try allocator.alloc(u8, payload_len_usize);
+    defer allocator.free(payload);
+    try reader.readSliceAll(payload);
+    if (masked) {
+        for (payload, 0..) |*byte, index| byte.* ^= mask[index % 4];
+    }
+    return webSocketCloseFromPayload(allocator, payload);
+}
+
+fn parseImmediateWebSocketCloseFrame(allocator: std.mem.Allocator, frame: []const u8) !?WebSocketClose {
+    if (frame.len < 2) return null;
+    const first = frame[0];
+    const second = frame[1];
+    const fin = (first & 0x80) != 0;
+    const opcode = first & 0x0f;
+    const masked = (second & 0x80) != 0;
+    var payload_len: u64 = second & 0x7f;
+    var offset: usize = 2;
+    if (payload_len == 126) {
+        if (frame.len < offset + 2) return null;
+        payload_len = std.mem.readInt(u16, frame[offset..][0..2], .big);
+        offset += 2;
+    } else if (payload_len == 127) {
+        if (frame.len < offset + 8) return null;
+        payload_len = std.mem.readInt(u64, frame[offset..][0..8], .big);
+        offset += 8;
+    }
+    if (!fin or opcode != 0x8) return null;
+    const payload_len_usize = std.math.cast(usize, payload_len) orelse return error.WebSocketFrameTooLarge;
+    if (payload_len_usize > 4096) return error.WebSocketFrameTooLarge;
+
+    var mask: [4]u8 = undefined;
+    if (masked) {
+        if (frame.len < offset + 4) return null;
+        mask = frame[offset..][0..4].*;
+        offset += 4;
+    }
+    if (frame.len < offset + payload_len_usize) return null;
+    const payload_bytes = frame[offset..][0..payload_len_usize];
+    if (!masked) return webSocketCloseFromPayload(allocator, payload_bytes);
+
+    const payload = try allocator.dupe(u8, payload_bytes);
+    defer allocator.free(payload);
+    for (payload, 0..) |*byte, index| byte.* ^= mask[index % 4];
+    return webSocketCloseFromPayload(allocator, payload);
+}
+
+fn webSocketCloseFromPayload(allocator: std.mem.Allocator, payload: []const u8) !?WebSocketClose {
+    if (payload.len < 2) return null;
+    const code_value = std.mem.readInt(u16, payload[0..2], .big);
+    const code = try std.fmt.allocPrint(allocator, "{d}", .{code_value});
+    errdefer allocator.free(code);
+    const reason_bytes = payload[2..];
+    const reason = if (std.unicode.utf8ValidateSlice(reason_bytes))
+        try allocator.dupe(u8, reason_bytes)
+    else
+        try allocator.dupe(u8, "<invalid utf-8>");
+    return .{ .code = code, .reason = reason };
 }
 
 fn headerPresent(head: std.http.Client.Response.Head, name: []const u8) bool {
@@ -2912,6 +3111,23 @@ test "doctor websocket accept value matches RFC example" {
     const rendered = try websocketAcceptValue(std.testing.allocator, "dGhlIHNhbXBsZSBub25jZQ==");
     defer std.testing.allocator.free(rendered);
     try std.testing.expectEqualStrings("s3pPLMBiTxaQ9kYGzzhZRbK+xOo=", rendered);
+}
+
+test "doctor websocket immediate close parser extracts code and reason" {
+    const allocator = std.testing.allocator;
+    const frame = [_]u8{ 0x88, 0x08, 0x03, 0xf0, 'p', 'o', 'l', 'i', 'c', 'y' };
+    const maybe_close = try parseImmediateWebSocketCloseFrame(allocator, &frame);
+    const close = maybe_close orelse return error.TestExpectedCloseFrame;
+    defer close.deinit(allocator);
+
+    try std.testing.expectEqualStrings("1008", close.code);
+    try std.testing.expectEqualStrings("policy", close.reason);
+}
+
+test "doctor websocket immediate close parser ignores non-close frame" {
+    const frame = [_]u8{ 0x81, 0x02, 'o', 'k' };
+    const maybe_close = try parseImmediateWebSocketCloseFrame(std.testing.allocator, &frame);
+    try std.testing.expect(maybe_close == null);
 }
 
 test "doctor JSON redacts local paths" {
