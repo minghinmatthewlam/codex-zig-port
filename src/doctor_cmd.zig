@@ -845,22 +845,7 @@ fn providerReachabilityCheck(allocator: std.mem.Allocator, cfg_load: ConfigLoad)
         return try providerReachabilityFailure(allocator, check, base_key, err);
     };
     try check.addDetailFmt(allocator, base_key, "{s} reachable (HTTP {d})", .{ base_url, @intFromEnum(base_status) });
-    if (!providerBaseStatusReachable(base_status)) {
-        check.status = .warning;
-        check.summary = "provider base URL returned an unexpected HTTP status";
-        check.remediation = "Check provider base URL, proxy, VPN, and network configuration.";
-        try check.addIssue(allocator, .{
-            .severity = .warning,
-            .cause = "provider base URL returned an unexpected HTTP status",
-            .measured = try std.fmt.allocPrint(allocator, "HTTP {d}", .{@intFromEnum(base_status)}),
-            .expected = "HTTP status below 500",
-            .remedy = check.remediation,
-            .fields = try allocator.dupe([]const u8, &.{base_key}),
-        });
-    }
-
-    const route_path = providerWireRoutePath(cfg.model_provider_wire_api);
-    const route_url = try api.buildProviderUrl(allocator, base_url, route_path, cfg.model_provider_query_params);
+    const route_url = try api.buildProviderUrl(allocator, base_url, "models", cfg.model_provider_query_params);
     defer allocator.free(route_url);
     const route_key = try std.fmt.allocPrint(allocator, "{s} API route probe", .{provider_name});
     const route_label = try redactedProviderRouteLabel(allocator, base_url);
@@ -870,15 +855,28 @@ fn providerReachabilityCheck(allocator: std.mem.Allocator, cfg_load: ConfigLoad)
     if (providerRouteStatusReachable(route_status)) {
         try check.addDetailFmt(allocator, route_key, "{s} route exists (HTTP {d})", .{ route_label, @intFromEnum(route_status) });
     } else {
-        try check.addDetailFmt(allocator, route_key, "{s} route returned HTTP {d}", .{ route_label, @intFromEnum(route_status) });
-        check.status = .warning;
-        check.summary = "active provider route returned an unexpected HTTP status";
-        check.remediation = "Check the active model provider base URL and wire API configuration.";
+        const route_code = @intFromEnum(route_status);
+        const route_fail = route_code == 404;
+        try check.addDetailFmt(
+            allocator,
+            route_key,
+            "{s} route returned HTTP {d} ({s})",
+            .{ route_label, route_code, if (route_fail) "required" else "warning" },
+        );
+        check.status = if (route_fail) .fail else .warning;
+        check.summary = if (route_fail)
+            "one or more required provider endpoints are unreachable over HTTP"
+        else
+            "provider endpoint checks returned warnings";
+        check.remediation = "Check proxy, VPN, firewall, DNS, and custom CA configuration.";
         try check.addIssue(allocator, .{
-            .severity = .warning,
-            .cause = "active provider route returned an unexpected HTTP status",
-            .measured = try std.fmt.allocPrint(allocator, "HTTP {d}", .{@intFromEnum(route_status)}),
-            .expected = "HTTP 2xx, 400, 401, 403, or 405",
+            .severity = check.status,
+            .cause = if (route_fail)
+                "provider base URL route returned 404 - verify the configured API prefix"
+            else
+                "provider route probe returned an unexpected HTTP status",
+            .measured = try std.fmt.allocPrint(allocator, "HTTP {d}", .{route_code}),
+            .expected = "GET /models returns 2xx, 401, or 403",
             .remedy = check.remediation,
             .fields = try allocator.dupe([]const u8, &.{route_key}),
         });
@@ -978,24 +976,11 @@ fn providerReachabilityBaseUrl(cfg: *const config.Config, credentials: ?auth.Cre
     return cfg.openai_base_url;
 }
 
-fn providerWireRoutePath(wire_api: config.ModelProviderWireApi) []const u8 {
-    return switch (wire_api) {
-        .responses => "responses",
-    };
-}
-
-fn providerBaseStatusReachable(status: std.http.Status) bool {
-    const code = @intFromEnum(status);
-    return code >= 200 and code < 500;
-}
-
 fn providerRouteStatusReachable(status: std.http.Status) bool {
     const code = @intFromEnum(status);
     return (code >= 200 and code < 300) or
-        code == 400 or
         code == 401 or
-        code == 403 or
-        code == 405;
+        code == 403;
 }
 
 fn redactedProviderRouteLabel(allocator: std.mem.Allocator, base_url: []const u8) ![]const u8 {
@@ -2073,14 +2058,12 @@ test "doctor rejects local strict-config flag like Rust" {
 }
 
 test "doctor provider reachability classifies HTTP statuses" {
-    try std.testing.expect(providerBaseStatusReachable(@enumFromInt(404)));
-    try std.testing.expect(!providerBaseStatusReachable(@enumFromInt(500)));
     try std.testing.expect(providerRouteStatusReachable(@enumFromInt(200)));
-    try std.testing.expect(providerRouteStatusReachable(@enumFromInt(400)));
     try std.testing.expect(providerRouteStatusReachable(@enumFromInt(401)));
     try std.testing.expect(providerRouteStatusReachable(@enumFromInt(403)));
-    try std.testing.expect(providerRouteStatusReachable(@enumFromInt(405)));
+    try std.testing.expect(!providerRouteStatusReachable(@enumFromInt(400)));
     try std.testing.expect(!providerRouteStatusReachable(@enumFromInt(404)));
+    try std.testing.expect(!providerRouteStatusReachable(@enumFromInt(405)));
     try std.testing.expect(!providerRouteStatusReachable(@enumFromInt(500)));
 }
 
