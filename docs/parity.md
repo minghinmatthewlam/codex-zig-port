@@ -72,13 +72,15 @@ emits a Rust-shaped JSON report with `schemaVersion`, `generatedAt`,
 `overallStatus`, `codexVersion`, and a check map keyed by diagnostic ID. The
 bounded local checks cover install/update detection, install context details,
 package-manager provenance, inherited package-manager env suppression for dev
-builds, PATH entry reporting, runtime, real `rg` readiness probing, config
-load, auth presence, MCP config parsing, sandbox config, proxy and custom-CA
-network env checks, passive app-server daemon state and control-socket
-reachability, terminal streams, state paths, config-backed `log_dir` /
-`sqlite_home` reporting, Rust runtime DB paths for state/log/goals, read-only
-SQLite integrity probes for existing runtime DBs, active/archived rollout file
-stats, and Rust-shaped human notes for large rollout storage, unrestricted
+builds, PATH entry reporting, runtime, package-layout bundled `rg` detection
+through `codex-path`, standalone bundled `rg` detection through
+`codex-resources`, real system `rg` readiness probing, config load, auth
+presence, MCP config parsing, sandbox config, proxy and custom-CA network env
+checks, passive app-server daemon state and control-socket reachability,
+terminal streams, state paths, config-backed `log_dir` / `sqlite_home`
+reporting, Rust runtime DB paths for state/log/goals, read-only SQLite
+integrity probes for existing runtime DBs, active/archived rollout file stats,
+and Rust-shaped human notes for large rollout storage, unrestricted
 sandbox/network posture, and mixed ChatGPT/API-key auth signals.
 Doctor-local `--strict-config` is rejected like Rust while root
 `--strict-config doctor` remains supported. Bounded active-provider HTTP
@@ -87,8 +89,8 @@ Bounded Responses WebSocket reachability now honors provider
 `supports_websockets` and `websocket_connect_timeout_ms`, resolves ChatGPT
 versus API-key auth mode, performs the `responses` upgrade handshake, and
 reports HTTP 101 plus reasoning/model-cache header presence. Rust's immediate
-close-frame inspection, bundled-search layout, npm-root mismatch diagnostics,
-and standalone release-cache diagnostics remain planned exact-depth parity.
+close-frame inspection, npm-root mismatch diagnostics, and standalone
+release-cache diagnostics remain planned exact-depth parity.
 
 Current app-server `hooks/list` coverage: user `$CODEX_HOME/config.toml`,
 `$CODEX_HOME/hooks.json`, per-cwd `.codex/config.toml`, and per-cwd
