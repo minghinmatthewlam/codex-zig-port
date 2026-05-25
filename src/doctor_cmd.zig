@@ -1896,6 +1896,7 @@ fn stateCheck(allocator: std.mem.Allocator, cfg_load: ConfigLoad) !Check {
     try addRuntimeDbDetail(allocator, &check, "log DB", try runtimeDbPath(allocator, sqlite_home, memory_reset.logs_db_filename));
     try addRuntimeDbDetail(allocator, &check, "goals DB", try resolveGoalsDbPath(allocator, sqlite_home));
     try addRolloutStatsDetails(allocator, &check, home);
+    try addStandaloneReleaseCacheDetail(allocator, &check, home);
     return check;
 }
 
@@ -2005,6 +2006,40 @@ fn addRolloutStatsDetails(allocator: std.mem.Allocator, check: *Check, codex_hom
     const archived_root = try std.fs.path.join(allocator, &.{ codex_home, "archived_sessions" });
     try addRolloutStatsDetail(allocator, check, "active rollout files", active_root);
     try addRolloutStatsDetail(allocator, check, "archived rollout files", archived_root);
+}
+
+fn addStandaloneReleaseCacheDetail(allocator: std.mem.Allocator, check: *Check, codex_home: []const u8) !void {
+    const update_action = update_cmd.detectCurrentUpdateAction(allocator) catch return;
+    switch (update_action orelse return) {
+        .standalone_unix, .standalone_windows => {},
+        else => return,
+    }
+
+    const io = std.Io.Threaded.global_single_threaded.io();
+    const exe_path = std.process.executablePathAlloc(io, allocator) catch return;
+    defer allocator.free(exe_path);
+
+    const detail = (try standaloneReleaseCacheDetailForInstall(allocator, exe_path, codex_home)) orelse return;
+    defer allocator.free(detail);
+    try check.addDetail(allocator, "standalone release cache", detail);
+}
+
+fn standaloneReleaseCacheDetailForInstall(allocator: std.mem.Allocator, exe_path: []const u8, codex_home: []const u8) !?[]u8 {
+    const release_dir = (try standaloneReleaseDir(allocator, exe_path, codex_home)) orelse return null;
+    defer allocator.free(release_dir);
+
+    const releases_dir = std.fs.path.dirname(release_dir) orelse return null;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var dir = std.Io.Dir.cwd().openDir(io, releases_dir, .{ .iterate = true }) catch return null;
+    defer dir.close(io);
+
+    var release_count: usize = 0;
+    var iterator = dir.iterate();
+    while (iterator.next(io) catch return null) |_| {
+        release_count += 1;
+    }
+    const detail = try std.fmt.allocPrint(allocator, "{d} entries in {s}", .{ release_count, releases_dir });
+    return detail;
 }
 
 fn addRolloutStatsDetail(allocator: std.mem.Allocator, check: *Check, label: []const u8, root: []const u8) !void {
@@ -3057,6 +3092,29 @@ test "doctor search command uses standalone bundled resources rg" {
     try std.testing.expect(search.bundled);
     try std.testing.expectEqualStrings("bundled", search.provider);
     try std.testing.expect(std.mem.endsWith(u8, search.command, "codex-resources/rg"));
+}
+
+test "doctor standalone release cache detail counts sibling releases" {
+    const allocator = std.testing.allocator;
+    var dir = std.testing.tmpDir(.{});
+    defer dir.cleanup();
+    const io = std.Io.Threaded.global_single_threaded.io();
+    try dir.dir.createDirPath(io, "codex-home/packages/standalone/releases/1.2.3");
+    try dir.dir.createDirPath(io, "codex-home/packages/standalone/releases/2.0.0");
+    try dir.dir.writeFile(io, .{ .sub_path = "codex-home/packages/standalone/releases/1.2.3/codex-zig", .data = "" });
+
+    const root = try dir.dir.realPathFileAlloc(io, ".", allocator);
+    defer allocator.free(root);
+    const codex_home = try std.fs.path.join(allocator, &.{ root, "codex-home" });
+    defer allocator.free(codex_home);
+    const exe_path = try std.fs.path.join(allocator, &.{ root, "codex-home", "packages", "standalone", "releases", "1.2.3", "codex-zig" });
+    defer allocator.free(exe_path);
+
+    const detail = (try standaloneReleaseCacheDetailForInstall(allocator, exe_path, codex_home)) orelse return error.TestExpectedDetail;
+    defer allocator.free(detail);
+
+    try std.testing.expect(std.mem.startsWith(u8, detail, "2 entries in "));
+    try std.testing.expect(std.mem.endsWith(u8, detail, "codex-home/packages/standalone/releases"));
 }
 
 test "doctor npm root comparison detects match" {
