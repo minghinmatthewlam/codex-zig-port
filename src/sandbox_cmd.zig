@@ -54,6 +54,7 @@ const SandboxRootOptions = struct {
 pub const Options = struct {
     profile: ?[]const u8 = null,
     runtime_overrides: config.RuntimeOverrides = .{},
+    feature_overrides: features_cmd.FeatureOverrides = .{},
     cwd: ?[]const u8 = null,
     additional_writable_roots: []const []const u8 = &.{},
 };
@@ -120,6 +121,9 @@ pub fn runWithOptions(allocator: std.mem.Allocator, args: *std.process.Args.Iter
     const effective_profile = parsed.profile_override orelse root_options.profile_override orelse options.profile;
     var runtime_overrides = config.mergeRuntimeOverrides(options.runtime_overrides, root_options.runtime_overrides);
     runtime_overrides = config.mergeRuntimeOverrides(runtime_overrides, parsed.runtime_overrides);
+    var effective_feature_overrides = try mergeSandboxFeatureOverrides(allocator, options.feature_overrides, root_options.feature_overrides, parsed.feature_overrides);
+    defer effective_feature_overrides.deinit(allocator);
+    try features_cmd.validateRawConfigOverrides(effective_feature_overrides);
 
     var cfg = try config.loadWithOptions(allocator, .{ .profile = effective_profile });
     defer cfg.deinit(allocator);
@@ -154,6 +158,19 @@ pub fn runWithOptions(allocator: std.mem.Allocator, args: *std.process.Args.Iter
     try runCommand(allocator, parsed.command, cfg.sandbox_mode, option_and_profile_roots, include_cwd_write_root, network_enabled, read_denied_roots, read_denied_globs, allow_unix_sockets, parsed.log_denials);
 }
 
+fn mergeSandboxFeatureOverrides(
+    allocator: std.mem.Allocator,
+    option_overrides: features_cmd.FeatureOverrides,
+    root_overrides: features_cmd.FeatureOverrides,
+    command_overrides: features_cmd.FeatureOverrides,
+) !features_cmd.FeatureOverrides {
+    var merged = try option_overrides.clone(allocator);
+    errdefer merged.deinit(allocator);
+    try merged.putAll(allocator, root_overrides);
+    try merged.putAll(allocator, command_overrides);
+    return merged;
+}
+
 fn parseSandboxRootOption(
     allocator: std.mem.Allocator,
     args: []const []const u8,
@@ -184,10 +201,13 @@ fn parseSandboxConfigFeatureOption(
         if (index.* >= args.len) return error.MissingConfigOptionValue;
         if (std.mem.eql(u8, args[index.*], "--")) return error.MissingConfigOptionValue;
         try config.applyRawConfigOverride(runtime_overrides, profile_override, args[index.*]);
+        try features_cmd.applyRawConfigOverride(allocator, feature_overrides, args[index.*]);
         return true;
     }
     if (std.mem.startsWith(u8, arg, "--config=")) {
-        try config.applyRawConfigOverride(runtime_overrides, profile_override, arg["--config=".len..]);
+        const raw = arg["--config=".len..];
+        try config.applyRawConfigOverride(runtime_overrides, profile_override, raw);
+        try features_cmd.applyRawConfigOverride(allocator, feature_overrides, raw);
         return true;
     }
     if (std.mem.eql(u8, arg, "--enable")) {
@@ -1518,13 +1538,14 @@ test "sandbox macos args parse help" {
 
 test "sandbox args parse Rust config and feature controls" {
     const allocator = std.testing.allocator;
-    const argv = [_][]const u8{ "-c", "sandbox_mode=\"danger-full-access\"", "--enable", "goals", "--disable=shell_tool", "--", "/bin/echo", "ok" };
+    const argv = [_][]const u8{ "-c", "sandbox_mode=\"danger-full-access\"", "--enable", "goals", "--disable=shell_tool", "-c", "features.artifact=true", "--", "/bin/echo", "ok" };
     const parsed = try parseSandboxArgs(allocator, argv[0..]);
     defer parsed.deinit(allocator);
 
     try std.testing.expectEqual(config.SandboxMode.danger_full_access, parsed.runtime_overrides.sandbox_mode.?);
     try std.testing.expectEqual(true, parsed.feature_overrides.get("goals").?);
     try std.testing.expectEqual(false, parsed.feature_overrides.get("shell_tool").?);
+    try std.testing.expectEqual(true, parsed.feature_overrides.get("artifact").?);
     try std.testing.expectEqualStrings("/bin/echo", parsed.command[0]);
 }
 
@@ -1545,6 +1566,26 @@ test "sandbox root options parse Rust config and feature controls" {
     try std.testing.expectEqual(false, parsed.feature_overrides.get("shell_tool").?);
     index += 1;
     try std.testing.expect(!try parseSandboxRootOption(allocator, argv[0..], &index, &parsed));
+}
+
+test "sandbox feature controls merge root before command-local overrides" {
+    const allocator = std.testing.allocator;
+    var option_overrides = features_cmd.FeatureOverrides{};
+    defer option_overrides.deinit(allocator);
+    try option_overrides.put(allocator, "artifact", true);
+    var root_overrides = features_cmd.FeatureOverrides{};
+    defer root_overrides.deinit(allocator);
+    try root_overrides.put(allocator, "goals", true);
+    try root_overrides.put(allocator, "artifact", true);
+    var command_overrides = features_cmd.FeatureOverrides{};
+    defer command_overrides.deinit(allocator);
+    try command_overrides.put(allocator, "artifact", false);
+
+    var merged = try mergeSandboxFeatureOverrides(allocator, option_overrides, root_overrides, command_overrides);
+    defer merged.deinit(allocator);
+
+    try std.testing.expectEqual(false, merged.get("artifact").?);
+    try std.testing.expectEqual(true, merged.get("goals").?);
 }
 
 test "sandbox value options reject option terminator as missing value" {
