@@ -39,6 +39,10 @@ pub const FeatureOverrides = struct {
         return null;
     }
 
+    pub fn isEmpty(self: FeatureOverrides) bool {
+        return self.items.items.len == 0;
+    }
+
     pub fn clone(self: FeatureOverrides, allocator: std.mem.Allocator) !FeatureOverrides {
         var cloned = FeatureOverrides{};
         errdefer cloned.deinit(allocator);
@@ -204,7 +208,388 @@ pub fn putRuntimeToggle(
     try overrides.put(allocator, canonical, enabled);
 }
 
+pub fn applyRawConfigOverride(
+    allocator: std.mem.Allocator,
+    overrides: *FeatureOverrides,
+    raw: []const u8,
+) !void {
+    const eq = tomlAssignmentEqualsIndex(raw) orelse return error.InvalidConfigOverride;
+    const key = std.mem.trim(u8, raw[0..eq], " \t");
+    const raw_value = tomlValueWithoutInlineComment(std.mem.trim(u8, raw[eq + 1 ..], " \t"));
+    if (std.mem.eql(u8, key, "features")) {
+        return applyInlineFeatureTableOverride(allocator, overrides, "", raw_value);
+    }
+
+    const prefix = "features.";
+    if (!std.mem.startsWith(u8, key, prefix)) return;
+
+    const feature_path = key[prefix.len..];
+    try applyFeaturePathConfigOverride(allocator, overrides, feature_path, raw_value);
+}
+
+fn applyFeaturePathConfigOverride(
+    allocator: std.mem.Allocator,
+    overrides: *FeatureOverrides,
+    feature_path: []const u8,
+    raw_value: []const u8,
+) !void {
+    if (feature_path.len == 0) return;
+    const first = tomlDottedPathFirstSegment(feature_path);
+    const feature = try tomlKeySegmentOwned(allocator, first.raw);
+    defer allocator.free(feature);
+    const canonical = feature_registry.canonicalFeatureKey(feature);
+
+    if (first.rest.len > 0) {
+        const rest = try tomlDottedPathNormalize(allocator, first.rest);
+        defer allocator.free(rest);
+        return applyRawNestedFeatureConfigOverride(allocator, overrides, canonical orelse return error.InvalidConfigOverride, rest, raw_value);
+    }
+
+    if (std.mem.startsWith(u8, std.mem.trim(u8, raw_value, " \t\r\n"), "{")) {
+        return applyInlineFeatureTableOverride(allocator, overrides, canonical orelse return error.InvalidConfigOverride, raw_value);
+    }
+
+    const enabled = if (std.mem.eql(u8, raw_value, "true"))
+        true
+    else if (std.mem.eql(u8, raw_value, "false"))
+        false
+    else
+        return error.InvalidConfigOverride;
+    if (canonical == null) return;
+    try putRuntimeToggle(allocator, overrides, feature, enabled);
+}
+
+fn applyInlineFeatureTableOverride(
+    allocator: std.mem.Allocator,
+    overrides: *FeatureOverrides,
+    parent_path: []const u8,
+    raw_value: []const u8,
+) anyerror!void {
+    const contents = inlineTableContents(raw_value) orelse return error.InvalidConfigOverride;
+    var entries = InlineTableEntryIterator.init(contents);
+    while (try entries.next()) |entry| {
+        try applyInlineFeatureTableEntry(allocator, overrides, parent_path, entry);
+    }
+}
+
+fn applyInlineFeatureTableEntry(
+    allocator: std.mem.Allocator,
+    overrides: *FeatureOverrides,
+    parent_path: []const u8,
+    entry: []const u8,
+) anyerror!void {
+    const parts = inlineTableEntryParts(entry) orelse return error.InvalidConfigOverride;
+    const key = parts.key;
+    const raw_value = parts.raw_value;
+    if (key.len == 0) return error.InvalidConfigOverride;
+
+    const child_path = if (parent_path.len == 0)
+        try allocator.dupe(u8, key)
+    else
+        try std.fmt.allocPrint(allocator, "{s}.{s}", .{ parent_path, key });
+    defer allocator.free(child_path);
+
+    try applyFeaturePathConfigOverride(allocator, overrides, child_path, raw_value);
+}
+
+const InlineTableEntryParts = struct {
+    key: []const u8,
+    raw_value: []const u8,
+};
+
+fn inlineTableEntryParts(entry: []const u8) ?InlineTableEntryParts {
+    const eq = tomlAssignmentEqualsIndex(entry) orelse return null;
+    return .{
+        .key = std.mem.trim(u8, entry[0..eq], " \t"),
+        .raw_value = std.mem.trim(u8, entry[eq + 1 ..], " \t"),
+    };
+}
+
+const InlineTableEntryIterator = struct {
+    contents: []const u8,
+    start: usize = 0,
+    index: usize = 0,
+    in_basic_string: bool = false,
+    in_literal_string: bool = false,
+    escaped: bool = false,
+    array_depth: usize = 0,
+    table_depth: usize = 0,
+    done: bool = false,
+
+    fn init(contents: []const u8) InlineTableEntryIterator {
+        return .{ .contents = contents };
+    }
+
+    fn next(self: *InlineTableEntryIterator) !?[]const u8 {
+        if (self.done) return null;
+        while (self.index <= self.contents.len) {
+            const at_end = self.index == self.contents.len;
+            if (!at_end) {
+                const byte = self.contents[self.index];
+                if (self.in_basic_string) {
+                    if (self.escaped) {
+                        self.escaped = false;
+                    } else if (byte == '\\') {
+                        self.escaped = true;
+                    } else if (byte == '"') {
+                        self.in_basic_string = false;
+                    }
+                    self.index += 1;
+                    continue;
+                }
+                if (self.in_literal_string) {
+                    if (byte == '\'') self.in_literal_string = false;
+                    self.index += 1;
+                    continue;
+                }
+                switch (byte) {
+                    '"' => {
+                        self.in_basic_string = true;
+                        self.index += 1;
+                        continue;
+                    },
+                    '\'' => {
+                        self.in_literal_string = true;
+                        self.index += 1;
+                        continue;
+                    },
+                    '[' => {
+                        self.array_depth += 1;
+                        self.index += 1;
+                        continue;
+                    },
+                    ']' => {
+                        if (self.array_depth == 0) return error.InvalidConfigOverride;
+                        self.array_depth -= 1;
+                        self.index += 1;
+                        continue;
+                    },
+                    '{' => {
+                        self.table_depth += 1;
+                        self.index += 1;
+                        continue;
+                    },
+                    '}' => {
+                        if (self.table_depth == 0) return error.InvalidConfigOverride;
+                        self.table_depth -= 1;
+                        self.index += 1;
+                        continue;
+                    },
+                    ',' => if (self.array_depth != 0 or self.table_depth != 0) {
+                        self.index += 1;
+                        continue;
+                    },
+                    else => {
+                        self.index += 1;
+                        continue;
+                    },
+                }
+            } else {
+                try self.ensureComplete();
+                self.done = true;
+            }
+
+            const entry = std.mem.trim(u8, self.contents[self.start..self.index], " \t\r\n");
+            self.start = self.index + 1;
+            self.index += 1;
+            if (entry.len == 0) {
+                if (at_end) return null;
+                continue;
+            }
+            return entry;
+        }
+        try self.ensureComplete();
+        self.done = true;
+        return null;
+    }
+
+    fn ensureComplete(self: InlineTableEntryIterator) !void {
+        if (self.in_basic_string or
+            self.in_literal_string or
+            self.array_depth != 0 or
+            self.table_depth != 0)
+        {
+            return error.InvalidConfigOverride;
+        }
+    }
+};
+
+fn applyRawNestedFeatureConfigOverride(
+    allocator: std.mem.Allocator,
+    overrides: *FeatureOverrides,
+    feature: []const u8,
+    rest: []const u8,
+    raw_value: []const u8,
+) !void {
+    if (!std.mem.eql(u8, rest, "enabled")) return error.InvalidConfigOverride;
+    try putRuntimeToggle(allocator, overrides, feature, try parseRawBooleanFeatureValue(raw_value));
+}
+
+fn parseRawBooleanFeatureValue(raw_value: []const u8) !bool {
+    if (std.mem.eql(u8, raw_value, "true")) return true;
+    if (std.mem.eql(u8, raw_value, "false")) return false;
+    return error.InvalidConfigOverride;
+}
+
+pub fn validateRawConfigOverrides(overrides: FeatureOverrides) !void {
+    _ = overrides;
+}
+
+const TomlDottedPathSegment = struct {
+    raw: []const u8,
+    rest: []const u8,
+};
+
+fn tomlDottedPathFirstSegment(path: []const u8) TomlDottedPathSegment {
+    var index: usize = 0;
+    while (index < path.len) : (index += 1) {
+        if (path[index] == '"') {
+            const close = tomlBasicStringClosingQuoteIndex(path[index..]) orelse break;
+            index += close;
+            continue;
+        }
+        if (path[index] == '\'') {
+            const close = tomlLiteralStringClosingQuoteIndex(path[index..]) orelse break;
+            index += close;
+            continue;
+        }
+        if (path[index] == '.') return .{ .raw = path[0..index], .rest = path[index + 1 ..] };
+    }
+    return .{ .raw = path, .rest = "" };
+}
+
+fn tomlDottedPathNormalize(allocator: std.mem.Allocator, path: []const u8) ![]const u8 {
+    var output = std.ArrayList(u8).empty;
+    errdefer output.deinit(allocator);
+
+    var rest = path;
+    while (rest.len > 0) {
+        const segment = tomlDottedPathFirstSegment(rest);
+        if (segment.raw.len == 0) return error.InvalidConfigOverride;
+
+        const decoded = try tomlKeySegmentOwned(allocator, segment.raw);
+        defer allocator.free(decoded);
+
+        if (output.items.len > 0) try output.append(allocator, '.');
+        try output.appendSlice(allocator, decoded);
+        rest = segment.rest;
+    }
+
+    return output.toOwnedSlice(allocator);
+}
+
+fn tomlKeySegmentOwned(allocator: std.mem.Allocator, raw: []const u8) ![]const u8 {
+    const segment = std.mem.trim(u8, raw, " \t");
+    if (segment.len == 0) return error.InvalidConfigOverride;
+    if (segment[0] == '"') {
+        const close = tomlBasicStringClosingQuoteIndex(segment) orelse return error.InvalidConfigOverride;
+        if (close != segment.len - 1) return error.InvalidConfigOverride;
+        return (try config.parseTomlString(allocator, segment)) orelse error.InvalidConfigOverride;
+    }
+    if (segment[0] == '\'') {
+        const close = tomlLiteralStringClosingQuoteIndex(segment) orelse return error.InvalidConfigOverride;
+        if (close != segment.len - 1) return error.InvalidConfigOverride;
+        return allocator.dupe(u8, segment[1..close]);
+    }
+    return allocator.dupe(u8, segment);
+}
+
+fn inlineTableContents(raw_value: []const u8) ?[]const u8 {
+    const trimmed = std.mem.trim(u8, raw_value, " \t\r\n");
+    if (trimmed.len < 2 or trimmed[0] != '{') return null;
+    const end = std.mem.lastIndexOfScalar(u8, trimmed, '}') orelse return null;
+    if (tomlValueWithoutInlineComment(trimmed[end + 1 ..]).len != 0) return null;
+    return std.mem.trim(u8, trimmed[1..end], " \t\r\n");
+}
+
+fn tomlValueWithoutInlineComment(raw_value: []const u8) []const u8 {
+    var in_basic_string = false;
+    var in_literal_string = false;
+    var escaped = false;
+    for (raw_value, 0..) |byte, index| {
+        if (in_basic_string) {
+            if (escaped) {
+                escaped = false;
+            } else if (byte == '\\') {
+                escaped = true;
+            } else if (byte == '"') {
+                in_basic_string = false;
+            }
+            continue;
+        }
+        if (in_literal_string) {
+            if (byte == '\'') in_literal_string = false;
+            continue;
+        }
+        switch (byte) {
+            '"' => in_basic_string = true,
+            '\'' => in_literal_string = true,
+            '#' => return std.mem.trim(u8, raw_value[0..index], " \t\r\n"),
+            else => {},
+        }
+    }
+    return std.mem.trim(u8, raw_value, " \t\r\n");
+}
+
+fn tomlAssignmentEqualsIndex(line: []const u8) ?usize {
+    var in_basic_string = false;
+    var in_literal_string = false;
+    var escaped = false;
+    for (line, 0..) |byte, index| {
+        if (in_basic_string) {
+            if (escaped) {
+                escaped = false;
+            } else if (byte == '\\') {
+                escaped = true;
+            } else if (byte == '"') {
+                in_basic_string = false;
+            }
+            continue;
+        }
+        if (in_literal_string) {
+            if (byte == '\'') in_literal_string = false;
+            continue;
+        }
+        switch (byte) {
+            '#' => return null,
+            '"' => in_basic_string = true,
+            '\'' => in_literal_string = true,
+            '=' => return index,
+            else => {},
+        }
+    }
+    return null;
+}
+
+fn tomlBasicStringClosingQuoteIndex(raw: []const u8) ?usize {
+    if (raw.len == 0 or raw[0] != '"') return null;
+    var escaped = false;
+    var index: usize = 1;
+    while (index < raw.len) : (index += 1) {
+        const byte = raw[index];
+        if (escaped) {
+            escaped = false;
+        } else if (byte == '\\') {
+            escaped = true;
+        } else if (byte == '"') {
+            return index;
+        }
+    }
+    return null;
+}
+
+fn tomlLiteralStringClosingQuoteIndex(raw: []const u8) ?usize {
+    if (raw.len == 0 or raw[0] != '\'') return null;
+    var index: usize = 1;
+    while (index < raw.len) : (index += 1) {
+        if (raw[index] == '\'') return index;
+    }
+    return null;
+}
+
 fn listFeatures(allocator: std.mem.Allocator, options: Options) !void {
+    try validateRawConfigOverrides(options.runtime_overrides);
+
     var cfg = try config.loadWithOptions(allocator, .{ .profile = options.profile });
     defer cfg.deinit(allocator);
 
@@ -923,6 +1308,73 @@ test "runtime feature toggles reject unknown keys" {
     defer overrides.deinit(allocator);
 
     try std.testing.expectError(error.UnknownFeature, putRuntimeToggle(allocator, &overrides, "not_real", true));
+}
+
+test "raw config feature override applies flat known booleans" {
+    const allocator = std.testing.allocator;
+    var overrides = FeatureOverrides{};
+    defer overrides.deinit(allocator);
+
+    try applyRawConfigOverride(allocator, &overrides, "features.artifact=true");
+    try applyRawConfigOverride(allocator, &overrides, "features.artifact=true # trailing comment");
+    try applyRawConfigOverride(allocator, &overrides, "features.shell_tool = false");
+    try applyRawConfigOverride(allocator, &overrides, "features.not_real=true");
+    try applyRawConfigOverride(allocator, &overrides, "features.multi_agent_v2.enabled=true");
+    try applyRawConfigOverride(allocator, &overrides, "features.apps_mcp_path_override.enabled=true");
+    try applyRawConfigOverride(allocator, &overrides, "features.network_proxy.enabled=true");
+    try applyRawConfigOverride(allocator, &overrides, "features.multi_agent_v2={enabled=true}");
+    try applyRawConfigOverride(allocator, &overrides, "features.apps_mcp_path_override={enabled=true}");
+    try applyRawConfigOverride(allocator, &overrides, "features.network_proxy={enabled=true}");
+    try applyRawConfigOverride(allocator, &overrides, "features={artifact=false,multi_agent_v2={enabled=false},apps_mcp_path_override={enabled=true},network_proxy={enabled=true}} # trailing comment");
+    try applyRawConfigOverride(allocator, &overrides, "model=gpt-test");
+
+    try std.testing.expectEqual(false, overrides.get("artifact").?);
+    try std.testing.expectEqual(false, overrides.get("shell_tool").?);
+    try std.testing.expectEqual(false, overrides.get("multi_agent_v2").?);
+    try std.testing.expectEqual(true, overrides.get("apps_mcp_path_override").?);
+    try std.testing.expectEqual(null, overrides.get("not_real"));
+    try std.testing.expectEqual(true, overrides.get("network_proxy").?);
+    try std.testing.expectError(error.InvalidConfigOverride, applyRawConfigOverride(allocator, &overrides, "features.artifact=maybe"));
+    try std.testing.expectError(error.InvalidConfigOverride, applyRawConfigOverride(allocator, &overrides, "features.not_real=maybe"));
+    try std.testing.expectError(error.InvalidConfigOverride, applyRawConfigOverride(allocator, &overrides, "features.not_real.enabled=true"));
+    try std.testing.expectError(error.InvalidConfigOverride, applyRawConfigOverride(allocator, &overrides, "features.multi_agent_v2.enabled=maybe"));
+    try std.testing.expectError(error.InvalidConfigOverride, applyRawConfigOverride(allocator, &overrides, "features.multi_agent_v2.nope=true"));
+    try std.testing.expectError(error.InvalidConfigOverride, applyRawConfigOverride(allocator, &overrides, "features={multi_agent_v2={enabled=maybe}}"));
+    try std.testing.expectError(error.InvalidConfigOverride, applyRawConfigOverride(allocator, &overrides, "features={multi_agent_v2={nope=true}}"));
+}
+
+test "raw config feature override rejects unsupported nested payload leaves" {
+    const allocator = std.testing.allocator;
+    var overrides = FeatureOverrides{};
+    defer overrides.deinit(allocator);
+
+    try std.testing.expectError(error.InvalidConfigOverride, applyRawConfigOverride(allocator, &overrides, "features.apps_mcp_path_override.path=/tmp/apps-mcp"));
+    try std.testing.expectError(error.InvalidConfigOverride, applyRawConfigOverride(allocator, &overrides, "features.apps_mcp_path_override.path=false"));
+    try std.testing.expectError(error.InvalidConfigOverride, applyRawConfigOverride(allocator, &overrides, "features.multi_agent_v2.max_concurrent_threads_per_session=4"));
+    try std.testing.expectError(error.InvalidConfigOverride, applyRawConfigOverride(allocator, &overrides, "features.multi_agent_v2.min_wait_timeout_ms=40000"));
+    try std.testing.expectError(error.InvalidConfigOverride, applyRawConfigOverride(allocator, &overrides, "features.multi_agent_v2.usage_hint_text=\"Use focused workers.\""));
+    try std.testing.expectError(error.InvalidConfigOverride, applyRawConfigOverride(allocator, &overrides, "features.multi_agent_v2.usage_hint_enabled=true"));
+    try std.testing.expectError(error.InvalidConfigOverride, applyRawConfigOverride(allocator, &overrides, "features.network_proxy.proxy_url=http://127.0.0.1:8888"));
+    try std.testing.expectError(error.InvalidConfigOverride, applyRawConfigOverride(allocator, &overrides, "features.network_proxy.mode=limited"));
+    try std.testing.expectError(error.InvalidConfigOverride, applyRawConfigOverride(allocator, &overrides, "features.network_proxy.dangerously_allow_all_unix_sockets=true"));
+    try std.testing.expectError(error.InvalidConfigOverride, applyRawConfigOverride(allocator, &overrides, "features.network_proxy.domains={\"api.example.com\"=\"allow\"}"));
+    try std.testing.expectError(error.InvalidConfigOverride, applyRawConfigOverride(allocator, &overrides, "features.network_proxy.domains.\"api.example.com\"=\"allow\""));
+    try std.testing.expectError(error.InvalidConfigOverride, applyRawConfigOverride(allocator, &overrides, "features={network_proxy={mode=limited}}"));
+    try std.testing.expectError(error.InvalidConfigOverride, applyRawConfigOverride(allocator, &overrides, "features={apps_mcp_path_override={path=\"/tmp/apps\"}}"));
+}
+
+test "raw config feature override decodes quoted toml inline keys" {
+    const allocator = std.testing.allocator;
+    var overrides = FeatureOverrides{};
+    defer overrides.deinit(allocator);
+
+    try applyRawConfigOverride(allocator, &overrides, "features={\"artifact\"=true,'shell_tool'=false,multi_agent_v2={\"enabled\"=true},\"apps_mcp_path_override\"={enabled=true},network_proxy={\"enabled\"=true}}");
+
+    try std.testing.expectEqual(true, overrides.get("artifact").?);
+    try std.testing.expectEqual(false, overrides.get("shell_tool").?);
+    try std.testing.expectEqual(true, overrides.get("multi_agent_v2").?);
+    try std.testing.expectEqual(true, overrides.get("apps_mcp_path_override").?);
+    try std.testing.expectEqual(true, overrides.get("network_proxy").?);
 }
 
 test "feature config update creates features table" {
