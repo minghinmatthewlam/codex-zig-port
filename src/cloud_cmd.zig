@@ -70,6 +70,7 @@ pub const ParsedOptions = struct {
 pub const Options = struct {
     profile: ?[]const u8 = null,
     runtime_overrides: config.RuntimeOverrides = .{},
+    feature_overrides: features_cmd.FeatureOverrides = .{},
 };
 
 pub fn run(allocator: std.mem.Allocator, args: *std.process.Args.Iterator) !void {
@@ -87,6 +88,8 @@ pub fn runWithOptions(allocator: std.mem.Allocator, args: *std.process.Args.Iter
     defer parsed.deinit(allocator);
     if (parsed.profile == null) parsed.profile = options.profile;
     parsed.runtime_overrides = config.mergeRuntimeOverrides(options.runtime_overrides, parsed.runtime_overrides);
+    try prependRootFeatureOverrides(allocator, &parsed, options.feature_overrides);
+    try features_cmd.validateRawConfigOverrides(parsed.feature_overrides);
 
     switch (parsed.command) {
         .exec => return runExec(allocator, parsed),
@@ -96,6 +99,19 @@ pub fn runWithOptions(allocator: std.mem.Allocator, args: *std.process.Args.Iter
         .diff => return runDiff(allocator, parsed),
         .tui => return runPicker(allocator, parsed),
     }
+}
+
+fn prependRootFeatureOverrides(
+    allocator: std.mem.Allocator,
+    parsed: *ParsedOptions,
+    root_feature_overrides: features_cmd.FeatureOverrides,
+) !void {
+    if (root_feature_overrides.isEmpty()) return;
+    var merged = try root_feature_overrides.clone(allocator);
+    errdefer merged.deinit(allocator);
+    try merged.putAll(allocator, parsed.feature_overrides);
+    parsed.feature_overrides.deinit(allocator);
+    parsed.feature_overrides = merged;
 }
 
 const TaskStatus = enum {
@@ -2195,12 +2211,15 @@ fn parseGlobalOption(
         const value = try takeValue(args, index, error.MissingConfigOptionValue);
         if (mode.validate_global_values) {
             try config.applyRawConfigOverride(&parsed.runtime_overrides, profile, value);
+            try features_cmd.applyRawConfigOverride(allocator, &parsed.feature_overrides, value);
         }
         return true;
     }
     if (std.mem.startsWith(u8, arg, "--config=")) {
+        const raw = arg["--config=".len..];
         if (mode.validate_global_values) {
-            try config.applyRawConfigOverride(&parsed.runtime_overrides, profile, arg["--config=".len..]);
+            try config.applyRawConfigOverride(&parsed.runtime_overrides, profile, raw);
+            try features_cmd.applyRawConfigOverride(allocator, &parsed.feature_overrides, raw);
         }
         return true;
     }
@@ -2550,6 +2569,8 @@ test "cloud command parses exec options" {
     const raw_args = [_][]const u8{
         "--enable",
         "goals",
+        "-c",
+        "features.artifact=true",
         "exec",
         "--env",
         "env-id",
@@ -2566,6 +2587,23 @@ test "cloud command parses exec options" {
     try std.testing.expectEqual(@as(usize, 4), parsed.exec.attempts);
     try std.testing.expectEqualStrings("feature", parsed.exec.branch.?);
     try std.testing.expectEqualStrings("write tests", parsed.exec.query.?);
+    try std.testing.expectEqual(true, parsed.feature_overrides.get("goals").?);
+    try std.testing.expectEqual(true, parsed.feature_overrides.get("artifact").?);
+}
+
+test "cloud command prepends root feature overrides before command-local overrides" {
+    const allocator = std.testing.allocator;
+    const raw_args = [_][]const u8{ "--disable", "artifact", "exec", "--env", "env-id", "write tests" };
+    var parsed = try parseArgSlice(allocator, raw_args[0..]);
+    defer parsed.deinit(allocator);
+    var root = features_cmd.FeatureOverrides{};
+    defer root.deinit(allocator);
+    try root.put(allocator, "artifact", true);
+    try root.put(allocator, "goals", true);
+
+    try prependRootFeatureOverrides(allocator, &parsed, root);
+
+    try std.testing.expectEqual(false, parsed.feature_overrides.get("artifact").?);
     try std.testing.expectEqual(true, parsed.feature_overrides.get("goals").?);
 }
 
