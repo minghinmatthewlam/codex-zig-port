@@ -269,6 +269,10 @@ list/read/install/share shapes and marketplace add/remove/upgrade shapes.
 print local command help before root semantic checks such as pre-help `-C`
 directory validation. Missing generator option values such as `--out --help`
 still fail instead of being treated as help or output paths.
+`app-server help [COMMAND]...` now routes to root, proxy, generator, daemon,
+and daemon-command help, and invalid nested help targets report
+unrecognized-subcommand errors with Clap-style exit status 2 before root
+semantic checks.
 Full Rust generator parity remains planned.
 
 Current app-server stdio/Unix/websocket JSON-RPC handling accepts well-formed

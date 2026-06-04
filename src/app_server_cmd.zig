@@ -1112,9 +1112,15 @@ pub fn runWithOptions(
 
     if (subcommand) |name| {
         const subcommand_help = appServerSubcommandTailHasHelp(name, subcommand_args.items);
-        const subcommand_help_like = subcommand_help or (std.mem.eql(u8, name, "daemon") and daemonTailMentionsHelp(subcommand_args.items));
+        const subcommand_help_like = subcommand_help or
+            std.mem.eql(u8, name, "help") or
+            (std.mem.eql(u8, name, "daemon") and daemonTailMentionsHelp(subcommand_args.items));
         if (strict_config and !subcommand_help_like) return failStrictConfigUnsupportedForSubcommandWithTail(name, subcommand_args.items);
         if (!subcommand_help_like) try features_cmd.validateRawConfigOverrides(invocation_options.feature_overrides);
+        if (std.mem.eql(u8, name, "help")) {
+            try printAppServerHelpForArgs(subcommand_args.items);
+            return;
+        }
         if (std.mem.eql(u8, name, "proxy")) {
             try runProxy(allocator, subcommand_args.items);
             return;
@@ -1593,6 +1599,7 @@ fn appServerRootOptionIsBoolean(arg: []const u8) bool {
 }
 
 fn appServerSubcommandTailHasHelp(name: []const u8, args: []const []const u8) bool {
+    if (std.mem.eql(u8, name, "help")) return true;
     if (std.mem.eql(u8, name, "proxy")) return proxyTailHasHelp(args);
     if (std.mem.eql(u8, name, "daemon")) return daemonTailHasHelp(args);
     if (std.mem.eql(u8, name, "generate-ts")) return generatorTailHasHelp(args, true);
@@ -1764,6 +1771,14 @@ test "app-server generator tails defer semantic checks for help" {
     try std.testing.expect(!appServerSubcommandTailHasHelp("generate-ts", &.{ "--prettier", "--help" }));
     try std.testing.expect(!appServerSubcommandTailHasHelp("generate-json-schema", &.{ "--prettier", "prettier", "--help" }));
     try std.testing.expect(!appServerSubcommandTailHasHelp("generate-json-schema", &.{ "--out", "--help" }));
+}
+
+test "app-server help command tails defer root semantic checks" {
+    try std.testing.expect(appServerSubcommandTailHasHelp("help", &.{}));
+    try std.testing.expect(appServerSubcommandTailHasHelp("help", &.{"generate-ts"}));
+    try std.testing.expect(appServerSubcommandTailHasHelp("help", &.{ "daemon", "start" }));
+    try std.testing.expect(appServerSubcommandTailHasHelp("help", &.{"nope"}));
+    try std.testing.expect(appServerSubcommandTailHasHelp("help", &.{"--help"}));
 }
 
 test "app-server generators reject help-like missing option values" {
@@ -69049,6 +69064,7 @@ pub fn printHelp() void {
         \\  codex-zig app-server proxy [--sock SOCKET_PATH]
         \\  codex-zig app-server generate-ts --out DIR [--experimental]
         \\  codex-zig app-server generate-json-schema --out DIR [--experimental]
+        \\  codex-zig app-server help [COMMAND]...
         \\
         \\Runs the app-server JSON-RPC transport.
         \\
@@ -69057,6 +69073,7 @@ pub fn printHelp() void {
         \\  proxy                  Proxy stdio to the app-server Unix socket
         \\  generate-ts            Generate TypeScript bindings for the app-server protocol
         \\  generate-json-schema   Generate JSON Schema for the app-server protocol
+        \\  help                   Print this message or the help of the given subcommand(s)
         \\
         \\Options:
         \\  --strict-config        Error on unknown config fields.
@@ -69085,6 +69102,88 @@ pub fn printHelp() void {
         \\The Zig port currently implements stdio://, unix://, unix://PATH, and off.
         \\
     , .{});
+}
+
+fn printAppServerHelpForArgs(args: []const []const u8) !void {
+    if (args.len == 0) {
+        printHelp();
+        return;
+    }
+
+    const target = args[0];
+    if (std.mem.eql(u8, target, "help")) {
+        if (args.len > 1) return failAppServerHelpSubcommand(args[1], "Usage: codex-zig app-server help [COMMAND]...", false);
+        printAppServerHelpCommandHelp();
+        return;
+    }
+    if (std.mem.eql(u8, target, "proxy")) {
+        if (args.len > 1) return failAppServerHelpSubcommand(args[1], "Usage: codex-zig app-server proxy [--sock SOCKET_PATH]", true);
+        printProxyHelp();
+        return;
+    }
+    if (std.mem.eql(u8, target, "daemon")) {
+        try printDaemonHelpForArgs(args[1..]);
+        return;
+    }
+    if (std.mem.eql(u8, target, "generate-ts")) {
+        if (args.len > 1) return failAppServerHelpSubcommand(args[1], "Usage: codex-zig app-server generate-ts [OPTIONS] --out <DIR>", true);
+        printGenerateTsHelp();
+        return;
+    }
+    if (std.mem.eql(u8, target, "generate-json-schema")) {
+        if (args.len > 1) return failAppServerHelpSubcommand(args[1], "Usage: codex-zig app-server generate-json-schema [OPTIONS] --out <DIR>", true);
+        printGenerateJsonSchemaHelp();
+        return;
+    }
+    if (std.mem.eql(u8, target, "generate-internal-json-schema")) {
+        if (args.len > 1) return failAppServerHelpSubcommand(args[1], "Usage: codex-zig app-server generate-internal-json-schema --out <DIR>", true);
+        printGenerateInternalJsonSchemaHelp();
+        return;
+    }
+    return failAppServerHelpSubcommand(target, "Usage: codex-zig app-server [OPTIONS] [COMMAND]", true);
+}
+
+fn printAppServerHelpCommandHelp() void {
+    std.debug.print(
+        \\Print this message or the help of the given subcommand(s)
+        \\
+        \\Usage: codex-zig app-server help [COMMAND]...
+        \\
+        \\Arguments:
+        \\  [COMMAND]...  Print help for the subcommand(s)
+        \\
+    , .{});
+}
+
+fn printDaemonHelpForArgs(args: []const []const u8) !void {
+    if (args.len == 0) {
+        printDaemonHelp();
+        return;
+    }
+
+    const target = args[0];
+    if (std.mem.eql(u8, target, "help")) {
+        if (args.len > 1) return failAppServerHelpSubcommand(args[1], "Usage: codex-zig app-server daemon help [COMMAND]...", false);
+        printDaemonHelpCommandHelp();
+        return;
+    }
+    if (daemonCommandFromName(target)) |command| {
+        if (args.len > 1) return failAppServerDaemonCommandHelpSubcommand(command, args[1]);
+        printDaemonCommandHelp(command);
+        return;
+    }
+    return failAppServerHelpSubcommand(target, "Usage: codex-zig app-server daemon [OPTIONS] <COMMAND>", true);
+}
+
+fn failAppServerHelpSubcommand(subcommand: []const u8, usage: []const u8, include_for_more: bool) error{HelpSubcommandInvalid} {
+    if (!builtin.is_test) cli_utils.printUnrecognizedSubcommand(subcommand, usage, include_for_more);
+    return error.HelpSubcommandInvalid;
+}
+
+fn failAppServerDaemonCommandHelpSubcommand(command: DaemonCommand, subcommand: []const u8) error{HelpSubcommandInvalid} {
+    var usage_buf: [160]u8 = undefined;
+    const usage = std.fmt.bufPrint(&usage_buf, "Usage: {s}", .{daemonCommandUsage(command)}) catch unreachable;
+    return failAppServerHelpSubcommand(subcommand, usage, true);
 }
 
 fn printGenerateTsHelp() void {

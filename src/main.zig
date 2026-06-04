@@ -176,7 +176,7 @@ pub fn main(init: std.process.Init) !void {
                 "error: bearer_token is not supported for streamable_http\n",
                 .{},
             ),
-            error.HelpSubcommandInvalid => {},
+            error.HelpSubcommandInvalid => std.process.exit(2),
             else => std.debug.print("error: {s}\n", .{@errorName(err)}),
         }
         std.process.exit(1);
@@ -3784,6 +3784,9 @@ test "root semantic checks defer to help and version tails" {
     try std.testing.expect(try rootArgsTailHasHelpOrVersion(std.testing.allocator, &.{ "-C", "does-not-exist", "app-server", "generate-ts", "--out", "src", "--help" }));
     try std.testing.expect(try rootArgsTailHasHelpOrVersion(std.testing.allocator, &.{ "--remote", "ws://127.0.0.1:1", "app-server", "generate-ts", "--help" }));
     try std.testing.expect(try rootArgsTailHasHelpOrVersion(std.testing.allocator, &.{ "--remote", "ws://127.0.0.1:1", "app-server", "generate-json-schema", "--out", "src", "--help" }));
+    try std.testing.expect(try rootArgsTailHasHelpOrVersion(std.testing.allocator, &.{ "-C", "does-not-exist", "app-server", "help", "generate-ts" }));
+    try std.testing.expect(try rootArgsTailHasHelpOrVersion(std.testing.allocator, &.{ "-C", "does-not-exist", "app-server", "help", "nope" }));
+    try std.testing.expect(try rootArgsTailHasHelpOrVersion(std.testing.allocator, &.{ "--remote", "ws://127.0.0.1:1", "app-server", "help", "daemon", "start" }));
     try std.testing.expect(try rootArgsTailHasHelpOrVersion(std.testing.allocator, &.{ "--strict-config", "app-server", "proxy", "--help" }));
     try std.testing.expect(try rootArgsTailHasHelpOrVersion(std.testing.allocator, &.{ "app-server", "--strict-config", "proxy", "--help" }));
     try std.testing.expect(try rootArgsTailHasHelpOrVersion(std.testing.allocator, &.{ "-C", "does-not-exist", "app-server", "proxy", "--sock", "/tmp/app.sock", "--help" }));

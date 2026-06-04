@@ -272,6 +272,11 @@ app-server smoke.
   generator help tails defer root semantic checks such as invalid pre-help
   `-C` directories and root `--remote`, and missing option values such as
   `--out --help` still fail instead of printing help or writing files.
+- App-server `help [COMMAND]...` routing is implemented for the root
+  app-server command, `proxy`, public generator commands, hidden internal schema
+  generation, `daemon`, daemon `help`, and daemon action commands. These help
+  paths also defer root semantic checks before printing valid help or
+  Rust-shaped invalid nested-subcommand errors with Clap-style exit status 2.
 
 ### App-Server Daemon and Remote Control
 
