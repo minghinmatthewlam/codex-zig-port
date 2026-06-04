@@ -110,7 +110,7 @@ const PluginCliOverrides = struct {
         };
         errdefer overrides.deinit(allocator);
         for (options.raw_config_overrides) |raw| {
-            try applyRawFeatureConfigOverride(allocator, &overrides.feature_overrides, raw);
+            try features_cmd.applyRawConfigOverride(allocator, &overrides.feature_overrides, raw);
             try overrides.raw_config_overrides.append(allocator, raw);
         }
         return overrides;
@@ -125,6 +125,10 @@ const PluginCliOverrides = struct {
         errdefer cloned.deinit(allocator);
         try cloned.raw_config_overrides.appendSlice(allocator, self.raw_config_overrides.items);
         return cloned;
+    }
+
+    fn validate(self: PluginCliOverrides) !void {
+        try features_cmd.validateRawConfigOverrides(self.feature_overrides);
     }
 
     fn deinit(self: *PluginCliOverrides, allocator: std.mem.Allocator) void {
@@ -359,14 +363,14 @@ fn parsePluginCliOverride(
         index.* += 1;
         if (index.* >= args.len or optionValueBoundary(args[index.*])) return error.MissingConfigOptionValue;
         try config.applyRawConfigOverride(&overrides.runtime_overrides, &overrides.profile, args[index.*]);
-        try applyRawFeatureConfigOverride(allocator, &overrides.feature_overrides, args[index.*]);
+        try features_cmd.applyRawConfigOverride(allocator, &overrides.feature_overrides, args[index.*]);
         try overrides.raw_config_overrides.append(allocator, args[index.*]);
         return true;
     }
     if (std.mem.startsWith(u8, arg, "--config=")) {
         const raw = arg["--config=".len..];
         try config.applyRawConfigOverride(&overrides.runtime_overrides, &overrides.profile, raw);
-        try applyRawFeatureConfigOverride(allocator, &overrides.feature_overrides, raw);
+        try features_cmd.applyRawConfigOverride(allocator, &overrides.feature_overrides, raw);
         try overrides.raw_config_overrides.append(allocator, raw);
         return true;
     }
@@ -391,29 +395,6 @@ fn parsePluginCliOverride(
         return true;
     }
     return false;
-}
-
-fn applyRawFeatureConfigOverride(
-    allocator: std.mem.Allocator,
-    overrides: *features_cmd.FeatureOverrides,
-    raw: []const u8,
-) !void {
-    const eq = std.mem.indexOfScalar(u8, raw, '=') orelse return error.InvalidConfigOverride;
-    const key = std.mem.trim(u8, raw[0..eq], " \t");
-    const prefix = "features.";
-    if (!std.mem.startsWith(u8, key, prefix)) return;
-    const feature = key[prefix.len..];
-    if (feature.len == 0 or std.mem.indexOfScalar(u8, feature, '.') != null) return;
-    if (features_cmd.canonicalFeatureKey(feature) == null) return;
-
-    const raw_value = std.mem.trim(u8, raw[eq + 1 ..], " \t");
-    const enabled = if (std.mem.eql(u8, raw_value, "true"))
-        true
-    else if (std.mem.eql(u8, raw_value, "false"))
-        false
-    else
-        return error.InvalidConfigOverride;
-    try features_cmd.putRuntimeToggle(allocator, overrides, feature, enabled);
 }
 
 fn pluginsFeatureEnabled(config_bytes: []const u8, overrides: PluginCliOverrides) bool {
@@ -595,6 +576,7 @@ fn runPluginAdd(allocator: std.mem.Allocator, args: []const []const u8, root_ove
         return err;
     };
     defer selection.deinit(allocator);
+    try parsed.overrides.validate();
     try addPluginAndPrint(allocator, selection, parsed.overrides);
 }
 
@@ -637,6 +619,7 @@ fn runPluginList(allocator: std.mem.Allocator, args: []const []const u8, root_ov
         return error.UnexpectedPluginArgument;
     }
 
+    try overrides.validate();
     try listPluginsAndPrint(allocator, marketplace_name, overrides);
 }
 
@@ -656,6 +639,7 @@ fn runPluginRemove(allocator: std.mem.Allocator, args: []const []const u8, root_
         return err;
     };
     defer selection.deinit(allocator);
+    try parsed.overrides.validate();
     try removePluginAndPrint(allocator, selection);
 }
 
@@ -1609,6 +1593,7 @@ fn runMarketplaceAdd(allocator: std.mem.Allocator, args: []const []const u8, roo
         printMarketplaceAddHelp();
         return error.MissingPluginMarketplaceSource;
     };
+    try overrides.validate();
     try addMarketplaceAndPrint(allocator, source_value, ref_name, sparse_paths.items);
 }
 
@@ -1629,6 +1614,7 @@ fn runMarketplaceList(allocator: std.mem.Allocator, args: []const []const u8, ro
         if (try parsePluginCliOverride(allocator, args, &index, &overrides)) continue;
         return error.UnexpectedPluginMarketplaceArgument;
     }
+    try overrides.validate();
     try listMarketplacesAndPrint(allocator, overrides);
 }
 
@@ -1654,6 +1640,7 @@ fn runMarketplaceUpgrade(allocator: std.mem.Allocator, args: []const []const u8,
         marketplace_name = arg;
     }
 
+    try overrides.validate();
     return upgradeMarketplacesAndPrint(allocator, marketplace_name, overrides);
 }
 
@@ -1681,6 +1668,7 @@ fn runMarketplaceRemove(allocator: std.mem.Allocator, args: []const []const u8, 
         printMarketplaceRemoveHelp();
         return error.MissingPluginMarketplaceName;
     };
+    try overrides.validate();
     try removeMarketplaceAndPrint(allocator, marketplace_name_value);
 }
 
@@ -1967,10 +1955,10 @@ test "plugin config feature overrides affect plugin feature gate" {
 
     var overrides = PluginCliOverrides{};
     defer overrides.deinit(allocator);
-    try applyRawFeatureConfigOverride(allocator, &overrides.feature_overrides, "features.plugins=true");
+    try features_cmd.applyRawConfigOverride(allocator, &overrides.feature_overrides, "features.plugins=true");
     try std.testing.expect(pluginsFeatureEnabled("[features]\nplugins = false\n", overrides));
 
-    try applyRawFeatureConfigOverride(allocator, &overrides.feature_overrides, "features.plugins=false");
+    try features_cmd.applyRawConfigOverride(allocator, &overrides.feature_overrides, "features.plugins=false");
     try std.testing.expect(!pluginsFeatureEnabled("[features]\nplugins = true\n", overrides));
 }
 
