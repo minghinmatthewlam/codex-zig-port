@@ -150,6 +150,7 @@ pub fn runWithOptions(allocator: std.mem.Allocator, args: *std.process.Args.Iter
     var runtime_feature_overrides = try options.feature_overrides.clone(allocator);
     defer runtime_feature_overrides.deinit(allocator);
     try runtime_feature_overrides.putAll(allocator, parsed.feature_overrides);
+    try features_cmd.validateRawConfigOverrides(runtime_feature_overrides);
 
     if (parsed.review_mode) {
         try review.runRawArgsWithOptions(allocator, parsed.review_args.items, .{
@@ -430,6 +431,7 @@ fn parseArgsWithOptions(allocator: std.mem.Allocator, args: []const []const u8, 
             if (parse_options.validate_config_feature_values) {
                 try config.rememberStrictConfigUnknownOverride(allocator, &parsed.unknown_config_override, args[index]);
                 try config.applyRawConfigOverride(&parsed.config_overrides, &parsed.config_profile, args[index]);
+                try features_cmd.applyRawConfigOverride(allocator, &parsed.feature_overrides, args[index]);
             }
             continue;
         }
@@ -438,6 +440,7 @@ fn parseArgsWithOptions(allocator: std.mem.Allocator, args: []const []const u8, 
             if (parse_options.validate_config_feature_values) {
                 try config.rememberStrictConfigUnknownOverride(allocator, &parsed.unknown_config_override, raw);
                 try config.applyRawConfigOverride(&parsed.config_overrides, &parsed.config_profile, raw);
+                try features_cmd.applyRawConfigOverride(allocator, &parsed.feature_overrides, raw);
             }
             continue;
         }
@@ -1047,12 +1050,13 @@ test "exec args reject path-like profile v2 names" {
 
 test "exec args parse runtime feature toggles" {
     const allocator = std.testing.allocator;
-    const argv = [_][]const u8{ "--enable", "goals", "--disable=shell_tool", "say", "hello" };
+    const argv = [_][]const u8{ "--enable", "goals", "--disable=shell_tool", "-c", "features.artifact=true", "say", "hello" };
     const parsed = try parseArgs(allocator, argv[0..]);
     defer parsed.deinit(allocator);
 
     try std.testing.expectEqual(true, parsed.feature_overrides.get("goals").?);
     try std.testing.expectEqual(false, parsed.feature_overrides.get("shell_tool").?);
+    try std.testing.expectEqual(true, parsed.feature_overrides.get("artifact").?);
     try std.testing.expectEqualStrings("say hello", parsed.prompt.?);
 }
 

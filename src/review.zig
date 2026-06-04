@@ -133,6 +133,7 @@ pub fn runRawArgsWithOptions(allocator: std.mem.Allocator, raw_args: []const []c
     }
     try feature_overrides.putAll(allocator, options.feature_overrides);
     try feature_overrides.putAll(allocator, parsed.feature_overrides);
+    try features_cmd.validateRawConfigOverrides(feature_overrides);
 
     var credentials = if (options.oss)
         try auth.localOssCredentials(allocator)
@@ -255,12 +256,14 @@ fn parseArgsWithOptions(allocator: std.mem.Allocator, args: []const []const u8, 
             if (index >= args.len) return error.MissingReviewOptionValue;
             try config.rememberStrictConfigUnknownOverride(allocator, &parsed.unknown_config_override, args[index]);
             try config.applyRawConfigOverride(&parsed.config_overrides, &parsed.config_profile, args[index]);
+            try features_cmd.applyRawConfigOverride(allocator, &parsed.feature_overrides, args[index]);
             continue;
         }
         if (!end_options and std.mem.startsWith(u8, arg, "--config=")) {
             const raw = arg["--config=".len..];
             try config.rememberStrictConfigUnknownOverride(allocator, &parsed.unknown_config_override, raw);
             try config.applyRawConfigOverride(&parsed.config_overrides, &parsed.config_profile, raw);
+            try features_cmd.applyRawConfigOverride(allocator, &parsed.feature_overrides, raw);
             continue;
         }
         if (!end_options and std.mem.eql(u8, arg, "--enable")) {
@@ -773,7 +776,7 @@ test "review args parse base" {
 
 test "review args parse local config and feature overrides" {
     const allocator = std.testing.allocator;
-    const argv = [_][]const u8{ "-c", "review_model=gpt-review", "--enable", "goals", "--disable=shell_tool", "--uncommitted" };
+    const argv = [_][]const u8{ "-c", "review_model=gpt-review", "--enable", "goals", "--disable=shell_tool", "-c", "features.artifact=true", "--uncommitted" };
     const parsed = try parseArgs(allocator, argv[0..]);
     defer parsed.deinit(allocator);
 
@@ -781,6 +784,7 @@ test "review args parse local config and feature overrides" {
     try std.testing.expectEqualStrings("gpt-review", parsed.config_overrides.review_model.?);
     try std.testing.expectEqual(true, parsed.feature_overrides.get("goals").?);
     try std.testing.expectEqual(false, parsed.feature_overrides.get("shell_tool").?);
+    try std.testing.expectEqual(true, parsed.feature_overrides.get("artifact").?);
 }
 
 test "review args parse strict config and remember first unknown override" {
