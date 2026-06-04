@@ -509,6 +509,8 @@ fn cloneConfig(allocator: std.mem.Allocator, source: config.Config) !config.Conf
     errdefer allocator.free(openai_base_url);
     const chatgpt_base_url = try allocator.dupe(u8, source.chatgpt_base_url);
     errdefer allocator.free(chatgpt_base_url);
+    const apps_mcp_path_override = if (source.apps_mcp_path_override) |value| try allocator.dupe(u8, value) else null;
+    errdefer if (apps_mcp_path_override) |value| allocator.free(value);
     const model_provider_env_key = if (source.model_provider_env_key) |value| try allocator.dupe(u8, value) else null;
     errdefer if (model_provider_env_key) |value| allocator.free(value);
     const model_provider_bearer_token = if (source.model_provider_bearer_token) |value| try allocator.dupe(u8, value) else null;
@@ -556,6 +558,7 @@ fn cloneConfig(allocator: std.mem.Allocator, source: config.Config) !config.Conf
         .model_provider_requires_openai_auth = source.model_provider_requires_openai_auth,
         .openai_base_url = openai_base_url,
         .chatgpt_base_url = chatgpt_base_url,
+        .apps_mcp_path_override = apps_mcp_path_override,
         .model_provider_wire_api = source.model_provider_wire_api,
         .model_provider_env_key = model_provider_env_key,
         .model_provider_bearer_token = model_provider_bearer_token,

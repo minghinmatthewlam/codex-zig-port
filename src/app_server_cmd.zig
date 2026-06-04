@@ -31760,10 +31760,11 @@ fn handleAppsList(
     else
         0;
 
-    const codex_home = resolveCodexHome(allocator) catch |err| {
+    var cfg = loadAppServerConfig(allocator, state) catch |err| {
         return renderJsonRpcErrorForFailure(allocator, id_value, "app/list failed", err);
     };
-    defer allocator.free(codex_home);
+    defer cfg.deinit(allocator);
+    const codex_home = cfg.codex_home;
 
     const config_path = config.configTomlPath(allocator, codex_home) catch |err| {
         return renderJsonRpcErrorForFailure(allocator, id_value, "app/list failed", err);
@@ -31793,7 +31794,7 @@ fn handleAppsList(
     }
     try fetchRemoteAppDirectoryPagesIfAvailable(allocator, &remote_directory_pages, force_refetch);
 
-    const accessible_catalog: ?mcp_runtime.Catalog = loadCodexAppsAccessibleCatalog(allocator, codex_home, force_refetch) catch |err| {
+    const accessible_catalog: ?mcp_runtime.Catalog = loadCodexAppsAccessibleCatalog(allocator, &cfg, force_refetch) catch |err| {
         return renderJsonRpcErrorForFailure(allocator, id_value, "app/list failed", err);
     };
     defer if (accessible_catalog) |catalog| catalog.deinit(allocator);
@@ -31828,12 +31829,12 @@ fn queueAppListUpdatedNotificationAfterEnablement(allocator: std.mem.Allocator, 
     if (serverNotificationShouldBeDropped(state, "app/list/updated")) return;
     if (!(try appServerFeatureEnabled(allocator, state, "apps"))) return;
 
-    const notification = try renderAppListUpdatedNotification(allocator);
+    const notification = try renderAppListUpdatedNotification(allocator, state);
     try queuePendingServerNotification(allocator, state, "app/list/updated", notification);
 }
 
-fn renderAppListUpdatedNotification(allocator: std.mem.Allocator) ![]const u8 {
-    const data_json = try renderCurrentAppListDataJson(allocator);
+fn renderAppListUpdatedNotification(allocator: std.mem.Allocator, state: *const AppServerState) ![]const u8 {
+    const data_json = try renderCurrentAppListDataJson(allocator, state);
     defer allocator.free(data_json);
 
     return std.fmt.allocPrint(
@@ -31843,9 +31844,10 @@ fn renderAppListUpdatedNotification(allocator: std.mem.Allocator) ![]const u8 {
     );
 }
 
-fn renderCurrentAppListDataJson(allocator: std.mem.Allocator) ![]const u8 {
-    const codex_home = try resolveCodexHome(allocator);
-    defer allocator.free(codex_home);
+fn renderCurrentAppListDataJson(allocator: std.mem.Allocator, state: *const AppServerState) ![]const u8 {
+    var cfg = try loadAppServerConfig(allocator, state);
+    defer cfg.deinit(allocator);
+    const codex_home = cfg.codex_home;
 
     const config_path = try config.configTomlPath(allocator, codex_home);
     defer allocator.free(config_path);
@@ -31863,7 +31865,7 @@ fn renderCurrentAppListDataJson(allocator: std.mem.Allocator) ![]const u8 {
     }
     try fetchRemoteAppDirectoryPagesIfAvailable(allocator, &remote_directory_pages, false);
 
-    const accessible_catalog: ?mcp_runtime.Catalog = try loadCodexAppsAccessibleCatalog(allocator, codex_home, false);
+    const accessible_catalog: ?mcp_runtime.Catalog = try loadCodexAppsAccessibleCatalog(allocator, &cfg, false);
     defer if (accessible_catalog) |catalog| catalog.deinit(allocator);
     const accessible_tools: []const mcp_runtime.ToolSpec = if (accessible_catalog) |catalog| catalog.tools else &.{};
 
@@ -31889,8 +31891,8 @@ fn renderCurrentAppListDataJson(allocator: std.mem.Allocator) ![]const u8 {
     return std.json.Stringify.valueAlloc(allocator, data, .{});
 }
 
-fn loadCodexAppsAccessibleCatalog(allocator: std.mem.Allocator, codex_home: []const u8, force_refetch: bool) !?mcp_runtime.Catalog {
-    const cache_key = try codexAppsAccessibleToolsCacheKey(allocator, codex_home);
+fn loadCodexAppsAccessibleCatalog(allocator: std.mem.Allocator, cfg: *const config.Config, force_refetch: bool) !?mcp_runtime.Catalog {
+    const cache_key = try codexAppsAccessibleToolsCacheKey(allocator, cfg);
     defer if (cache_key) |key| allocator.free(key);
 
     if (!force_refetch) {
@@ -31899,7 +31901,7 @@ fn loadCodexAppsAccessibleCatalog(allocator: std.mem.Allocator, codex_home: []co
         }
     }
 
-    const catalog = mcp_runtime.loadHostOwnedCodexAppsCatalog(allocator, codex_home) catch |err| switch (err) {
+    const catalog = mcp_runtime.loadHostOwnedCodexAppsCatalogForConfig(allocator, cfg.codex_home, cfg) catch |err| switch (err) {
         error.OutOfMemory => return err,
         else => return null,
     };
@@ -31910,14 +31912,8 @@ fn loadCodexAppsAccessibleCatalog(allocator: std.mem.Allocator, codex_home: []co
     return catalog;
 }
 
-fn codexAppsAccessibleToolsCacheKey(allocator: std.mem.Allocator, codex_home: []const u8) !?[]const u8 {
-    var cfg = config.load(allocator) catch |err| switch (err) {
-        error.OutOfMemory => return err,
-        else => return null,
-    };
-    defer cfg.deinit(allocator);
-
-    var credentials = auth_mod.loadCliAuthNoRefreshForConfig(allocator, &cfg) catch |err| switch (err) {
+fn codexAppsAccessibleToolsCacheKey(allocator: std.mem.Allocator, cfg: *const config.Config) !?[]const u8 {
+    var credentials = auth_mod.loadCliAuthNoRefreshForConfig(allocator, cfg) catch |err| switch (err) {
         error.OutOfMemory => return err,
         else => return null,
     };
@@ -31927,8 +31923,9 @@ fn codexAppsAccessibleToolsCacheKey(allocator: std.mem.Allocator, codex_home: []
 
     var key = std.ArrayList(u8).empty;
     errdefer key.deinit(allocator);
-    try appendAppDirectoryCacheKeyPart(allocator, &key, "codex_home", codex_home);
+    try appendAppDirectoryCacheKeyPart(allocator, &key, "codex_home", cfg.codex_home);
     try appendAppDirectoryCacheKeyPart(allocator, &key, "chatgpt_base_url", cfg.chatgpt_base_url);
+    try appendAppDirectoryCacheKeyPart(allocator, &key, "apps_mcp_path_override", cfg.apps_mcp_path_override orelse "");
     try appendAppDirectoryCacheKeyPart(allocator, &key, "auth_mode", authMethodLabel(credentials.mode) orelse "local_oss");
     try appendAppDirectoryCacheKeyPart(allocator, &key, "account_id", credentials.account_id orelse "");
     try appendAppDirectoryCacheKeyPart(allocator, &key, "chatgpt_user_id", credentials.chatgpt_user_id orelse "");

@@ -302,8 +302,15 @@ pub fn loadCatalogForServer(
 pub fn loadHostOwnedCodexAppsCatalog(allocator: std.mem.Allocator, codex_home: []const u8) !Catalog {
     var cfg = try config.loadWithOptions(allocator, .{});
     defer cfg.deinit(allocator);
+    return loadHostOwnedCodexAppsCatalogForConfig(allocator, codex_home, &cfg);
+}
 
-    var credentials = auth_mod.loadCliAuthNoRefreshForConfig(allocator, &cfg) catch |err| switch (err) {
+pub fn loadHostOwnedCodexAppsCatalogForConfig(
+    allocator: std.mem.Allocator,
+    codex_home: []const u8,
+    cfg: *const config.Config,
+) !Catalog {
+    var credentials = auth_mod.loadCliAuthNoRefreshForConfig(allocator, cfg) catch |err| switch (err) {
         error.OutOfMemory => return err,
         else => return .{ .tools = try allocator.alloc(ToolSpec, 0) },
     };
@@ -312,7 +319,7 @@ pub fn loadHostOwnedCodexAppsCatalog(allocator: std.mem.Allocator, codex_home: [
         return .{ .tools = try allocator.alloc(ToolSpec, 0) };
     }
 
-    var server = try hostOwnedCodexAppsServer(allocator, cfg.chatgpt_base_url, credentials);
+    var server = try hostOwnedCodexAppsServer(allocator, cfg.chatgpt_base_url, cfg.apps_mcp_path_override, credentials);
     defer server.deinit(allocator);
     return loadCatalogForServer(allocator, codex_home, server, .{});
 }
@@ -1845,12 +1852,13 @@ fn mcpAuthorizationHeader(
 fn hostOwnedCodexAppsServer(
     allocator: std.mem.Allocator,
     chatgpt_base_url: []const u8,
+    apps_mcp_path_override: ?[]const u8,
     credentials: auth_mod.Credentials,
 ) !mcp_cmd.McpServer {
     const name = try allocator.dupe(u8, codex_apps_mcp_server_name);
     var name_owned_by_server = false;
     errdefer if (!name_owned_by_server) allocator.free(name);
-    const url = try codexAppsMcpUrlForBaseUrl(allocator, chatgpt_base_url, null);
+    const url = try codexAppsMcpUrlForBaseUrl(allocator, chatgpt_base_url, apps_mcp_path_override);
     var url_owned_by_server = false;
     errdefer if (!url_owned_by_server) allocator.free(url);
     const bearer_token_env_var = try codexAppsBearerTokenEnvVar(allocator);
@@ -2686,6 +2694,13 @@ test "mcp codex apps URL keeps api codex base for non-backend hosts" {
     const url = try codexAppsMcpUrlForBaseUrl(allocator, "http://127.0.0.1:8080/api/codex", null);
     defer allocator.free(url);
     try std.testing.expectEqualStrings("http://127.0.0.1:8080/api/codex/apps", url);
+}
+
+test "mcp codex apps URL uses path override" {
+    const allocator = std.testing.allocator;
+    const url = try codexAppsMcpUrlForBaseUrl(allocator, "https://chatgpt.com/backend-api/codex", "/custom/mcp");
+    defer allocator.free(url);
+    try std.testing.expectEqualStrings("https://chatgpt.com/backend-api/custom/mcp", url);
 }
 
 test "mcp codex apps tool metadata is preserved from tool meta" {
