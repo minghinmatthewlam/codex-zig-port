@@ -3,6 +3,7 @@ const std = @import("std");
 const auth = @import("auth.zig");
 const cli_utils = @import("cli_utils.zig");
 const config = @import("config.zig");
+const features_cmd = @import("features_cmd.zig");
 const git_apply = @import("git_apply.zig");
 
 const ApplyArgs = struct {
@@ -10,11 +11,17 @@ const ApplyArgs = struct {
     task_id: ?[]const u8 = null,
     profile: ?[]const u8 = null,
     runtime_overrides: config.RuntimeOverrides = .{},
+    feature_overrides: features_cmd.FeatureOverrides = .{},
+
+    fn deinit(self: *ApplyArgs, allocator: std.mem.Allocator) void {
+        self.feature_overrides.deinit(allocator);
+    }
 };
 
 pub const Options = struct {
     profile: ?[]const u8 = null,
     runtime_overrides: config.RuntimeOverrides = .{},
+    feature_overrides: features_cmd.FeatureOverrides = .{},
 };
 
 pub fn runWithOptions(allocator: std.mem.Allocator, args: *std.process.Args.Iterator, options: Options) !void {
@@ -24,7 +31,8 @@ pub fn runWithOptions(allocator: std.mem.Allocator, args: *std.process.Args.Iter
         try raw_args.append(allocator, arg);
     }
 
-    const parsed = try parseArgs(raw_args.items);
+    var parsed = try parseArgs(allocator, raw_args.items);
+    defer parsed.deinit(allocator);
     if (parsed.help) {
         printHelp();
         return;
@@ -40,6 +48,12 @@ pub fn runWithOptions(allocator: std.mem.Allocator, args: *std.process.Args.Iter
     try config.applyRuntimeOverrides(&cfg, allocator, options.runtime_overrides);
     try config.applyRuntimeOverrides(&cfg, allocator, parsed.runtime_overrides);
 
+    var feature_overrides = try features_cmd.loadFeatureOverridesForProfile(allocator, cfg.codex_home, cfg.active_profile);
+    defer feature_overrides.deinit(allocator);
+    try feature_overrides.putAll(allocator, options.feature_overrides);
+    try feature_overrides.putAll(allocator, parsed.feature_overrides);
+    try features_cmd.validateRawConfigOverrides(feature_overrides);
+
     var credentials = try auth.loadCliAuthForConfig(allocator, &cfg);
     defer credentials.deinit(allocator);
 
@@ -52,8 +66,9 @@ pub fn runWithOptions(allocator: std.mem.Allocator, args: *std.process.Args.Iter
     try applyGitDiff(allocator, task_id, diff);
 }
 
-fn parseArgs(args: []const []const u8) !ApplyArgs {
+fn parseArgs(allocator: std.mem.Allocator, args: []const []const u8) !ApplyArgs {
     var parsed = ApplyArgs{};
+    errdefer parsed.deinit(allocator);
     if (helpPreflight(args)) {
         parsed.help = true;
         return parsed;
@@ -69,10 +84,33 @@ fn parseArgs(args: []const []const u8) !ApplyArgs {
             index += 1;
             if (index >= args.len) return error.MissingConfigOptionValue;
             try config.applyRawConfigOverride(&parsed.runtime_overrides, &parsed.profile, args[index]);
+            try features_cmd.applyRawConfigOverride(allocator, &parsed.feature_overrides, args[index]);
             continue;
         }
         if (std.mem.startsWith(u8, arg, "--config=")) {
-            try config.applyRawConfigOverride(&parsed.runtime_overrides, &parsed.profile, arg["--config=".len..]);
+            const raw = arg["--config=".len..];
+            try config.applyRawConfigOverride(&parsed.runtime_overrides, &parsed.profile, raw);
+            try features_cmd.applyRawConfigOverride(allocator, &parsed.feature_overrides, raw);
+            continue;
+        }
+        if (std.mem.eql(u8, arg, "--enable")) {
+            index += 1;
+            if (index >= args.len or optionValueBoundary(args[index])) return error.MissingFeatureName;
+            try features_cmd.putRuntimeToggle(allocator, &parsed.feature_overrides, args[index], true);
+            continue;
+        }
+        if (std.mem.startsWith(u8, arg, "--enable=")) {
+            try features_cmd.putRuntimeToggle(allocator, &parsed.feature_overrides, arg["--enable=".len..], true);
+            continue;
+        }
+        if (std.mem.eql(u8, arg, "--disable")) {
+            index += 1;
+            if (index >= args.len or optionValueBoundary(args[index])) return error.MissingFeatureName;
+            try features_cmd.putRuntimeToggle(allocator, &parsed.feature_overrides, args[index], false);
+            continue;
+        }
+        if (std.mem.startsWith(u8, arg, "--disable=")) {
+            try features_cmd.putRuntimeToggle(allocator, &parsed.feature_overrides, arg["--disable=".len..], false);
             continue;
         }
         if (std.mem.startsWith(u8, arg, "-")) return error.UnknownApplyOption;
@@ -94,6 +132,12 @@ fn helpPreflight(args: []const []const u8) bool {
             continue;
         }
         if (std.mem.startsWith(u8, arg, "--config=")) continue;
+        if (std.mem.eql(u8, arg, "--enable") or std.mem.eql(u8, arg, "--disable")) {
+            index += 1;
+            if (index >= args.len or optionValueBoundary(args[index])) return false;
+            continue;
+        }
+        if (std.mem.startsWith(u8, arg, "--enable=") or std.mem.startsWith(u8, arg, "--disable=")) continue;
         if (std.mem.startsWith(u8, arg, "-")) return false;
         if (task_seen) return false;
         task_seen = true;
@@ -278,6 +322,8 @@ pub fn printHelp() void {
         \\
         \\Options:
         \\  -c, --config key=value  Override a supported config value
+        \\  --enable FEATURE        Enable a feature for this invocation
+        \\  --disable FEATURE       Disable a feature for this invocation
         \\  -h, --help              Print help
         \\
     , .{});
@@ -311,7 +357,29 @@ test "apply command reports missing PR diff" {
 
 test "apply command parses task and config override" {
     const argv = [_][]const u8{ "task_123", "-c", "model=gpt-test" };
-    const parsed = try parseArgs(argv[0..]);
+    var parsed = try parseArgs(std.testing.allocator, argv[0..]);
+    defer parsed.deinit(std.testing.allocator);
+
     try std.testing.expectEqualStrings("task_123", parsed.task_id.?);
     try std.testing.expectEqualStrings("gpt-test", parsed.runtime_overrides.model.?);
+}
+
+test "apply command accepts task and feature overrides" {
+    const argv = [_][]const u8{ "task_123", "--enable", "goals", "--disable=shell_tool", "-c", "features.artifact=true" };
+    var parsed = try parseArgs(std.testing.allocator, argv[0..]);
+    defer parsed.deinit(std.testing.allocator);
+
+    try std.testing.expectEqualStrings("task_123", parsed.task_id.?);
+    try std.testing.expectEqual(true, parsed.feature_overrides.get("goals").?);
+    try std.testing.expectEqual(false, parsed.feature_overrides.get("shell_tool").?);
+    try std.testing.expectEqual(true, parsed.feature_overrides.get("artifact").?);
+    try std.testing.expectError(error.UnknownFeature, parseArgs(std.testing.allocator, &.{ "task_123", "--enable", "not_a_feature" }));
+}
+
+test "apply command help preflight skips feature values" {
+    var help = try parseArgs(std.testing.allocator, &.{ "task_123", "--enable", "definitely-not-a-feature", "--help" });
+    defer help.deinit(std.testing.allocator);
+
+    try std.testing.expect(help.help);
+    try std.testing.expectError(error.MissingFeatureName, parseArgs(std.testing.allocator, &.{ "task_123", "--enable", "--help" }));
 }
