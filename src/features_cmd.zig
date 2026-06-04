@@ -421,6 +421,13 @@ fn applyRawNestedFeatureConfigOverride(
     rest: []const u8,
     raw_value: []const u8,
 ) !void {
+    if (std.mem.eql(u8, feature, "apps_mcp_path_override") and std.mem.eql(u8, rest, "path")) {
+        if (!appsMcpPathOverrideRawValueIsString(raw_value)) return error.InvalidConfigOverride;
+        if (overrides.get(feature) == null) {
+            try putRuntimeToggle(allocator, overrides, feature, true);
+        }
+        return;
+    }
     if (!std.mem.eql(u8, rest, "enabled")) return error.InvalidConfigOverride;
     try putRuntimeToggle(allocator, overrides, feature, try parseRawBooleanFeatureValue(raw_value));
 }
@@ -429,6 +436,17 @@ fn parseRawBooleanFeatureValue(raw_value: []const u8) !bool {
     if (std.mem.eql(u8, raw_value, "true")) return true;
     if (std.mem.eql(u8, raw_value, "false")) return false;
     return error.InvalidConfigOverride;
+}
+
+fn appsMcpPathOverrideRawValueIsString(raw_value: []const u8) bool {
+    const value = std.mem.trim(u8, raw_value, " \t\r\n");
+    if (value.len == 0) return true;
+    if (value[0] == '"' or value[0] == '\'') return true;
+    if (std.mem.eql(u8, value, "true") or std.mem.eql(u8, value, "false")) return false;
+    if (std.fmt.parseInt(i64, value, 10)) |_| return false else |_| {}
+    if (std.fmt.parseFloat(f64, value)) |_| return false else |_| {}
+    if (value[0] == '[' or value[0] == '{') return false;
+    return true;
 }
 
 pub fn validateRawConfigOverrides(overrides: FeatureOverrides) !void {
@@ -883,17 +901,12 @@ fn parseFeatureOverridesForProfile(
         const eq = std.mem.indexOfScalar(u8, line, '=') orelse continue;
         const key = std.mem.trim(u8, line[0..eq], " \t");
         const raw_value = std.mem.trim(u8, line[eq + 1 ..], " \t");
-        const enabled = if (std.mem.eql(u8, raw_value, "true"))
-            true
-        else if (std.mem.eql(u8, raw_value, "false"))
-            false
-        else
-            continue;
-        const canonical_key = feature_registry.canonicalFeatureKey(key) orelse continue;
         switch (section) {
             .none => {},
-            .top_level => try base_overrides.put(allocator, canonical_key, enabled),
-            .profile => try profile_overrides.put(allocator, canonical_key, enabled),
+            .top_level => try applyPersistentFeatureTableLine(allocator, &base_overrides, key, raw_value),
+            .profile => try applyPersistentFeatureTableLine(allocator, &profile_overrides, key, raw_value),
+            .top_level_payload => try applyPersistentAppsMcpPathOverridePayloadLine(allocator, &base_overrides, key, raw_value),
+            .profile_payload => try applyPersistentAppsMcpPathOverridePayloadLine(allocator, &profile_overrides, key, raw_value),
         }
     }
 
@@ -909,6 +922,8 @@ const FeatureConfigSection = enum {
     none,
     top_level,
     profile,
+    top_level_payload,
+    profile_payload,
 };
 
 const FeatureConfigUpdate = union(enum) {
@@ -918,10 +933,37 @@ const FeatureConfigUpdate = union(enum) {
 
 fn featureConfigSectionForLine(line: []const u8, profile: ?[]const u8) FeatureConfigSection {
     if (std.mem.eql(u8, line, "[features]")) return .top_level;
+    if (std.mem.eql(u8, line, "[features.apps_mcp_path_override]")) return .top_level_payload;
     if (profile) |name| {
         if (isProfileFeaturesSection(line, name)) return .profile;
+        if (isProfileAppsMcpPathOverrideSection(line, name)) return .profile_payload;
     }
     return .none;
+}
+
+fn applyPersistentFeatureTableLine(
+    allocator: std.mem.Allocator,
+    overrides: *FeatureOverrides,
+    key: []const u8,
+    raw_value: []const u8,
+) !void {
+    applyFeaturePathConfigOverride(allocator, overrides, key, raw_value) catch return;
+}
+
+fn applyPersistentAppsMcpPathOverridePayloadLine(
+    allocator: std.mem.Allocator,
+    overrides: *FeatureOverrides,
+    key: []const u8,
+    raw_value: []const u8,
+) !void {
+    if (std.mem.eql(u8, key, "enabled")) {
+        try overrides.put(allocator, "apps_mcp_path_override", try parseRawBooleanFeatureValue(raw_value));
+    } else if (std.mem.eql(u8, key, "path")) {
+        if (!appsMcpPathOverrideRawValueIsString(raw_value)) return;
+        if (overrides.get("apps_mcp_path_override") == null) {
+            try overrides.put(allocator, "apps_mcp_path_override", true);
+        }
+    }
 }
 
 fn updateFeatureConfig(
@@ -1006,6 +1048,19 @@ fn isProfileFeaturesSection(line: []const u8, profile: []const u8) bool {
     const section = std.mem.trim(u8, line[1 .. line.len - 1], " \t");
     const prefix = "profiles.";
     const suffix = ".features";
+    if (!std.mem.startsWith(u8, section, prefix) or !std.mem.endsWith(u8, section, suffix)) return false;
+    const raw_name = section[prefix.len .. section.len - suffix.len];
+    if (raw_name.len >= 2 and raw_name[0] == '"' and raw_name[raw_name.len - 1] == '"') {
+        return std.mem.eql(u8, raw_name[1 .. raw_name.len - 1], profile);
+    }
+    return std.mem.eql(u8, raw_name, profile);
+}
+
+fn isProfileAppsMcpPathOverrideSection(line: []const u8, profile: []const u8) bool {
+    if (line.len < "[]".len or line[0] != '[' or line[line.len - 1] != ']') return false;
+    const section = std.mem.trim(u8, line[1 .. line.len - 1], " \t");
+    const prefix = "profiles.";
+    const suffix = ".features.apps_mcp_path_override";
     if (!std.mem.startsWith(u8, section, prefix) or !std.mem.endsWith(u8, section, suffix)) return false;
     const raw_name = section[prefix.len .. section.len - suffix.len];
     if (raw_name.len >= 2 and raw_name[0] == '"' and raw_name[raw_name.len - 1] == '"') {
@@ -1187,6 +1242,62 @@ test "feature overrides parse booleans from features table" {
     try std.testing.expect(overrides.get("unknown") == null);
 }
 
+test "feature overrides parse apps mcp path override payload" {
+    const allocator = std.testing.allocator;
+    var overrides = try parseFeatureOverridesForProfile(allocator,
+        \\[features.apps_mcp_path_override]
+        \\path = "/custom/mcp"
+        \\
+        \\[profiles.work.features.apps_mcp_path_override]
+        \\enabled = false
+        \\path = "/profile/mcp"
+        \\
+        \\[profiles.inline.features]
+        \\apps_mcp_path_override = { path = "/inline/mcp" }
+        \\
+    , null);
+    defer overrides.deinit(allocator);
+    try std.testing.expectEqual(true, overrides.get("apps_mcp_path_override").?);
+
+    var profile_overrides = try parseFeatureOverridesForProfile(allocator,
+        \\[features.apps_mcp_path_override]
+        \\path = "/custom/mcp"
+        \\
+        \\[profiles.work.features.apps_mcp_path_override]
+        \\enabled = false
+        \\path = "/profile/mcp"
+        \\
+        \\[profiles.inline.features]
+        \\apps_mcp_path_override = { path = "/inline/mcp" }
+        \\
+    , "work");
+    defer profile_overrides.deinit(allocator);
+    try std.testing.expectEqual(false, profile_overrides.get("apps_mcp_path_override").?);
+
+    var inline_overrides = try parseFeatureOverridesForProfile(allocator,
+        \\[features.apps_mcp_path_override]
+        \\path = "/custom/mcp"
+        \\
+        \\[profiles.inline.features]
+        \\apps_mcp_path_override = { path = "/inline/mcp" }
+        \\
+    , "inline");
+    defer inline_overrides.deinit(allocator);
+    try std.testing.expectEqual(true, inline_overrides.get("apps_mcp_path_override").?);
+
+    var dotted_overrides = try parseFeatureOverridesForProfile(allocator,
+        \\[features]
+        \\apps_mcp_path_override = false
+        \\apps_mcp_path_override.path = "/dotted/mcp"
+        \\
+        \\[profiles.work.features]
+        \\apps_mcp_path_override.path = "/profile-dotted/mcp"
+        \\
+    , "work");
+    defer dotted_overrides.deinit(allocator);
+    try std.testing.expectEqual(true, dotted_overrides.get("apps_mcp_path_override").?);
+}
+
 test "feature overrides parse legacy aliases as canonical features" {
     const allocator = std.testing.allocator;
     var overrides = try parseFeatureOverrides(allocator,
@@ -1321,9 +1432,10 @@ test "raw config feature override applies flat known booleans" {
     try applyRawConfigOverride(allocator, &overrides, "features.not_real=true");
     try applyRawConfigOverride(allocator, &overrides, "features.multi_agent_v2.enabled=true");
     try applyRawConfigOverride(allocator, &overrides, "features.apps_mcp_path_override.enabled=true");
+    try applyRawConfigOverride(allocator, &overrides, "features.apps_mcp_path_override.path=/tmp/apps-mcp");
     try applyRawConfigOverride(allocator, &overrides, "features.network_proxy.enabled=true");
     try applyRawConfigOverride(allocator, &overrides, "features.multi_agent_v2={enabled=true}");
-    try applyRawConfigOverride(allocator, &overrides, "features.apps_mcp_path_override={enabled=true}");
+    try applyRawConfigOverride(allocator, &overrides, "features.apps_mcp_path_override={path=\"/tmp/apps\"}");
     try applyRawConfigOverride(allocator, &overrides, "features.network_proxy={enabled=true}");
     try applyRawConfigOverride(allocator, &overrides, "features={artifact=false,multi_agent_v2={enabled=false},apps_mcp_path_override={enabled=true},network_proxy={enabled=true}} # trailing comment");
     try applyRawConfigOverride(allocator, &overrides, "model=gpt-test");
@@ -1348,7 +1460,6 @@ test "raw config feature override rejects unsupported nested payload leaves" {
     var overrides = FeatureOverrides{};
     defer overrides.deinit(allocator);
 
-    try std.testing.expectError(error.InvalidConfigOverride, applyRawConfigOverride(allocator, &overrides, "features.apps_mcp_path_override.path=/tmp/apps-mcp"));
     try std.testing.expectError(error.InvalidConfigOverride, applyRawConfigOverride(allocator, &overrides, "features.apps_mcp_path_override.path=false"));
     try std.testing.expectError(error.InvalidConfigOverride, applyRawConfigOverride(allocator, &overrides, "features.multi_agent_v2.max_concurrent_threads_per_session=4"));
     try std.testing.expectError(error.InvalidConfigOverride, applyRawConfigOverride(allocator, &overrides, "features.multi_agent_v2.min_wait_timeout_ms=40000"));
@@ -1360,7 +1471,7 @@ test "raw config feature override rejects unsupported nested payload leaves" {
     try std.testing.expectError(error.InvalidConfigOverride, applyRawConfigOverride(allocator, &overrides, "features.network_proxy.domains={\"api.example.com\"=\"allow\"}"));
     try std.testing.expectError(error.InvalidConfigOverride, applyRawConfigOverride(allocator, &overrides, "features.network_proxy.domains.\"api.example.com\"=\"allow\""));
     try std.testing.expectError(error.InvalidConfigOverride, applyRawConfigOverride(allocator, &overrides, "features={network_proxy={mode=limited}}"));
-    try std.testing.expectError(error.InvalidConfigOverride, applyRawConfigOverride(allocator, &overrides, "features={apps_mcp_path_override={path=\"/tmp/apps\"}}"));
+    try std.testing.expectError(error.InvalidConfigOverride, applyRawConfigOverride(allocator, &overrides, "features={apps_mcp_path_override={path=false}}"));
 }
 
 test "raw config feature override decodes quoted toml inline keys" {

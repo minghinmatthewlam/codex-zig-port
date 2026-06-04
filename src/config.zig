@@ -29,6 +29,7 @@ pub const Config = struct {
     model_provider_wire_api: ModelProviderWireApi = .responses,
     model_provider_supports_websockets: bool = true,
     model_provider_websocket_connect_timeout_ms: u64 = DEFAULT_WEBSOCKET_CONNECT_TIMEOUT_MS,
+    apps_mcp_path_override: ?[]const u8 = null,
     model_provider_env_key: ?[]const u8 = null,
     model_provider_bearer_token: ?[]const u8 = null,
     model_provider_auth_command: ?ProviderAuthCommand = null,
@@ -71,6 +72,7 @@ pub const Config = struct {
         if (self.model_provider_id) |value| allocator.free(value);
         allocator.free(self.openai_base_url);
         allocator.free(self.chatgpt_base_url);
+        if (self.apps_mcp_path_override) |value| allocator.free(value);
         if (self.model_provider_env_key) |value| allocator.free(value);
         if (self.model_provider_bearer_token) |value| allocator.free(value);
         if (self.model_provider_auth_command) |*value| value.deinit(allocator);
@@ -204,6 +206,8 @@ pub const RuntimeOverrides = struct {
     model_provider_id: ?[]const u8 = null,
     openai_base_url: ?[]const u8 = null,
     chatgpt_base_url: ?[]const u8 = null,
+    apps_mcp_path_override_enabled: ?bool = null,
+    apps_mcp_path_override_path: ?[]const u8 = null,
     oss_provider: ?[]const u8 = null,
     approval_policy: ?ApprovalPolicy = null,
     approvals_reviewer: ?ApprovalsReviewer = null,
@@ -232,6 +236,8 @@ pub fn mergeRuntimeOverrides(base: RuntimeOverrides, overrides: RuntimeOverrides
     if (overrides.model_provider_id) |value| merged.model_provider_id = value;
     if (overrides.openai_base_url) |value| merged.openai_base_url = value;
     if (overrides.chatgpt_base_url) |value| merged.chatgpt_base_url = value;
+    if (overrides.apps_mcp_path_override_enabled) |value| merged.apps_mcp_path_override_enabled = value;
+    if (overrides.apps_mcp_path_override_path) |value| merged.apps_mcp_path_override_path = value;
     if (overrides.oss_provider) |value| merged.oss_provider = value;
     if (overrides.approval_policy) |value| merged.approval_policy = value;
     if (overrides.approvals_reviewer) |value| merged.approvals_reviewer = value;
@@ -391,6 +397,23 @@ pub fn applyRuntimeOverrides(
         allocator.free(cfg.chatgpt_base_url);
         cfg.chatgpt_base_url = next_chatgpt_base_url;
     }
+    if (overrides.apps_mcp_path_override_enabled != null or overrides.apps_mcp_path_override_path != null) {
+        const enabled = overrides.apps_mcp_path_override_enabled orelse (overrides.apps_mcp_path_override_path != null);
+        var next_apps_mcp_path_override: ?[]const u8 = null;
+        errdefer if (next_apps_mcp_path_override) |value| allocator.free(value);
+        if (enabled) {
+            if (overrides.apps_mcp_path_override_path) |path| {
+                next_apps_mcp_path_override = try allocator.dupe(u8, path);
+            } else if (cfg.apps_mcp_path_override == null) {
+                next_apps_mcp_path_override = try allocator.dupe(u8, DEFAULT_APPS_MCP_PATH_OVERRIDE);
+            }
+        }
+        if (next_apps_mcp_path_override != null or !enabled) {
+            if (cfg.apps_mcp_path_override) |existing| allocator.free(existing);
+            cfg.apps_mcp_path_override = next_apps_mcp_path_override;
+            next_apps_mcp_path_override = null;
+        }
+    }
     if (overrides.oss_provider) |oss_provider| {
         const next_oss_provider = try allocator.dupe(u8, oss_provider);
         if (cfg.oss_provider) |existing| allocator.free(existing);
@@ -523,6 +546,7 @@ pub fn applyRawConfigOverride(
     const key = try rawConfigOverrideKey(raw);
     const value = trimConfigOverrideValue(raw[eq + 1 ..]);
     if (key.len == 0) return error.InvalidConfigOverride;
+    try applyAppsMcpPathOverrideRawConfigOverride(runtime_overrides, key, raw[eq + 1 ..], value);
 
     if (std.mem.eql(u8, key, "profile")) {
         profile_override.* = value;
@@ -683,6 +707,92 @@ fn trimConfigOverrideValue(raw: []const u8) []const u8 {
         return value[1 .. value.len - 1];
     }
     return value;
+}
+
+fn applyAppsMcpPathOverrideRawConfigOverride(
+    runtime_overrides: *RuntimeOverrides,
+    key: []const u8,
+    raw_value: []const u8,
+    value: []const u8,
+) !void {
+    const first = tomlDottedPathFirstSegment(key) orelse return;
+    if (!tomlSegmentMatches(first.raw, "features")) return;
+    if (first.rest.len == 0) {
+        const contents = inlineTableContentsSlice(raw_value) orelse return;
+        var entries = InlineTableEntryIterator.init(contents);
+        while (try entries.next()) |entry| {
+            const parts = inlineTableEntryParts(entry) orelse return error.InvalidConfigOverride;
+            if (tomlSegmentMatches(parts.key, "apps_mcp_path_override")) {
+                try applyAppsMcpPathOverrideFeatureValue(runtime_overrides, parts.raw_value);
+            }
+        }
+        return;
+    }
+
+    const feature = tomlDottedPathFirstSegment(first.rest) orelse return;
+    if (!tomlSegmentMatches(feature.raw, "apps_mcp_path_override")) return;
+    if (feature.rest.len == 0) {
+        try applyAppsMcpPathOverrideFeatureValue(runtime_overrides, raw_value);
+        return;
+    }
+
+    const leaf = tomlDottedPathFirstSegment(feature.rest) orelse return;
+    if (leaf.rest.len != 0) return error.InvalidConfigOverride;
+    if (tomlSegmentMatches(leaf.raw, "enabled")) {
+        runtime_overrides.apps_mcp_path_override_enabled = parseRawConfigBoolean(raw_value) orelse return error.InvalidConfigOverride;
+    } else if (tomlSegmentMatches(leaf.raw, "path")) {
+        if (!appsMcpPathOverrideRawValueIsString(raw_value)) return error.InvalidConfigOverride;
+        runtime_overrides.apps_mcp_path_override_path = value;
+    } else {
+        return error.InvalidConfigOverride;
+    }
+}
+
+fn applyAppsMcpPathOverrideFeatureValue(
+    runtime_overrides: *RuntimeOverrides,
+    raw_value: []const u8,
+) !void {
+    if (inlineTableContentsSlice(raw_value)) |contents| {
+        var entries = InlineTableEntryIterator.init(contents);
+        while (try entries.next()) |entry| {
+            const parts = inlineTableEntryParts(entry) orelse return error.InvalidConfigOverride;
+            if (tomlSegmentMatches(parts.key, "enabled")) {
+                runtime_overrides.apps_mcp_path_override_enabled = parseRawConfigBoolean(parts.raw_value) orelse return error.InvalidConfigOverride;
+            } else if (tomlSegmentMatches(parts.key, "path")) {
+                if (!appsMcpPathOverrideRawValueIsString(parts.raw_value)) return error.InvalidConfigOverride;
+                runtime_overrides.apps_mcp_path_override_path = trimConfigOverrideValue(parts.raw_value);
+            } else {
+                return error.InvalidConfigOverride;
+            }
+        }
+        return;
+    }
+    runtime_overrides.apps_mcp_path_override_enabled = parseRawConfigBoolean(raw_value) orelse return error.InvalidConfigOverride;
+}
+
+fn parseRawConfigBoolean(raw_value: []const u8) ?bool {
+    const value = std.mem.trim(u8, raw_value, " \t\r\n");
+    if (std.mem.eql(u8, value, "true")) return true;
+    if (std.mem.eql(u8, value, "false")) return false;
+    return null;
+}
+
+fn appsMcpPathOverrideRawValueIsString(raw_value: []const u8) bool {
+    const value = std.mem.trim(u8, raw_value, " \t\r\n");
+    if (value.len == 0) return true;
+    if (value[0] == '"' or value[0] == '\'') return true;
+    if (parseRawConfigBoolean(value) != null) return false;
+    if (std.fmt.parseInt(i64, value, 10)) |_| return false else |_| {}
+    if (std.fmt.parseFloat(f64, value)) |_| return false else |_| {}
+    if (value[0] == '[' or value[0] == '{') return false;
+    return true;
+}
+
+fn inlineTableContentsSlice(raw_value: []const u8) ?[]const u8 {
+    const value = std.mem.trim(u8, raw_value, " \t\r\n");
+    if (value.len < 2 or value[0] != '{') return null;
+    const end = std.mem.lastIndexOfScalar(u8, value, '}') orelse return null;
+    return std.mem.trim(u8, value[1..end], " \t\r\n");
 }
 
 pub const ApprovalPolicy = enum {
@@ -1088,6 +1198,8 @@ pub fn loadWithOptions(allocator: std.mem.Allocator, options: LoadOptions) !Conf
     const base_urls = try resolveBaseUrls(allocator, config_view, active_profile);
     errdefer allocator.free(base_urls.openai);
     errdefer allocator.free(base_urls.chatgpt);
+    const apps_mcp_path_override = try resolveAppsMcpPathOverride(allocator, config_view, active_profile);
+    errdefer if (apps_mcp_path_override) |value| allocator.free(value);
 
     const model_provider_wire_api = try resolveModelProviderWireApi(allocator, config_view, active_profile);
 
@@ -1160,6 +1272,7 @@ pub fn loadWithOptions(allocator: std.mem.Allocator, options: LoadOptions) !Conf
         .model_provider_websocket_connect_timeout_ms = model_provider_websocket_connect_timeout_ms,
         .openai_base_url = base_urls.openai,
         .chatgpt_base_url = base_urls.chatgpt,
+        .apps_mcp_path_override = apps_mcp_path_override,
         .model_provider_wire_api = model_provider_wire_api,
         .model_provider_env_key = model_provider_auth.env_key,
         .model_provider_bearer_token = model_provider_auth.bearer_token,
@@ -1398,6 +1511,53 @@ fn resolveBaseUrls(allocator: std.mem.Allocator, config_view: ConfigView, active
     const model_provider = try resolveModelProviderId(allocator, config_view, active_profile);
     defer if (model_provider) |value| allocator.free(value);
     return resolveBaseUrlsForProvider(allocator, config_view, active_profile, model_provider);
+}
+
+const DEFAULT_APPS_MCP_PATH_OVERRIDE = "/ps/mcp";
+
+const AppsMcpPathOverrideState = struct {
+    enabled: ?bool = null,
+    path: ?[]const u8 = null,
+    has_path: bool = false,
+
+    fn deinit(self: *AppsMcpPathOverrideState, allocator: std.mem.Allocator) void {
+        if (self.path) |value| allocator.free(value);
+        self.path = null;
+        self.has_path = false;
+    }
+
+    fn setOwnedPath(self: *AppsMcpPathOverrideState, allocator: std.mem.Allocator, path: []const u8) void {
+        if (self.path) |existing| allocator.free(existing);
+        self.path = path;
+        self.has_path = true;
+    }
+};
+
+fn resolveAppsMcpPathOverride(
+    allocator: std.mem.Allocator,
+    config_view: ConfigView,
+    active_profile: ?[]const u8,
+) !?[]const u8 {
+    var base = AppsMcpPathOverrideState{};
+    defer base.deinit(allocator);
+    var profile = AppsMcpPathOverrideState{};
+    defer profile.deinit(allocator);
+
+    try config_view.collectAppsMcpPathOverride(allocator, active_profile, &base, &profile);
+
+    const has_profile_path = profile.has_path;
+    const path = if (has_profile_path) profile.path else base.path;
+    const effective_enabled = if (profile.enabled) |enabled|
+        enabled
+    else if (has_profile_path)
+        true
+    else if (base.enabled) |enabled|
+        enabled
+    else
+        base.has_path;
+    if (!effective_enabled) return null;
+    const owned: []const u8 = try allocator.dupe(u8, path orelse DEFAULT_APPS_MCP_PATH_OVERRIDE);
+    return owned;
 }
 
 fn resolveBaseUrlsForProvider(
@@ -2822,6 +2982,40 @@ const ConfigView = struct {
         }
     }
 
+    fn collectAppsMcpPathOverride(
+        self: ConfigView,
+        allocator: std.mem.Allocator,
+        profile: ?[]const u8,
+        base: *AppsMcpPathOverrideState,
+        profile_state: *AppsMcpPathOverrideState,
+    ) !void {
+        if (self.fallback) |fallback| {
+            try fallback.collectAppsMcpPathOverride(allocator, profile, base, profile_state);
+        }
+
+        var section = AppsMcpPathOverrideSection.other;
+        var multiline = TomlMultilineScanState{};
+        var iter = std.mem.splitScalar(u8, self.bytes, '\n');
+        while (iter.next()) |line_raw| {
+            const line = std.mem.trim(u8, line_raw, " \t\r");
+            if (multiline.skipBodyLine(line_raw)) continue;
+            if (line.len == 0 or line[0] == '#') continue;
+            if (line[0] == '[') {
+                section = appsMcpPathOverrideSection(line, profile);
+                continue;
+            }
+
+            switch (section) {
+                .base_features => try collectAppsMcpFeatureTableLine(allocator, base, line),
+                .profile_features => try collectAppsMcpFeatureTableLine(allocator, profile_state, line),
+                .base_payload => try collectAppsMcpFeaturePayloadLine(allocator, base, line),
+                .profile_payload => try collectAppsMcpFeaturePayloadLine(allocator, profile_state, line),
+                .other => {},
+            }
+            multiline.observeLine(line);
+        }
+    }
+
     fn strictConfigUnknownField(self: ConfigView, allocator: std.mem.Allocator) !?[]const u8 {
         var section: []const u8 = "";
         var multiline = TomlMultilineScanState{};
@@ -2868,6 +3062,100 @@ const ConfigView = struct {
         return false;
     }
 };
+
+const AppsMcpPathOverrideSection = enum {
+    other,
+    base_features,
+    profile_features,
+    base_payload,
+    profile_payload,
+};
+
+fn appsMcpPathOverrideSection(line: []const u8, profile: ?[]const u8) AppsMcpPathOverrideSection {
+    const section = tomlSectionName(line) orelse return .other;
+    const first = tomlDottedPathFirstSegment(section) orelse return .other;
+    if (tomlSegmentMatches(first.raw, "features")) {
+        if (first.rest.len == 0) return .base_features;
+        const feature = tomlDottedPathFirstSegment(first.rest) orelse return .other;
+        if (feature.rest.len == 0 and tomlSegmentMatches(feature.raw, "apps_mcp_path_override")) {
+            return .base_payload;
+        }
+        return .other;
+    }
+
+    const profile_name = profile orelse return .other;
+    if (!tomlSegmentMatches(first.raw, "profiles")) return .other;
+    const profile_segment = tomlDottedPathFirstSegment(first.rest) orelse return .other;
+    if (!tomlSegmentMatches(profile_segment.raw, profile_name)) return .other;
+    const features_segment = tomlDottedPathFirstSegment(profile_segment.rest) orelse return .other;
+    if (!tomlSegmentMatches(features_segment.raw, "features")) return .other;
+    if (features_segment.rest.len == 0) return .profile_features;
+    const feature = tomlDottedPathFirstSegment(features_segment.rest) orelse return .other;
+    if (feature.rest.len == 0 and tomlSegmentMatches(feature.raw, "apps_mcp_path_override")) {
+        return .profile_payload;
+    }
+    return .other;
+}
+
+fn collectAppsMcpFeatureTableLine(
+    allocator: std.mem.Allocator,
+    state: *AppsMcpPathOverrideState,
+    line: []const u8,
+) !void {
+    const key = tomlAssignmentKey(line) orelse return;
+    const raw_value = tomlAssignmentRawValue(line) orelse return;
+    const feature = tomlDottedPathFirstSegment(key) orelse return;
+    if (!tomlSegmentMatches(feature.raw, "apps_mcp_path_override")) return;
+    if (feature.rest.len == 0) {
+        if (parseInlineTableBool(raw_value)) |enabled| {
+            state.enabled = enabled;
+            return;
+        }
+        const inline_table = inlineTableContentsSlice(raw_value) orelse return;
+        try collectAppsMcpInlineFeatureTable(allocator, state, inline_table);
+        return;
+    }
+
+    const leaf = tomlDottedPathFirstSegment(feature.rest) orelse return;
+    if (leaf.rest.len != 0) return;
+    if (tomlSegmentMatches(leaf.raw, "enabled")) {
+        state.enabled = parseInlineTableBool(raw_value) orelse return;
+    } else if (tomlSegmentMatches(leaf.raw, "path")) {
+        const path = try parseTomlStringValue(allocator, raw_value) orelse return;
+        state.setOwnedPath(allocator, path);
+    }
+}
+
+fn collectAppsMcpFeaturePayloadLine(
+    allocator: std.mem.Allocator,
+    state: *AppsMcpPathOverrideState,
+    line: []const u8,
+) !void {
+    if (boolValueForKey(line, "enabled")) |enabled| {
+        state.enabled = enabled;
+        return;
+    }
+    if (try stringValueForKey(allocator, line, "path")) |path| {
+        state.setOwnedPath(allocator, path);
+    }
+}
+
+fn collectAppsMcpInlineFeatureTable(
+    allocator: std.mem.Allocator,
+    state: *AppsMcpPathOverrideState,
+    contents: []const u8,
+) !void {
+    var entries = InlineTableEntryIterator.init(contents);
+    while (try entries.next()) |entry| {
+        const parts = inlineTableEntryParts(entry) orelse return error.InvalidTomlInlineTable;
+        if (std.mem.eql(u8, parts.key, "enabled")) {
+            state.enabled = parseInlineTableBool(parts.raw_value) orelse return error.InvalidTomlInlineTable;
+        } else if (std.mem.eql(u8, parts.key, "path")) {
+            const path = try parseTomlStringValue(allocator, parts.raw_value) orelse return error.InvalidTomlInlineTable;
+            state.setOwnedPath(allocator, path);
+        }
+    }
+}
 
 fn tomlSectionName(line: []const u8) ?[]const u8 {
     if (line.len >= 4 and std.mem.startsWith(u8, line, "[[")) {
@@ -3872,6 +4160,11 @@ fn tomlAssignmentKey(line: []const u8) ?[]const u8 {
     return lhs;
 }
 
+fn tomlAssignmentRawValue(line: []const u8) ?[]const u8 {
+    const eq = tomlAssignmentEqualsIndex(line) orelse return null;
+    return std.mem.trim(u8, line[eq + 1 ..], " \t");
+}
+
 fn tomlAssignmentEqualsIndex(line: []const u8) ?usize {
     var in_basic_string = false;
     var in_literal_string = false;
@@ -4166,6 +4459,134 @@ fn parseStringMapInlineTable(allocator: std.mem.Allocator, contents: []const u8)
         return null;
     }
     return .{ .entries = try entries.toOwnedSlice(allocator) };
+}
+
+const InlineTableEntryParts = struct {
+    key: []const u8,
+    raw_value: []const u8,
+};
+
+fn inlineTableEntryParts(entry: []const u8) ?InlineTableEntryParts {
+    const eq = tomlAssignmentEqualsIndex(entry) orelse return null;
+    return .{
+        .key = std.mem.trim(u8, entry[0..eq], " \t"),
+        .raw_value = std.mem.trim(u8, entry[eq + 1 ..], " \t"),
+    };
+}
+
+const InlineTableEntryIterator = struct {
+    contents: []const u8,
+    start: usize = 0,
+    index: usize = 0,
+    in_basic_string: bool = false,
+    in_literal_string: bool = false,
+    escaped: bool = false,
+    array_depth: usize = 0,
+    table_depth: usize = 0,
+    done: bool = false,
+
+    fn init(contents: []const u8) InlineTableEntryIterator {
+        return .{ .contents = contents };
+    }
+
+    fn next(self: *InlineTableEntryIterator) !?[]const u8 {
+        if (self.done) return null;
+        while (self.index <= self.contents.len) {
+            const at_end = self.index == self.contents.len;
+            if (!at_end) {
+                const byte = self.contents[self.index];
+                if (self.in_basic_string) {
+                    if (self.escaped) {
+                        self.escaped = false;
+                    } else if (byte == '\\') {
+                        self.escaped = true;
+                    } else if (byte == '"') {
+                        self.in_basic_string = false;
+                    }
+                    self.index += 1;
+                    continue;
+                }
+                if (self.in_literal_string) {
+                    if (byte == '\'') self.in_literal_string = false;
+                    self.index += 1;
+                    continue;
+                }
+                switch (byte) {
+                    '"' => {
+                        self.in_basic_string = true;
+                        self.index += 1;
+                        continue;
+                    },
+                    '\'' => {
+                        self.in_literal_string = true;
+                        self.index += 1;
+                        continue;
+                    },
+                    '[' => {
+                        self.array_depth += 1;
+                        self.index += 1;
+                        continue;
+                    },
+                    ']' => {
+                        if (self.array_depth == 0) return error.InvalidTomlInlineTable;
+                        self.array_depth -= 1;
+                        self.index += 1;
+                        continue;
+                    },
+                    '{' => {
+                        self.table_depth += 1;
+                        self.index += 1;
+                        continue;
+                    },
+                    '}' => {
+                        if (self.table_depth == 0) return error.InvalidTomlInlineTable;
+                        self.table_depth -= 1;
+                        self.index += 1;
+                        continue;
+                    },
+                    ',' => if (self.array_depth != 0 or self.table_depth != 0) {
+                        self.index += 1;
+                        continue;
+                    },
+                    else => {
+                        self.index += 1;
+                        continue;
+                    },
+                }
+            } else {
+                try self.ensureComplete();
+                self.done = true;
+            }
+
+            const entry = std.mem.trim(u8, self.contents[self.start..self.index], " \t\r\n");
+            self.start = self.index + 1;
+            self.index += 1;
+            if (entry.len == 0) {
+                if (at_end) return null;
+                continue;
+            }
+            return entry;
+        }
+        try self.ensureComplete();
+        self.done = true;
+        return null;
+    }
+
+    fn ensureComplete(self: InlineTableEntryIterator) !void {
+        if (self.in_basic_string or
+            self.in_literal_string or
+            self.array_depth != 0 or
+            self.table_depth != 0)
+        {
+            return error.InvalidTomlInlineTable;
+        }
+    }
+};
+
+fn parseInlineTableBool(raw_value: []const u8) ?bool {
+    if (std.mem.eql(u8, raw_value, "true")) return true;
+    if (std.mem.eql(u8, raw_value, "false")) return false;
+    return null;
 }
 
 pub fn parseTomlString(allocator: std.mem.Allocator, rhs: []const u8) !?[]const u8 {
@@ -5109,6 +5530,89 @@ test "quoted profile section names are supported" {
     try std.testing.expectEqualStrings("quoted-profile-model", model.?);
 }
 
+test "apps mcp path override resolves from feature config" {
+    const allocator = std.testing.allocator;
+    const view = ConfigView{
+        .bytes =
+        \\[features.apps_mcp_path_override]
+        \\path = "/custom/mcp"
+        \\
+        \\[profiles.work.features.apps_mcp_path_override]
+        \\enabled = true
+        \\path = "/profile/mcp"
+        \\
+        \\[profiles.disabled.features.apps_mcp_path_override]
+        \\enabled = false
+        \\path = "/disabled/mcp"
+        \\
+        \\[profiles.inline.features]
+        \\apps_mcp_path_override = { enabled = true, path = "/inline/mcp" }
+        \\
+        ,
+    };
+
+    const base = try resolveAppsMcpPathOverride(allocator, view, null);
+    defer allocator.free(base.?);
+    try std.testing.expectEqualStrings("/custom/mcp", base.?);
+
+    const profile = try resolveAppsMcpPathOverride(allocator, view, "work");
+    defer allocator.free(profile.?);
+    try std.testing.expectEqualStrings("/profile/mcp", profile.?);
+
+    const disabled = try resolveAppsMcpPathOverride(allocator, view, "disabled");
+    try std.testing.expectEqual(null, disabled);
+
+    const inline_value = try resolveAppsMcpPathOverride(allocator, view, "inline");
+    defer allocator.free(inline_value.?);
+    try std.testing.expectEqualStrings("/inline/mcp", inline_value.?);
+
+    const disabled_base_view = ConfigView{
+        .bytes =
+        \\[features]
+        \\apps_mcp_path_override = false
+        \\
+        \\[profiles.work.features.apps_mcp_path_override]
+        \\path = "/profile-from-disabled-base/mcp"
+        \\
+        ,
+    };
+    const profile_path = try resolveAppsMcpPathOverride(allocator, disabled_base_view, "work");
+    defer allocator.free(profile_path.?);
+    try std.testing.expectEqualStrings("/profile-from-disabled-base/mcp", profile_path.?);
+
+    const dotted_view = ConfigView{
+        .bytes =
+        \\[features]
+        \\apps_mcp_path_override.path = "/dotted/mcp"
+        \\
+        \\[profiles.work.features]
+        \\apps_mcp_path_override.path = "/profile-dotted/mcp"
+        \\
+        ,
+    };
+    const dotted = try resolveAppsMcpPathOverride(allocator, dotted_view, null);
+    defer allocator.free(dotted.?);
+    try std.testing.expectEqualStrings("/dotted/mcp", dotted.?);
+    const profile_dotted = try resolveAppsMcpPathOverride(allocator, dotted_view, "work");
+    defer allocator.free(profile_dotted.?);
+    try std.testing.expectEqualStrings("/profile-dotted/mcp", profile_dotted.?);
+}
+
+test "apps mcp path override defaults when explicitly enabled" {
+    const allocator = std.testing.allocator;
+    const view = ConfigView{
+        .bytes =
+        \\[features]
+        \\apps_mcp_path_override = true
+        \\
+        ,
+    };
+
+    const value = try resolveAppsMcpPathOverride(allocator, view, null);
+    defer allocator.free(value.?);
+    try std.testing.expectEqualStrings(DEFAULT_APPS_MCP_PATH_OVERRIDE, value.?);
+}
+
 test "quoted named section escapes are decoded" {
     const allocator = std.testing.allocator;
     const trust_level = try namedSectionStringValue(
@@ -5536,6 +6040,9 @@ test "raw cli config overrides map supported fields" {
     try applyRawConfigOverride(&runtime, &profile, "model_reasoning_summary=detailed");
     try applyRawConfigOverride(&runtime, &profile, "model_verbosity=high");
     try applyRawConfigOverride(&runtime, &profile, "tui.alternate_screen=never");
+    try applyRawConfigOverride(&runtime, &profile, "features.apps_mcp_path_override.path=/custom/mcp");
+    try applyRawConfigOverride(&runtime, &profile, "features={apps_mcp_path_override={path=\"/inline/mcp\"}}");
+    try applyRawConfigOverride(&runtime, &profile, "features.apps_mcp_path_override.enabled=false");
     try applyRawConfigOverride(&runtime, &profile, "unsupported.key=true");
 
     try std.testing.expectEqualStrings("work", profile.?);
@@ -5562,6 +6069,9 @@ test "raw cli config overrides map supported fields" {
     try std.testing.expectEqual(ReasoningSummary.detailed, runtime.model_reasoning_summary.?);
     try std.testing.expectEqual(Verbosity.high, runtime.model_verbosity.?);
     try std.testing.expectEqual(AltScreenMode.never, runtime.tui_alternate_screen.?);
+    try std.testing.expectEqualStrings("/inline/mcp", runtime.apps_mcp_path_override_path.?);
+    try std.testing.expectEqual(false, runtime.apps_mcp_path_override_enabled.?);
+    try std.testing.expectError(error.InvalidConfigOverride, applyRawConfigOverride(&runtime, &profile, "features.apps_mcp_path_override.path=false"));
 }
 
 test "raw cli config override rejects missing assignment" {
@@ -5966,6 +6476,13 @@ test "runtime path overrides resolve relative to current working directory" {
 
     try std.testing.expectEqualStrings(expected_log_dir, cfg.log_dir.?);
     try std.testing.expectEqualStrings(expected_sqlite_home, cfg.sqlite_home.?);
+
+    try applyRuntimeOverrides(&cfg, allocator, .{ .apps_mcp_path_override_path = "/custom/mcp" });
+    try std.testing.expectEqualStrings("/custom/mcp", cfg.apps_mcp_path_override.?);
+    try applyRuntimeOverrides(&cfg, allocator, .{ .apps_mcp_path_override_enabled = false });
+    try std.testing.expectEqual(null, cfg.apps_mcp_path_override);
+    try applyRuntimeOverrides(&cfg, allocator, .{ .apps_mcp_path_override_enabled = true });
+    try std.testing.expectEqualStrings(DEFAULT_APPS_MCP_PATH_OVERRIDE, cfg.apps_mcp_path_override.?);
 }
 
 test "profile v2 names must be plain filenames" {
