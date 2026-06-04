@@ -218,6 +218,19 @@ app-server smoke.
   `app-server`, and `exec-server` propagation, root unsupported-subcommand
   rejection, and app-server subcommand rejection. Remaining strict-config depth
   is full config-layer coverage across every user/project/system/managed layer.
+- Root and command-local feature config overrides now materialize into runtime
+  feature overrides for the user-visible CLI surfaces that accept feature
+  controls, including interactive/resume/fork, exec, review, apply, cloud,
+  sandbox, doctor, plugin, remote-control, and app-server daemon flows. This
+  covers flat `-c features.artifact=true`, nested `.enabled` leaves such as
+  `features.multi_agent_v2.enabled=true`, and inline TOML tables such as
+  `-c 'features={"artifact"=true}'` and
+  `-c 'features={network_proxy={enabled=true}}'`; unknown flat boolean feature
+  keys are ignored while invalid scalar or unsupported nested feature config
+  payloads fail instead of being silently dropped. Deeper Rust feature payloads
+  such as `features.apps_mcp_path_override.path`,
+  `features.network_proxy.*` settings, and non-toggle `multi_agent_v2` settings
+  remain planned until their runtime consumers are ported.
 - Root runtime surfaces now support `--profile-v2 <CONFIG_PROFILE_V2>` for
   interactive runs, `exec`, `review`, `resume`, `fork`, and
   `debug prompt-input`; `exec --profile-v2` also works locally. Unsupported
