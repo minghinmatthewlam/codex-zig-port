@@ -54,7 +54,7 @@ pub fn runWithOptions(allocator: std.mem.Allocator, args: *std.process.Args.Iter
             if (!parsed.json) {
                 try cli_utils.writeStdout("Starting app-server daemon with remote control enabled...\n");
             }
-            try app_server_cmd.runRemoteControlDaemonStart(allocator, parsed.json, parsed.child_global_args.items, options.feature_overrides);
+            try app_server_cmd.runRemoteControlDaemonStart(allocator, parsed.json, parsed.child_global_args.items, parsed.feature_overrides);
         },
         .stop => {
             if (!parsed.json) {
@@ -118,15 +118,18 @@ fn parseArgSliceWithOptions(allocator: std.mem.Allocator, args: []const []const 
                 &profile,
                 args[index],
             );
+            try features_cmd.applyRawConfigOverride(allocator, &parsed.feature_overrides, args[index]);
             continue;
         }
         if (std.mem.startsWith(u8, arg, "--config=")) {
+            const raw = arg["--config=".len..];
             try parsed.child_global_args.append(allocator, arg);
             try config.applyRawConfigOverride(
                 &parsed.runtime_overrides,
                 &profile,
-                arg["--config=".len..],
+                raw,
             );
+            try features_cmd.applyRawConfigOverride(allocator, &parsed.feature_overrides, raw);
             continue;
         }
         if (std.mem.eql(u8, arg, "--enable")) {
@@ -161,6 +164,7 @@ fn parseArgSliceWithOptions(allocator: std.mem.Allocator, args: []const []const 
     }
 
     try enableRemoteControlForInvocation(allocator, &parsed.feature_overrides);
+    try features_cmd.validateRawConfigOverrides(parsed.feature_overrides);
     return parsed;
 }
 
@@ -396,17 +400,20 @@ test "remote-control command rejects unexpected positional arguments" {
 
 test "remote-control command parses config overrides" {
     const allocator = std.testing.allocator;
-    const raw_args = [_][]const u8{ "-c", "model=\"o3\"", "--config=chatgpt_base_url=http://127.0.0.1:9" };
+    const raw_args = [_][]const u8{ "-c", "model=\"o3\"", "--config=chatgpt_base_url=http://127.0.0.1:9", "-c", "features.artifact=true" };
     var parsed = try parseArgSlice(allocator, raw_args[0..]);
     defer parsed.deinit(allocator);
 
     try std.testing.expectEqualStrings("o3", parsed.runtime_overrides.model.?);
     try std.testing.expectEqualStrings("http://127.0.0.1:9", parsed.runtime_overrides.chatgpt_base_url.?);
     try std.testing.expectEqual(true, parsed.feature_overrides.get("remote_control").?);
-    try std.testing.expectEqual(@as(usize, 3), parsed.child_global_args.items.len);
+    try std.testing.expectEqual(true, parsed.feature_overrides.get("artifact").?);
+    try std.testing.expectEqual(@as(usize, 5), parsed.child_global_args.items.len);
     try std.testing.expectEqualStrings("-c", parsed.child_global_args.items[0]);
     try std.testing.expectEqualStrings("model=\"o3\"", parsed.child_global_args.items[1]);
     try std.testing.expectEqualStrings("--config=chatgpt_base_url=http://127.0.0.1:9", parsed.child_global_args.items[2]);
+    try std.testing.expectEqualStrings("-c", parsed.child_global_args.items[3]);
+    try std.testing.expectEqualStrings("features.artifact=true", parsed.child_global_args.items[4]);
 }
 
 test "remote-control command preserves root child global args before command-local args" {

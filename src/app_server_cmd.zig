@@ -1114,6 +1114,7 @@ pub fn runWithOptions(
         const subcommand_help = appServerSubcommandTailHasHelp(name, subcommand_args.items);
         const subcommand_help_like = subcommand_help or (std.mem.eql(u8, name, "daemon") and daemonTailMentionsHelp(subcommand_args.items));
         if (strict_config and !subcommand_help_like) return failStrictConfigUnsupportedForSubcommandWithTail(name, subcommand_args.items);
+        if (!subcommand_help_like) try features_cmd.validateRawConfigOverrides(invocation_options.feature_overrides);
         if (std.mem.eql(u8, name, "proxy")) {
             try runProxy(allocator, subcommand_args.items);
             return;
@@ -1160,6 +1161,7 @@ pub fn runWithOptions(
     if (options.remote_control_enabled) {
         try server_feature_overrides.put(allocator, "remote_control", true);
     }
+    try features_cmd.validateRawConfigOverrides(server_feature_overrides);
     var server_invocation_options = invocation_options;
     server_invocation_options.feature_overrides = server_feature_overrides;
     server_invocation_options.remote_control_enabled = options.remote_control_enabled;
@@ -1318,8 +1320,8 @@ pub fn runRemoteControlDaemonStart(
 
     var daemon_child_args = std.ArrayList([]const u8).empty;
     defer daemon_child_args.deinit(allocator);
-    try appendDaemonFeatureOverrideArgsExcluding(allocator, &daemon_child_args, root_feature_overrides, "remote_control");
     try daemon_child_args.appendSlice(allocator, child_global_args);
+    try appendDaemonFeatureOverrideArgsExcluding(allocator, &daemon_child_args, root_feature_overrides, "remote_control");
 
     try ensureDaemonScaffolding(allocator, codex_home, true);
     try ensureDaemonUpdaterPidLock(allocator, codex_home);
@@ -1357,11 +1359,13 @@ fn runDaemon(
     root_feature_overrides: features_cmd.FeatureOverrides,
     root_child_global_args: []const []const u8,
 ) !void {
+    try validateDaemonLocalFeatureOverrides(allocator, raw_args, root_feature_overrides);
+
     var command: ?DaemonCommand = null;
     var options = DaemonRunOptions{};
     defer options.deinit(allocator);
-    try appendDaemonFeatureOverrideArgs(allocator, &options.child_global_args, root_feature_overrides);
     try options.child_global_args.appendSlice(allocator, root_child_global_args);
+    try appendDaemonFeatureOverrideArgs(allocator, &options.child_global_args, root_feature_overrides);
 
     var index: usize = 0;
     while (index < raw_args.len) : (index += 1) {
@@ -1456,6 +1460,54 @@ fn runDaemon(
         .restart => try runDaemonRestart(allocator, codex_home, options.child_global_args.items),
         .pid_update_loop => try runDaemonPidUpdateLoop(),
     }
+}
+
+fn validateDaemonLocalFeatureOverrides(
+    allocator: std.mem.Allocator,
+    raw_args: []const []const u8,
+    root_feature_overrides: features_cmd.FeatureOverrides,
+) !void {
+    if (daemonTailMentionsHelp(raw_args)) return;
+
+    var feature_overrides = try root_feature_overrides.clone(allocator);
+    defer feature_overrides.deinit(allocator);
+
+    var index: usize = 0;
+    while (index < raw_args.len) : (index += 1) {
+        const arg = raw_args[index];
+        if (std.mem.eql(u8, arg, "-c") or std.mem.eql(u8, arg, "--config")) {
+            if (index + 1 >= raw_args.len) return failMissingDaemonOptionValue(arg);
+            index += 1;
+            try features_cmd.applyRawConfigOverride(allocator, &feature_overrides, raw_args[index]);
+            continue;
+        }
+        if (std.mem.startsWith(u8, arg, "--config=")) {
+            try features_cmd.applyRawConfigOverride(allocator, &feature_overrides, arg["--config=".len..]);
+            continue;
+        }
+        if (std.mem.eql(u8, arg, "--enable")) {
+            if (index + 1 >= raw_args.len) return failMissingDaemonOptionValue(arg);
+            index += 1;
+            try features_cmd.putRuntimeToggle(allocator, &feature_overrides, raw_args[index], true);
+            continue;
+        }
+        if (std.mem.startsWith(u8, arg, "--enable=")) {
+            try features_cmd.putRuntimeToggle(allocator, &feature_overrides, arg["--enable=".len..], true);
+            continue;
+        }
+        if (std.mem.eql(u8, arg, "--disable")) {
+            if (index + 1 >= raw_args.len) return failMissingDaemonOptionValue(arg);
+            index += 1;
+            try features_cmd.putRuntimeToggle(allocator, &feature_overrides, raw_args[index], false);
+            continue;
+        }
+        if (std.mem.startsWith(u8, arg, "--disable=")) {
+            try features_cmd.putRuntimeToggle(allocator, &feature_overrides, arg["--disable=".len..], false);
+            continue;
+        }
+    }
+
+    try features_cmd.validateRawConfigOverrides(feature_overrides);
 }
 
 pub fn tailHasHelp(args: []const []const u8) bool {
@@ -1628,6 +1680,38 @@ fn appendDaemonFeatureOverrideArgsExcluding(
         try child_global_args.append(allocator, if (item.enabled) "--enable" else "--disable");
         try child_global_args.append(allocator, item.key);
     }
+}
+
+test "daemon feature args are appended after forwarded root config args" {
+    const allocator = std.testing.allocator;
+    var args = std.ArrayList([]const u8).empty;
+    defer args.deinit(allocator);
+    try args.appendSlice(allocator, &.{ "-c", "features.artifact=false" });
+    var overrides = features_cmd.FeatureOverrides{};
+    defer overrides.deinit(allocator);
+    try overrides.put(allocator, "artifact", true);
+
+    try appendDaemonFeatureOverrideArgs(allocator, &args, overrides);
+
+    try std.testing.expectEqual(@as(usize, 4), args.items.len);
+    try std.testing.expectEqualStrings("-c", args.items[0]);
+    try std.testing.expectEqualStrings("features.artifact=false", args.items[1]);
+    try std.testing.expectEqualStrings("--enable", args.items[2]);
+    try std.testing.expectEqualStrings("artifact", args.items[3]);
+}
+
+test "daemon local feature overrides validate before non-launch actions" {
+    const allocator = std.testing.allocator;
+    var root = features_cmd.FeatureOverrides{};
+    defer root.deinit(allocator);
+    try root.put(allocator, "artifact", true);
+
+    try validateDaemonLocalFeatureOverrides(allocator, &.{ "-c", "features.artifact=false", "version" }, root);
+    try validateDaemonLocalFeatureOverrides(allocator, &.{ "stop", "--disable=shell_tool" }, root);
+    try std.testing.expectError(error.InvalidConfigOverride, validateDaemonLocalFeatureOverrides(allocator, &.{ "-c", "features.artifact=maybe", "stop" }, root));
+    try std.testing.expectError(error.UnknownFeature, validateDaemonLocalFeatureOverrides(allocator, &.{ "version", "--enable", "definitely-not-a-feature" }, root));
+    try std.testing.expectError(error.InvalidConfigOverride, validateDaemonLocalFeatureOverrides(allocator, &.{ "version", "-c", "features.network_proxy.mode=limited" }, root));
+    try validateDaemonLocalFeatureOverrides(allocator, &.{ "-c", "features.artifact=maybe", "--help" }, root);
 }
 
 fn daemonCommandFromName(name: []const u8) ?DaemonCommand {
