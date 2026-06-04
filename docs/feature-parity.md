@@ -1,6 +1,6 @@
 # Feature Parity Gap List
 
-Last checked: 2026-05-25.
+Last checked: 2026-06-04.
 
 This file tracks user-facing feature parity against the local Rust Codex CLI
 reference, not CI, release, OSS hygiene, byte-for-byte fixture parity, or
@@ -8,8 +8,8 @@ purely internal generator parity. The current reference is:
 
 - Rust checkout: `/Users/matthewlam/dev/codex` at
   `5381240f57fe326b13bc81325f3c61596592fc7a`
-- Installed Rust CLI: `codex-cli 0.133.0`
-- Zig checkout: `bfd3d441e1df89ba1ba534f02214e10025d7f048`
+- Installed Rust CLI: `codex-cli 0.135.0`
+- Zig checkout: `36875f21ec515a4fc98a3720fad0069956fc0037`
 - Zig CLI: `codex-zig 0.0.1`
 
 The source evidence for this pass was the Rust and Zig root help output,
