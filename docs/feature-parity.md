@@ -227,9 +227,10 @@ app-server smoke.
   `-c 'features={"artifact"=true}'` and
   `-c 'features={network_proxy={enabled=true}}'`; unknown flat boolean feature
   keys are ignored while invalid scalar or unsupported nested feature config
-  payloads fail instead of being silently dropped. Deeper Rust feature payloads
-  such as `features.apps_mcp_path_override.path`,
-  `features.network_proxy.*` settings, and non-toggle `multi_agent_v2` settings
+  payloads fail instead of being silently dropped. `features.apps_mcp_path_override.path`
+  is now ported for persistent config and runtime `-c` overrides, including the
+  host-owned `codex_apps` MCP URL consumer. Deeper Rust feature payloads such as
+  `features.network_proxy.*` settings and non-toggle `multi_agent_v2` settings
   remain planned until their runtime consumers are ported.
 - Root runtime surfaces now support `--profile-v2 <CONFIG_PROFILE_V2>` for
   interactive runs, `exec`, `review`, `resume`, `fork`, and
