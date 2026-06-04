@@ -277,6 +277,11 @@ app-server smoke.
   generation, `daemon`, daemon `help`, and daemon action commands. These help
   paths also defer root semantic checks before printing valid help or
   Rust-shaped invalid nested-subcommand errors with Clap-style exit status 2.
+- App-server-local `-c/--config`, `--enable`, and `--disable` are accepted on
+  the root app-server command, `proxy`, public generators, and hidden internal
+  schema generation. Local feature/config overrides validate before execution,
+  help paths skip unknown feature/config validation while preserving missing
+  value errors, and local `-c` overrides are forwarded to daemon child launches.
 
 ### App-Server Daemon and Remote Control
 

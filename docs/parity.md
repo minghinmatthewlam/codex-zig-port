@@ -273,6 +273,10 @@ still fail instead of being treated as help or output paths.
 and daemon-command help, and invalid nested help targets report
 unrecognized-subcommand errors with Clap-style exit status 2 before root
 semantic checks.
+App-server-local `-c/--config`, `--enable`, and `--disable` now parse on the
+root app-server command, `proxy`, public generators, and hidden internal schema
+generation; help paths defer unknown feature/config validation but still reject
+missing values, and local `-c` overrides are forwarded to daemon child launches.
 Full Rust generator parity remains planned.
 
 Current app-server stdio/Unix/websocket JSON-RPC handling accepts well-formed

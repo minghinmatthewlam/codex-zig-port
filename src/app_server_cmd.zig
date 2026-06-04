@@ -410,6 +410,7 @@ fn configSqliteHome(cfg: config.Config) []const u8 {
 }
 
 pub const InvocationOptions = struct {
+    profile: ?[]const u8 = null,
     runtime_overrides: config.RuntimeOverrides = .{},
     feature_overrides: features_cmd.FeatureOverrides = .{},
     child_global_args: []const []const u8 = &.{},
@@ -528,6 +529,7 @@ const AppServerState = struct {
     bypass_hook_trust: bool = false,
     remote_control_enabled: bool = false,
     session_source: []const u8 = "vscode",
+    active_profile: ?[]const u8 = null,
     runtime_overrides: config.RuntimeOverrides = .{},
     thread_unloading_delay_ms: i64 = THREAD_UNLOADING_DELAY_MS,
     cli_feature_overrides: features_cmd.FeatureOverrides = .{},
@@ -587,6 +589,7 @@ fn initAppServerState(
         .bypass_hook_trust = invocation_options.bypass_hook_trust,
         .remote_control_enabled = invocation_options.remote_control_enabled,
         .session_source = invocation_options.session_source,
+        .active_profile = invocation_options.profile,
         .runtime_overrides = invocation_options.runtime_overrides,
         .thread_unloading_delay_ms = appServerThreadUnloadingDelayMs(allocator),
         .cli_feature_overrides = try invocation_options.feature_overrides.clone(allocator),
@@ -604,7 +607,9 @@ fn loadAppServerConfigWithOptions(
     state: *const AppServerState,
     options: config.LoadOptions,
 ) !config.Config {
-    var cfg = try config.loadWithOptions(allocator, options);
+    var effective_options = options;
+    if (effective_options.profile == null) effective_options.profile = state.active_profile;
+    var cfg = try config.loadWithOptions(allocator, effective_options);
     errdefer cfg.deinit(allocator);
     try config.applyRuntimeOverrides(&cfg, allocator, state.runtime_overrides);
     return cfg;
@@ -1003,13 +1008,37 @@ pub fn runWithOptions(
     args: *std.process.Args.Iterator,
     invocation_options: InvocationOptions,
 ) !void {
+    var raw_args = std.ArrayList([]const u8).empty;
+    defer raw_args.deinit(allocator);
+    while (args.next()) |arg| try raw_args.append(allocator, arg);
+    try runWithOptionsArgs(allocator, raw_args.items, invocation_options);
+}
+
+fn runWithOptionsArgs(
+    allocator: std.mem.Allocator,
+    raw_args: []const []const u8,
+    invocation_options: InvocationOptions,
+) !void {
     var options = AppServerOptions{};
     defer options.deinit(allocator);
+    var local_profile_override = invocation_options.profile;
+    var local_runtime_overrides = invocation_options.runtime_overrides;
+    var local_feature_overrides = try invocation_options.feature_overrides.clone(allocator);
+    defer local_feature_overrides.deinit(allocator);
+    var local_unknown_config_override: ?[]const u8 = null;
+    defer if (local_unknown_config_override) |field| allocator.free(field);
+    var local_child_global_args = std.ArrayList([]const u8).empty;
+    defer local_child_global_args.deinit(allocator);
+    try local_child_global_args.appendSlice(allocator, invocation_options.child_global_args);
+    try appendDaemonProfileArgs(allocator, &local_child_global_args, invocation_options.profile);
     var subcommand: ?[]const u8 = null;
     var subcommand_args = std.ArrayList([]const u8).empty;
     defer subcommand_args.deinit(allocator);
+    const help_like = tailHasHelp(raw_args);
 
-    while (args.next()) |arg| {
+    var index: usize = 0;
+    while (index < raw_args.len) : (index += 1) {
+        const arg = raw_args[index];
         if (subcommand != null) {
             try subcommand_args.append(allocator, arg);
             continue;
@@ -1019,7 +1048,9 @@ pub fn runWithOptions(
             return;
         }
         if (std.mem.eql(u8, arg, "--listen")) {
-            options.listen_url = args.next() orelse return error.MissingAppServerListenValue;
+            index += 1;
+            if (index >= raw_args.len) return error.MissingAppServerListenValue;
+            options.listen_url = raw_args[index];
             continue;
         }
         if (std.mem.startsWith(u8, arg, "--listen=")) {
@@ -1027,7 +1058,9 @@ pub fn runWithOptions(
             continue;
         }
         if (std.mem.eql(u8, arg, "--session-source")) {
-            try setAppServerSessionSource(allocator, &options, args.next() orelse return error.MissingAppServerSessionSource);
+            index += 1;
+            if (index >= raw_args.len) return error.MissingAppServerSessionSource;
+            try setAppServerSessionSource(allocator, &options, raw_args[index]);
             continue;
         }
         if (std.mem.startsWith(u8, arg, "--session-source=")) {
@@ -1045,8 +1078,21 @@ pub fn runWithOptions(
             options.strict_config = true;
             continue;
         }
+        if (try parseAppServerLocalConfigFeatureArg(
+            allocator,
+            raw_args,
+            &index,
+            &local_profile_override,
+            &local_runtime_overrides,
+            &local_feature_overrides,
+            &local_unknown_config_override,
+            &local_child_global_args,
+            !help_like,
+        )) continue;
         if (std.mem.eql(u8, arg, "--ws-auth")) {
-            options.websocket_auth.ws_auth = try parseWebsocketAuthMode(args.next() orelse return error.MissingAppServerWebsocketAuthMode);
+            index += 1;
+            if (index >= raw_args.len) return error.MissingAppServerWebsocketAuthMode;
+            options.websocket_auth.ws_auth = try parseWebsocketAuthMode(raw_args[index]);
             continue;
         }
         if (std.mem.startsWith(u8, arg, "--ws-auth=")) {
@@ -1054,7 +1100,9 @@ pub fn runWithOptions(
             continue;
         }
         if (std.mem.eql(u8, arg, "--ws-token-file")) {
-            options.websocket_auth.ws_token_file = args.next() orelse return error.MissingAppServerWebsocketTokenFile;
+            index += 1;
+            if (index >= raw_args.len) return error.MissingAppServerWebsocketTokenFile;
+            options.websocket_auth.ws_token_file = raw_args[index];
             continue;
         }
         if (std.mem.startsWith(u8, arg, "--ws-token-file=")) {
@@ -1062,7 +1110,9 @@ pub fn runWithOptions(
             continue;
         }
         if (std.mem.eql(u8, arg, "--ws-token-sha256")) {
-            options.websocket_auth.ws_token_sha256 = args.next() orelse return error.MissingAppServerWebsocketTokenSha256;
+            index += 1;
+            if (index >= raw_args.len) return error.MissingAppServerWebsocketTokenSha256;
+            options.websocket_auth.ws_token_sha256 = raw_args[index];
             continue;
         }
         if (std.mem.startsWith(u8, arg, "--ws-token-sha256=")) {
@@ -1070,7 +1120,9 @@ pub fn runWithOptions(
             continue;
         }
         if (std.mem.eql(u8, arg, "--ws-shared-secret-file")) {
-            options.websocket_auth.ws_shared_secret_file = args.next() orelse return error.MissingAppServerWebsocketSharedSecretFile;
+            index += 1;
+            if (index >= raw_args.len) return error.MissingAppServerWebsocketSharedSecretFile;
+            options.websocket_auth.ws_shared_secret_file = raw_args[index];
             continue;
         }
         if (std.mem.startsWith(u8, arg, "--ws-shared-secret-file=")) {
@@ -1078,7 +1130,9 @@ pub fn runWithOptions(
             continue;
         }
         if (std.mem.eql(u8, arg, "--ws-issuer")) {
-            options.websocket_auth.ws_issuer = args.next() orelse return error.MissingAppServerWebsocketIssuer;
+            index += 1;
+            if (index >= raw_args.len) return error.MissingAppServerWebsocketIssuer;
+            options.websocket_auth.ws_issuer = raw_args[index];
             continue;
         }
         if (std.mem.startsWith(u8, arg, "--ws-issuer=")) {
@@ -1086,7 +1140,9 @@ pub fn runWithOptions(
             continue;
         }
         if (std.mem.eql(u8, arg, "--ws-audience")) {
-            options.websocket_auth.ws_audience = args.next() orelse return error.MissingAppServerWebsocketAudience;
+            index += 1;
+            if (index >= raw_args.len) return error.MissingAppServerWebsocketAudience;
+            options.websocket_auth.ws_audience = raw_args[index];
             continue;
         }
         if (std.mem.startsWith(u8, arg, "--ws-audience=")) {
@@ -1094,7 +1150,9 @@ pub fn runWithOptions(
             continue;
         }
         if (std.mem.eql(u8, arg, "--ws-max-clock-skew-seconds")) {
-            options.websocket_auth.ws_max_clock_skew_seconds = try parseWebsocketClockSkew(args.next() orelse return error.MissingAppServerWebsocketClockSkew);
+            index += 1;
+            if (index >= raw_args.len) return error.MissingAppServerWebsocketClockSkew;
+            options.websocket_auth.ws_max_clock_skew_seconds = try parseWebsocketClockSkew(raw_args[index]);
             continue;
         }
         if (std.mem.startsWith(u8, arg, "--ws-max-clock-skew-seconds=")) {
@@ -1116,17 +1174,17 @@ pub fn runWithOptions(
             std.mem.eql(u8, name, "help") or
             (std.mem.eql(u8, name, "daemon") and daemonTailMentionsHelp(subcommand_args.items));
         if (strict_config and !subcommand_help_like) return failStrictConfigUnsupportedForSubcommandWithTail(name, subcommand_args.items);
-        if (!subcommand_help_like) try features_cmd.validateRawConfigOverrides(invocation_options.feature_overrides);
+        if (!subcommand_help_like) try features_cmd.validateRawConfigOverrides(local_feature_overrides);
         if (std.mem.eql(u8, name, "help")) {
             try printAppServerHelpForArgs(subcommand_args.items);
             return;
         }
         if (std.mem.eql(u8, name, "proxy")) {
-            try runProxy(allocator, subcommand_args.items);
+            try runProxy(allocator, subcommand_args.items, local_feature_overrides);
             return;
         }
         if (std.mem.eql(u8, name, "daemon")) {
-            try runDaemon(allocator, subcommand_args.items, invocation_options.feature_overrides, invocation_options.child_global_args);
+            try runDaemon(allocator, subcommand_args.items, local_feature_overrides, local_child_global_args.items);
             return;
         }
         if (std.mem.eql(u8, name, "generate-ts")) {
@@ -1134,7 +1192,7 @@ pub fn runWithOptions(
                 printGenerateTsHelp();
                 return;
             }
-            try runGenerateTs(allocator, subcommand_args.items);
+            try runGenerateTs(allocator, subcommand_args.items, local_feature_overrides);
             return;
         }
         if (std.mem.eql(u8, name, "generate-json-schema")) {
@@ -1142,7 +1200,7 @@ pub fn runWithOptions(
                 printGenerateJsonSchemaHelp();
                 return;
             }
-            try runGenerateJsonSchema(allocator, subcommand_args.items);
+            try runGenerateJsonSchema(allocator, subcommand_args.items, local_feature_overrides);
             return;
         }
         if (std.mem.eql(u8, name, "generate-internal-json-schema")) {
@@ -1150,14 +1208,18 @@ pub fn runWithOptions(
                 printGenerateInternalJsonSchemaHelp();
                 return;
             }
-            try runGenerateInternalJsonSchema(allocator, subcommand_args.items);
+            try runGenerateInternalJsonSchema(allocator, subcommand_args.items, local_feature_overrides);
             return;
         }
         return error.UnknownAppServerSubcommand;
     }
 
     if (strict_config) {
-        var cfg = try config.loadWithOptions(allocator, .{ .strict_config = true });
+        if (local_unknown_config_override) |field| return config.failStrictConfigUnknownCliOverride(field);
+        var cfg = try config.loadWithOptions(allocator, .{
+            .profile = local_profile_override,
+            .strict_config = true,
+        });
         defer cfg.deinit(allocator);
     }
 
@@ -1174,13 +1236,15 @@ pub fn runWithOptions(
         return err;
     };
 
-    var server_feature_overrides = try invocation_options.feature_overrides.clone(allocator);
+    var server_feature_overrides = try local_feature_overrides.clone(allocator);
     defer server_feature_overrides.deinit(allocator);
     if (options.remote_control_enabled) {
         try server_feature_overrides.put(allocator, "remote_control", true);
     }
     try features_cmd.validateRawConfigOverrides(server_feature_overrides);
     var server_invocation_options = invocation_options;
+    server_invocation_options.profile = local_profile_override;
+    server_invocation_options.runtime_overrides = local_runtime_overrides;
     server_invocation_options.feature_overrides = server_feature_overrides;
     server_invocation_options.remote_control_enabled = options.remote_control_enabled;
     server_invocation_options.session_source = options.session_source;
@@ -1528,6 +1592,109 @@ fn validateDaemonLocalFeatureOverrides(
     try features_cmd.validateRawConfigOverrides(feature_overrides);
 }
 
+fn parseAppServerLocalConfigFeatureArg(
+    allocator: std.mem.Allocator,
+    args: []const []const u8,
+    index: *usize,
+    profile_override: ?*?[]const u8,
+    runtime_overrides: ?*config.RuntimeOverrides,
+    feature_overrides: *features_cmd.FeatureOverrides,
+    unknown_config_override: ?*?[]const u8,
+    child_global_args: ?*std.ArrayList([]const u8),
+    validate: bool,
+) !bool {
+    const arg = args[index.*];
+    if (std.mem.eql(u8, arg, "-c") or std.mem.eql(u8, arg, "--config")) {
+        if (index.* + 1 >= args.len or optionValueLooksMissing(args[index.* + 1])) return error.MissingConfigOptionValue;
+        index.* += 1;
+        const raw = args[index.*];
+        if (raw.len != 0 and validate) {
+            if (unknown_config_override) |unknown| {
+                try config.rememberStrictConfigUnknownOverride(allocator, unknown, raw);
+            }
+            if (runtime_overrides) |runtime| {
+                var ignored_profile_override: ?[]const u8 = null;
+                const profile_target = profile_override orelse &ignored_profile_override;
+                try config.applyRawConfigOverride(runtime, profile_target, raw);
+            }
+            try features_cmd.applyRawConfigOverride(allocator, feature_overrides, raw);
+        }
+        if (raw.len != 0) {
+            if (child_global_args) |child_args| {
+                try child_args.append(allocator, arg);
+                try child_args.append(allocator, raw);
+            }
+        }
+        return true;
+    }
+    if (std.mem.startsWith(u8, arg, "--config=")) {
+        const raw = arg["--config=".len..];
+        if (raw.len != 0 and validate) {
+            if (unknown_config_override) |unknown| {
+                try config.rememberStrictConfigUnknownOverride(allocator, unknown, raw);
+            }
+            if (runtime_overrides) |runtime| {
+                var ignored_profile_override: ?[]const u8 = null;
+                const profile_target = profile_override orelse &ignored_profile_override;
+                try config.applyRawConfigOverride(runtime, profile_target, raw);
+            }
+            try features_cmd.applyRawConfigOverride(allocator, feature_overrides, raw);
+        }
+        if (raw.len != 0) {
+            if (child_global_args) |child_args| try child_args.append(allocator, arg);
+        }
+        return true;
+    }
+    if (std.mem.eql(u8, arg, "--enable")) {
+        if (index.* + 1 >= args.len or optionValueLooksMissing(args[index.* + 1])) return error.MissingFeatureName;
+        index.* += 1;
+        if (validate) try features_cmd.putRuntimeToggle(allocator, feature_overrides, args[index.*], true);
+        return true;
+    }
+    if (std.mem.startsWith(u8, arg, "--enable=")) {
+        if (validate) try features_cmd.putRuntimeToggle(allocator, feature_overrides, arg["--enable=".len..], true);
+        return true;
+    }
+    if (std.mem.eql(u8, arg, "--disable")) {
+        if (index.* + 1 >= args.len or optionValueLooksMissing(args[index.* + 1])) return error.MissingFeatureName;
+        index.* += 1;
+        if (validate) try features_cmd.putRuntimeToggle(allocator, feature_overrides, args[index.*], false);
+        return true;
+    }
+    if (std.mem.startsWith(u8, arg, "--disable=")) {
+        if (validate) try features_cmd.putRuntimeToggle(allocator, feature_overrides, arg["--disable=".len..], false);
+        return true;
+    }
+    return false;
+}
+
+fn validateAppServerLocalConfigFeatureOverrides(
+    allocator: std.mem.Allocator,
+    args: []const []const u8,
+    root_feature_overrides: features_cmd.FeatureOverrides,
+) !void {
+    var runtime_overrides = config.RuntimeOverrides{};
+    var feature_overrides = try root_feature_overrides.clone(allocator);
+    defer feature_overrides.deinit(allocator);
+
+    var index: usize = 0;
+    while (index < args.len) : (index += 1) {
+        _ = try parseAppServerLocalConfigFeatureArg(
+            allocator,
+            args,
+            &index,
+            null,
+            &runtime_overrides,
+            &feature_overrides,
+            null,
+            null,
+            true,
+        );
+    }
+
+    try features_cmd.validateRawConfigOverrides(feature_overrides);
+}
+
 pub fn tailHasHelp(args: []const []const u8) bool {
     var index: usize = 0;
     while (index < args.len) : (index += 1) {
@@ -1571,6 +1738,10 @@ pub fn tailHasHelp(args: []const []const u8) bool {
 fn appServerRootOptionConsumesSingleValue(arg: []const u8) bool {
     return std.mem.eql(u8, arg, "--listen") or
         std.mem.eql(u8, arg, "--session-source") or
+        std.mem.eql(u8, arg, "-c") or
+        std.mem.eql(u8, arg, "--config") or
+        std.mem.eql(u8, arg, "--enable") or
+        std.mem.eql(u8, arg, "--disable") or
         std.mem.eql(u8, arg, "--ws-auth") or
         std.mem.eql(u8, arg, "--ws-token-file") or
         std.mem.eql(u8, arg, "--ws-token-sha256") or
@@ -1583,6 +1754,9 @@ fn appServerRootOptionConsumesSingleValue(arg: []const u8) bool {
 fn appServerRootOptionHasInlineValue(arg: []const u8) bool {
     return std.mem.startsWith(u8, arg, "--listen=") or
         std.mem.startsWith(u8, arg, "--session-source=") or
+        std.mem.startsWith(u8, arg, "--config=") or
+        std.mem.startsWith(u8, arg, "--enable=") or
+        std.mem.startsWith(u8, arg, "--disable=") or
         std.mem.startsWith(u8, arg, "--ws-auth=") or
         std.mem.startsWith(u8, arg, "--ws-token-file=") or
         std.mem.startsWith(u8, arg, "--ws-token-sha256=") or
@@ -1614,6 +1788,12 @@ fn proxyTailHasHelp(args: []const []const u8) bool {
         const arg = args[index];
         if (std.mem.eql(u8, arg, "--")) return false;
         if (isHelpFlag(arg)) return true;
+        if (appServerLocalConfigFeatureOptionConsumesValue(arg)) {
+            index += 1;
+            if (index >= args.len or optionValueLooksMissing(args[index])) return false;
+            continue;
+        }
+        if (appServerLocalConfigFeatureOptionHasInlineValue(arg)) continue;
         if (std.mem.eql(u8, arg, "--sock")) {
             index += 1;
             if (index >= args.len or optionValueLooksMissing(args[index])) return false;
@@ -1631,6 +1811,12 @@ fn generatorTailHasHelp(args: []const []const u8, allow_prettier: bool) bool {
         const arg = args[index];
         if (std.mem.eql(u8, arg, "--")) return false;
         if (isHelpFlag(arg)) return true;
+        if (appServerLocalConfigFeatureOptionConsumesValue(arg)) {
+            index += 1;
+            if (index >= args.len or optionValueLooksMissing(args[index])) return false;
+            continue;
+        }
+        if (appServerLocalConfigFeatureOptionHasInlineValue(arg)) continue;
         if (std.mem.eql(u8, arg, "-o") or std.mem.eql(u8, arg, "--out")) {
             index += 1;
             if (index >= args.len or optionValueLooksMissing(args[index])) return false;
@@ -1705,12 +1891,36 @@ fn optionValueLooksMissing(arg: []const u8) bool {
     return std.mem.eql(u8, arg, "--") or std.mem.startsWith(u8, arg, "-");
 }
 
+fn appServerLocalConfigFeatureOptionConsumesValue(arg: []const u8) bool {
+    return std.mem.eql(u8, arg, "-c") or
+        std.mem.eql(u8, arg, "--config") or
+        std.mem.eql(u8, arg, "--enable") or
+        std.mem.eql(u8, arg, "--disable");
+}
+
+fn appServerLocalConfigFeatureOptionHasInlineValue(arg: []const u8) bool {
+    return std.mem.startsWith(u8, arg, "--config=") or
+        std.mem.startsWith(u8, arg, "--enable=") or
+        std.mem.startsWith(u8, arg, "--disable=");
+}
+
 fn appendDaemonFeatureOverrideArgs(
     allocator: std.mem.Allocator,
     child_global_args: *std.ArrayList([]const u8),
     overrides: features_cmd.FeatureOverrides,
 ) !void {
     try appendDaemonFeatureOverrideArgsExcluding(allocator, child_global_args, overrides, null);
+}
+
+fn appendDaemonProfileArgs(
+    allocator: std.mem.Allocator,
+    child_global_args: *std.ArrayList([]const u8),
+    profile: ?[]const u8,
+) !void {
+    if (profile) |value| {
+        try child_global_args.append(allocator, "--profile");
+        try child_global_args.append(allocator, value);
+    }
 }
 
 fn appendDaemonFeatureOverrideArgsExcluding(
@@ -1728,22 +1938,25 @@ fn appendDaemonFeatureOverrideArgsExcluding(
     }
 }
 
-test "daemon feature args are appended after forwarded root config args" {
+test "daemon profile and feature args are appended after forwarded root config args" {
     const allocator = std.testing.allocator;
     var args = std.ArrayList([]const u8).empty;
     defer args.deinit(allocator);
     try args.appendSlice(allocator, &.{ "-c", "features.artifact=false" });
+    try appendDaemonProfileArgs(allocator, &args, "work");
     var overrides = features_cmd.FeatureOverrides{};
     defer overrides.deinit(allocator);
     try overrides.put(allocator, "artifact", true);
 
     try appendDaemonFeatureOverrideArgs(allocator, &args, overrides);
 
-    try std.testing.expectEqual(@as(usize, 4), args.items.len);
+    try std.testing.expectEqual(@as(usize, 6), args.items.len);
     try std.testing.expectEqualStrings("-c", args.items[0]);
     try std.testing.expectEqualStrings("features.artifact=false", args.items[1]);
-    try std.testing.expectEqualStrings("--enable", args.items[2]);
-    try std.testing.expectEqualStrings("artifact", args.items[3]);
+    try std.testing.expectEqualStrings("--profile", args.items[2]);
+    try std.testing.expectEqualStrings("work", args.items[3]);
+    try std.testing.expectEqualStrings("--enable", args.items[4]);
+    try std.testing.expectEqualStrings("artifact", args.items[5]);
 }
 
 test "daemon local feature overrides validate before non-launch actions" {
@@ -1758,6 +1971,66 @@ test "daemon local feature overrides validate before non-launch actions" {
     try std.testing.expectError(error.UnknownFeature, validateDaemonLocalFeatureOverrides(allocator, &.{ "version", "--enable", "definitely-not-a-feature" }, root));
     try std.testing.expectError(error.InvalidConfigOverride, validateDaemonLocalFeatureOverrides(allocator, &.{ "version", "-c", "features.network_proxy.mode=limited" }, root));
     try validateDaemonLocalFeatureOverrides(allocator, &.{ "-c", "features.artifact=maybe", "--help" }, root);
+}
+
+test "app-server local feature flags participate in help preflight" {
+    try std.testing.expect(tailHasHelp(&.{ "--enable", "definitely-not-a-feature", "--help" }));
+    try std.testing.expect(tailHasHelp(&.{ "-c", "features.artifact=maybe", "proxy", "--help" }));
+    try std.testing.expect(tailHasHelp(&.{ "proxy", "--enable", "definitely-not-a-feature", "--help" }));
+    try std.testing.expect(tailHasHelp(&.{ "generate-ts", "--out", "src", "--disable", "definitely-not-a-feature", "--help" }));
+
+    try std.testing.expect(!tailHasHelp(&.{ "--enable", "--help" }));
+    try std.testing.expect(!tailHasHelp(&.{ "-c", "--help" }));
+    try std.testing.expect(!tailHasHelp(&.{ "proxy", "--disable", "--help" }));
+    try std.testing.expect(!tailHasHelp(&.{ "generate-json-schema", "--enable", "--help" }));
+}
+
+test "app-server local feature overrides validate for execution" {
+    const allocator = std.testing.allocator;
+    var root = features_cmd.FeatureOverrides{};
+    defer root.deinit(allocator);
+    try root.put(allocator, "artifact", true);
+
+    try validateAppServerLocalConfigFeatureOverrides(allocator, &.{ "--disable", "artifact" }, root);
+    try validateAppServerLocalConfigFeatureOverrides(allocator, &.{ "-c", "features.artifact=false" }, root);
+    try validateAppServerLocalConfigFeatureOverrides(allocator, &.{"--config="}, root);
+    try validateAppServerLocalConfigFeatureOverrides(allocator, &.{ "-c", "" }, root);
+    try std.testing.expectError(error.UnknownFeature, validateAppServerLocalConfigFeatureOverrides(allocator, &.{ "--enable", "definitely-not-a-feature" }, root));
+    try std.testing.expectError(error.InvalidConfigOverride, validateAppServerLocalConfigFeatureOverrides(allocator, &.{ "-c", "features.network_proxy.mode=limited" }, root));
+
+    var runtime = config.RuntimeOverrides{};
+    var feature_overrides = features_cmd.FeatureOverrides{};
+    defer feature_overrides.deinit(allocator);
+    var unknown: ?[]const u8 = null;
+    defer if (unknown) |field| allocator.free(field);
+    var index: usize = 0;
+    try std.testing.expect(try parseAppServerLocalConfigFeatureArg(
+        allocator,
+        &.{ "-c", "typo.field=1" },
+        &index,
+        null,
+        &runtime,
+        &feature_overrides,
+        &unknown,
+        null,
+        true,
+    ));
+    try std.testing.expectEqualStrings("typo.field", unknown.?);
+
+    var profile: ?[]const u8 = "base";
+    index = 0;
+    try std.testing.expect(try parseAppServerLocalConfigFeatureArg(
+        allocator,
+        &.{ "-c", "profile=work" },
+        &index,
+        &profile,
+        &runtime,
+        &feature_overrides,
+        null,
+        null,
+        true,
+    ));
+    try std.testing.expectEqualStrings("work", profile.?);
 }
 
 test "app-server generator tails defer semantic checks for help" {
@@ -1783,11 +2056,12 @@ test "app-server help command tails defer root semantic checks" {
 
 test "app-server generators reject help-like missing option values" {
     const allocator = std.testing.allocator;
+    const empty_features = features_cmd.FeatureOverrides{};
 
-    try std.testing.expectError(error.MissingAppServerGenerateTsOutDir, runGenerateTs(allocator, &.{ "--out", "--help" }));
-    try std.testing.expectError(error.MissingAppServerGenerateTsPrettierPath, runGenerateTs(allocator, &.{ "--out", "src", "--prettier", "--help" }));
-    try std.testing.expectError(error.MissingAppServerGenerateJsonSchemaOutDir, runGenerateJsonSchema(allocator, &.{ "--out", "--help" }));
-    try std.testing.expectError(error.MissingAppServerGenerateInternalJsonSchemaOutDir, runGenerateInternalJsonSchema(allocator, &.{ "--out", "--help" }));
+    try std.testing.expectError(error.MissingAppServerGenerateTsOutDir, runGenerateTs(allocator, &.{ "--out", "--help" }, empty_features));
+    try std.testing.expectError(error.MissingAppServerGenerateTsPrettierPath, runGenerateTs(allocator, &.{ "--out", "src", "--prettier", "--help" }, empty_features));
+    try std.testing.expectError(error.MissingAppServerGenerateJsonSchemaOutDir, runGenerateJsonSchema(allocator, &.{ "--out", "--help" }, empty_features));
+    try std.testing.expectError(error.MissingAppServerGenerateInternalJsonSchemaOutDir, runGenerateInternalJsonSchema(allocator, &.{ "--out", "--help" }, empty_features));
 }
 
 fn daemonCommandFromName(name: []const u8) ?DaemonCommand {
@@ -3744,13 +4018,17 @@ fn readWebsocketAuthSecret(allocator: std.mem.Allocator, path: []const u8) ![]co
     return allocator.dupe(u8, trimmed);
 }
 
-fn runGenerateTs(allocator: std.mem.Allocator, args: []const []const u8) !void {
+fn runGenerateTs(allocator: std.mem.Allocator, args: []const []const u8, root_feature_overrides: features_cmd.FeatureOverrides) !void {
     var out_dir: ?[]const u8 = null;
     var prettier: ?[]const u8 = null;
     var experimental = false;
+    var ignored_runtime_overrides = config.RuntimeOverrides{};
+    var ignored_feature_overrides = features_cmd.FeatureOverrides{};
+    defer ignored_feature_overrides.deinit(allocator);
     var index: usize = 0;
     while (index < args.len) : (index += 1) {
         const arg = args[index];
+        if (try parseAppServerLocalConfigFeatureArg(allocator, args, &index, null, &ignored_runtime_overrides, &ignored_feature_overrides, null, null, false)) continue;
         if (std.mem.eql(u8, arg, "-o") or std.mem.eql(u8, arg, "--out")) {
             if (index + 1 >= args.len or optionValueLooksMissing(args[index + 1])) return error.MissingAppServerGenerateTsOutDir;
             index += 1;
@@ -3781,15 +4059,20 @@ fn runGenerateTs(allocator: std.mem.Allocator, args: []const []const u8) !void {
 
     const target_dir = out_dir orelse return error.MissingAppServerGenerateTsOutDir;
     if (target_dir.len == 0) return error.MissingAppServerGenerateTsOutDir;
+    try validateAppServerLocalConfigFeatureOverrides(allocator, args, root_feature_overrides);
     try writeAppServerTs(allocator, target_dir, prettier, experimental);
 }
 
-fn runGenerateJsonSchema(allocator: std.mem.Allocator, args: []const []const u8) !void {
+fn runGenerateJsonSchema(allocator: std.mem.Allocator, args: []const []const u8, root_feature_overrides: features_cmd.FeatureOverrides) !void {
     var out_dir: ?[]const u8 = null;
     var experimental = false;
+    var ignored_runtime_overrides = config.RuntimeOverrides{};
+    var ignored_feature_overrides = features_cmd.FeatureOverrides{};
+    defer ignored_feature_overrides.deinit(allocator);
     var index: usize = 0;
     while (index < args.len) : (index += 1) {
         const arg = args[index];
+        if (try parseAppServerLocalConfigFeatureArg(allocator, args, &index, null, &ignored_runtime_overrides, &ignored_feature_overrides, null, null, false)) continue;
         if (std.mem.eql(u8, arg, "-o") or std.mem.eql(u8, arg, "--out")) {
             if (index + 1 >= args.len or optionValueLooksMissing(args[index + 1])) return error.MissingAppServerGenerateJsonSchemaOutDir;
             index += 1;
@@ -3810,14 +4093,19 @@ fn runGenerateJsonSchema(allocator: std.mem.Allocator, args: []const []const u8)
 
     const target_dir = out_dir orelse return error.MissingAppServerGenerateJsonSchemaOutDir;
     if (target_dir.len == 0) return error.MissingAppServerGenerateJsonSchemaOutDir;
+    try validateAppServerLocalConfigFeatureOverrides(allocator, args, root_feature_overrides);
     try writeAppServerJsonSchemas(allocator, target_dir, experimental);
 }
 
-fn runGenerateInternalJsonSchema(allocator: std.mem.Allocator, args: []const []const u8) !void {
+fn runGenerateInternalJsonSchema(allocator: std.mem.Allocator, args: []const []const u8, root_feature_overrides: features_cmd.FeatureOverrides) !void {
     var out_dir: ?[]const u8 = null;
+    var ignored_runtime_overrides = config.RuntimeOverrides{};
+    var ignored_feature_overrides = features_cmd.FeatureOverrides{};
+    defer ignored_feature_overrides.deinit(allocator);
     var index: usize = 0;
     while (index < args.len) : (index += 1) {
         const arg = args[index];
+        if (try parseAppServerLocalConfigFeatureArg(allocator, args, &index, null, &ignored_runtime_overrides, &ignored_feature_overrides, null, null, false)) continue;
         if (std.mem.eql(u8, arg, "-o") or std.mem.eql(u8, arg, "--out")) {
             if (index + 1 >= args.len or optionValueLooksMissing(args[index + 1])) return error.MissingAppServerGenerateInternalJsonSchemaOutDir;
             index += 1;
@@ -3834,6 +4122,7 @@ fn runGenerateInternalJsonSchema(allocator: std.mem.Allocator, args: []const []c
 
     const target_dir = out_dir orelse return error.MissingAppServerGenerateInternalJsonSchemaOutDir;
     if (target_dir.len == 0) return error.MissingAppServerGenerateInternalJsonSchemaOutDir;
+    try validateAppServerLocalConfigFeatureOverrides(allocator, args, root_feature_overrides);
     try writeRolloutLineJsonSchema(allocator, target_dir);
 }
 
@@ -28599,8 +28888,12 @@ fn shouldPrefixVersionedJsonSchemaRef(value: []const u8) bool {
     return true;
 }
 
-fn runProxy(allocator: std.mem.Allocator, args: []const []const u8) !void {
+fn runProxy(allocator: std.mem.Allocator, args: []const []const u8, root_feature_overrides: features_cmd.FeatureOverrides) !void {
     var socket_path_arg: ?[]const u8 = null;
+    const help_like = proxyTailHasHelp(args);
+    var runtime_overrides = config.RuntimeOverrides{};
+    var feature_overrides = try root_feature_overrides.clone(allocator);
+    defer feature_overrides.deinit(allocator);
     var index: usize = 0;
     while (index < args.len) : (index += 1) {
         const arg = args[index];
@@ -28608,6 +28901,7 @@ fn runProxy(allocator: std.mem.Allocator, args: []const []const u8) !void {
             printProxyHelp();
             return;
         }
+        if (try parseAppServerLocalConfigFeatureArg(allocator, args, &index, null, &runtime_overrides, &feature_overrides, null, null, !help_like)) continue;
         if (std.mem.eql(u8, arg, "--sock")) {
             if (index + 1 >= args.len) return error.MissingAppServerProxySocketPath;
             index += 1;
@@ -28621,6 +28915,7 @@ fn runProxy(allocator: std.mem.Allocator, args: []const []const u8) !void {
         if (std.mem.startsWith(u8, arg, "-")) return error.UnknownAppServerProxyOption;
         return error.UnexpectedAppServerProxyArgument;
     }
+    try features_cmd.validateRawConfigOverrides(feature_overrides);
 
     const owned_default_path = if (socket_path_arg == null) try defaultUnixSocketPath(allocator) else null;
     defer if (owned_default_path) |path| allocator.free(path);
@@ -46369,7 +46664,7 @@ fn appServerFeatureEnabledForProfile(
     profile: ?[]const u8,
     key: []const u8,
 ) !bool {
-    var cfg = try config.load(allocator);
+    var cfg = try loadAppServerConfig(allocator, state);
     defer cfg.deinit(allocator);
     const feature_profile: ?[]const u8 = if (profile) |value| value else cfg.active_profile;
     var config_overrides = try features_cmd.loadFeatureOverridesForProfile(allocator, cfg.codex_home, feature_profile);
@@ -68985,6 +69280,10 @@ pub fn remoteRejectionLabel(args: []const []const u8) []const u8 {
 fn optionConsumesValue(arg: []const u8) bool {
     return std.mem.eql(u8, arg, "--listen") or
         std.mem.eql(u8, arg, "--session-source") or
+        std.mem.eql(u8, arg, "-c") or
+        std.mem.eql(u8, arg, "--config") or
+        std.mem.eql(u8, arg, "--enable") or
+        std.mem.eql(u8, arg, "--disable") or
         std.mem.eql(u8, arg, "--ws-auth") or
         std.mem.eql(u8, arg, "--ws-token-file") or
         std.mem.eql(u8, arg, "--ws-token-sha256") or
@@ -68997,6 +69296,9 @@ fn optionConsumesValue(arg: []const u8) bool {
 fn optionHasInlineValue(arg: []const u8) bool {
     return std.mem.startsWith(u8, arg, "--listen=") or
         std.mem.startsWith(u8, arg, "--session-source=") or
+        std.mem.startsWith(u8, arg, "--config=") or
+        std.mem.startsWith(u8, arg, "--enable=") or
+        std.mem.startsWith(u8, arg, "--disable=") or
         std.mem.startsWith(u8, arg, "--ws-auth=") or
         std.mem.startsWith(u8, arg, "--ws-token-file=") or
         std.mem.startsWith(u8, arg, "--ws-token-sha256=") or
@@ -69076,6 +69378,10 @@ pub fn printHelp() void {
         \\  help                   Print this message or the help of the given subcommand(s)
         \\
         \\Options:
+        \\  -c, --config <key=value>
+        \\                          Override a supported config value
+        \\      --enable <FEATURE>  Enable a feature for this invocation
+        \\      --disable <FEATURE> Disable a feature for this invocation
         \\  --strict-config        Error on unknown config fields.
         \\  --listen URL           Transport URL. Defaults to stdio://.
         \\  --session-source SOURCE
@@ -69193,8 +69499,11 @@ fn printGenerateTsHelp() void {
         \\Usage: codex-zig app-server generate-ts [OPTIONS] --out <DIR>
         \\
         \\Options:
+        \\  -c, --config <key=value>  Override a supported config value
         \\  -o, --out <DIR>            Output directory where .ts files will be written
+        \\      --enable <FEATURE>     Enable a feature for this invocation
         \\  -p, --prettier <BIN>       Optional Prettier executable used to format generated files
+        \\      --disable <FEATURE>    Disable a feature for this invocation
         \\      --experimental         Include experimental methods and fields
         \\  -h, --help                 Print help
         \\
@@ -69208,8 +69517,11 @@ fn printGenerateJsonSchemaHelp() void {
         \\Usage: codex-zig app-server generate-json-schema [OPTIONS] --out <DIR>
         \\
         \\Options:
+        \\  -c, --config <key=value>  Override a supported config value
         \\  -o, --out <DIR>            Output directory where the schema bundle will be written
+        \\      --enable <FEATURE>     Enable a feature for this invocation
         \\      --experimental         Include experimental methods and fields
+        \\      --disable <FEATURE>    Disable a feature for this invocation
         \\  -h, --help                 Print help
         \\
     , .{});
@@ -69222,7 +69534,10 @@ fn printGenerateInternalJsonSchemaHelp() void {
         \\Usage: codex-zig app-server generate-internal-json-schema --out <DIR>
         \\
         \\Options:
+        \\  -c, --config <key=value>  Override a supported config value
         \\  -o, --out <DIR>            Output directory where the internal schema will be written
+        \\      --enable <FEATURE>     Enable a feature for this invocation
+        \\      --disable <FEATURE>    Disable a feature for this invocation
         \\  -h, --help                 Print help
         \\
     , .{});
@@ -69236,6 +69551,13 @@ fn printProxyHelp() void {
         \\Relays newline-delimited JSON-RPC between stdio and the app-server
         \\Unix control socket. If --sock is omitted, the default
         \\CODEX_HOME/app-server-control/app-server-control.sock path is used.
+        \\
+        \\Options:
+        \\  -c, --config <key=value>  Override a supported config value
+        \\      --sock SOCKET_PATH     Path to the app-server Unix domain socket
+        \\      --enable <FEATURE>     Enable a feature for this invocation
+        \\      --disable <FEATURE>    Disable a feature for this invocation
+        \\  -h, --help                 Print help
         \\
     , .{});
 }
