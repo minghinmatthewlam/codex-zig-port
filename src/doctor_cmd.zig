@@ -391,12 +391,14 @@ fn parseArgs(allocator: std.mem.Allocator, argv: []const []const u8, options: Op
             if (index >= argv.len) return error.MissingConfigOptionValue;
             try config.rememberStrictConfigUnknownOverride(allocator, &parsed.unknown_config_override, argv[index]);
             try config.applyRawConfigOverride(&parsed.runtime_overrides, &parsed.profile, argv[index]);
+            try features_cmd.applyRawConfigOverride(allocator, &parsed.feature_overrides, argv[index]);
             continue;
         }
         if (std.mem.startsWith(u8, arg, "--config=")) {
             const raw = arg["--config=".len..];
             try config.rememberStrictConfigUnknownOverride(allocator, &parsed.unknown_config_override, raw);
             try config.applyRawConfigOverride(&parsed.runtime_overrides, &parsed.profile, raw);
+            try features_cmd.applyRawConfigOverride(allocator, &parsed.feature_overrides, raw);
             continue;
         }
         if (std.mem.eql(u8, arg, "--enable")) {
@@ -422,6 +424,8 @@ fn parseArgs(allocator: std.mem.Allocator, argv: []const []const u8, options: Op
         if (std.mem.startsWith(u8, arg, "-")) return error.UnknownDoctorOption;
         return error.UnexpectedDoctorArgument;
     }
+
+    if (!parsed.help) try features_cmd.validateRawConfigOverrides(parsed.feature_overrides);
 
     if (parsed.strict_config and !parsed.help) {
         if (parsed.unknown_config_override) |field| return config.failStrictConfigUnknownCliOverride(field);
@@ -3022,6 +3026,8 @@ test "doctor parses Rust command flags" {
         "model=gpt-test",
         "--enable",
         "goals",
+        "-c",
+        "features.artifact=true",
         "--disable=memories",
     }, .{});
     defer parsed.deinit(allocator);
@@ -3033,6 +3039,7 @@ test "doctor parses Rust command flags" {
     try std.testing.expect(parsed.ascii);
     try std.testing.expectEqualStrings("gpt-test", parsed.runtime_overrides.model.?);
     try std.testing.expectEqual(true, parsed.feature_overrides.get("goals").?);
+    try std.testing.expectEqual(true, parsed.feature_overrides.get("artifact").?);
     try std.testing.expectEqual(false, parsed.feature_overrides.get("memories").?);
 }
 
