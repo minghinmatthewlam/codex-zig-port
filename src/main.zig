@@ -265,6 +265,7 @@ fn mainInner(init: std.process.Init) !void {
                     &overrides.profile,
                     raw,
                 );
+                try features_cmd.applyRawConfigOverride(allocator, &runtime_feature_overrides, raw);
             }
             try root_config_child_args.append(allocator, arg);
             try root_config_child_args.append(allocator, raw);
@@ -280,6 +281,7 @@ fn mainInner(init: std.process.Init) !void {
                     &overrides.profile,
                     raw,
                 );
+                try features_cmd.applyRawConfigOverride(allocator, &runtime_feature_overrides, raw);
             }
             try root_config_child_args.append(allocator, arg);
             try root_config_raw_overrides.append(allocator, raw);
@@ -475,6 +477,7 @@ fn mainInner(init: std.process.Init) !void {
     }
 
     if (forced_initial_prompt) |initial_prompt| {
+        try features_cmd.validateRawConfigOverrides(runtime_feature_overrides);
         try runTuiWithImages(allocator, initial_image_files.items, .{
             .profile = overrides.profile,
             .profile_v2 = overrides.profile_v2,
@@ -579,6 +582,7 @@ fn mainInner(init: std.process.Init) !void {
             try sandbox_cmd.runWithOptions(allocator, &args, .{
                 .profile = overrides.profile,
                 .runtime_overrides = overrides.runtime,
+                .feature_overrides = runtime_feature_overrides,
                 .cwd = overrides.cwd,
                 .additional_writable_roots = overrides.additional_writable_roots,
             });
@@ -595,6 +599,7 @@ fn mainInner(init: std.process.Init) !void {
             try cloud_cmd.runWithOptions(allocator, &args, .{
                 .profile = overrides.profile,
                 .runtime_overrides = overrides.runtime,
+                .feature_overrides = runtime_feature_overrides,
             });
             return;
         }
@@ -670,6 +675,7 @@ fn mainInner(init: std.process.Init) !void {
             try apply_command.runWithOptions(allocator, &args, .{
                 .profile = overrides.profile,
                 .runtime_overrides = overrides.runtime,
+                .feature_overrides = runtime_feature_overrides,
             });
             return;
         }
@@ -840,6 +846,7 @@ fn mainInner(init: std.process.Init) !void {
                 cwd_applied = true;
             }
         }
+        try features_cmd.validateRawConfigOverrides(runtime_feature_overrides);
         const initial_prompt = try allocator.dupe(u8, cmd);
         defer allocator.free(initial_prompt);
         try runTuiWithImages(allocator, initial_image_files.items, .{
@@ -861,6 +868,7 @@ fn mainInner(init: std.process.Init) !void {
         return;
     }
 
+    try features_cmd.validateRawConfigOverrides(runtime_feature_overrides);
     try runTuiWithImages(allocator, initial_image_files.items, .{
         .profile = overrides.profile,
         .profile_v2 = overrides.profile_v2,
@@ -1414,7 +1422,7 @@ fn applyTailHasHelp(args: []const []const u8) bool {
     while (index < args.len) : (index += 1) {
         const arg = args[index];
         if (isHelpFlag(arg)) return true;
-        switch (scanConfigFeatureTailOption(args, &index, arg, false)) {
+        switch (scanConfigFeatureTailOption(args, &index, arg, true)) {
             .valid => continue,
             .invalid => return false,
             .not_handled => {},
@@ -2294,6 +2302,7 @@ fn parseRootPromptTail(
             if (!tail_has_help_or_version) {
                 try config.rememberStrictConfigUnknownOverride(allocator, &overrides.unknown_config_override, raw);
                 try config.applyRawConfigOverride(&overrides.runtime, &overrides.profile, raw);
+                try features_cmd.applyRawConfigOverride(allocator, feature_overrides, raw);
             }
             try root_config_child_args.append(allocator, arg);
             try root_config_child_args.append(allocator, raw);
@@ -2304,6 +2313,7 @@ fn parseRootPromptTail(
             if (!tail_has_help_or_version) {
                 try config.rememberStrictConfigUnknownOverride(allocator, &overrides.unknown_config_override, raw);
                 try config.applyRawConfigOverride(&overrides.runtime, &overrides.profile, raw);
+                try features_cmd.applyRawConfigOverride(allocator, feature_overrides, raw);
             }
             try root_config_child_args.append(allocator, arg);
             continue;
@@ -2536,6 +2546,7 @@ const SessionCommandArgs = struct {
     profile: ?[]const u8 = null,
     profile_v2: ?[]const u8 = null,
     runtime_overrides: config.RuntimeOverrides = .{},
+    feature_overrides: features_cmd.FeatureOverrides = .{},
     unknown_config_override: ?[]const u8 = null,
     oss: bool = false,
     oss_provider: ?[]const u8 = null,
@@ -2551,6 +2562,7 @@ const SessionCommandArgs = struct {
     help: bool = false,
 
     fn deinit(self: *SessionCommandArgs, allocator: std.mem.Allocator) void {
+        self.feature_overrides.deinit(allocator);
         if (self.unknown_config_override) |field| allocator.free(field);
         self.additional_writable_roots.deinit(allocator);
         for (self.image_files.items) |path| allocator.free(path);
@@ -2564,6 +2576,7 @@ const SessionLaunchOptions = struct {
     owned_initial_prompt: ?[]const u8 = null,
 
     fn deinit(self: *SessionLaunchOptions, allocator: std.mem.Allocator) void {
+        self.tui_options.feature_overrides.deinit(allocator);
         allocator.free(self.image_files);
         allocator.free(self.tui_options.additional_writable_roots);
         if (self.owned_initial_prompt) |prompt| allocator.free(prompt);
@@ -2594,6 +2607,10 @@ fn prepareSessionLaunchOptions(
         if (overrides.unknown_config_override) |field| return config.failStrictConfigUnknownCliOverride(field);
         if (parsed.unknown_config_override) |field| return config.failStrictConfigUnknownCliOverride(field);
     }
+    var merged_feature_overrides = try feature_overrides.clone(allocator);
+    errdefer merged_feature_overrides.deinit(allocator);
+    try merged_feature_overrides.putAll(allocator, parsed.feature_overrides);
+    try features_cmd.validateRawConfigOverrides(merged_feature_overrides);
 
     if (parsed.cwd) |cwd| try workdir.change(cwd);
 
@@ -2626,7 +2643,7 @@ fn prepareSessionLaunchOptions(
             .remote_auth_token_env = parsed.remote_auth_token_env orelse overrides.remote_auth_token_env,
             .local_remote_control = overrides.local_remote_control or parsed.local_remote_control,
             .remote_control_bind = parsed.remote_control_bind orelse overrides.remote_control_bind,
-            .feature_overrides = feature_overrides,
+            .feature_overrides = merged_feature_overrides,
             .strict_config = effective_strict_config,
         },
     };
@@ -2720,12 +2737,34 @@ fn parseSessionCommandArgsWithOptions(allocator: std.mem.Allocator, args: []cons
             index += 1;
             try config.rememberStrictConfigUnknownOverride(allocator, &parsed.unknown_config_override, args[index]);
             try config.applyRawConfigOverride(&parsed.runtime_overrides, &parsed.profile, args[index]);
+            try features_cmd.applyRawConfigOverride(allocator, &parsed.feature_overrides, args[index]);
             continue;
         }
         if (!end_options and std.mem.startsWith(u8, arg, "--config=")) {
             const raw = arg["--config=".len..];
             try config.rememberStrictConfigUnknownOverride(allocator, &parsed.unknown_config_override, raw);
             try config.applyRawConfigOverride(&parsed.runtime_overrides, &parsed.profile, raw);
+            try features_cmd.applyRawConfigOverride(allocator, &parsed.feature_overrides, raw);
+            continue;
+        }
+        if (!end_options and std.mem.eql(u8, arg, "--enable")) {
+            if (index + 1 >= args.len or isRootPromptOptionValueBoundary(args[index + 1])) return error.MissingFeatureName;
+            index += 1;
+            try features_cmd.putRuntimeToggle(allocator, &parsed.feature_overrides, args[index], true);
+            continue;
+        }
+        if (!end_options and std.mem.startsWith(u8, arg, "--enable=")) {
+            try features_cmd.putRuntimeToggle(allocator, &parsed.feature_overrides, arg["--enable=".len..], true);
+            continue;
+        }
+        if (!end_options and std.mem.eql(u8, arg, "--disable")) {
+            if (index + 1 >= args.len or isRootPromptOptionValueBoundary(args[index + 1])) return error.MissingFeatureName;
+            index += 1;
+            try features_cmd.putRuntimeToggle(allocator, &parsed.feature_overrides, args[index], false);
+            continue;
+        }
+        if (!end_options and std.mem.startsWith(u8, arg, "--disable=")) {
+            try features_cmd.putRuntimeToggle(allocator, &parsed.feature_overrides, arg["--disable=".len..], false);
             continue;
         }
         if (!end_options and (std.mem.eql(u8, arg, "--model") or std.mem.eql(u8, arg, "-m"))) {
@@ -2956,6 +2995,8 @@ fn sessionHelpPreflight(args: []const []const u8, options: SessionParseOptions) 
             std.mem.eql(u8, arg, "-p") or
             std.mem.eql(u8, arg, "--config") or
             std.mem.eql(u8, arg, "-c") or
+            std.mem.eql(u8, arg, "--enable") or
+            std.mem.eql(u8, arg, "--disable") or
             std.mem.eql(u8, arg, "--model") or
             std.mem.eql(u8, arg, "-m") or
             std.mem.eql(u8, arg, "--cd") or
@@ -3496,6 +3537,10 @@ test "session command flags merge interactive overrides" {
         "/tmp/b.png",
         "-c",
         "review_model=gpt-session-review",
+        "--enable",
+        "goals",
+        "--disable=shell_tool",
+        "--config=features.artifact=true",
         "--dangerously-bypass-hook-trust",
         "--no-alt-screen",
     };
@@ -3511,6 +3556,9 @@ test "session command flags merge interactive overrides" {
     try std.testing.expectEqual(true, parsed.runtime_overrides.bypass_hook_trust.?);
     try std.testing.expectEqualStrings("gpt-5.1-test", parsed.runtime_overrides.model.?);
     try std.testing.expectEqualStrings("gpt-session-review", parsed.runtime_overrides.review_model.?);
+    try std.testing.expectEqual(true, parsed.feature_overrides.get("goals").?);
+    try std.testing.expectEqual(false, parsed.feature_overrides.get("shell_tool").?);
+    try std.testing.expectEqual(true, parsed.feature_overrides.get("artifact").?);
     try std.testing.expectEqualStrings("work", parsed.profile.?);
     try std.testing.expectEqualStrings("/tmp/workspace", parsed.cwd.?);
     try std.testing.expectEqualStrings("/tmp/extra", parsed.additional_writable_roots.items[0]);
@@ -3534,6 +3582,15 @@ test "session command flags remember first unknown config override" {
 
     try std.testing.expectEqualStrings("features.nope", parsed.unknown_config_override.?);
     try std.testing.expect(parsed.target == null);
+}
+
+test "session command feature help preflight skips feature validation" {
+    const allocator = std.testing.allocator;
+    var parsed = try parseSessionCommandArgs(allocator, &.{ "--enable", "definitely-not-a-feature", "--help" }, true);
+    defer parsed.deinit(allocator);
+
+    try std.testing.expect(parsed.help);
+    try std.testing.expectError(error.UnknownFeature, parseSessionCommandArgs(allocator, &.{ "--enable", "definitely-not-a-feature" }, true));
 }
 
 test "session command variadic images stop at separator before target" {
@@ -3739,6 +3796,8 @@ test "root semantic checks defer to help and version tails" {
     try std.testing.expect(try rootArgsTailHasHelpOrVersion(std.testing.allocator, &.{ "--strict-config", "-c", "foo.bar=1", "completion", "zsh", "--help" }));
     try std.testing.expect(try rootArgsTailHasHelpOrVersion(std.testing.allocator, &.{ "-C", "does-not-exist", "apply", "--help", "--bad" }));
     try std.testing.expect(try rootArgsTailHasHelpOrVersion(std.testing.allocator, &.{ "-C", "does-not-exist", "apply", "--config", "bogus", "--help" }));
+    try std.testing.expect(try rootArgsTailHasHelpOrVersion(std.testing.allocator, &.{ "-C", "does-not-exist", "apply", "--enable", "definitely-not-a-feature", "--help" }));
+    try std.testing.expect(try rootArgsTailHasHelpOrVersion(std.testing.allocator, &.{ "-C", "does-not-exist", "apply", "task_123", "--disable=shell_tool", "--help" }));
     try std.testing.expect(try rootArgsTailHasHelpOrVersion(std.testing.allocator, &.{ "--image", "/tmp/a.png", "prompt-token", "--help" }));
     try std.testing.expect(!(try rootArgsTailHasHelpOrVersion(std.testing.allocator, &.{ "-C", "--help" })));
     try std.testing.expect(!(try rootArgsTailHasHelpOrVersion(std.testing.allocator, &.{ "--model", "--help" })));
@@ -3890,6 +3949,19 @@ test "root prompt fallback honors trailing global flags" {
     try std.testing.expectEqualStrings("/tmp/extra", additional_writable_roots.items[0]);
     try std.testing.expectEqualStrings("/tmp/image-a.png", image_files.items[0]);
     try std.testing.expectEqualStrings("/tmp/image-b.png", image_files.items[1]);
+    try std.testing.expect((try parseRootPromptTail(
+        allocator,
+        &.{ "-c", "features.artifact=true", "--config=features.shell_tool=false" },
+        &overrides,
+        &feature_overrides,
+        &additional_writable_roots,
+        &image_files,
+        &root_config_child_args,
+        &approval_policy_requested,
+        &dangerous_bypass_requested,
+    )) == null);
+    try std.testing.expectEqual(true, feature_overrides.get("artifact").?);
+    try std.testing.expectEqual(false, feature_overrides.get("shell_tool").?);
 
     try std.testing.expectError(error.UnexpectedPromptArgument, parseRootPromptTail(
         allocator,
