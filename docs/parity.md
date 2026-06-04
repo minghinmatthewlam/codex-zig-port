@@ -264,6 +264,11 @@ still planned.
 Marketplace and plugin JSON Schema generation now includes the remaining
 `v2/Marketplace*` and `v2/Plugin*` request/response artifacts, including plugin
 list/read/install/share shapes and marketplace add/remove/upgrade shapes.
+`codex-zig app-server --help` advertises the public generator subcommands, and
+`app-server generate-ts --help` / `app-server generate-json-schema --help`
+print local command help before root semantic checks such as pre-help `-C`
+directory validation. Missing generator option values such as `--out --help`
+still fail instead of being treated as help or output paths.
 Full Rust generator parity remains planned.
 
 Current app-server stdio/Unix/websocket JSON-RPC handling accepts well-formed

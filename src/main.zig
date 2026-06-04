@@ -3781,6 +3781,9 @@ test "root semantic checks defer to help and version tails" {
     try std.testing.expect(try rootArgsTailHasHelpOrVersion(std.testing.allocator, &.{ "-C", "does-not-exist", "app-server", "--session-source", "vscode", "--help" }));
     try std.testing.expect(try rootArgsTailHasHelpOrVersion(std.testing.allocator, &.{ "--remote", "ws://127.0.0.1:1", "app-server", "--ws-auth", "capability-token", "--help" }));
     try std.testing.expect(try rootArgsTailHasHelpOrVersion(std.testing.allocator, &.{ "--remote", "ws://127.0.0.1:1", "app-server", "--ws-max-clock-skew-seconds", "30", "--help" }));
+    try std.testing.expect(try rootArgsTailHasHelpOrVersion(std.testing.allocator, &.{ "-C", "does-not-exist", "app-server", "generate-ts", "--out", "src", "--help" }));
+    try std.testing.expect(try rootArgsTailHasHelpOrVersion(std.testing.allocator, &.{ "--remote", "ws://127.0.0.1:1", "app-server", "generate-ts", "--help" }));
+    try std.testing.expect(try rootArgsTailHasHelpOrVersion(std.testing.allocator, &.{ "--remote", "ws://127.0.0.1:1", "app-server", "generate-json-schema", "--out", "src", "--help" }));
     try std.testing.expect(try rootArgsTailHasHelpOrVersion(std.testing.allocator, &.{ "--strict-config", "app-server", "proxy", "--help" }));
     try std.testing.expect(try rootArgsTailHasHelpOrVersion(std.testing.allocator, &.{ "app-server", "--strict-config", "proxy", "--help" }));
     try std.testing.expect(try rootArgsTailHasHelpOrVersion(std.testing.allocator, &.{ "-C", "does-not-exist", "app-server", "proxy", "--sock", "/tmp/app.sock", "--help" }));
@@ -3804,7 +3807,7 @@ test "root semantic checks defer to help and version tails" {
     try std.testing.expect(!(try rootArgsTailHasHelpOrVersion(std.testing.allocator, &.{ "-C", "does-not-exist", "debug", "trace-reduce", "--output", "--help" })));
     try std.testing.expect(!(try rootArgsTailHasHelpOrVersion(std.testing.allocator, &.{ "-C", "does-not-exist", "debug", "clear-memories", "--bundled", "--help" })));
     try std.testing.expect(!(try rootArgsTailHasHelpOrVersion(std.testing.allocator, &.{ "-C", "does-not-exist", "app-server", "--session-source", "--help" })));
-    try std.testing.expect(!(try rootArgsTailHasHelpOrVersion(std.testing.allocator, &.{ "-C", "does-not-exist", "app-server", "generate-ts", "--out", "src", "--help" })));
+    try std.testing.expect(!(try rootArgsTailHasHelpOrVersion(std.testing.allocator, &.{ "-C", "does-not-exist", "app-server", "generate-ts", "--out", "--help" })));
     try std.testing.expect(!(try rootArgsTailHasHelpOrVersion(std.testing.allocator, &.{ "-C", "does-not-exist", "app-server", "daemon", "--remote-control", "--help" })));
     try std.testing.expect(!(try rootArgsTailHasHelpOrVersion(std.testing.allocator, &.{ "doctor", "--strict-config", "-c", "foo.bar=1", "--help" })));
     try std.testing.expect(!(try rootArgsTailHasHelpOrVersion(std.testing.allocator, &.{ "--remote", "ws://127.0.0.1:1", "doctor", "--config", "--help" })));

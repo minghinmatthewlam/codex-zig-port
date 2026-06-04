@@ -266,6 +266,12 @@ app-server smoke.
   completions expose Rust-visible aliases plus hidden internal Rust command
   entries such as `responses-api-proxy` and `stdio-to-uds`; `help
   stdio-to-uds` now resolves like the command-local help path.
+- App-server generator command discovery now matches the implemented Rust
+  surface: `app-server --help` advertises `generate-ts` and
+  `generate-json-schema`, generator-local `--help` prints command help, valid
+  generator help tails defer root semantic checks such as invalid pre-help
+  `-C` directories and root `--remote`, and missing option values such as
+  `--out --help` still fail instead of printing help or writing files.
 
 ### App-Server Daemon and Remote Control
 
@@ -417,8 +423,8 @@ app-server smoke.
 
 - Bring nested completion output closer to Rust for all user-facing
   command/flag surfaces after the command set is complete.
-- Normalize help/error behavior for implemented commands, especially app-server
-  generator help, hidden commands, aliases, and command-specific usage text.
+- Normalize help/error behavior for implemented commands, especially hidden
+  commands, aliases, and command-specific usage text.
 - Finish hiding or documenting remaining Zig-only compatibility/helper commands
   outside normal Rust parity discovery surfaces.
 

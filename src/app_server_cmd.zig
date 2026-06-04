@@ -1124,14 +1124,26 @@ pub fn runWithOptions(
             return;
         }
         if (std.mem.eql(u8, name, "generate-ts")) {
+            if (subcommand_help) {
+                printGenerateTsHelp();
+                return;
+            }
             try runGenerateTs(allocator, subcommand_args.items);
             return;
         }
         if (std.mem.eql(u8, name, "generate-json-schema")) {
+            if (subcommand_help) {
+                printGenerateJsonSchemaHelp();
+                return;
+            }
             try runGenerateJsonSchema(allocator, subcommand_args.items);
             return;
         }
         if (std.mem.eql(u8, name, "generate-internal-json-schema")) {
+            if (subcommand_help) {
+                printGenerateInternalJsonSchemaHelp();
+                return;
+            }
             try runGenerateInternalJsonSchema(allocator, subcommand_args.items);
             return;
         }
@@ -1583,6 +1595,9 @@ fn appServerRootOptionIsBoolean(arg: []const u8) bool {
 fn appServerSubcommandTailHasHelp(name: []const u8, args: []const []const u8) bool {
     if (std.mem.eql(u8, name, "proxy")) return proxyTailHasHelp(args);
     if (std.mem.eql(u8, name, "daemon")) return daemonTailHasHelp(args);
+    if (std.mem.eql(u8, name, "generate-ts")) return generatorTailHasHelp(args, true);
+    if (std.mem.eql(u8, name, "generate-json-schema")) return generatorTailHasHelp(args, false);
+    if (std.mem.eql(u8, name, "generate-internal-json-schema")) return generatorTailHasHelp(args, false);
     return false;
 }
 
@@ -1598,6 +1613,30 @@ fn proxyTailHasHelp(args: []const []const u8) bool {
             continue;
         }
         if (std.mem.startsWith(u8, arg, "--sock=")) continue;
+        return false;
+    }
+    return false;
+}
+
+fn generatorTailHasHelp(args: []const []const u8, allow_prettier: bool) bool {
+    var index: usize = 0;
+    while (index < args.len) : (index += 1) {
+        const arg = args[index];
+        if (std.mem.eql(u8, arg, "--")) return false;
+        if (isHelpFlag(arg)) return true;
+        if (std.mem.eql(u8, arg, "-o") or std.mem.eql(u8, arg, "--out")) {
+            index += 1;
+            if (index >= args.len or optionValueLooksMissing(args[index])) return false;
+            continue;
+        }
+        if (std.mem.startsWith(u8, arg, "--out=")) continue;
+        if (allow_prettier and (std.mem.eql(u8, arg, "-p") or std.mem.eql(u8, arg, "--prettier"))) {
+            index += 1;
+            if (index >= args.len or optionValueLooksMissing(args[index])) return false;
+            continue;
+        }
+        if (allow_prettier and std.mem.startsWith(u8, arg, "--prettier=")) continue;
+        if (std.mem.eql(u8, arg, "--experimental")) continue;
         return false;
     }
     return false;
@@ -1712,6 +1751,28 @@ test "daemon local feature overrides validate before non-launch actions" {
     try std.testing.expectError(error.UnknownFeature, validateDaemonLocalFeatureOverrides(allocator, &.{ "version", "--enable", "definitely-not-a-feature" }, root));
     try std.testing.expectError(error.InvalidConfigOverride, validateDaemonLocalFeatureOverrides(allocator, &.{ "version", "-c", "features.network_proxy.mode=limited" }, root));
     try validateDaemonLocalFeatureOverrides(allocator, &.{ "-c", "features.artifact=maybe", "--help" }, root);
+}
+
+test "app-server generator tails defer semantic checks for help" {
+    try std.testing.expect(appServerSubcommandTailHasHelp("generate-ts", &.{"--help"}));
+    try std.testing.expect(appServerSubcommandTailHasHelp("generate-ts", &.{ "--out", "src", "--help" }));
+    try std.testing.expect(appServerSubcommandTailHasHelp("generate-ts", &.{ "--out=src", "--prettier", "prettier", "--help" }));
+    try std.testing.expect(appServerSubcommandTailHasHelp("generate-json-schema", &.{ "--out", "src", "--help" }));
+    try std.testing.expect(appServerSubcommandTailHasHelp("generate-internal-json-schema", &.{ "--out", "src", "--help" }));
+
+    try std.testing.expect(!appServerSubcommandTailHasHelp("generate-ts", &.{ "--out", "--help" }));
+    try std.testing.expect(!appServerSubcommandTailHasHelp("generate-ts", &.{ "--prettier", "--help" }));
+    try std.testing.expect(!appServerSubcommandTailHasHelp("generate-json-schema", &.{ "--prettier", "prettier", "--help" }));
+    try std.testing.expect(!appServerSubcommandTailHasHelp("generate-json-schema", &.{ "--out", "--help" }));
+}
+
+test "app-server generators reject help-like missing option values" {
+    const allocator = std.testing.allocator;
+
+    try std.testing.expectError(error.MissingAppServerGenerateTsOutDir, runGenerateTs(allocator, &.{ "--out", "--help" }));
+    try std.testing.expectError(error.MissingAppServerGenerateTsPrettierPath, runGenerateTs(allocator, &.{ "--out", "src", "--prettier", "--help" }));
+    try std.testing.expectError(error.MissingAppServerGenerateJsonSchemaOutDir, runGenerateJsonSchema(allocator, &.{ "--out", "--help" }));
+    try std.testing.expectError(error.MissingAppServerGenerateInternalJsonSchemaOutDir, runGenerateInternalJsonSchema(allocator, &.{ "--out", "--help" }));
 }
 
 fn daemonCommandFromName(name: []const u8) ?DaemonCommand {
@@ -3676,7 +3737,7 @@ fn runGenerateTs(allocator: std.mem.Allocator, args: []const []const u8) !void {
     while (index < args.len) : (index += 1) {
         const arg = args[index];
         if (std.mem.eql(u8, arg, "-o") or std.mem.eql(u8, arg, "--out")) {
-            if (index + 1 >= args.len) return error.MissingAppServerGenerateTsOutDir;
+            if (index + 1 >= args.len or optionValueLooksMissing(args[index + 1])) return error.MissingAppServerGenerateTsOutDir;
             index += 1;
             out_dir = args[index];
             continue;
@@ -3686,7 +3747,7 @@ fn runGenerateTs(allocator: std.mem.Allocator, args: []const []const u8) !void {
             continue;
         }
         if (std.mem.eql(u8, arg, "-p") or std.mem.eql(u8, arg, "--prettier")) {
-            if (index + 1 >= args.len) return error.MissingAppServerGenerateTsPrettierPath;
+            if (index + 1 >= args.len or optionValueLooksMissing(args[index + 1])) return error.MissingAppServerGenerateTsPrettierPath;
             index += 1;
             prettier = args[index];
             continue;
@@ -3715,7 +3776,7 @@ fn runGenerateJsonSchema(allocator: std.mem.Allocator, args: []const []const u8)
     while (index < args.len) : (index += 1) {
         const arg = args[index];
         if (std.mem.eql(u8, arg, "-o") or std.mem.eql(u8, arg, "--out")) {
-            if (index + 1 >= args.len) return error.MissingAppServerGenerateJsonSchemaOutDir;
+            if (index + 1 >= args.len or optionValueLooksMissing(args[index + 1])) return error.MissingAppServerGenerateJsonSchemaOutDir;
             index += 1;
             out_dir = args[index];
             continue;
@@ -3743,7 +3804,7 @@ fn runGenerateInternalJsonSchema(allocator: std.mem.Allocator, args: []const []c
     while (index < args.len) : (index += 1) {
         const arg = args[index];
         if (std.mem.eql(u8, arg, "-o") or std.mem.eql(u8, arg, "--out")) {
-            if (index + 1 >= args.len) return error.MissingAppServerGenerateInternalJsonSchemaOutDir;
+            if (index + 1 >= args.len or optionValueLooksMissing(args[index + 1])) return error.MissingAppServerGenerateInternalJsonSchemaOutDir;
             index += 1;
             out_dir = args[index];
             continue;
@@ -68986,12 +69047,16 @@ pub fn printHelp() void {
         \\  codex-zig app-server [--strict-config] [--listen URL] [--session-source SOURCE]
         \\  codex-zig app-server daemon [OPTIONS] <COMMAND>
         \\  codex-zig app-server proxy [--sock SOCKET_PATH]
+        \\  codex-zig app-server generate-ts --out DIR [--experimental]
+        \\  codex-zig app-server generate-json-schema --out DIR [--experimental]
         \\
         \\Runs the app-server JSON-RPC transport.
         \\
         \\Subcommands:
         \\  daemon                 Manage the local app-server daemon
         \\  proxy                  Proxy stdio to the app-server Unix socket
+        \\  generate-ts            Generate TypeScript bindings for the app-server protocol
+        \\  generate-json-schema   Generate JSON Schema for the app-server protocol
         \\
         \\Options:
         \\  --strict-config        Error on unknown config fields.
@@ -69018,6 +69083,48 @@ pub fn printHelp() void {
         \\  ws://IP:PORT           Parse a websocket transport address
         \\
         \\The Zig port currently implements stdio://, unix://, unix://PATH, and off.
+        \\
+    , .{});
+}
+
+fn printGenerateTsHelp() void {
+    std.debug.print(
+        \\[experimental] Generate TypeScript bindings for the app server protocol
+        \\
+        \\Usage: codex-zig app-server generate-ts [OPTIONS] --out <DIR>
+        \\
+        \\Options:
+        \\  -o, --out <DIR>            Output directory where .ts files will be written
+        \\  -p, --prettier <BIN>       Optional Prettier executable used to format generated files
+        \\      --experimental         Include experimental methods and fields
+        \\  -h, --help                 Print help
+        \\
+    , .{});
+}
+
+fn printGenerateJsonSchemaHelp() void {
+    std.debug.print(
+        \\[experimental] Generate JSON Schema for the app server protocol
+        \\
+        \\Usage: codex-zig app-server generate-json-schema [OPTIONS] --out <DIR>
+        \\
+        \\Options:
+        \\  -o, --out <DIR>            Output directory where the schema bundle will be written
+        \\      --experimental         Include experimental methods and fields
+        \\  -h, --help                 Print help
+        \\
+    , .{});
+}
+
+fn printGenerateInternalJsonSchemaHelp() void {
+    std.debug.print(
+        \\Generate internal JSON Schema for the app-server protocol
+        \\
+        \\Usage: codex-zig app-server generate-internal-json-schema --out <DIR>
+        \\
+        \\Options:
+        \\  -o, --out <DIR>            Output directory where the internal schema will be written
+        \\  -h, --help                 Print help
         \\
     , .{});
 }
