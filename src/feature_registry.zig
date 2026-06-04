@@ -111,8 +111,9 @@ const features = [_]FeatureSpec{
         .experimental_menu_name = "Network proxy",
         .experimental_menu_description = "Apply network proxy restrictions to sandboxed sessions that already have network access.",
     },
+    .{ .key = "non_prefixed_mcp_tool_names", .stage = "under development", .default_enabled = false },
     .{ .key = "personality", .stage = "stable", .default_enabled = true },
-    .{ .key = "plugin_hooks", .stage = "stable", .default_enabled = true },
+    .{ .key = "plugin_hooks", .stage = "removed", .default_enabled = false },
     .{ .key = "plugin_sharing", .stage = "stable", .default_enabled = true },
     .{ .key = "plugins", .stage = "stable", .default_enabled = true },
     .{
@@ -140,6 +141,7 @@ const features = [_]FeatureSpec{
     .{ .key = "skill_env_var_dependency_prompt", .stage = "removed", .default_enabled = false },
     .{ .key = "skill_mcp_dependency_install", .stage = "stable", .default_enabled = true },
     .{ .key = "sqlite", .stage = "removed", .default_enabled = true },
+    .{ .key = "standalone_web_search", .stage = "under development", .default_enabled = false },
     .{ .key = "steer", .stage = "removed", .default_enabled = true },
     .{
         .key = "terminal_resize_reflow",
