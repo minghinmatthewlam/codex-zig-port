@@ -8,8 +8,8 @@ purely internal generator parity. The current reference is:
 
 - Rust checkout: `/Users/matthewlam/dev/codex` at
   `5381240f57fe326b13bc81325f3c61596592fc7a`
-- Installed Rust CLI: `codex-cli 0.135.0`
-- Zig checkout: `36875f21ec515a4fc98a3720fad0069956fc0037`
+- Installed Rust CLI: `codex-cli 0.145.0`
+- Zig checkout: `b32b51ab1c496d8b778581f6c60d9a1284fefdb9`
 - Zig CLI: `codex-zig 0.0.1`
 
 The source evidence for this pass was the Rust and Zig root help output,
@@ -232,13 +232,14 @@ app-server smoke.
   host-owned `codex_apps` MCP URL consumer. Deeper Rust feature payloads such as
   `features.network_proxy.*` settings and non-toggle `multi_agent_v2` settings
   remain planned until their runtime consumers are ported.
-- Root runtime surfaces now support `--profile-v2 <CONFIG_PROFILE_V2>` for
-  interactive runs, `exec`, `review`, `resume`, `fork`, and
-  `debug prompt-input`; `exec --profile-v2` also works locally. Unsupported
-  subcommands reject the flag with the Rust-shaped runtime-scope error, and
-  profile-v2 names are validated as Rust-style plain names instead of accepting
-  path-like config filenames. Selecting a profile-v2 name that still exists as
-  a legacy `[profiles.NAME]` section in the base user config now rejects like
+- Root runtime surfaces now support current Rust `--profile
+  <CONFIG_PROFILE_V2>` overlay semantics for interactive runs, `exec`,
+  `review`, `resume`, `fork`, `mcp`, `sandbox`, and `debug prompt-input`;
+  `exec --profile` also works locally. Unsupported subcommands reject the flag
+  with the Rust-shaped runtime-scope error, obsolete `--profile-v2` is rejected,
+  and overlay names are validated as Rust-style plain names instead of accepting
+  path-like config filenames. Selecting an overlay name that still exists as a
+  legacy `[profiles.NAME]` section in the base user config now rejects like
   Rust.
 - Root and exec `--dangerously-bypass-hook-trust` parsing is implemented, and
   app-server plus non-interactive exec/review hook execution now runs enabled
@@ -402,7 +403,7 @@ app-server smoke.
   affect CLI, TUI, tools, MCP, plugins, app-server, hooks, and sandboxing.
 - Finish exact strict-config validation behavior across all config layers and
   command surfaces that Rust supports.
-- Finish exact profile-v2 edge-case depth beyond the current user-config
+- Finish exact profile-overlay edge-case depth beyond the current user-config
   overlay on Rust runtime surfaces, especially where it intersects with the
   broader unfinished config-manager layer stack.
 - Finish managed/cloud requirements enforcement for approval policy, reviewer,
@@ -458,7 +459,7 @@ app-server smoke.
 ## Current Working Order
 
 1. Root CLI command/flag parity: finish doctor diagnostic depth and remaining
-   exact strict-config/profile-v2 edge-case depth.
+   exact strict-config/profile-overlay edge-case depth.
 2. Live app-server daemon lifecycle and remote-control command forms.
 3. Active-turn/TUI lifecycle: interruption, steering, queued input, process
    tracking, and lifecycle notifications.
