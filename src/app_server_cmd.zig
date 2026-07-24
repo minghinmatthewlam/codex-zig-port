@@ -1029,8 +1029,13 @@ fn runWithOptionsArgs(
     defer if (local_unknown_config_override) |field| allocator.free(field);
     var local_child_global_args = std.ArrayList([]const u8).empty;
     defer local_child_global_args.deinit(allocator);
+    var owned_child_global_args = std.ArrayList([]const u8).empty;
+    defer {
+        for (owned_child_global_args.items) |arg| allocator.free(arg);
+        owned_child_global_args.deinit(allocator);
+    }
     try local_child_global_args.appendSlice(allocator, invocation_options.child_global_args);
-    try appendDaemonProfileArgs(allocator, &local_child_global_args, invocation_options.profile);
+    try appendDaemonProfileArgs(allocator, &local_child_global_args, &owned_child_global_args, invocation_options.profile);
     var subcommand: ?[]const u8 = null;
     var subcommand_args = std.ArrayList([]const u8).empty;
     defer subcommand_args.deinit(allocator);
@@ -1915,12 +1920,38 @@ fn appendDaemonFeatureOverrideArgs(
 fn appendDaemonProfileArgs(
     allocator: std.mem.Allocator,
     child_global_args: *std.ArrayList([]const u8),
+    owned_child_global_args: *std.ArrayList([]const u8),
     profile: ?[]const u8,
 ) !void {
     if (profile) |value| {
-        try child_global_args.append(allocator, "--profile");
-        try child_global_args.append(allocator, value);
+        if (daemonChildArgsContainProfileOverride(child_global_args.items)) return;
+        const raw = try std.fmt.allocPrint(allocator, "profile={s}", .{value});
+        errdefer allocator.free(raw);
+        try owned_child_global_args.append(allocator, raw);
+        try child_global_args.append(allocator, "-c");
+        try child_global_args.append(allocator, raw);
     }
+}
+
+fn daemonChildArgsContainProfileOverride(args: []const []const u8) bool {
+    var index: usize = 0;
+    while (index < args.len) : (index += 1) {
+        const arg = args[index];
+        if (std.mem.eql(u8, arg, "-c") or std.mem.eql(u8, arg, "--config")) {
+            if (index + 1 < args.len and daemonConfigOverrideIsProfile(args[index + 1])) return true;
+            index += 1;
+            continue;
+        }
+        if (std.mem.startsWith(u8, arg, "--config=") and daemonConfigOverrideIsProfile(arg["--config=".len..])) return true;
+    }
+    return false;
+}
+
+fn daemonConfigOverrideIsProfile(raw: []const u8) bool {
+    const trimmed = std.mem.trim(u8, raw, " \t\r\n");
+    if (!std.mem.startsWith(u8, trimmed, "profile")) return false;
+    const rest = std.mem.trim(u8, trimmed["profile".len..], " \t\r\n");
+    return rest.len > 0 and rest[0] == '=';
 }
 
 fn appendDaemonFeatureOverrideArgsExcluding(
@@ -1942,8 +1973,13 @@ test "daemon profile and feature args are appended after forwarded root config a
     const allocator = std.testing.allocator;
     var args = std.ArrayList([]const u8).empty;
     defer args.deinit(allocator);
+    var owned_args = std.ArrayList([]const u8).empty;
+    defer {
+        for (owned_args.items) |arg| allocator.free(arg);
+        owned_args.deinit(allocator);
+    }
     try args.appendSlice(allocator, &.{ "-c", "features.artifact=false" });
-    try appendDaemonProfileArgs(allocator, &args, "work");
+    try appendDaemonProfileArgs(allocator, &args, &owned_args, "work");
     var overrides = features_cmd.FeatureOverrides{};
     defer overrides.deinit(allocator);
     try overrides.put(allocator, "artifact", true);
@@ -1953,10 +1989,35 @@ test "daemon profile and feature args are appended after forwarded root config a
     try std.testing.expectEqual(@as(usize, 6), args.items.len);
     try std.testing.expectEqualStrings("-c", args.items[0]);
     try std.testing.expectEqualStrings("features.artifact=false", args.items[1]);
-    try std.testing.expectEqualStrings("--profile", args.items[2]);
-    try std.testing.expectEqualStrings("work", args.items[3]);
+    try std.testing.expectEqualStrings("-c", args.items[2]);
+    try std.testing.expectEqualStrings("profile=work", args.items[3]);
     try std.testing.expectEqualStrings("--enable", args.items[4]);
     try std.testing.expectEqualStrings("artifact", args.items[5]);
+}
+
+test "daemon profile arg is not duplicated when forwarded config already selects one" {
+    const allocator = std.testing.allocator;
+    var split_args = std.ArrayList([]const u8).empty;
+    defer split_args.deinit(allocator);
+    var split_owned = std.ArrayList([]const u8).empty;
+    defer {
+        for (split_owned.items) |arg| allocator.free(arg);
+        split_owned.deinit(allocator);
+    }
+    try split_args.appendSlice(allocator, &.{ "-c", "profile = \"work\"" });
+    try appendDaemonProfileArgs(allocator, &split_args, &split_owned, "other");
+    try std.testing.expectEqual(@as(usize, 2), split_args.items.len);
+
+    var inline_args = std.ArrayList([]const u8).empty;
+    defer inline_args.deinit(allocator);
+    var inline_owned = std.ArrayList([]const u8).empty;
+    defer {
+        for (inline_owned.items) |arg| allocator.free(arg);
+        inline_owned.deinit(allocator);
+    }
+    try inline_args.append(allocator, "--config=profile=work");
+    try appendDaemonProfileArgs(allocator, &inline_args, &inline_owned, "other");
+    try std.testing.expectEqual(@as(usize, 1), inline_args.items.len);
 }
 
 test "daemon local feature overrides validate before non-launch actions" {

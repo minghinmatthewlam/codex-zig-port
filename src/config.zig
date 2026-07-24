@@ -275,6 +275,7 @@ pub const SandboxPermissionProfile = struct {
 
 pub const SandboxPermissionProfileOptions = struct {
     allow_read_denied_globs: bool = false,
+    profile_v2: ?[]const u8 = null,
 };
 
 pub const AltScreenMode = enum {
@@ -601,9 +602,32 @@ pub fn applyRawConfigOverride(
 
 pub fn rawConfigOverrideUnknownField(allocator: std.mem.Allocator, raw: []const u8) !?[]const u8 {
     const key = try rawConfigOverrideKey(raw);
-    if (!strictConfigOverridePathAllowed(key)) return try allocator.dupe(u8, key);
+    if (!strictConfigOverridePathAllowed(key)) return try strictConfigUnknownOverrideField(allocator, key);
     if (try strictConfigInlineTableUnknownField(allocator, key, raw)) |field| return field;
     return null;
+}
+
+fn strictConfigUnknownOverrideField(allocator: std.mem.Allocator, path: []const u8) ![]const u8 {
+    const first = tomlDottedPathFirstSegment(path) orelse return try allocator.dupe(u8, path);
+    if (tomlSegmentMatches(first.raw, "features")) {
+        if (try strictConfigUnknownFeatureField(allocator, "features", first.rest)) |field| return field;
+    } else if (tomlSegmentMatches(first.raw, "profiles")) {
+        const profile = tomlDottedPathFirstSegment(first.rest) orelse return try allocator.dupe(u8, path);
+        const nested_first = tomlDottedPathFirstSegment(profile.rest) orelse return try allocator.dupe(u8, path);
+        if (tomlSegmentMatches(nested_first.raw, "features")) {
+            const prefix = try std.fmt.allocPrint(allocator, "profiles.{s}.features", .{profile.raw});
+            defer allocator.free(prefix);
+            if (try strictConfigUnknownFeatureField(allocator, prefix, nested_first.rest)) |field| return field;
+        }
+    }
+    return try allocator.dupe(u8, path);
+}
+
+fn strictConfigUnknownFeatureField(allocator: std.mem.Allocator, prefix: []const u8, feature_path: []const u8) !?[]const u8 {
+    if (feature_path.len == 0) return null;
+    const feature = tomlDottedPathFirstSegment(feature_path) orelse return null;
+    if (strictConfigFeatureKeyKnown(feature.raw)) return null;
+    return try std.fmt.allocPrint(allocator, "{s}.{s}", .{ prefix, feature.raw });
 }
 
 pub fn rememberStrictConfigUnknownOverride(
@@ -611,13 +635,23 @@ pub fn rememberStrictConfigUnknownOverride(
     destination: *?[]const u8,
     raw: []const u8,
 ) !void {
+    _ = try rememberStrictConfigUnknownOverrideWithResult(allocator, destination, raw);
+}
+
+pub fn rememberStrictConfigUnknownOverrideWithResult(
+    allocator: std.mem.Allocator,
+    destination: *?[]const u8,
+    raw: []const u8,
+) !bool {
     if (try rawConfigOverrideUnknownField(allocator, raw)) |field| {
         if (destination.* == null) {
             destination.* = field;
         } else {
             allocator.free(field);
         }
+        return true;
     }
+    return false;
 }
 
 pub fn failStrictConfigUnknownCliOverride(field: []const u8) error{StrictConfigUnknownField} {
@@ -642,14 +676,28 @@ pub fn loadSandboxPermissionProfileWithOptions(
     options: SandboxPermissionProfileOptions,
 ) !SandboxPermissionProfile {
     if (try resolveBuiltInSandboxPermissionProfile(allocator, profile)) |builtin_profile| return builtin_profile;
+    if (options.profile_v2) |profile_v2| try validateProfileV2Name(profile_v2);
 
     const codex_home = try resolveCodexHome(allocator);
     defer allocator.free(codex_home);
-    const config_bytes = try readConfigToml(allocator, codex_home);
-    defer if (config_bytes) |bytes| allocator.free(bytes);
-    const bytes = config_bytes orelse return error.SandboxPermissionProfileUnsupported;
+    const base_config_bytes = try readConfigToml(allocator, codex_home);
+    defer if (base_config_bytes) |bytes| allocator.free(bytes);
+    const profile_v2_config_bytes = if (options.profile_v2 == null)
+        null
+    else
+        try readProfileV2ConfigToml(allocator, codex_home, options.profile_v2.?);
+    defer if (profile_v2_config_bytes) |bytes| allocator.free(bytes);
 
-    return (ConfigView{ .bytes = bytes }).resolveCustomSandboxPermissionProfileWithOptions(allocator, profile, options);
+    if (base_config_bytes == null and profile_v2_config_bytes == null) return error.SandboxPermissionProfileUnsupported;
+
+    const base_config_view = ConfigView{ .bytes = base_config_bytes orelse "" };
+    try rejectProfileV2LegacyProfileConflict(options.profile_v2, base_config_view);
+    const config_view = if (profile_v2_config_bytes) |bytes|
+        ConfigView{ .bytes = bytes, .fallback = &base_config_view }
+    else
+        base_config_view;
+
+    return config_view.resolveCustomSandboxPermissionProfileWithOptions(allocator, profile, options);
 }
 
 pub fn loadSandboxPermissionProfileFromConfigLayerBytesWithOptions(
@@ -1932,7 +1980,7 @@ fn readConfigToml(allocator: std.mem.Allocator, codex_home: []const u8) !?[]cons
     return readConfigTomlFile(allocator, path);
 }
 
-fn readProfileV2ConfigToml(allocator: std.mem.Allocator, codex_home: []const u8, profile_v2: []const u8) !?[]const u8 {
+pub fn readProfileV2ConfigToml(allocator: std.mem.Allocator, codex_home: []const u8, profile_v2: []const u8) !?[]const u8 {
     const file_name = try std.fmt.allocPrint(allocator, "{s}.config.toml", .{profile_v2});
     defer allocator.free(file_name);
     const path = try std.fs.path.join(allocator, &.{ codex_home, file_name });
@@ -6109,7 +6157,7 @@ test "raw cli config override reports strict unknown fields" {
     try std.testing.expectEqualStrings("features.nope", feature);
     const nested_feature = (try rawConfigOverrideUnknownField(allocator, "features.nope.goals=true")).?;
     defer allocator.free(nested_feature);
-    try std.testing.expectEqualStrings("features.nope.goals", nested_feature);
+    try std.testing.expectEqualStrings("features.nope", nested_feature);
     const inline_feature = (try rawConfigOverrideUnknownField(allocator, "features={nope=true}")).?;
     defer allocator.free(inline_feature);
     try std.testing.expectEqualStrings("features.nope", inline_feature);

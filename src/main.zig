@@ -54,6 +54,7 @@ const CliOverrides = struct {
     remote_control_bind: ?[]const u8 = null,
     strict_config: bool = false,
     unknown_config_override: ?[]const u8 = null,
+    invalid_unknown_config_override: bool = false,
 
     fn deinit(self: *CliOverrides, allocator: std.mem.Allocator) void {
         if (self.unknown_config_override) |field| allocator.free(field);
@@ -117,15 +118,15 @@ pub fn main(init: std.process.Init) !void {
             error.StrictConfigUnsupportedForSubcommand => {},
             error.UnexpectedPromptArgument => {},
             error.ProfileV2UnsupportedCommand => std.debug.print(
-                "Error: --profile-v2 only applies to runtime commands: `codex`, `codex exec`, `codex review`, `codex resume`, `codex fork`, and `codex debug prompt-input`.\n",
+                "Error: --profile only applies to runtime commands and `codex mcp`: `codex`, `codex exec`, `codex review`, `codex resume`, `codex archive`, `codex delete`, `codex unarchive`, `codex fork`, `codex mcp`, `codex sandbox`, and `codex debug prompt-input`.\n",
                 .{},
             ),
             error.InvalidProfileV2Name => std.debug.print(
-                "error: invalid --profile-v2 value; pass a plain name such as `work`\n",
+                "error: invalid --profile value; pass a plain name such as `work`\n",
                 .{},
             ),
             error.ProfileV2LegacyProfileConflict => std.debug.print(
-                "error: selected profile-v2 cannot also exist as a legacy [profiles.<name>] section in config.toml\n",
+                "error: selected profile cannot also exist as a legacy [profiles.<name>] section in config.toml\n",
                 .{},
             ),
             error.InvalidMcpServerTransport => std.debug.print(
@@ -221,21 +222,13 @@ fn mainInner(init: std.process.Init) !void {
             break :arg value;
         } else args.next() orelse break;
         if (std.mem.eql(u8, arg, "--profile") or std.mem.eql(u8, arg, "-p")) {
-            overrides.profile = try nextRootOptionValue(&args, error.MissingProfileOptionValue);
-            continue;
-        }
-        if (std.mem.startsWith(u8, arg, "--profile=")) {
-            overrides.profile = arg["--profile=".len..];
-            continue;
-        }
-        if (std.mem.eql(u8, arg, "--profile-v2")) {
             const value = try nextRootOptionValue(&args, error.MissingProfileOptionValue);
             try config.validateProfileV2Name(value);
             overrides.profile_v2 = value;
             continue;
         }
-        if (std.mem.startsWith(u8, arg, "--profile-v2=")) {
-            const value = arg["--profile-v2=".len..];
+        if (std.mem.startsWith(u8, arg, "--profile=")) {
+            const value = arg["--profile=".len..];
             try config.validateProfileV2Name(value);
             overrides.profile_v2 = value;
             continue;
@@ -259,13 +252,15 @@ fn mainInner(init: std.process.Init) !void {
         if (std.mem.eql(u8, arg, "--config") or std.mem.eql(u8, arg, "-c")) {
             const raw = try nextRootOptionValue(&args, error.MissingConfigOptionValue);
             if (!tail_has_help_or_version) {
-                try config.rememberStrictConfigUnknownOverride(allocator, &overrides.unknown_config_override, raw);
-                try config.applyRawConfigOverride(
+                try features_cmd.applyRuntimeConfigAndFeatureOverride(
+                    allocator,
                     &overrides.runtime,
                     &overrides.profile,
+                    &runtime_feature_overrides,
+                    &overrides.unknown_config_override,
+                    &overrides.invalid_unknown_config_override,
                     raw,
                 );
-                try features_cmd.applyRawConfigOverride(allocator, &runtime_feature_overrides, raw);
             }
             try root_config_child_args.append(allocator, arg);
             try root_config_child_args.append(allocator, raw);
@@ -275,13 +270,15 @@ fn mainInner(init: std.process.Init) !void {
         if (std.mem.startsWith(u8, arg, "--config=")) {
             const raw = arg["--config=".len..];
             if (!tail_has_help_or_version) {
-                try config.rememberStrictConfigUnknownOverride(allocator, &overrides.unknown_config_override, raw);
-                try config.applyRawConfigOverride(
+                try features_cmd.applyRuntimeConfigAndFeatureOverride(
+                    allocator,
                     &overrides.runtime,
                     &overrides.profile,
+                    &runtime_feature_overrides,
+                    &overrides.unknown_config_override,
+                    &overrides.invalid_unknown_config_override,
                     raw,
                 );
-                try features_cmd.applyRawConfigOverride(allocator, &runtime_feature_overrides, raw);
             }
             try root_config_child_args.append(allocator, arg);
             try root_config_raw_overrides.append(allocator, raw);
@@ -455,6 +452,7 @@ fn mainInner(init: std.process.Init) !void {
         }
         if (overrides.unknown_config_override) |field| return config.failStrictConfigUnknownCliOverride(field);
     }
+    if (!defer_semantic_checks and overrides.invalid_unknown_config_override) return error.InvalidConfigOverride;
     if (!defer_semantic_checks and overrides.profile_v2 != null) {
         if (cmd_opt) |cmd| {
             if (profileV2UnsupportedSubcommandName(cmd) != null) {
@@ -581,6 +579,7 @@ fn mainInner(init: std.process.Init) !void {
         if (std.mem.eql(u8, cmd, "sandbox")) {
             try sandbox_cmd.runWithOptions(allocator, &args, .{
                 .profile = overrides.profile,
+                .profile_v2 = overrides.profile_v2,
                 .runtime_overrides = overrides.runtime,
                 .feature_overrides = runtime_feature_overrides,
                 .cwd = overrides.cwd,
@@ -620,6 +619,10 @@ fn mainInner(init: std.process.Init) !void {
             return;
         }
         if (std.mem.eql(u8, cmd, "mcp")) {
+            if (overrides.profile_v2 != null) {
+                var profile_config_probe = try config.loadWithOptions(allocator, .{ .profile_v2 = overrides.profile_v2 });
+                profile_config_probe.deinit(allocator);
+            }
             try mcp_cmd.run(allocator, &args);
             return;
         }
@@ -841,6 +844,7 @@ fn mainInner(init: std.process.Init) !void {
         if (overrides.strict_config) {
             if (overrides.unknown_config_override) |field| return config.failStrictConfigUnknownCliOverride(field);
         }
+        if (overrides.invalid_unknown_config_override) return error.InvalidConfigOverride;
         if (!cwd_applied) {
             if (overrides.cwd) |cwd| {
                 try workdir.change(cwd);
@@ -1876,7 +1880,6 @@ fn sandboxKindOptionIsBoolean(arg: []const u8) bool {
 fn rootOptionConsumesSingleValue(arg: []const u8) bool {
     return std.mem.eql(u8, arg, "--profile") or
         std.mem.eql(u8, arg, "-p") or
-        std.mem.eql(u8, arg, "--profile-v2") or
         std.mem.eql(u8, arg, "--cd") or
         std.mem.eql(u8, arg, "-C") or
         std.mem.eql(u8, arg, "--add-dir") or
@@ -1899,7 +1902,6 @@ fn rootOptionConsumesSingleValue(arg: []const u8) bool {
 
 fn rootOptionHasInlineValue(arg: []const u8) bool {
     return std.mem.startsWith(u8, arg, "--profile=") or
-        std.mem.startsWith(u8, arg, "--profile-v2=") or
         std.mem.startsWith(u8, arg, "--cd=") or
         std.mem.startsWith(u8, arg, "--add-dir=") or
         std.mem.startsWith(u8, arg, "--config=") or
@@ -2053,6 +2055,8 @@ fn profileV2UnsupportedSubcommandName(cmd: []const u8) ?[]const u8 {
         std.mem.eql(u8, cmd, "resume") or
         std.mem.eql(u8, cmd, "fork") or
         std.mem.eql(u8, cmd, "remote-fork") or
+        std.mem.eql(u8, cmd, "mcp") or
+        std.mem.eql(u8, cmd, "sandbox") or
         std.mem.eql(u8, cmd, "debug") or
         isExecCommand(cmd))
     {
@@ -2060,12 +2064,10 @@ fn profileV2UnsupportedSubcommandName(cmd: []const u8) ?[]const u8 {
     }
     if (std.mem.eql(u8, cmd, "auth-status")) return "auth-status";
     if (std.mem.eql(u8, cmd, "doctor")) return "doctor";
-    if (std.mem.eql(u8, cmd, "sandbox")) return "sandbox";
     if (std.mem.eql(u8, cmd, "features")) return "features";
     if (std.mem.eql(u8, cmd, "completion")) return "completion";
     if (std.mem.eql(u8, cmd, "execpolicy")) return "execpolicy";
     if (isCloudCommand(cmd)) return cmd;
-    if (std.mem.eql(u8, cmd, "mcp")) return "mcp";
     if (std.mem.eql(u8, cmd, "app")) return "app";
     if (std.mem.eql(u8, cmd, "app-server")) return "app-server";
     if (std.mem.eql(u8, cmd, "exec-server")) return "exec-server";
@@ -2262,21 +2264,13 @@ fn parseRootPromptTail(
         if (isHelpFlag(arg)) return .help;
         if (isVersionFlag(arg)) return .version;
         if (std.mem.eql(u8, arg, "--profile") or std.mem.eql(u8, arg, "-p")) {
-            overrides.profile = try nextRootPromptOptionValue(tail, &index, error.MissingProfileOptionValue);
-            continue;
-        }
-        if (std.mem.startsWith(u8, arg, "--profile=")) {
-            overrides.profile = arg["--profile=".len..];
-            continue;
-        }
-        if (std.mem.eql(u8, arg, "--profile-v2")) {
             const value = try nextRootPromptOptionValue(tail, &index, error.MissingProfileOptionValue);
             try config.validateProfileV2Name(value);
             overrides.profile_v2 = value;
             continue;
         }
-        if (std.mem.startsWith(u8, arg, "--profile-v2=")) {
-            const value = arg["--profile-v2=".len..];
+        if (std.mem.startsWith(u8, arg, "--profile=")) {
+            const value = arg["--profile=".len..];
             try config.validateProfileV2Name(value);
             overrides.profile_v2 = value;
             continue;
@@ -2301,9 +2295,15 @@ fn parseRootPromptTail(
         if (std.mem.eql(u8, arg, "--config") or std.mem.eql(u8, arg, "-c")) {
             const raw = try nextRootPromptOptionValue(tail, &index, error.MissingConfigOptionValue);
             if (!tail_has_help_or_version) {
-                try config.rememberStrictConfigUnknownOverride(allocator, &overrides.unknown_config_override, raw);
-                try config.applyRawConfigOverride(&overrides.runtime, &overrides.profile, raw);
-                try features_cmd.applyRawConfigOverride(allocator, feature_overrides, raw);
+                try features_cmd.applyRuntimeConfigAndFeatureOverride(
+                    allocator,
+                    &overrides.runtime,
+                    &overrides.profile,
+                    feature_overrides,
+                    &overrides.unknown_config_override,
+                    &overrides.invalid_unknown_config_override,
+                    raw,
+                );
             }
             try root_config_child_args.append(allocator, arg);
             try root_config_child_args.append(allocator, raw);
@@ -2312,9 +2312,15 @@ fn parseRootPromptTail(
         if (std.mem.startsWith(u8, arg, "--config=")) {
             const raw = arg["--config=".len..];
             if (!tail_has_help_or_version) {
-                try config.rememberStrictConfigUnknownOverride(allocator, &overrides.unknown_config_override, raw);
-                try config.applyRawConfigOverride(&overrides.runtime, &overrides.profile, raw);
-                try features_cmd.applyRawConfigOverride(allocator, feature_overrides, raw);
+                try features_cmd.applyRuntimeConfigAndFeatureOverride(
+                    allocator,
+                    &overrides.runtime,
+                    &overrides.profile,
+                    feature_overrides,
+                    &overrides.unknown_config_override,
+                    &overrides.invalid_unknown_config_override,
+                    raw,
+                );
             }
             try root_config_child_args.append(allocator, arg);
             continue;
@@ -2549,6 +2555,7 @@ const SessionCommandArgs = struct {
     runtime_overrides: config.RuntimeOverrides = .{},
     feature_overrides: features_cmd.FeatureOverrides = .{},
     unknown_config_override: ?[]const u8 = null,
+    invalid_unknown_config_override: bool = false,
     oss: bool = false,
     oss_provider: ?[]const u8 = null,
     cwd: ?[]const u8 = null,
@@ -2608,6 +2615,7 @@ fn prepareSessionLaunchOptions(
         if (overrides.unknown_config_override) |field| return config.failStrictConfigUnknownCliOverride(field);
         if (parsed.unknown_config_override) |field| return config.failStrictConfigUnknownCliOverride(field);
     }
+    if (overrides.invalid_unknown_config_override or parsed.invalid_unknown_config_override) return error.InvalidConfigOverride;
     var merged_feature_overrides = try feature_overrides.clone(allocator);
     errdefer merged_feature_overrides.deinit(allocator);
     try merged_feature_overrides.putAll(allocator, parsed.feature_overrides);
@@ -2713,22 +2721,12 @@ fn parseSessionCommandArgsWithOptions(allocator: std.mem.Allocator, args: []cons
         if (!end_options and (std.mem.eql(u8, arg, "--profile") or std.mem.eql(u8, arg, "-p"))) {
             if (index + 1 >= args.len) return error.MissingProfileOptionValue;
             index += 1;
-            parsed.profile = args[index];
-            continue;
-        }
-        if (!end_options and std.mem.startsWith(u8, arg, "--profile=")) {
-            parsed.profile = arg["--profile=".len..];
-            continue;
-        }
-        if (!end_options and std.mem.eql(u8, arg, "--profile-v2")) {
-            if (index + 1 >= args.len) return error.MissingProfileOptionValue;
-            index += 1;
             try config.validateProfileV2Name(args[index]);
             parsed.profile_v2 = args[index];
             continue;
         }
-        if (!end_options and std.mem.startsWith(u8, arg, "--profile-v2=")) {
-            const value = arg["--profile-v2=".len..];
+        if (!end_options and std.mem.startsWith(u8, arg, "--profile=")) {
+            const value = arg["--profile=".len..];
             try config.validateProfileV2Name(value);
             parsed.profile_v2 = value;
             continue;
@@ -2736,16 +2734,28 @@ fn parseSessionCommandArgsWithOptions(allocator: std.mem.Allocator, args: []cons
         if (!end_options and (std.mem.eql(u8, arg, "--config") or std.mem.eql(u8, arg, "-c"))) {
             if (index + 1 >= args.len) return error.MissingConfigOptionValue;
             index += 1;
-            try config.rememberStrictConfigUnknownOverride(allocator, &parsed.unknown_config_override, args[index]);
-            try config.applyRawConfigOverride(&parsed.runtime_overrides, &parsed.profile, args[index]);
-            try features_cmd.applyRawConfigOverride(allocator, &parsed.feature_overrides, args[index]);
+            try features_cmd.applyRuntimeConfigAndFeatureOverride(
+                allocator,
+                &parsed.runtime_overrides,
+                &parsed.profile,
+                &parsed.feature_overrides,
+                &parsed.unknown_config_override,
+                &parsed.invalid_unknown_config_override,
+                args[index],
+            );
             continue;
         }
         if (!end_options and std.mem.startsWith(u8, arg, "--config=")) {
             const raw = arg["--config=".len..];
-            try config.rememberStrictConfigUnknownOverride(allocator, &parsed.unknown_config_override, raw);
-            try config.applyRawConfigOverride(&parsed.runtime_overrides, &parsed.profile, raw);
-            try features_cmd.applyRawConfigOverride(allocator, &parsed.feature_overrides, raw);
+            try features_cmd.applyRuntimeConfigAndFeatureOverride(
+                allocator,
+                &parsed.runtime_overrides,
+                &parsed.profile,
+                &parsed.feature_overrides,
+                &parsed.unknown_config_override,
+                &parsed.invalid_unknown_config_override,
+                raw,
+            );
             continue;
         }
         if (!end_options and std.mem.eql(u8, arg, "--enable")) {
@@ -2955,14 +2965,14 @@ fn sessionHelpPreflight(args: []const []const u8, options: SessionParseOptions) 
             continue;
         }
         if (options.allow_include_non_interactive and std.mem.eql(u8, arg, "--include-non-interactive")) continue;
-        if (std.mem.eql(u8, arg, "--profile-v2")) {
+        if (std.mem.eql(u8, arg, "--profile") or std.mem.eql(u8, arg, "-p")) {
             index += 1;
             if (index >= args.len or isRootPromptOptionValueBoundary(args[index])) return false;
             try config.validateProfileV2Name(args[index]);
             continue;
         }
-        if (std.mem.startsWith(u8, arg, "--profile-v2=")) {
-            try config.validateProfileV2Name(arg["--profile-v2=".len..]);
+        if (std.mem.startsWith(u8, arg, "--profile=")) {
+            try config.validateProfileV2Name(arg["--profile=".len..]);
             continue;
         }
         if (std.mem.eql(u8, arg, "--ask-for-approval") or
@@ -2992,9 +3002,7 @@ fn sessionHelpPreflight(args: []const []const u8, options: SessionParseOptions) 
             _ = try config.SandboxMode.parse(arg["--sandbox=".len..]);
             continue;
         }
-        if (std.mem.eql(u8, arg, "--profile") or
-            std.mem.eql(u8, arg, "-p") or
-            std.mem.eql(u8, arg, "--config") or
+        if (std.mem.eql(u8, arg, "--config") or
             std.mem.eql(u8, arg, "-c") or
             std.mem.eql(u8, arg, "--enable") or
             std.mem.eql(u8, arg, "--disable") or
@@ -3105,8 +3113,8 @@ fn printHelp() !void {
         \\  -m, --model <MODEL>           Override model for the command
         \\      --oss                     Use an open-source provider
         \\      --local-provider <NAME>   Select the local OSS provider
-        \\  -p, --profile <NAME>          Select a config profile
-        \\      --profile-v2 <NAME>       Layer CODEX_HOME/NAME.config.toml over base config
+        \\  -p, --profile <CONFIG_PROFILE_V2>
+        \\                                Layer CODEX_HOME/NAME.config.toml over base config
         \\  -s, --sandbox <MODE>          Select the sandbox policy
         \\      --dangerously-bypass-approvals-and-sandbox
         \\                                Skip approvals and sandboxing
@@ -3462,7 +3470,7 @@ test "exec command alias matches exec" {
 
 test "session command flags parse resume compatibility options" {
     const allocator = std.testing.allocator;
-    const argv = [_][]const u8{ "--all", "--include-non-interactive", "--last", "--profile-v2", "team", "--strict-config" };
+    const argv = [_][]const u8{ "--all", "--include-non-interactive", "--last", "--profile", "team", "--strict-config" };
     var parsed = try parseSessionCommandArgs(allocator, argv[0..], true);
     defer parsed.deinit(allocator);
 
@@ -3476,14 +3484,14 @@ test "session command flags parse resume compatibility options" {
 
 test "session command flags reject path-like profile v2 names" {
     const allocator = std.testing.allocator;
-    const argv = [_][]const u8{ "--profile-v2", "../team" };
+    const argv = [_][]const u8{ "--profile", "../team" };
     try std.testing.expectError(error.InvalidProfileV2Name, parseSessionCommandArgs(allocator, argv[0..], true));
 }
 
 test "session command help preflight validates typed option values" {
     const allocator = std.testing.allocator;
 
-    const invalid_profile = [_][]const u8{ "--profile-v2", "../team", "--help" };
+    const invalid_profile = [_][]const u8{ "--profile", "../team", "--help" };
     try std.testing.expectError(error.InvalidProfileV2Name, parseSessionCommandArgs(allocator, invalid_profile[0..], true));
 
     const invalid_approval = [_][]const u8{ "--ask-for-approval", "bogus", "--help" };
@@ -3527,8 +3535,10 @@ test "session command flags merge interactive overrides" {
         "on-request",
         "-m",
         "gpt-5.1-test",
+        "-c",
+        "profile=work",
         "-p",
-        "work",
+        "team",
         "-C",
         "/tmp/workspace",
         "--add-dir",
@@ -3561,6 +3571,7 @@ test "session command flags merge interactive overrides" {
     try std.testing.expectEqual(false, parsed.feature_overrides.get("shell_tool").?);
     try std.testing.expectEqual(true, parsed.feature_overrides.get("artifact").?);
     try std.testing.expectEqualStrings("work", parsed.profile.?);
+    try std.testing.expectEqualStrings("team", parsed.profile_v2.?);
     try std.testing.expectEqualStrings("/tmp/workspace", parsed.cwd.?);
     try std.testing.expectEqualStrings("/tmp/extra", parsed.additional_writable_roots.items[0]);
     try std.testing.expectEqual(@as(usize, 2), parsed.image_files.items.len);
@@ -3573,7 +3584,7 @@ test "session command flags remember first unknown config override" {
     const allocator = std.testing.allocator;
     const argv = [_][]const u8{
         "-c",
-        "features.nope=true",
+        "features.nope.goals=true",
         "--config=mcp_servers.local.command=echo",
         "-c",
         "foo=bar",
@@ -3582,6 +3593,7 @@ test "session command flags remember first unknown config override" {
     defer parsed.deinit(allocator);
 
     try std.testing.expectEqualStrings("features.nope", parsed.unknown_config_override.?);
+    try std.testing.expect(parsed.invalid_unknown_config_override);
     try std.testing.expect(parsed.target == null);
 }
 
@@ -3829,7 +3841,7 @@ test "root semantic checks defer to help and version tails" {
     try std.testing.expect(!(try rootArgsTailHasHelpOrVersion(std.testing.allocator, &.{ "--strict-config", "-c", "foo.bar=1", "review", "--base", "--help" })));
     try std.testing.expect(!(try rootArgsTailHasHelpOrVersion(std.testing.allocator, &.{ "--remote", "ws://127.0.0.1:1", "review", "one", "two", "--help" })));
     try std.testing.expect(!(try rootArgsTailHasHelpOrVersion(std.testing.allocator, &.{ "resume", "--sandbox", "bogus", "--help" })));
-    try std.testing.expect(!(try rootArgsTailHasHelpOrVersion(std.testing.allocator, &.{ "fork", "--profile-v2", "../bad", "--help" })));
+    try std.testing.expect(!(try rootArgsTailHasHelpOrVersion(std.testing.allocator, &.{ "fork", "--profile", "../bad", "--help" })));
     try std.testing.expect(!(try rootArgsTailHasHelpOrVersion(std.testing.allocator, &.{ "remote-fork", "--approval-policy", "bogus", "--help" })));
     try std.testing.expect(!(try rootArgsTailHasHelpOrVersion(std.testing.allocator, &.{ "--remote", "ws://127.0.0.1:1", "exec", "--base", "main", "--help" })));
     try std.testing.expect(!(try rootArgsTailHasHelpOrVersion(std.testing.allocator, &.{ "--remote", "ws://127.0.0.1:1", "exec", "--color", "red", "--help" })));
@@ -3885,16 +3897,17 @@ test "root strict config is rejected for unsupported subcommands" {
     try std.testing.expectEqualStrings("apply", strictConfigUnsupportedSubcommandName("apply").?);
 }
 
-test "root profile-v2 is restricted to runtime subcommands" {
+test "root profile overlay is restricted to runtime subcommands" {
     try std.testing.expect(profileV2UnsupportedSubcommandName("exec") == null);
     try std.testing.expect(profileV2UnsupportedSubcommandName("e") == null);
     try std.testing.expect(profileV2UnsupportedSubcommandName("review") == null);
     try std.testing.expect(profileV2UnsupportedSubcommandName("resume") == null);
     try std.testing.expect(profileV2UnsupportedSubcommandName("fork") == null);
+    try std.testing.expect(profileV2UnsupportedSubcommandName("mcp") == null);
+    try std.testing.expect(profileV2UnsupportedSubcommandName("sandbox") == null);
     try std.testing.expect(profileV2UnsupportedSubcommandName("debug") == null);
     try std.testing.expect(profileV2UnsupportedSubcommandName("write this prompt") == null);
     try std.testing.expectEqualStrings("doctor", profileV2UnsupportedSubcommandName("doctor").?);
-    try std.testing.expectEqualStrings("sandbox", profileV2UnsupportedSubcommandName("sandbox").?);
     try std.testing.expectEqualStrings("apply", profileV2UnsupportedSubcommandName("apply").?);
 }
 

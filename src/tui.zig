@@ -258,7 +258,7 @@ pub fn runWithOptions(allocator: std.mem.Allocator, options: Options) !void {
         try config.applyOssMode(&cfg, allocator, options.oss_provider, options.runtime_overrides.model != null);
     }
     defer _ = tools.stopAllExecSessions();
-    var feature_overrides = try features_cmd.loadFeatureOverridesForProfile(allocator, cfg.codex_home, cfg.active_profile);
+    var feature_overrides = try features_cmd.loadFeatureOverridesWithProfileOverlay(allocator, cfg.codex_home, cfg.active_profile, options.profile_v2);
     defer feature_overrides.deinit(allocator);
     try feature_overrides.putAll(allocator, options.feature_overrides);
     const goals_enabled = features_cmd.effectiveEnabled(feature_overrides, "goals") orelse false;
@@ -6399,6 +6399,11 @@ test "remote TUI serializes supported runtime overrides" {
     try std.testing.expectEqualStrings("mock-provider", thread_config.get("model_provider").?.string);
     try std.testing.expectEqualStrings("https://chatgpt.example/backend-api/codex", thread_config.get("chatgpt_base_url").?.string);
     try std.testing.expectEqualStrings("live", thread_config.get("web_search").?.string);
+
+    const overlay_request_config = remoteRequestConfigOverrides(.{ .profile_v2 = "overlay-work" });
+    try std.testing.expect(overlay_request_config.profile == null);
+    const legacy_request_config = remoteRequestConfigOverrides(.{ .profile = "legacy-work", .profile_v2 = "overlay-work" });
+    try std.testing.expectEqualStrings("legacy-work", legacy_request_config.profile.?);
 
     const oss_thread_start = try renderRemoteThreadStartRequest(allocator, "/tmp/work", .{}, false, .{
         .oss_mode = true,

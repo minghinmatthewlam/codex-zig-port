@@ -20,6 +20,7 @@ const SandboxKind = enum {
 const SandboxArgs = struct {
     help: bool = false,
     profile_override: ?[]const u8 = null,
+    profile_v2: ?[]const u8 = null,
     runtime_overrides: config.RuntimeOverrides = .{},
     feature_overrides: features_cmd.FeatureOverrides = .{},
     permissions_profile: ?[]const u8 = null,
@@ -43,6 +44,7 @@ const SandboxArgs = struct {
 
 const SandboxRootOptions = struct {
     profile_override: ?[]const u8 = null,
+    profile_v2: ?[]const u8 = null,
     runtime_overrides: config.RuntimeOverrides = .{},
     feature_overrides: features_cmd.FeatureOverrides = .{},
 
@@ -53,6 +55,7 @@ const SandboxRootOptions = struct {
 
 pub const Options = struct {
     profile: ?[]const u8 = null,
+    profile_v2: ?[]const u8 = null,
     runtime_overrides: config.RuntimeOverrides = .{},
     feature_overrides: features_cmd.FeatureOverrides = .{},
     cwd: ?[]const u8 = null,
@@ -70,7 +73,7 @@ pub fn runWithOptions(allocator: std.mem.Allocator, args: *std.process.Args.Iter
         printHelp();
         return error.MissingSandboxSubcommand;
     }
-    if (helpPreflight(raw_args.items)) |target| {
+    if (try helpPreflight(raw_args.items)) |target| {
         switch (target) {
             .root => printHelp(),
             .kind => |kind| printSandboxKindHelp(kind),
@@ -119,13 +122,14 @@ pub fn runWithOptions(allocator: std.mem.Allocator, args: *std.process.Args.Iter
     defer sandbox.freeResolvedPaths(allocator, allow_unix_sockets);
 
     const effective_profile = parsed.profile_override orelse root_options.profile_override orelse options.profile;
+    const effective_profile_v2 = parsed.profile_v2 orelse root_options.profile_v2 orelse options.profile_v2;
     var runtime_overrides = config.mergeRuntimeOverrides(options.runtime_overrides, root_options.runtime_overrides);
     runtime_overrides = config.mergeRuntimeOverrides(runtime_overrides, parsed.runtime_overrides);
     var effective_feature_overrides = try mergeSandboxFeatureOverrides(allocator, options.feature_overrides, root_options.feature_overrides, parsed.feature_overrides);
     defer effective_feature_overrides.deinit(allocator);
     try features_cmd.validateRawConfigOverrides(effective_feature_overrides);
 
-    var cfg = try config.loadWithOptions(allocator, .{ .profile = effective_profile });
+    var cfg = try config.loadWithOptions(allocator, .{ .profile = effective_profile, .profile_v2 = effective_profile_v2 });
     defer cfg.deinit(allocator);
     var sandbox_profile: ?config.SandboxPermissionProfile = null;
     defer if (sandbox_profile) |*profile| profile.deinit(allocator);
@@ -133,6 +137,7 @@ pub fn runWithOptions(allocator: std.mem.Allocator, args: *std.process.Args.Iter
     if (parsed.permissions_profile) |profile| {
         sandbox_profile = try config.loadSandboxPermissionProfileWithOptions(allocator, profile, .{
             .allow_read_denied_globs = true,
+            .profile_v2 = effective_profile_v2,
         });
         cfg.sandbox_mode = sandbox_profile.?.mode;
     }
@@ -182,6 +187,7 @@ fn parseSandboxRootOption(
         args,
         index,
         &parsed.profile_override,
+        &parsed.profile_v2,
         &parsed.runtime_overrides,
         &parsed.feature_overrides,
     );
@@ -192,10 +198,25 @@ fn parseSandboxConfigFeatureOption(
     args: []const []const u8,
     index: *usize,
     profile_override: *?[]const u8,
+    profile_v2: *?[]const u8,
     runtime_overrides: *config.RuntimeOverrides,
     feature_overrides: *features_cmd.FeatureOverrides,
 ) !bool {
     const arg = args[index.*];
+    if (std.mem.eql(u8, arg, "--profile") or std.mem.eql(u8, arg, "-p")) {
+        index.* += 1;
+        if (index.* >= args.len) return error.MissingProfileOptionValue;
+        if (std.mem.eql(u8, args[index.*], "--")) return error.MissingProfileOptionValue;
+        try config.validateProfileV2Name(args[index.*]);
+        profile_v2.* = args[index.*];
+        return true;
+    }
+    if (std.mem.startsWith(u8, arg, "--profile=")) {
+        const value = arg["--profile=".len..];
+        try config.validateProfileV2Name(value);
+        profile_v2.* = value;
+        return true;
+    }
     if (std.mem.eql(u8, arg, "--config") or std.mem.eql(u8, arg, "-c")) {
         index.* += 1;
         if (index.* >= args.len) return error.MissingConfigOptionValue;
@@ -303,7 +324,7 @@ const HelpTarget = union(enum) {
     kind: SandboxKind,
 };
 
-fn helpPreflight(args: []const []const u8) ?HelpTarget {
+fn helpPreflight(args: []const []const u8) !?HelpTarget {
     var index: usize = 0;
     while (index < args.len) : (index += 1) {
         const arg = args[index];
@@ -314,6 +335,16 @@ fn helpPreflight(args: []const []const u8) ?HelpTarget {
             const kind = parseSandboxKind(args[index + 1]) orelse return null;
             return .{ .kind = kind };
         }
+        if (std.mem.eql(u8, arg, "--profile") or std.mem.eql(u8, arg, "-p")) {
+            index += 1;
+            if (index >= args.len or optionValueBoundary(args[index])) return null;
+            try config.validateProfileV2Name(args[index]);
+            continue;
+        }
+        if (std.mem.startsWith(u8, arg, "--profile=")) {
+            try config.validateProfileV2Name(arg["--profile=".len..]);
+            continue;
+        }
         if (isConfigFeatureOptionName(arg)) {
             index += 1;
             if (index >= args.len or optionValueBoundary(args[index])) return null;
@@ -322,17 +353,27 @@ fn helpPreflight(args: []const []const u8) ?HelpTarget {
         if (isConfigFeatureOptionWithInlineValue(arg)) continue;
         if (std.mem.startsWith(u8, arg, "-")) return null;
         const kind = parseSandboxKind(arg) orelse return null;
-        return kindHelpPreflight(kind, args[index + 1 ..]);
+        return try kindHelpPreflight(kind, args[index + 1 ..]);
     }
     return null;
 }
 
-fn kindHelpPreflight(kind: SandboxKind, args: []const []const u8) ?HelpTarget {
+fn kindHelpPreflight(kind: SandboxKind, args: []const []const u8) !?HelpTarget {
     var index: usize = 0;
     while (index < args.len) : (index += 1) {
         const arg = args[index];
         if (std.mem.eql(u8, arg, "--")) return null;
         if (isHelpFlag(arg)) return .{ .kind = kind };
+        if (std.mem.eql(u8, arg, "--profile") or std.mem.eql(u8, arg, "-p")) {
+            index += 1;
+            if (index >= args.len or optionValueBoundary(args[index])) return null;
+            try config.validateProfileV2Name(args[index]);
+            continue;
+        }
+        if (std.mem.startsWith(u8, arg, "--profile=")) {
+            try config.validateProfileV2Name(arg["--profile=".len..]);
+            continue;
+        }
         if (isConfigFeatureOptionName(arg) or
             std.mem.eql(u8, arg, "--permissions-profile") or
             std.mem.eql(u8, arg, "--allow-unix-socket") or
@@ -361,14 +402,17 @@ fn kindHelpPreflight(kind: SandboxKind, args: []const []const u8) ?HelpTarget {
 }
 
 fn isConfigFeatureOptionName(arg: []const u8) bool {
-    return std.mem.eql(u8, arg, "--config") or
+    return std.mem.eql(u8, arg, "--profile") or
+        std.mem.eql(u8, arg, "-p") or
+        std.mem.eql(u8, arg, "--config") or
         std.mem.eql(u8, arg, "-c") or
         std.mem.eql(u8, arg, "--enable") or
         std.mem.eql(u8, arg, "--disable");
 }
 
 fn isConfigFeatureOptionWithInlineValue(arg: []const u8) bool {
-    return std.mem.startsWith(u8, arg, "--config=") or
+    return std.mem.startsWith(u8, arg, "--profile=") or
+        std.mem.startsWith(u8, arg, "--config=") or
         std.mem.startsWith(u8, arg, "--enable=") or
         std.mem.startsWith(u8, arg, "--disable=");
 }
@@ -398,6 +442,7 @@ fn parseSandboxArgs(allocator: std.mem.Allocator, args: []const []const u8) !San
             args,
             &index,
             &parsed.profile_override,
+            &parsed.profile_v2,
             &parsed.runtime_overrides,
             &parsed.feature_overrides,
         )) {
@@ -1353,6 +1398,8 @@ pub fn printHelp() void {
         \\  help     Print this message or the help of the given subcommand(s)
         \\
         \\Options:
+        \\  -p, --profile <CONFIG_PROFILE>
+        \\          Layer CODEX_HOME/NAME.config.toml over base config
         \\  -c, --config <key=value>
         \\          Override a configuration value that would otherwise be loaded from `~/.codex/config.toml`
         \\      --enable <FEATURE>
@@ -1396,6 +1443,8 @@ fn printMacosHelp() void {
         \\          Full command args to run under seatbelt
         \\
         \\Options:
+        \\  -p, --profile PROFILE
+        \\                      Layer CODEX_HOME/PROFILE.config.toml over base config
         \\  -c, --config <key=value>
         \\                      Override a configuration value that would otherwise be loaded from `~/.codex/config.toml`
         \\  --permissions-profile NAME
@@ -1424,6 +1473,8 @@ fn printLinuxHelp() void {
         \\          Full command args to run under the Linux sandbox
         \\
         \\Options:
+        \\  -p, --profile PROFILE
+        \\                      Layer CODEX_HOME/PROFILE.config.toml over base config
         \\  -c, --config <key=value>
         \\                      Override a configuration value that would otherwise be loaded from `~/.codex/config.toml`
         \\  --permissions-profile NAME
@@ -1449,6 +1500,8 @@ fn printWindowsHelp() void {
         \\          Full command args to run under Windows restricted token sandbox
         \\
         \\Options:
+        \\  -p, --profile PROFILE
+        \\                      Layer CODEX_HOME/PROFILE.config.toml over base config
         \\  -c, --config <key=value>
         \\                      Override a configuration value that would otherwise be loaded from `~/.codex/config.toml`
         \\  --permissions-profile NAME
@@ -1538,11 +1591,12 @@ test "sandbox macos args parse help" {
 
 test "sandbox args parse Rust config and feature controls" {
     const allocator = std.testing.allocator;
-    const argv = [_][]const u8{ "-c", "sandbox_mode=\"danger-full-access\"", "--enable", "goals", "--disable=shell_tool", "-c", "features.artifact=true", "--", "/bin/echo", "ok" };
+    const argv = [_][]const u8{ "-c", "sandbox_mode=\"danger-full-access\"", "--profile", "team", "--enable", "goals", "--disable=shell_tool", "-c", "features.artifact=true", "--", "/bin/echo", "ok" };
     const parsed = try parseSandboxArgs(allocator, argv[0..]);
     defer parsed.deinit(allocator);
 
     try std.testing.expectEqual(config.SandboxMode.danger_full_access, parsed.runtime_overrides.sandbox_mode.?);
+    try std.testing.expectEqualStrings("team", parsed.profile_v2.?);
     try std.testing.expectEqual(true, parsed.feature_overrides.get("goals").?);
     try std.testing.expectEqual(false, parsed.feature_overrides.get("shell_tool").?);
     try std.testing.expectEqual(true, parsed.feature_overrides.get("artifact").?);
@@ -1551,13 +1605,16 @@ test "sandbox args parse Rust config and feature controls" {
 
 test "sandbox root options parse Rust config and feature controls" {
     const allocator = std.testing.allocator;
-    const argv = [_][]const u8{ "--config=sandbox_mode=\"workspace-write\"", "--enable", "goals", "--disable=shell_tool", "macos" };
+    const argv = [_][]const u8{ "--config=sandbox_mode=\"workspace-write\"", "--profile", "team", "--enable", "goals", "--disable=shell_tool", "macos" };
     var parsed = SandboxRootOptions{};
     defer parsed.deinit(allocator);
 
     var index: usize = 0;
     try std.testing.expect(try parseSandboxRootOption(allocator, argv[0..], &index, &parsed));
     try std.testing.expectEqual(config.SandboxMode.workspace_write, parsed.runtime_overrides.sandbox_mode.?);
+    index += 1;
+    try std.testing.expect(try parseSandboxRootOption(allocator, argv[0..], &index, &parsed));
+    try std.testing.expectEqualStrings("team", parsed.profile_v2.?);
     index += 1;
     try std.testing.expect(try parseSandboxRootOption(allocator, argv[0..], &index, &parsed));
     try std.testing.expectEqual(true, parsed.feature_overrides.get("goals").?);
@@ -1591,6 +1648,7 @@ test "sandbox feature controls merge root before command-local overrides" {
 test "sandbox value options reject option terminator as missing value" {
     const allocator = std.testing.allocator;
     const missing_config = [_][]const u8{ "-c", "--", "/bin/echo", "ok" };
+    const missing_overlay_profile = [_][]const u8{ "--profile", "--", "/bin/echo", "ok" };
     const missing_enable = [_][]const u8{ "--enable", "--", "/bin/echo", "ok" };
     const missing_disable = [_][]const u8{ "--disable", "--", "/bin/echo", "ok" };
     const missing_profile = [_][]const u8{ "--permissions-profile", "--help" };
@@ -1598,6 +1656,7 @@ test "sandbox value options reject option terminator as missing value" {
     const missing_cd = [_][]const u8{ "--cd", "--help" };
 
     try std.testing.expectError(error.MissingConfigOptionValue, parseSandboxArgs(allocator, missing_config[0..]));
+    try std.testing.expectError(error.MissingProfileOptionValue, parseSandboxArgs(allocator, missing_overlay_profile[0..]));
     try std.testing.expectError(error.MissingFeatureName, parseSandboxArgs(allocator, missing_enable[0..]));
     try std.testing.expectError(error.MissingFeatureName, parseSandboxArgs(allocator, missing_disable[0..]));
     try std.testing.expectError(error.MissingSandboxOptionValue, parseSandboxArgs(allocator, missing_profile[0..]));

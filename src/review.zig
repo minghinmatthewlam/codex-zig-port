@@ -33,6 +33,7 @@ const ReviewArgs = struct {
     read_stdin: bool = false,
     strict_config: bool = false,
     unknown_config_override: ?[]const u8 = null,
+    invalid_unknown_config_override: bool = false,
 
     fn deinit(self: ReviewArgs, allocator: std.mem.Allocator) void {
         var feature_overrides = self.feature_overrides;
@@ -99,6 +100,7 @@ pub fn runRawArgsWithOptions(allocator: std.mem.Allocator, raw_args: []const []c
         if (options.unknown_config_override) |field| return config.failStrictConfigUnknownCliOverride(field);
         if (parsed.unknown_config_override) |field| return config.failStrictConfigUnknownCliOverride(field);
     }
+    if (parsed.invalid_unknown_config_override) return error.InvalidConfigOverride;
     var cfg = try config.loadWithOptions(allocator, .{
         .profile = parsed.config_profile orelse options.profile,
         .profile_v2 = options.profile_v2,
@@ -129,7 +131,7 @@ pub fn runRawArgsWithOptions(allocator: std.mem.Allocator, raw_args: []const []c
     var feature_overrides = features_cmd.FeatureOverrides{};
     defer feature_overrides.deinit(allocator);
     if (!effective_ignore_user_config) {
-        feature_overrides = try features_cmd.loadFeatureOverridesForProfile(allocator, cfg.codex_home, cfg.active_profile);
+        feature_overrides = try features_cmd.loadFeatureOverridesWithProfileOverlay(allocator, cfg.codex_home, cfg.active_profile, options.profile_v2);
     }
     try feature_overrides.putAll(allocator, options.feature_overrides);
     try feature_overrides.putAll(allocator, parsed.feature_overrides);
@@ -254,16 +256,28 @@ fn parseArgsWithOptions(allocator: std.mem.Allocator, args: []const []const u8, 
         if (!end_options and (std.mem.eql(u8, arg, "--config") or std.mem.eql(u8, arg, "-c"))) {
             index += 1;
             if (index >= args.len) return error.MissingReviewOptionValue;
-            try config.rememberStrictConfigUnknownOverride(allocator, &parsed.unknown_config_override, args[index]);
-            try config.applyRawConfigOverride(&parsed.config_overrides, &parsed.config_profile, args[index]);
-            try features_cmd.applyRawConfigOverride(allocator, &parsed.feature_overrides, args[index]);
+            try features_cmd.applyRuntimeConfigAndFeatureOverride(
+                allocator,
+                &parsed.config_overrides,
+                &parsed.config_profile,
+                &parsed.feature_overrides,
+                &parsed.unknown_config_override,
+                &parsed.invalid_unknown_config_override,
+                args[index],
+            );
             continue;
         }
         if (!end_options and std.mem.startsWith(u8, arg, "--config=")) {
             const raw = arg["--config=".len..];
-            try config.rememberStrictConfigUnknownOverride(allocator, &parsed.unknown_config_override, raw);
-            try config.applyRawConfigOverride(&parsed.config_overrides, &parsed.config_profile, raw);
-            try features_cmd.applyRawConfigOverride(allocator, &parsed.feature_overrides, raw);
+            try features_cmd.applyRuntimeConfigAndFeatureOverride(
+                allocator,
+                &parsed.config_overrides,
+                &parsed.config_profile,
+                &parsed.feature_overrides,
+                &parsed.unknown_config_override,
+                &parsed.invalid_unknown_config_override,
+                raw,
+            );
             continue;
         }
         if (!end_options and std.mem.eql(u8, arg, "--enable")) {
@@ -795,6 +809,18 @@ test "review args parse strict config and remember first unknown override" {
 
     try std.testing.expect(parsed.strict_config);
     try std.testing.expectEqualStrings("foo", parsed.unknown_config_override.?);
+    try std.testing.expect(parsed.uncommitted);
+}
+
+test "review args remember unknown feature parent for strict nested overrides" {
+    const allocator = std.testing.allocator;
+    const argv = [_][]const u8{ "--config=features.nope.goals=true", "--strict-config", "--uncommitted" };
+    const parsed = try parseArgs(allocator, argv[0..]);
+    defer parsed.deinit(allocator);
+
+    try std.testing.expect(parsed.strict_config);
+    try std.testing.expectEqualStrings("features.nope", parsed.unknown_config_override.?);
+    try std.testing.expect(parsed.invalid_unknown_config_override);
     try std.testing.expect(parsed.uncommitted);
 }
 

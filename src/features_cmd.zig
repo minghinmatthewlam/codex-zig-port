@@ -227,6 +227,27 @@ pub fn applyRawConfigOverride(
     try applyFeaturePathConfigOverride(allocator, overrides, feature_path, raw_value);
 }
 
+pub fn applyRuntimeConfigAndFeatureOverride(
+    allocator: std.mem.Allocator,
+    runtime_overrides: *config.RuntimeOverrides,
+    profile: *?[]const u8,
+    feature_overrides: *FeatureOverrides,
+    unknown_config_override: *?[]const u8,
+    invalid_unknown_config_override: *bool,
+    raw: []const u8,
+) !void {
+    const raw_unknown = try config.rememberStrictConfigUnknownOverrideWithResult(allocator, unknown_config_override, raw);
+    try config.applyRawConfigOverride(runtime_overrides, profile, raw);
+    applyRawConfigOverride(allocator, feature_overrides, raw) catch |err| switch (err) {
+        error.InvalidConfigOverride => if (raw_unknown) {
+            invalid_unknown_config_override.* = true;
+        } else {
+            return err;
+        },
+        else => return err,
+    };
+}
+
 fn applyFeaturePathConfigOverride(
     allocator: std.mem.Allocator,
     overrides: *FeatureOverrides,
@@ -859,6 +880,25 @@ pub fn loadFeatureOverridesForProfile(
     return parseFeatureOverridesForProfile(allocator, config_bytes orelse "", profile);
 }
 
+pub fn loadFeatureOverridesWithProfileOverlay(
+    allocator: std.mem.Allocator,
+    codex_home: []const u8,
+    profile: ?[]const u8,
+    profile_v2: ?[]const u8,
+) !FeatureOverrides {
+    var overrides = try loadFeatureOverridesForProfile(allocator, codex_home, profile);
+    errdefer overrides.deinit(allocator);
+
+    const overlay = profile_v2 orelse return overrides;
+    try config.validateProfileV2Name(overlay);
+    const overlay_bytes = try config.readProfileV2ConfigToml(allocator, codex_home, overlay);
+    defer if (overlay_bytes) |bytes| allocator.free(bytes);
+    var overlay_overrides = try parseFeatureOverridesForProfile(allocator, overlay_bytes orelse "", profile);
+    defer overlay_overrides.deinit(allocator);
+    try overrides.putAll(allocator, overlay_overrides);
+    return overrides;
+}
+
 fn readConfigToml(allocator: std.mem.Allocator, codex_home: []const u8) !?[]const u8 {
     const path = try std.fs.path.join(allocator, &.{ codex_home, "config.toml" });
     defer allocator.free(path);
@@ -1197,7 +1237,7 @@ pub fn printHelp() void {
         \\  codex-zig features disable FEATURE
         \\
         \\Writes update the top-level [features] table in CODEX_HOME/config.toml.
-        \\Root --profile NAME writes to [profiles.NAME.features] instead.
+        \\Root -c profile=NAME writes to [profiles.NAME.features] instead.
         \\Root --enable/--disable flags apply only to the current invocation.
         \\
     , .{});
@@ -1220,7 +1260,7 @@ fn printSetHelp(action: []const u8) void {
         \\  codex-zig features {s} FEATURE
         \\
         \\Updates CODEX_HOME/config.toml for a known feature key.
-        \\Root --profile NAME scopes the write to that profile.
+        \\Root -c profile=NAME scopes the write to that profile.
         \\
     , .{action});
 }
@@ -1363,6 +1403,46 @@ test "feature overrides apply profile scoped values over base values" {
 
     try std.testing.expectEqual(true, overrides.get("goals").?);
     try std.testing.expectEqual(false, overrides.get("shell_tool").?);
+}
+
+test "feature overrides load profile overlay over base config" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var dir = std.testing.tmpDir(.{});
+    defer dir.cleanup();
+
+    const codex_home = try dir.dir.realPathFileAlloc(io, ".", allocator);
+    defer allocator.free(codex_home);
+    try dir.dir.writeFile(io, .{
+        .sub_path = "config.toml",
+        .data =
+        \\[features]
+        \\goals = false
+        \\shell_tool = true
+        \\
+        \\[profiles.work.features]
+        \\artifact = false
+        \\
+        ,
+    });
+    try dir.dir.writeFile(io, .{
+        .sub_path = "team.config.toml",
+        .data =
+        \\[features]
+        \\goals = true
+        \\
+        \\[profiles.work.features]
+        \\artifact = true
+        \\shell_tool = false
+        \\
+        ,
+    });
+
+    var overrides = try loadFeatureOverridesWithProfileOverlay(allocator, codex_home, "work", "team");
+    defer overrides.deinit(allocator);
+    try std.testing.expectEqual(true, overrides.get("goals").?);
+    try std.testing.expectEqual(false, overrides.get("shell_tool").?);
+    try std.testing.expectEqual(true, overrides.get("artifact").?);
 }
 
 test "feature overrides parse quoted profile feature sections" {

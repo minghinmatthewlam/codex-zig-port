@@ -4577,14 +4577,13 @@ def run_remote_wss_tui_smoke(
             raise AssertionError(f"remote wss TUI did not send thread/start: {wss_server.requests!r}")
         request_config = thread_requests[-1]["params"].get("config")
         if request_config != {
-            "profile": "remote-work",
             "model_provider": "mock-provider",
             "openai_base_url": "http://127.0.0.1:11434/v1",
             "chatgpt_base_url": "http://127.0.0.1:9090/backend-api/codex",
             "web_search": "live",
         }:
             raise AssertionError(
-                f"remote wss TUI did not forward profile/base URL/search config: {request_config!r}"
+                f"remote wss TUI did not forward base URL/search config cleanly: {request_config!r}"
             )
 
         turn_requests = [

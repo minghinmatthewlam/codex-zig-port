@@ -56,6 +56,7 @@ const ExecArgs = struct {
     approval_policy_requested: bool = false,
     strict_config: bool = false,
     unknown_config_override: ?[]const u8 = null,
+    invalid_unknown_config_override: bool = false,
 
     fn deinit(self: ExecArgs, allocator: std.mem.Allocator) void {
         var feature_overrides = self.feature_overrides;
@@ -141,6 +142,7 @@ pub fn runWithOptions(allocator: std.mem.Allocator, args: *std.process.Args.Iter
         if (options.unknown_config_override) |field| return config.failStrictConfigUnknownCliOverride(field);
         if (parsed.unknown_config_override) |field| return config.failStrictConfigUnknownCliOverride(field);
     }
+    if (parsed.invalid_unknown_config_override) return error.InvalidConfigOverride;
 
     const effective_oss = options.oss or parsed.oss;
     const effective_oss_provider = parsed.oss_provider orelse options.oss_provider;
@@ -198,9 +200,10 @@ pub fn runWithOptions(allocator: std.mem.Allocator, args: *std.process.Args.Iter
     } else try allocator.dupe(u8, parsed.prompt.?);
     defer allocator.free(prompt);
 
+    const effective_profile_v2 = parsed.profile_v2 orelse options.profile_v2;
     var cfg = try config.loadWithOptions(allocator, .{
         .profile = parsed.profile,
-        .profile_v2 = parsed.profile_v2 orelse options.profile_v2,
+        .profile_v2 = effective_profile_v2,
         .ignore_user_config = parsed.ignore_user_config,
         .strict_config = effective_strict_config,
     });
@@ -214,7 +217,7 @@ pub fn runWithOptions(allocator: std.mem.Allocator, args: *std.process.Args.Iter
     var feature_overrides = features_cmd.FeatureOverrides{};
     defer feature_overrides.deinit(allocator);
     if (!parsed.ignore_user_config) {
-        feature_overrides = try features_cmd.loadFeatureOverridesForProfile(allocator, cfg.codex_home, cfg.active_profile);
+        feature_overrides = try features_cmd.loadFeatureOverridesWithProfileOverlay(allocator, cfg.codex_home, cfg.active_profile, effective_profile_v2);
     }
     try feature_overrides.putAll(allocator, runtime_feature_overrides);
 
@@ -429,18 +432,30 @@ fn parseArgsWithOptions(allocator: std.mem.Allocator, args: []const []const u8, 
             if (index >= args.len) return error.MissingExecOptionValue;
             if (!parse_options.validate_config_feature_values and optionValueLooksMissing(args[index])) return error.MissingExecOptionValue;
             if (parse_options.validate_config_feature_values) {
-                try config.rememberStrictConfigUnknownOverride(allocator, &parsed.unknown_config_override, args[index]);
-                try config.applyRawConfigOverride(&parsed.config_overrides, &parsed.config_profile, args[index]);
-                try features_cmd.applyRawConfigOverride(allocator, &parsed.feature_overrides, args[index]);
+                try features_cmd.applyRuntimeConfigAndFeatureOverride(
+                    allocator,
+                    &parsed.config_overrides,
+                    &parsed.config_profile,
+                    &parsed.feature_overrides,
+                    &parsed.unknown_config_override,
+                    &parsed.invalid_unknown_config_override,
+                    args[index],
+                );
             }
             continue;
         }
         if (!end_options and std.mem.startsWith(u8, arg, "--config=")) {
             const raw = arg["--config=".len..];
             if (parse_options.validate_config_feature_values) {
-                try config.rememberStrictConfigUnknownOverride(allocator, &parsed.unknown_config_override, raw);
-                try config.applyRawConfigOverride(&parsed.config_overrides, &parsed.config_profile, raw);
-                try features_cmd.applyRawConfigOverride(allocator, &parsed.feature_overrides, raw);
+                try features_cmd.applyRuntimeConfigAndFeatureOverride(
+                    allocator,
+                    &parsed.config_overrides,
+                    &parsed.config_profile,
+                    &parsed.feature_overrides,
+                    &parsed.unknown_config_override,
+                    &parsed.invalid_unknown_config_override,
+                    raw,
+                );
             }
             continue;
         }
@@ -559,30 +574,12 @@ fn parseArgsWithOptions(allocator: std.mem.Allocator, args: []const []const u8, 
         if (!end_options and (std.mem.eql(u8, arg, "--profile") or std.mem.eql(u8, arg, "-p"))) {
             index += 1;
             if (index >= args.len) return error.MissingExecOptionValue;
-            if (parsed.profile) |existing| {
-                allocator.free(existing);
-                parsed.profile = null;
-            }
-            parsed.profile = try allocator.dupe(u8, args[index]);
-            continue;
-        }
-        if (!end_options and std.mem.startsWith(u8, arg, "--profile=")) {
-            if (parsed.profile) |existing| {
-                allocator.free(existing);
-                parsed.profile = null;
-            }
-            parsed.profile = try allocator.dupe(u8, arg["--profile=".len..]);
-            continue;
-        }
-        if (!end_options and std.mem.eql(u8, arg, "--profile-v2")) {
-            index += 1;
-            if (index >= args.len) return error.MissingExecOptionValue;
             try config.validateProfileV2Name(args[index]);
             parsed.profile_v2 = args[index];
             continue;
         }
-        if (!end_options and std.mem.startsWith(u8, arg, "--profile-v2=")) {
-            const value = arg["--profile-v2=".len..];
+        if (!end_options and std.mem.startsWith(u8, arg, "--profile=")) {
+            const value = arg["--profile=".len..];
             try config.validateProfileV2Name(value);
             parsed.profile_v2 = value;
             continue;
@@ -888,8 +885,7 @@ pub fn printHelp() void {
         \\                          untrusted, on-failure, on-request, or never
         \\  --approval-policy MODE  Alias for --ask-for-approval
         \\  -s, --sandbox MODE      read-only, workspace-write, or danger-full-access
-        \\  -p, --profile PROFILE   Select a config profile
-        \\  --profile-v2 PROFILE    Layer CODEX_HOME/PROFILE.config.toml over base config
+        \\  -p, --profile PROFILE   Layer CODEX_HOME/PROFILE.config.toml over base config
         \\  --json                  Emit JSONL events instead of plain final text
         \\  -o, --output-last-message FILE
         \\                          Write final answer to FILE
@@ -1004,7 +1000,7 @@ pub fn printVersion() !void {
 
 test "exec args parse prompt and options" {
     const allocator = std.testing.allocator;
-    const argv = [_][]const u8{ "--auto-approve", "--skip-git-repo-check", "--full-auto", "--sandbox", "read-only", "--ignore-user-config", "--ignore-rules", "-c", "web_search=live", "-c", "review_model=gpt-review", "--color", "never", "--json", "--profile", "work", "--profile-v2", "team", "--oss", "--local-provider", "ollama", "-m", "gpt-test", "--cd", "/tmp/demo", "--add-dir", "/tmp/extra", "--image", "one.png,two.jpg", "three.webp", "-o", "last.txt", "--", "say", "hello" };
+    const argv = [_][]const u8{ "--auto-approve", "--skip-git-repo-check", "--full-auto", "--sandbox", "read-only", "--ignore-user-config", "--ignore-rules", "-c", "web_search=live", "-c", "review_model=gpt-review", "-c", "profile=work", "--color", "never", "--json", "--profile", "team", "--oss", "--local-provider", "ollama", "-m", "gpt-test", "--cd", "/tmp/demo", "--add-dir", "/tmp/extra", "--image", "one.png,two.jpg", "three.webp", "-o", "last.txt", "--", "say", "hello" };
     const parsed = try parseArgs(allocator, argv[0..]);
     defer parsed.deinit(allocator);
 
@@ -1017,7 +1013,7 @@ test "exec args parse prompt and options" {
     try std.testing.expectEqual(config.WebSearchMode.live, parsed.config_overrides.web_search_mode.?);
     try std.testing.expectEqualStrings("gpt-review", parsed.config_overrides.review_model.?);
     try std.testing.expect(parsed.json);
-    try std.testing.expectEqualStrings("work", parsed.profile.?);
+    try std.testing.expectEqualStrings("work", parsed.config_profile.?);
     try std.testing.expectEqualStrings("team", parsed.profile_v2.?);
     try std.testing.expect(parsed.oss);
     try std.testing.expectEqualStrings("ollama", parsed.oss_provider.?);
@@ -1044,7 +1040,7 @@ test "exec args parse output schema" {
 
 test "exec args reject path-like profile v2 names" {
     const allocator = std.testing.allocator;
-    const argv = [_][]const u8{ "--profile-v2=../team", "say", "hello" };
+    const argv = [_][]const u8{ "--profile=../team", "say", "hello" };
     try std.testing.expectError(error.InvalidProfileV2Name, parseArgs(allocator, argv[0..]));
 }
 
@@ -1069,6 +1065,17 @@ test "exec args parse strict config and remember first unknown override" {
     try std.testing.expect(parsed.strict_config);
     try std.testing.expectEqualStrings("foo", parsed.unknown_config_override.?);
     try std.testing.expectEqualStrings("say hello", parsed.prompt.?);
+}
+
+test "exec args remember unknown feature parent for strict nested overrides" {
+    const allocator = std.testing.allocator;
+    const argv = [_][]const u8{ "--config=features.nope.goals=true", "--strict-config", "say", "hello" };
+    const parsed = try parseArgs(allocator, argv[0..]);
+    defer parsed.deinit(allocator);
+
+    try std.testing.expect(parsed.strict_config);
+    try std.testing.expectEqualStrings("features.nope", parsed.unknown_config_override.?);
+    try std.testing.expect(parsed.invalid_unknown_config_override);
 }
 
 test "exec args parse hook trust bypass" {

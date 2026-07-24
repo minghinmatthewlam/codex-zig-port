@@ -2269,22 +2269,22 @@ def run_help_command_smoke(binary: Path) -> None:
     for argv, usage in [
         ([str(binary), "help", "debug", "prompt-input"], "codex-zig debug prompt-input [OPTIONS] [PROMPT]"),
         ([str(binary), "debug", "help", "prompt-input"], "codex-zig debug prompt-input [OPTIONS] [PROMPT]"),
-        ([str(binary), "--profile-v2", "work", "debug", "help", "prompt-input"], "codex-zig debug prompt-input [OPTIONS] [PROMPT]"),
+        ([str(binary), "--profile", "work", "debug", "help", "prompt-input"], "codex-zig debug prompt-input [OPTIONS] [PROMPT]"),
         ([str(binary), "help", "debug", "models"], "codex-zig debug models [--bundled]"),
-        ([str(binary), "--profile-v2", "work", "debug", "models", "--help"], "codex-zig debug models [--bundled]"),
+        ([str(binary), "--profile", "work", "debug", "models", "--help"], "codex-zig debug models [--bundled]"),
         ([str(binary), "help", "debug", "app-server"], "codex-zig debug app-server send-message-v2 USER_MESSAGE"),
         ([str(binary), "debug", "app-server", "help"], "codex-zig debug app-server send-message-v2 USER_MESSAGE"),
-        ([str(binary), "--profile-v2", "work", "debug", "app-server", "help"], "codex-zig debug app-server send-message-v2 USER_MESSAGE"),
+        ([str(binary), "--profile", "work", "debug", "app-server", "help"], "codex-zig debug app-server send-message-v2 USER_MESSAGE"),
         ([str(binary), "debug", "app-server", "help", "help"], "Usage: codex-zig debug app-server help [COMMAND]..."),
         ([str(binary), "debug", "app-server", "help", "send-message-v2"], "codex-zig debug app-server send-message-v2 USER_MESSAGE"),
-        ([str(binary), "--profile-v2", "work", "debug", "app-server", "send-message-v2", "--help"], "codex-zig debug app-server send-message-v2 USER_MESSAGE"),
+        ([str(binary), "--profile", "work", "debug", "app-server", "send-message-v2", "--help"], "codex-zig debug app-server send-message-v2 USER_MESSAGE"),
         ([str(binary), "help", "debug", "app-server", "send-message-v2"], "codex-zig debug app-server send-message-v2 USER_MESSAGE"),
         ([str(binary), "help", "debug", "help"], "Usage: codex-zig debug help [COMMAND]..."),
         ([str(binary), "help", "debug", "app-server", "help"], "Usage: codex-zig debug app-server help [COMMAND]..."),
         ([str(binary), "help", "debug", "trace-reduce"], "codex-zig debug trace-reduce [--output FILE] TRACE_BUNDLE"),
-        ([str(binary), "--profile-v2", "work", "debug", "trace-reduce", "--help"], "codex-zig debug trace-reduce [--output FILE] TRACE_BUNDLE"),
+        ([str(binary), "--profile", "work", "debug", "trace-reduce", "--help"], "codex-zig debug trace-reduce [--output FILE] TRACE_BUNDLE"),
         ([str(binary), "help", "debug", "clear-memories"], "codex-zig debug clear-memories"),
-        ([str(binary), "--profile-v2", "work", "debug", "clear-memories", "--help"], "codex-zig debug clear-memories"),
+        ([str(binary), "--profile", "work", "debug", "clear-memories", "--help"], "codex-zig debug clear-memories"),
     ]:
         nested_debug = subprocess.run(
             argv,
@@ -2508,17 +2508,17 @@ def run_help_command_smoke(binary: Path) -> None:
         assert f"error: unrecognized subcommand '{rejected_subcommand}'" in rejected.stderr
         assert usage in rejected.stderr
 
-    profile_v2_debug_runtime = subprocess.run(
-        [str(binary), "--profile-v2", "work", "debug", "models"],
+    profile_overlay_debug_runtime = subprocess.run(
+        [str(binary), "--profile", "work", "debug", "models"],
         text=True,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         timeout=5,
         check=False,
     )
-    assert profile_v2_debug_runtime.returncode != 0
-    assert profile_v2_debug_runtime.stdout == ""
-    assert "--profile-v2 only applies to runtime commands" in profile_v2_debug_runtime.stderr
+    assert profile_overlay_debug_runtime.returncode != 0
+    assert profile_overlay_debug_runtime.stdout == ""
+    assert "--profile only applies to runtime commands" in profile_overlay_debug_runtime.stderr
 
 
 def run_update_command_smoke(binary: Path) -> None:
@@ -6558,7 +6558,7 @@ def run_features_profile_smoke(binary: Path) -> None:
         env["CODEX_HOME"] = str(codex_home)
 
         subprocess.run(
-            [str(binary), "--profile", "work", "features", "enable", "goals"],
+            [str(binary), "-c", "profile=work", "features", "enable", "goals"],
             env=env,
             text=True,
             stdout=subprocess.PIPE,
@@ -6567,7 +6567,7 @@ def run_features_profile_smoke(binary: Path) -> None:
             check=True,
         )
         subprocess.run(
-            [str(binary), "--profile", "work", "features", "disable", "shell_tool"],
+            [str(binary), "-c", "profile=work", "features", "disable", "shell_tool"],
             env=env,
             text=True,
             stdout=subprocess.PIPE,
@@ -6576,7 +6576,7 @@ def run_features_profile_smoke(binary: Path) -> None:
             check=True,
         )
         profile_under_development = subprocess.run(
-            [str(binary), "--profile", "work", "features", "enable", "code_mode"],
+            [str(binary), "-c", "profile=work", "features", "enable", "code_mode"],
             env=env,
             text=True,
             stdout=subprocess.PIPE,
@@ -6593,7 +6593,7 @@ def run_features_profile_smoke(binary: Path) -> None:
         assert "code_mode = true" in contents
 
         listed = subprocess.run(
-            [str(binary), "--profile", "work", "features", "list"],
+            [str(binary), "-c", "profile=work", "features", "list"],
             env=env,
             text=True,
             stdout=subprocess.PIPE,
@@ -7123,8 +7123,8 @@ def run_exec_review_smoke(binary: Path) -> None:
                 "exec",
                 "--cd",
                 str(repo),
-                "-p",
-                "base",
+                "-c",
+                "profile=base",
                 "review",
                 "-c",
                 "profile=review",
@@ -7494,22 +7494,26 @@ def run_exec_equals_options_smoke(binary: Path) -> None:
         shutil.rmtree(temp_root, ignore_errors=True)
 
 
-def run_profile_v2_smoke(binary: Path) -> None:
-    temp_root = Path(tempfile.mkdtemp(prefix="codex-zig-cli-profile-v2-", dir="/tmp"))
+def run_profile_overlay_smoke(binary: Path) -> None:
+    temp_root = Path(tempfile.mkdtemp(prefix="codex-zig-cli-profile-overlay-", dir="/tmp"))
     server, base_url = start_exec_responses_server()
     try:
         env = make_exec_mock_env(temp_root, base_url)
         profile_config = Path(env["CODEX_HOME"]) / "team.config.toml"
         profile_config.write_text(
-            'model = "gpt-profile-v2"\n'
-            'sandbox_mode = "danger-full-access"\n',
+            'model = "gpt-profile-overlay"\n'
+            'sandbox_mode = "danger-full-access"\n'
+            "[features]\n"
+            "shell_tool = false\n"
+            "[mcp_servers.overlay]\n"
+            'command = "echo"\n',
             encoding="utf-8",
         )
 
         root_result = subprocess.run(
             [
                 str(binary.resolve()),
-                "--profile-v2",
+                "--profile",
                 "team",
                 "exec",
                 "--skip-git-repo-check",
@@ -7526,14 +7530,15 @@ def run_profile_v2_smoke(binary: Path) -> None:
         )
         assert root_result.stdout == "stored reply\n"
         assert len(server.request_bodies) == 1
-        assert server.request_bodies[-1]["model"] == "gpt-profile-v2"
+        assert server.request_bodies[-1]["model"] == "gpt-profile-overlay"
         assert server.request_bodies[-1]["input"][-1]["content"][0]["text"] == "profile root"
+        assert_shell_tools_disabled(server.request_bodies[-1])
 
         exec_result = subprocess.run(
             [
                 str(binary.resolve()),
                 "exec",
-                "--profile-v2",
+                "--profile",
                 "team",
                 "--skip-git-repo-check",
                 "profile",
@@ -7549,13 +7554,33 @@ def run_profile_v2_smoke(binary: Path) -> None:
         )
         assert exec_result.stdout == "stored reply\n"
         assert len(server.request_bodies) == 2
-        assert server.request_bodies[-1]["model"] == "gpt-profile-v2"
+        assert server.request_bodies[-1]["model"] == "gpt-profile-overlay"
         assert server.request_bodies[-1]["input"][-1]["content"][0]["text"] == "profile exec"
+        assert_shell_tools_disabled(server.request_bodies[-1])
+
+        mcp_list = subprocess.run(
+            [
+                str(binary.resolve()),
+                "--profile",
+                "team",
+                "mcp",
+                "list",
+            ],
+            cwd=temp_root,
+            env=env,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=5,
+            check=True,
+        )
+        assert "No MCP servers configured yet" in mcp_list.stdout
+        assert "overlay" not in mcp_list.stdout
 
         unsupported_result = subprocess.run(
             [
                 str(binary.resolve()),
-                "--profile-v2",
+                "--profile",
                 "team",
                 "doctor",
             ],
@@ -7567,7 +7592,68 @@ def run_profile_v2_smoke(binary: Path) -> None:
             timeout=5,
         )
         assert unsupported_result.returncode != 0
-        assert "--profile-v2 only applies to runtime commands" in unsupported_result.stderr
+        assert "--profile only applies to runtime commands" in unsupported_result.stderr
+
+        obsolete_result = subprocess.run(
+            [
+                str(binary.resolve()),
+                "--profile-v2",
+                "team",
+                "--help",
+            ],
+            cwd=temp_root,
+            env=env,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=5,
+        )
+        assert obsolete_result.returncode != 0
+        assert obsolete_result.stdout == ""
+
+        profile_config.write_text('approval_policy = "bogus"\n', encoding="utf-8")
+        invalid_overlay = subprocess.run(
+            [
+                str(binary.resolve()),
+                "--profile",
+                "team",
+                "mcp",
+                "list",
+            ],
+            cwd=temp_root,
+            env=env,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=5,
+        )
+        assert invalid_overlay.returncode != 0
+        assert invalid_overlay.stdout == ""
+        assert "approval" in invalid_overlay.stderr.lower() or "config" in invalid_overlay.stderr.lower()
+
+        Path(env["CODEX_HOME"], "config.toml").write_text(
+            f'openai_base_url = "{base_url}"\n[profiles.team]\nmodel = "legacy"\n',
+            encoding="utf-8",
+        )
+        profile_config.write_text('model = "gpt-profile-overlay"\n', encoding="utf-8")
+        legacy_conflict = subprocess.run(
+            [
+                str(binary.resolve()),
+                "--profile",
+                "team",
+                "mcp",
+                "list",
+            ],
+            cwd=temp_root,
+            env=env,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=5,
+        )
+        assert legacy_conflict.returncode != 0
+        assert legacy_conflict.stdout == ""
+        assert "selected profile" in legacy_conflict.stderr
     finally:
         server.shutdown()
         server.server_close()
@@ -7620,8 +7706,6 @@ def run_strict_config_smoke(binary: Path) -> None:
                 "features.multi_agent_v2.enabled=true",
                 "-c",
                 "features={multi_agent_v2={enabled=true}}",
-                "-c",
-                'features.network_proxy.domains."api.example.com"="allow"',
                 "--skip-git-repo-check",
                 "strict",
                 "allowed",
@@ -7850,9 +7934,31 @@ def run_strict_config_smoke(binary: Path) -> None:
         )
         assert nested_feature_unknown.returncode != 0
         assert (
-            "unknown configuration field `features.nope.goals` in -c/--config override"
+            "unknown configuration field `features.nope` in -c/--config override"
             in nested_feature_unknown.stderr
         )
+
+        unsupported_feature_payload = subprocess.run(
+            [
+                str(binary.resolve()),
+                "exec",
+                "--strict-config",
+                "-c",
+                'features.network_proxy.domains."api.example.com"="allow"',
+                "--skip-git-repo-check",
+                "strict",
+                "unsupported",
+                "payload",
+            ],
+            cwd=temp_root,
+            env=env,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=5,
+        )
+        assert unsupported_feature_payload.returncode != 0
+        assert unsupported_feature_payload.stdout == ""
 
         root_subcommand_unknown = subprocess.run(
             [
@@ -8731,10 +8837,10 @@ def run_app_server_daemon_smoke(binary: Path) -> None:
                 (expected_home / "app-server-daemon" / "app-server.pid").read_text(encoding="utf-8")
             )
             assert root_pid_record["childGlobalArgs"] == [
-                "--enable",
-                "goals",
                 "-c",
                 'model="o3"',
+                "--enable",
+                "goals",
             ]
             root_feature_response = managed_app_server_request("experimentalFeature/list", {}, 2)
             root_goals_feature = next(
@@ -12860,10 +12966,6 @@ def run_prompt_global_flag_smoke(binary: Path) -> None:
                 "FileNotFound",
             ),
             (
-                ("-C", "does-not-exist", "app-server", "generate-ts", "--out", "src", "--help"),
-                "FileNotFound",
-            ),
-            (
                 ("-C", "does-not-exist", "app-server", "daemon", "--remote-control", "--help"),
                 "FileNotFound",
             ),
@@ -14288,7 +14390,7 @@ def main() -> None:
     run_exec_review_smoke(binary)
     run_review_stdin_smoke(binary)
     run_exec_equals_options_smoke(binary)
-    run_profile_v2_smoke(binary)
+    run_profile_overlay_smoke(binary)
     run_strict_config_smoke(binary)
     run_app_server_daemon_smoke(binary)
     run_exec_hook_trust_bypass_smoke(binary)
@@ -14333,7 +14435,7 @@ def main() -> None:
     print("cli-exec-review-e2e: ok")
     print("cli-review-stdin-e2e: ok")
     print("cli-exec-options-e2e: ok")
-    print("cli-profile-v2-e2e: ok")
+    print("cli-profile-overlay-e2e: ok")
     print("cli-strict-config-e2e: ok")
     print("cli-app-server-daemon-e2e: ok")
     print("cli-exec-hook-trust-bypass-e2e: ok")

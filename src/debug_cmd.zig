@@ -390,8 +390,7 @@ fn appendDebugAppServerChildOptions(
     options: Options,
 ) !void {
     if (options.profile) |profile| {
-        try argv.append(allocator, "-p");
-        try argv.append(allocator, profile);
+        try appendConfigOverrideArg(allocator, argv, owned_args, "profile", profile);
     }
     const overrides = options.runtime_overrides;
     if (overrides.model) |value| try appendConfigOverrideArg(allocator, argv, owned_args, "model", value);
@@ -896,8 +895,8 @@ test "debug app-server forwards model config overrides" {
     });
 
     const expected = [_][]const u8{
-        "-p",
-        "work",
+        "-c",
+        "profile=work",
         "-c",
         "model_context_window=128000",
         "-c",
