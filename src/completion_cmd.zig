@@ -3,12 +3,12 @@ const std = @import("std");
 const cli_utils = @import("cli_utils.zig");
 
 const top_level_commands =
-    "exec e review login logout mcp plugin mcp-server app-server remote-control app completion update doctor sandbox debug execpolicy apply a resume fork cloud responses-api-proxy stdio-to-uds exec-server features help";
+    "exec e review login logout mcp plugin mcp-server app-server remote-control app completion update doctor sandbox debug execpolicy apply a resume archive delete unarchive fork cloud responses-api-proxy stdio-to-uds exec-server features help";
 const global_options =
     "--help -h --version -V --profile -p --cd -C --add-dir --config -c --strict-config --model -m --image -i --enable --disable --oss --local-provider --ask-for-approval -a --approval-policy --sandbox -s --dangerously-bypass-approvals-and-sandbox --yolo --dangerously-bypass-hook-trust --search --remote --remote-auth-token-env --remote-control --remote-control-bind --no-alt-screen";
 const shells = "bash elvish fish powershell zsh";
 const elvish_top_level_commands =
-    "'exec' 'e' 'review' 'login' 'logout' 'mcp' 'plugin' 'mcp-server' 'app-server' 'remote-control' 'app' 'completion' 'update' 'doctor' 'sandbox' 'debug' 'execpolicy' 'apply' 'a' 'resume' 'fork' 'cloud' 'responses-api-proxy' 'stdio-to-uds' 'exec-server' 'features' 'help'";
+    "'exec' 'e' 'review' 'login' 'logout' 'mcp' 'plugin' 'mcp-server' 'app-server' 'remote-control' 'app' 'completion' 'update' 'doctor' 'sandbox' 'debug' 'execpolicy' 'apply' 'a' 'resume' 'archive' 'delete' 'unarchive' 'fork' 'cloud' 'responses-api-proxy' 'stdio-to-uds' 'exec-server' 'features' 'help'";
 const elvish_global_options =
     "'--help' '-h' '--version' '-V' '--profile' '-p' '--cd' '-C' '--add-dir' '--config' '-c' '--strict-config' '--model' '-m' '--image' '-i' '--enable' '--disable' '--oss' '--local-provider' '--ask-for-approval' '-a' '--approval-policy' '--sandbox' '-s' '--dangerously-bypass-approvals-and-sandbox' '--yolo' '--dangerously-bypass-hook-trust' '--search' '--remote' '--remote-auth-token-env' '--remote-control' '--remote-control-bind' '--no-alt-screen'";
 const elvish_shells = "'bash' 'elvish' 'fish' 'powershell' 'zsh'";

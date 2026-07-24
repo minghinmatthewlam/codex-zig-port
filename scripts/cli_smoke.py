@@ -28,11 +28,14 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 COMPLETION_SHELLS = ("bash", "elvish", "fish", "powershell", "zsh")
 COMPLETION_REQUIRED_VALUES = (
     "app-server",
+    "archive",
     "completion",
+    "delete",
     "execpolicy",
     "remote-control",
     "responses-api-proxy",
     "stdio-to-uds",
+    "unarchive",
     "--remote-auth-token-env",
     "--remote-control-bind",
     "bash elvish fish powershell zsh",
@@ -2265,6 +2268,22 @@ def run_help_command_smoke(binary: Path) -> None:
     )
     assert root_nested_exec_review.stdout == ""
     assert "codex-zig exec review [OPTIONS] [PROMPT]" in root_nested_exec_review.stderr
+
+    for argv, usage in [
+        ([str(binary), "help", "archive"], "Usage: codex-zig archive [OPTIONS] <SESSION>"),
+        ([str(binary), "delete", "--help"], "Usage: codex-zig delete [OPTIONS] <SESSION>"),
+        ([str(binary), "help", "unarchive"], "Usage: codex-zig unarchive [OPTIONS] <SESSION>"),
+    ]:
+        session_command_help = subprocess.run(
+            argv,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=5,
+            check=True,
+        )
+        assert session_command_help.stdout == ""
+        assert usage in session_command_help.stderr
 
     for argv, usage in [
         ([str(binary), "help", "debug", "prompt-input"], "codex-zig debug prompt-input [OPTIONS] [PROMPT]"),
@@ -7654,6 +7673,194 @@ def run_profile_overlay_smoke(binary: Path) -> None:
         assert legacy_conflict.returncode != 0
         assert legacy_conflict.stdout == ""
         assert "selected profile" in legacy_conflict.stderr
+    finally:
+        server.shutdown()
+        server.server_close()
+        shutil.rmtree(temp_root, ignore_errors=True)
+
+
+def run_session_archive_commands_smoke(binary: Path) -> None:
+    temp_root = Path(tempfile.mkdtemp(prefix="codex-zig-cli-session-archive-", dir="/tmp"))
+    server, base_url = start_exec_responses_server()
+    try:
+        env = make_exec_mock_env(temp_root, base_url)
+        codex_home = Path(env["CODEX_HOME"])
+
+        active_id = "11111111-1111-4111-8111-111111111111"
+        archived_id = "22222222-2222-4222-8222-222222222222"
+        delete_id = "33333333-3333-4333-8333-333333333333"
+
+        def rollout_path(thread_id: str, archived: bool) -> Path:
+            root = "archived_sessions" if archived else "sessions"
+            return codex_home / root / "zig" / f"rollout-{thread_id}.jsonl"
+
+        def write_rollout(thread_id: str, title: str, archived: bool) -> Path:
+            path = rollout_path(thread_id, archived)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(
+                json.dumps({"type": "metadata", "title": title}, separators=(",", ":")) + "\n",
+                encoding="utf-8",
+            )
+            return path
+
+        active_path = write_rollout(active_id, "Active Title", archived=False)
+        archived_path = write_rollout(archived_id, "Archived Name", archived=True)
+        delete_path = write_rollout(delete_id, "Delete Me", archived=False)
+        (codex_home / "session_index.jsonl").write_text(
+            json.dumps({"id": active_id, "thread_name": "Indexed Active"}, separators=(",", ":")) + "\n",
+            encoding="utf-8",
+        )
+
+        archive_result = subprocess.run(
+            [str(binary.resolve()), "archive", "Indexed Active"],
+            cwd=temp_root,
+            env=env,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=5,
+            check=True,
+        )
+        assert archive_result.stdout == f"Archived session Indexed Active ({active_id}).\n"
+        assert archive_result.stderr == ""
+        assert not active_path.exists()
+        assert rollout_path(active_id, archived=True).exists()
+
+        unarchive_result = subprocess.run(
+            [str(binary.resolve()), "unarchive", "Archived Name"],
+            cwd=temp_root,
+            env=env,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=5,
+            check=True,
+        )
+        assert unarchive_result.stdout == f"Unarchived session Archived Name ({archived_id}).\n"
+        assert unarchive_result.stderr == ""
+        assert not archived_path.exists()
+        assert rollout_path(archived_id, archived=False).exists()
+
+        prompt_delete = subprocess.run(
+            [str(binary.resolve()), "delete", archived_id],
+            cwd=temp_root,
+            env=env,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=5,
+        )
+        assert prompt_delete.returncode != 0
+        assert prompt_delete.stdout == ""
+        assert "cannot confirm session deletion without an interactive terminal" in prompt_delete.stderr
+        assert rollout_path(archived_id, archived=False).exists()
+
+        delete_result = subprocess.run(
+            [str(binary.resolve()), "delete", "--force", archived_id],
+            cwd=temp_root,
+            env=env,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=5,
+            check=True,
+        )
+        assert delete_result.stdout == f"Deleted session {archived_id}.\n"
+        assert delete_result.stderr == ""
+        assert not rollout_path(archived_id, archived=False).exists()
+
+        delete_active = subprocess.run(
+            [str(binary.resolve()), "delete", "--force", delete_id],
+            cwd=temp_root,
+            env=env,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=5,
+            check=True,
+        )
+        assert delete_active.stdout == f"Deleted session {delete_id}.\n"
+        assert delete_active.stderr == ""
+        assert not delete_path.exists()
+
+        force_name = subprocess.run(
+            [str(binary.resolve()), "delete", "--force", "Indexed Active"],
+            cwd=temp_root,
+            env=env,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=5,
+        )
+        assert force_name.returncode != 0
+        assert force_name.stdout == ""
+        assert "Error: --force requires a session UUID; names must be confirmed interactively" in force_name.stderr
+
+        archive_missing_name = subprocess.run(
+            [str(binary.resolve()), "archive", "missing-session"],
+            cwd=temp_root,
+            env=env,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=5,
+        )
+        assert archive_missing_name.returncode != 0
+        assert archive_missing_name.stdout == ""
+        assert "Error: No active session found matching 'missing-session'." in archive_missing_name.stderr
+
+        unarchive_missing_name = subprocess.run(
+            [str(binary.resolve()), "unarchive", "missing-session"],
+            cwd=temp_root,
+            env=env,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=5,
+        )
+        assert unarchive_missing_name.returncode != 0
+        assert unarchive_missing_name.stdout == ""
+        assert "Error: No archived session found matching 'missing-session'." in unarchive_missing_name.stderr
+
+        delete_missing_name = subprocess.run(
+            [str(binary.resolve()), "delete", "missing-session"],
+            cwd=temp_root,
+            env=env,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=5,
+        )
+        assert delete_missing_name.returncode != 0
+        assert delete_missing_name.stdout == ""
+        assert "Error: No active or archived session found matching 'missing-session'." in delete_missing_name.stderr
+
+        missing_uuid = "44444444-4444-4444-8444-444444444444"
+        archive_missing_uuid = subprocess.run(
+            [str(binary.resolve()), "archive", missing_uuid],
+            cwd=temp_root,
+            env=env,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=5,
+        )
+        assert archive_missing_uuid.returncode != 0
+        assert archive_missing_uuid.stdout == ""
+        assert "Error: failed to archive session" in archive_missing_uuid.stderr
+
+        remote_result = subprocess.run(
+            [str(binary.resolve()), "archive", "--remote", "ws://127.0.0.1:1", "Indexed Active"],
+            cwd=temp_root,
+            env=env,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=5,
+        )
+        assert remote_result.returncode != 0
+        assert remote_result.stdout == ""
+        assert "only supported for interactive TUI commands" in remote_result.stderr
     finally:
         server.shutdown()
         server.server_close()
@@ -14391,6 +14598,7 @@ def main() -> None:
     run_review_stdin_smoke(binary)
     run_exec_equals_options_smoke(binary)
     run_profile_overlay_smoke(binary)
+    run_session_archive_commands_smoke(binary)
     run_strict_config_smoke(binary)
     run_app_server_daemon_smoke(binary)
     run_exec_hook_trust_bypass_smoke(binary)
@@ -14436,6 +14644,7 @@ def main() -> None:
     print("cli-review-stdin-e2e: ok")
     print("cli-exec-options-e2e: ok")
     print("cli-profile-overlay-e2e: ok")
+    print("cli-session-archive-commands-e2e: ok")
     print("cli-strict-config-e2e: ok")
     print("cli-app-server-daemon-e2e: ok")
     print("cli-exec-hook-trust-bypass-e2e: ok")

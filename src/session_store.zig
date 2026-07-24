@@ -152,6 +152,25 @@ pub const ThreadNameEntry = struct {
     }
 };
 
+pub const SessionArchiveScope = enum {
+    active,
+    archived,
+    active_or_archived,
+};
+
+pub const SessionArchiveTarget = struct {
+    id: []const u8,
+    path: []const u8,
+    name: ?[]const u8 = null,
+    archived: bool,
+
+    pub fn deinit(self: SessionArchiveTarget, allocator: std.mem.Allocator) void {
+        allocator.free(self.id);
+        allocator.free(self.path);
+        if (self.name) |value| allocator.free(value);
+    }
+};
+
 pub fn createSessionPath(allocator: std.mem.Allocator, codex_home: []const u8) ![]const u8 {
     try ensureSessionsDir(allocator, codex_home);
 
@@ -1248,8 +1267,66 @@ pub fn unarchiveRollout(allocator: std.mem.Allocator, codex_home: []const u8, th
     return moveRolloutArchiveState(allocator, codex_home, thread_id, false);
 }
 
+pub fn deleteRollout(allocator: std.mem.Allocator, codex_home: []const u8, thread_id: []const u8) ![]const u8 {
+    const path = if (try findRolloutPathByThreadId(allocator, codex_home, thread_id, false)) |active_path|
+        active_path
+    else if (try findRolloutPathByThreadId(allocator, codex_home, thread_id, true)) |archived_path|
+        archived_path
+    else
+        return error.FileNotFound;
+    errdefer allocator.free(path);
+
+    try std.Io.Dir.cwd().deleteFile(std.Io.Threaded.global_single_threaded.io(), path);
+    return path;
+}
+
 pub fn resolveArchivedRolloutPath(allocator: std.mem.Allocator, codex_home: []const u8, thread_id: []const u8) ![]const u8 {
     return (try findRolloutPathByThreadId(allocator, codex_home, thread_id, true)) orelse error.FileNotFound;
+}
+
+pub fn resolveSessionArchiveTarget(
+    allocator: std.mem.Allocator,
+    codex_home: []const u8,
+    target: []const u8,
+    scope: SessionArchiveScope,
+) !?SessionArchiveTarget {
+    const raw_target = std.mem.trim(u8, target, " \t\r\n");
+    if (raw_target.len == 0) return null;
+
+    if (isUuidLike(raw_target)) {
+        if (scopeAllowsActive(scope)) {
+            if (try findRolloutPathByThreadId(allocator, codex_home, raw_target, false)) |path| {
+                errdefer allocator.free(path);
+                const id = try allocator.dupe(u8, raw_target);
+                errdefer allocator.free(id);
+                return .{ .id = id, .path = path, .archived = false };
+            }
+        }
+        if (scopeAllowsArchived(scope)) {
+            if (try findRolloutPathByThreadId(allocator, codex_home, raw_target, true)) |path| {
+                errdefer allocator.free(path);
+                const id = try allocator.dupe(u8, raw_target);
+                errdefer allocator.free(id);
+                return .{ .id = id, .path = path, .archived = true };
+            }
+        }
+        return null;
+    }
+
+    const thread_names = try loadThreadNameIndex(allocator, codex_home);
+    defer freeThreadNameIndex(allocator, thread_names);
+
+    if (scopeAllowsActive(scope)) {
+        if (try resolveSessionArchiveTargetByName(allocator, codex_home, raw_target, false, thread_names)) |resolved| {
+            return resolved;
+        }
+    }
+    if (scopeAllowsArchived(scope)) {
+        if (try resolveSessionArchiveTargetByName(allocator, codex_home, raw_target, true, thread_names)) |resolved| {
+            return resolved;
+        }
+    }
+    return null;
 }
 
 pub fn latestSessionPath(allocator: std.mem.Allocator, codex_home: []const u8) !?[]const u8 {
@@ -1525,6 +1602,58 @@ fn moveRolloutArchiveState(
 fn rolloutRootPath(allocator: std.mem.Allocator, codex_home: []const u8, archived: bool) ![]const u8 {
     const root_name: []const u8 = if (archived) "archived_sessions" else "sessions";
     return std.fs.path.join(allocator, &.{ codex_home, root_name });
+}
+
+fn scopeAllowsActive(scope: SessionArchiveScope) bool {
+    return scope == .active or scope == .active_or_archived;
+}
+
+fn scopeAllowsArchived(scope: SessionArchiveScope) bool {
+    return scope == .archived or scope == .active_or_archived;
+}
+
+fn resolveSessionArchiveTargetByName(
+    allocator: std.mem.Allocator,
+    codex_home: []const u8,
+    target_name: []const u8,
+    archived: bool,
+    thread_names: []const ThreadNameEntry,
+) !?SessionArchiveTarget {
+    const files = try listRolloutFiles(allocator, codex_home, archived);
+    defer freeRolloutFiles(allocator, files);
+    std.mem.sort(RolloutFile, files, {}, newerRolloutFileFirst);
+
+    for (files) |file| {
+        var summary = loadThreadListSummary(allocator, file.path, file.id) catch |err| switch (err) {
+            error.FileNotFound => continue,
+            else => return err,
+        };
+        defer summary.deinit(allocator);
+
+        const name_value = threadNameFromIndex(thread_names, summary.id) orelse summary.title orelse continue;
+        if (!std.mem.eql(u8, name_value, target_name)) continue;
+
+        const id = try allocator.dupe(u8, summary.id);
+        errdefer allocator.free(id);
+        const path = try allocator.dupe(u8, file.path);
+        errdefer allocator.free(path);
+        const name = try allocator.dupe(u8, name_value);
+        errdefer allocator.free(name);
+        return .{
+            .id = id,
+            .path = path,
+            .name = name,
+            .archived = archived,
+        };
+    }
+    return null;
+}
+
+fn newerRolloutFileFirst(_: void, lhs: RolloutFile, rhs: RolloutFile) bool {
+    if (lhs.modified_at_seconds != rhs.modified_at_seconds) {
+        return lhs.modified_at_seconds > rhs.modified_at_seconds;
+    }
+    return std.mem.order(u8, lhs.path, rhs.path) == .gt;
 }
 
 fn findRolloutPathByThreadIdInDir(
@@ -2323,4 +2452,102 @@ test "load transcript replays external session imported marker event only" {
     try std.testing.expectEqualStrings("ordinary answer", loaded.history.items[0].text.?);
     try std.testing.expectEqualStrings("assistant", loaded.history.items[1].role.?);
     try std.testing.expectEqualStrings(external_agent_session_imported_marker, loaded.history.items[1].text.?);
+}
+
+test "session archive target resolution matches names and UUIDs by scope" {
+    const allocator = std.testing.allocator;
+    var dir = std.testing.tmpDir(.{});
+    defer dir.cleanup();
+
+    const root = try dir.dir.realPathFileAlloc(std.Io.Threaded.global_single_threaded.io(), ".", allocator);
+    defer allocator.free(root);
+
+    const active_id = "11111111-1111-4111-8111-111111111111";
+    const archived_id = "22222222-2222-4222-8222-222222222222";
+    const shadow_id = "33333333-3333-4333-8333-333333333333";
+
+    const active_path = try std.fs.path.join(allocator, &.{ root, "sessions", "zig", "rollout-11111111-1111-4111-8111-111111111111.jsonl" });
+    defer allocator.free(active_path);
+    const archived_path = try std.fs.path.join(allocator, &.{ root, "archived_sessions", "zig", "rollout-22222222-2222-4222-8222-222222222222.jsonl" });
+    defer allocator.free(archived_path);
+    const shadow_path = try std.fs.path.join(allocator, &.{ root, "archived_sessions", "zig", "rollout-33333333-3333-4333-8333-333333333333.jsonl" });
+    defer allocator.free(shadow_path);
+
+    try writeArchiveResolverFixture(active_path, "Active Title");
+    try writeArchiveResolverFixture(archived_path, "Archived Title");
+    try writeArchiveResolverFixture(shadow_path, active_id);
+
+    const index_path = try std.fs.path.join(allocator, &.{ root, session_index_file });
+    defer allocator.free(index_path);
+    try std.Io.Dir.cwd().writeFile(std.Io.Threaded.global_single_threaded.io(), .{
+        .sub_path = index_path,
+        .data = "{\"id\":\"11111111-1111-4111-8111-111111111111\",\"thread_name\":\"Indexed Active\"}\n",
+    });
+
+    var active = (try resolveSessionArchiveTarget(allocator, root, "Indexed Active", .active)).?;
+    defer active.deinit(allocator);
+    try std.testing.expectEqualStrings(active_id, active.id);
+    try std.testing.expectEqualStrings("Indexed Active", active.name.?);
+    try std.testing.expect(!active.archived);
+
+    var archived = (try resolveSessionArchiveTarget(allocator, root, "Archived Title", .archived)).?;
+    defer archived.deinit(allocator);
+    try std.testing.expectEqualStrings(archived_id, archived.id);
+    try std.testing.expectEqualStrings("Archived Title", archived.name.?);
+    try std.testing.expect(archived.archived);
+
+    var uuid = (try resolveSessionArchiveTarget(allocator, root, active_id, .active_or_archived)).?;
+    defer uuid.deinit(allocator);
+    try std.testing.expectEqualStrings(active_id, uuid.id);
+    try std.testing.expect(uuid.name == null);
+    try std.testing.expect(!uuid.archived);
+
+    try std.testing.expect((try resolveSessionArchiveTarget(allocator, root, "Archived Title", .active)) == null);
+    try std.testing.expect((try resolveSessionArchiveTarget(allocator, root, "missing", .active_or_archived)) == null);
+    _ = shadow_id;
+}
+
+test "delete rollout removes active or archived sessions" {
+    const allocator = std.testing.allocator;
+    var dir = std.testing.tmpDir(.{});
+    defer dir.cleanup();
+
+    const root = try dir.dir.realPathFileAlloc(std.Io.Threaded.global_single_threaded.io(), ".", allocator);
+    defer allocator.free(root);
+
+    const active_id = "44444444-4444-4444-8444-444444444444";
+    const archived_id = "55555555-5555-4555-8555-555555555555";
+    const active_path = try std.fs.path.join(allocator, &.{ root, "sessions", "zig", "rollout-44444444-4444-4444-8444-444444444444.jsonl" });
+    defer allocator.free(active_path);
+    const archived_path = try std.fs.path.join(allocator, &.{ root, "archived_sessions", "zig", "rollout-55555555-5555-4555-8555-555555555555.jsonl" });
+    defer allocator.free(archived_path);
+
+    try writeArchiveResolverFixture(active_path, "Delete Active");
+    try writeArchiveResolverFixture(archived_path, "Delete Archived");
+
+    const deleted_active = try deleteRollout(allocator, root, active_id);
+    defer allocator.free(deleted_active);
+    try std.testing.expectEqualStrings(active_path, deleted_active);
+    try std.testing.expect(!fileExists(active_path));
+
+    const deleted_archived = try deleteRollout(allocator, root, archived_id);
+    defer allocator.free(deleted_archived);
+    try std.testing.expectEqualStrings(archived_path, deleted_archived);
+    try std.testing.expect(!fileExists(archived_path));
+}
+
+fn writeArchiveResolverFixture(path: []const u8, title: []const u8) !void {
+    try ensureParentDir(path);
+    const encoded_title = try std.json.Stringify.valueAlloc(std.testing.allocator, title, .{});
+    defer std.testing.allocator.free(encoded_title);
+
+    var bytes = std.ArrayList(u8).empty;
+    defer bytes.deinit(std.testing.allocator);
+    try bytes.appendSlice(std.testing.allocator, "{\"type\":\"metadata\",\"title\":");
+    try bytes.appendSlice(std.testing.allocator, encoded_title);
+    try bytes.appendSlice(std.testing.allocator, "}\n");
+    try std.Io.Dir.cwd().writeFile(std.Io.Threaded.global_single_threaded.io(), .{
+        .sub_path = path,
+        .data = bytes.items,
+    });
 }

@@ -117,6 +117,19 @@ pub fn main(init: std.process.Init) !void {
             error.StrictConfigUnknownField => {},
             error.StrictConfigUnsupportedForSubcommand => {},
             error.UnexpectedPromptArgument => {},
+            error.MissingSessionArchiveTarget => {
+                std.debug.print(
+                    \\error: the following required arguments were not provided:
+                    \\  <SESSION>
+                    \\
+                    \\Usage: codex-zig archive|delete|unarchive <SESSION>
+                    \\
+                    \\For more information, try '--help'.
+                    \\
+                , .{});
+                std.process.exit(2);
+            },
+            error.SessionArchiveCommandFailed => {},
             error.ProfileV2UnsupportedCommand => std.debug.print(
                 "Error: --profile only applies to runtime commands and `codex mcp`: `codex`, `codex exec`, `codex review`, `codex resume`, `codex archive`, `codex delete`, `codex unarchive`, `codex fork`, `codex mcp`, `codex sandbox`, and `codex debug prompt-input`.\n",
                 .{},
@@ -734,6 +747,18 @@ fn mainInner(init: std.process.Init) !void {
             try runTuiWithImages(allocator, launch.image_files, options);
             return;
         }
+        if (sessionArchiveActionFromCommand(cmd)) |action| {
+            var remaining = try collectRemainingArgs(allocator, &args);
+            defer remaining.deinit(allocator);
+            var parsed = try parseSessionArchiveCommandArgs(allocator, remaining.items, action);
+            defer parsed.deinit(allocator);
+            if (parsed.session.help) {
+                printSessionArchiveHelp(action);
+                return;
+            }
+            try runSessionArchiveCommand(allocator, action, overrides, runtime_feature_overrides, parsed);
+            return;
+        }
         if (std.mem.eql(u8, cmd, "resume")) {
             var remaining = try collectRemainingArgs(allocator, &args);
             defer remaining.deinit(allocator);
@@ -1041,6 +1066,7 @@ fn rootCommandTailHasHelpOrVersion(allocator: std.mem.Allocator, cmd: []const u8
     if (isApplyCommand(cmd)) return applyTailHasHelp(tail);
     if (std.mem.eql(u8, cmd, "mcp-server")) return mcpServerTailHasHelp(tail);
     if (std.mem.eql(u8, cmd, "resume")) return sessionCommandTailHasHelp(allocator, tail, true);
+    if (sessionArchiveActionFromCommand(cmd)) |action| return sessionArchiveCommandTailHasHelp(allocator, tail, action);
     if (std.mem.eql(u8, cmd, "fork")) return sessionCommandTailHasHelp(allocator, tail, false);
     if (std.mem.eql(u8, cmd, "remote-fork")) return remoteForkTailHasHelp(allocator, tail);
     if (std.mem.eql(u8, cmd, "sessions")) return noArgumentTailHasHelp(tail);
@@ -1452,6 +1478,12 @@ fn sessionCommandTailHasHelp(allocator: std.mem.Allocator, args: []const []const
     var parsed = parseSessionCommandArgs(allocator, args, allow_include_non_interactive) catch return false;
     defer parsed.deinit(allocator);
     return parsed.help;
+}
+
+fn sessionArchiveCommandTailHasHelp(allocator: std.mem.Allocator, args: []const []const u8, action: SessionArchiveAction) !bool {
+    var parsed = parseSessionArchiveCommandArgs(allocator, args, action) catch return false;
+    defer parsed.deinit(allocator);
+    return parsed.session.help;
 }
 
 fn remoteForkTailHasHelp(allocator: std.mem.Allocator, args: []const []const u8) !bool {
@@ -1959,6 +1991,13 @@ fn isCloudCommand(cmd: []const u8) bool {
     return std.mem.eql(u8, cmd, "cloud") or std.mem.eql(u8, cmd, "cloud-tasks");
 }
 
+fn sessionArchiveActionFromCommand(cmd: []const u8) ?SessionArchiveAction {
+    if (std.mem.eql(u8, cmd, "archive")) return .archive;
+    if (std.mem.eql(u8, cmd, "delete")) return .delete;
+    if (std.mem.eql(u8, cmd, "unarchive")) return .unarchive;
+    return null;
+}
+
 fn isKnownRootCommand(cmd: []const u8) bool {
     return std.mem.eql(u8, cmd, "auth-status") or
         std.mem.eql(u8, cmd, "login") or
@@ -1984,6 +2023,7 @@ fn isKnownRootCommand(cmd: []const u8) bool {
         std.mem.eql(u8, cmd, "mcp-server") or
         std.mem.eql(u8, cmd, "remote-fork") or
         std.mem.eql(u8, cmd, "resume") or
+        sessionArchiveActionFromCommand(cmd) != null or
         std.mem.eql(u8, cmd, "fork") or
         std.mem.eql(u8, cmd, "sessions") or
         std.mem.eql(u8, cmd, "mock-demo") or
@@ -2017,6 +2057,7 @@ fn strictConfigUnsupportedSubcommandName(cmd: []const u8) ?[]const u8 {
         std.mem.eql(u8, cmd, "exec-server") or
         std.mem.eql(u8, cmd, "mcp-server") or
         std.mem.eql(u8, cmd, "resume") or
+        sessionArchiveActionFromCommand(cmd) != null or
         std.mem.eql(u8, cmd, "fork") or
         std.mem.eql(u8, cmd, "remote-fork") or
         std.mem.eql(u8, cmd, "sessions") or
@@ -2053,6 +2094,7 @@ fn rejectStrictConfigForSubcommand(subcommand: []const u8) error{StrictConfigUns
 fn profileV2UnsupportedSubcommandName(cmd: []const u8) ?[]const u8 {
     if (std.mem.eql(u8, cmd, "review") or
         std.mem.eql(u8, cmd, "resume") or
+        sessionArchiveActionFromCommand(cmd) != null or
         std.mem.eql(u8, cmd, "fork") or
         std.mem.eql(u8, cmd, "remote-fork") or
         std.mem.eql(u8, cmd, "mcp") or
@@ -2197,6 +2239,8 @@ fn runHelpCommand(allocator: std.mem.Allocator, args: *std.process.Args.Iterator
         printAuthStatusHelp();
     } else if (std.mem.eql(u8, target, "resume")) {
         printResumeHelp();
+    } else if (sessionArchiveActionFromCommand(target)) |action| {
+        printSessionArchiveHelp(action);
     } else if (std.mem.eql(u8, target, "fork")) {
         printForkHelp();
     } else if (std.mem.eql(u8, target, "remote-fork")) {
@@ -2575,6 +2619,69 @@ const SessionCommandArgs = struct {
         self.additional_writable_roots.deinit(allocator);
         for (self.image_files.items) |path| allocator.free(path);
         self.image_files.deinit(allocator);
+    }
+};
+
+const SessionArchiveAction = enum {
+    archive,
+    delete,
+    unarchive,
+
+    fn command(self: SessionArchiveAction) []const u8 {
+        return switch (self) {
+            .archive => "archive",
+            .delete => "delete",
+            .unarchive => "unarchive",
+        };
+    }
+
+    fn description(self: SessionArchiveAction) []const u8 {
+        return switch (self) {
+            .archive => "Archive a saved session by id or session name",
+            .delete => "Permanently delete a saved session by id or session name",
+            .unarchive => "Unarchive a saved session by id or session name",
+        };
+    }
+
+    fn successVerb(self: SessionArchiveAction) []const u8 {
+        return switch (self) {
+            .archive => "Archived",
+            .delete => "Deleted",
+            .unarchive => "Unarchived",
+        };
+    }
+
+    fn failureVerb(self: SessionArchiveAction) []const u8 {
+        return switch (self) {
+            .archive => "archive",
+            .delete => "delete",
+            .unarchive => "unarchive",
+        };
+    }
+
+    fn scope(self: SessionArchiveAction) session_store.SessionArchiveScope {
+        return switch (self) {
+            .archive => .active,
+            .delete => .active_or_archived,
+            .unarchive => .archived,
+        };
+    }
+
+    fn missingScopeLabel(self: SessionArchiveAction) []const u8 {
+        return switch (self) {
+            .archive => "active",
+            .delete => "active or archived",
+            .unarchive => "archived",
+        };
+    }
+};
+
+const SessionArchiveCommandArgs = struct {
+    session: SessionCommandArgs,
+    force: bool = false,
+
+    fn deinit(self: *SessionArchiveCommandArgs, allocator: std.mem.Allocator) void {
+        self.session.deinit(allocator);
     }
 };
 
@@ -3065,6 +3172,181 @@ fn parseRemoteForkCommandArgs(allocator: std.mem.Allocator, args: []const []cons
     return parsed;
 }
 
+fn parseSessionArchiveCommandArgs(
+    allocator: std.mem.Allocator,
+    args: []const []const u8,
+    action: SessionArchiveAction,
+) !SessionArchiveCommandArgs {
+    var filtered = std.ArrayList([]const u8).empty;
+    defer filtered.deinit(allocator);
+
+    var force = false;
+    for (args) |arg| {
+        if (std.mem.eql(u8, arg, "--force")) {
+            if (action != .delete) return error.UnknownSessionCommandOption;
+            force = true;
+            continue;
+        }
+        try filtered.append(allocator, arg);
+    }
+
+    var session_args = try parseSessionCommandArgsWithOptions(allocator, filtered.items, .{
+        .allow_include_non_interactive = false,
+        .help_positionals = 1,
+    });
+    errdefer session_args.deinit(allocator);
+
+    if (session_args.help) {
+        return .{ .session = session_args, .force = force };
+    }
+    if (session_args.target == null) return error.MissingSessionArchiveTarget;
+    if (session_args.initial_prompt != null) return error.UnexpectedSessionCommandArgument;
+    if (session_args.last or
+        session_args.show_all or
+        session_args.include_non_interactive or
+        session_args.no_alt_screen or
+        session_args.local_remote_control or
+        session_args.remote_control_bind != null or
+        session_args.runtime_overrides.web_search_mode != null)
+    {
+        return error.UnknownSessionCommandOption;
+    }
+
+    return .{ .session = session_args, .force = force };
+}
+
+fn runSessionArchiveCommand(
+    allocator: std.mem.Allocator,
+    action: SessionArchiveAction,
+    root_overrides: CliOverrides,
+    root_feature_overrides: features_cmd.FeatureOverrides,
+    parsed: SessionArchiveCommandArgs,
+) !void {
+    try rejectRemoteModeForSubcommand(
+        root_overrides.remote,
+        root_overrides.remote_auth_token_env,
+        root_overrides.local_remote_control,
+        root_overrides.remote_control_bind,
+        action.command(),
+    );
+    try rejectRemoteModeForSubcommand(
+        parsed.session.remote,
+        parsed.session.remote_auth_token_env,
+        parsed.session.local_remote_control,
+        parsed.session.remote_control_bind,
+        action.command(),
+    );
+
+    const strict_config = root_overrides.strict_config or parsed.session.strict_config;
+    if (strict_config) {
+        if (root_overrides.unknown_config_override) |field| return config.failStrictConfigUnknownCliOverride(field);
+        if (parsed.session.unknown_config_override) |field| return config.failStrictConfigUnknownCliOverride(field);
+    }
+    if (root_overrides.invalid_unknown_config_override or parsed.session.invalid_unknown_config_override) {
+        return error.InvalidConfigOverride;
+    }
+
+    var merged_feature_overrides = try root_feature_overrides.clone(allocator);
+    defer merged_feature_overrides.deinit(allocator);
+    try merged_feature_overrides.putAll(allocator, parsed.session.feature_overrides);
+    try features_cmd.validateRawConfigOverrides(merged_feature_overrides);
+
+    if (parsed.session.cwd) |cwd| try workdir.change(cwd);
+
+    var cfg = try config.loadWithOptions(allocator, .{
+        .profile = parsed.session.profile orelse root_overrides.profile,
+        .profile_v2 = parsed.session.profile_v2 orelse root_overrides.profile_v2,
+        .strict_config = strict_config,
+    });
+    defer cfg.deinit(allocator);
+
+    const raw_target = parsed.session.target.?;
+    if (action == .delete and parsed.force and !session_store.isUuidLike(raw_target)) {
+        std.debug.print("Error: --force requires a session UUID; names must be confirmed interactively\n", .{});
+        return error.SessionArchiveCommandFailed;
+    }
+
+    const target_opt = try session_store.resolveSessionArchiveTarget(allocator, cfg.codex_home, raw_target, action.scope());
+    var target = target_opt orelse {
+        if (session_store.isUuidLike(raw_target)) {
+            std.debug.print("Error: failed to {s} session\n", .{action.failureVerb()});
+        } else {
+            std.debug.print("Error: No {s} session found matching '{s}'.\n", .{ action.missingScopeLabel(), raw_target });
+        }
+        return error.SessionArchiveCommandFailed;
+    };
+    defer target.deinit(allocator);
+
+    switch (action) {
+        .archive => {
+            const archived_path = session_store.archiveRollout(allocator, cfg.codex_home, target.id) catch {
+                std.debug.print("Error: failed to archive session\n", .{});
+                return error.SessionArchiveCommandFailed;
+            };
+            defer allocator.free(archived_path);
+        },
+        .unarchive => {
+            const active_path = session_store.unarchiveRollout(allocator, cfg.codex_home, target.id) catch {
+                std.debug.print("Error: failed to unarchive session\n", .{});
+                return error.SessionArchiveCommandFailed;
+            };
+            defer allocator.free(active_path);
+        },
+        .delete => {
+            if (!parsed.force) {
+                if (!isStdinTty()) {
+                    std.debug.print("cannot confirm session deletion without an interactive terminal; rerun with --force and a session UUID\n", .{});
+                    return error.SessionArchiveCommandFailed;
+                }
+                if (!(try confirmDeleteSession(target))) {
+                    try cli_utils.writeStdout("Delete cancelled.\n");
+                    return;
+                }
+            }
+            const deleted_path = session_store.deleteRollout(allocator, cfg.codex_home, target.id) catch {
+                std.debug.print("Error: failed to delete session\n", .{});
+                return error.SessionArchiveCommandFailed;
+            };
+            defer allocator.free(deleted_path);
+        },
+    }
+
+    try printSessionArchiveSuccess(allocator, action, target);
+}
+
+fn confirmDeleteSession(target: session_store.SessionArchiveTarget) !bool {
+    if (target.name) |name| {
+        std.debug.print("Permanently delete session '{s}' ({s})?\n", .{ name, target.id });
+    } else {
+        std.debug.print("Permanently delete session {s}?\n", .{target.id});
+    }
+    std.debug.print("This cannot be undone. Subagent threads will also be deleted.\n", .{});
+    std.debug.print("Continue? [y/N]: ", .{});
+
+    var buffer: [256]u8 = undefined;
+    var reader = std.Io.File.stdin().reader(std.Io.Threaded.global_single_threaded.io(), &buffer);
+    const line_opt = try reader.interface.takeDelimiter('\n');
+    const line = std.mem.trim(u8, line_opt orelse "", " \t\r\n");
+    return std.ascii.eqlIgnoreCase(line, "y") or std.ascii.eqlIgnoreCase(line, "yes");
+}
+
+fn printSessionArchiveSuccess(
+    allocator: std.mem.Allocator,
+    action: SessionArchiveAction,
+    target: session_store.SessionArchiveTarget,
+) !void {
+    const message = if (target.name) |name|
+        try std.fmt.allocPrint(allocator, "{s} session {s} ({s}).\n", .{ action.successVerb(), name, target.id })
+    else
+        try std.fmt.allocPrint(allocator, "{s} session {s}.\n", .{ action.successVerb(), target.id });
+    defer allocator.free(message);
+    try cli_utils.writeStdout(message);
+}
+
+fn isStdinTty() bool {
+    return std.Io.File.stdin().isTty(std.Io.Threaded.global_single_threaded.io()) catch false;
+}
+
 fn printHelp() !void {
     std.debug.print(
         \\Codex Zig CLI
@@ -3092,6 +3374,9 @@ fn printHelp() !void {
         \\  debug           Debugging tools
         \\  apply           Apply the latest diff produced by Codex agent as a git apply [aliases: a]
         \\  resume          Resume a previous interactive session
+        \\  archive         Archive a saved session by id or session name
+        \\  delete          Permanently delete a saved session by id or session name
+        \\  unarchive       Unarchive a saved session by id or session name
         \\  fork            Fork a previous interactive session
         \\  cloud           [EXPERIMENTAL] Browse tasks from Codex Cloud and apply changes locally
         \\  exec-server     [EXPERIMENTAL] Run the standalone exec-server service
@@ -3214,6 +3499,48 @@ fn printRemoteForkHelp() void {
         \\
         \\Imports a Rust-compatible remote fork claim bundle and starts a local forked session.
         \\For the current local demo, CODE must be an http:// claim URL.
+        \\
+    , .{});
+}
+
+fn printSessionArchiveHelp(action: SessionArchiveAction) void {
+    std.debug.print(
+        \\{s}
+        \\
+        \\Usage: codex-zig {s} [OPTIONS] <SESSION>
+        \\
+        \\Arguments:
+        \\  <SESSION>      Session id (UUID) or session name. UUIDs take precedence if it parses
+        \\
+        \\Options:
+        \\      --remote <ADDR>           Connect to a remote app server endpoint
+        \\      --remote-auth-token-env <ENV_VAR>
+        \\                                Read bearer token env var for remote app-server
+        \\      --enable <FEATURE>        Enable a feature for this invocation
+        \\      --disable <FEATURE>       Disable a feature for this invocation
+        \\  -i, --image <FILE>...         Optional image(s) to attach to the initial prompt
+        \\  -m, --model <MODEL>           Model the agent should use
+        \\      --oss                     Use an open-source provider
+        \\      --local-provider <NAME>   Select the local OSS provider
+        \\  -p, --profile <CONFIG_PROFILE_V2>
+        \\                                Layer CODEX_HOME/NAME.config.toml over base config
+        \\  -s, --sandbox <MODE>          Select the sandbox policy
+        \\      --dangerously-bypass-approvals-and-sandbox
+        \\                                Skip approvals and sandboxing
+        \\      --dangerously-bypass-hook-trust
+        \\                                Run enabled hooks without persisted hook trust
+        \\  -C, --cd <DIR>                Use DIR as the working root
+        \\      --add-dir <DIR>           Allow workspace-write shell tools to write DIR
+        \\      --strict-config           Error on unknown config fields
+        \\  -c, --config <key=value>      Override a supported config value
+    , .{ action.description(), action.command() });
+    if (action == .delete) {
+        std.debug.print(
+            \\      --force                  Delete without prompting. SESSION must be a UUID
+        , .{});
+    }
+    std.debug.print(
+        \\  -h, --help                    Print help
         \\
     , .{});
 }
@@ -3696,6 +4023,33 @@ test "remote fork command requires a code and rejects session picker flags" {
     try std.testing.expectError(error.UnexpectedSessionCommandArgument, parseRemoteForkCommandArgs(allocator, prompt[0..]));
 }
 
+test "session archive commands parse targets and delete force" {
+    const allocator = std.testing.allocator;
+    var archive = try parseSessionArchiveCommandArgs(allocator, &.{ "--profile", "team", "Named Session" }, .archive);
+    defer archive.deinit(allocator);
+    try std.testing.expectEqualStrings("Named Session", archive.session.target.?);
+    try std.testing.expectEqualStrings("team", archive.session.profile_v2.?);
+    try std.testing.expect(!archive.force);
+
+    var delete = try parseSessionArchiveCommandArgs(allocator, &.{ "--force", "11111111-1111-4111-8111-111111111111" }, .delete);
+    defer delete.deinit(allocator);
+    try std.testing.expect(delete.force);
+    try std.testing.expectEqualStrings("11111111-1111-4111-8111-111111111111", delete.session.target.?);
+
+    try std.testing.expectError(error.MissingSessionArchiveTarget, parseSessionArchiveCommandArgs(allocator, &.{}, .archive));
+}
+
+test "session archive commands reject picker and TUI-only flags" {
+    const allocator = std.testing.allocator;
+    try std.testing.expectError(error.UnknownSessionCommandOption, parseSessionArchiveCommandArgs(allocator, &.{ "--last", "session" }, .archive));
+    try std.testing.expectError(error.UnknownSessionCommandOption, parseSessionArchiveCommandArgs(allocator, &.{ "--all", "session" }, .archive));
+    try std.testing.expectError(error.UnknownSessionCommandOption, parseSessionArchiveCommandArgs(allocator, &.{ "--include-non-interactive", "session" }, .archive));
+    try std.testing.expectError(error.UnknownSessionCommandOption, parseSessionArchiveCommandArgs(allocator, &.{ "--search", "session" }, .archive));
+    try std.testing.expectError(error.UnknownSessionCommandOption, parseSessionArchiveCommandArgs(allocator, &.{ "--no-alt-screen", "session" }, .archive));
+    try std.testing.expectError(error.UnknownSessionCommandOption, parseSessionArchiveCommandArgs(allocator, &.{ "--remote-control", "session" }, .archive));
+    try std.testing.expectError(error.UnknownSessionCommandOption, parseSessionArchiveCommandArgs(allocator, &.{ "--force", "session" }, .archive));
+}
+
 test "root remote is only accepted for interactive commands" {
     try std.testing.expect(commandRejectsRootRemote("exec"));
     try std.testing.expect(commandRejectsRootRemote("app-server"));
@@ -3709,6 +4063,9 @@ test "root remote is only accepted for interactive commands" {
     try std.testing.expect(commandRejectsRootRemote("sandbox"));
     try std.testing.expect(commandRejectsRootRemote("update"));
     try std.testing.expect(commandRejectsRootRemote("responses-api-proxy"));
+    try std.testing.expect(commandRejectsRootRemote("archive"));
+    try std.testing.expect(commandRejectsRootRemote("delete"));
+    try std.testing.expect(commandRejectsRootRemote("unarchive"));
     try std.testing.expect(!commandRejectsRootRemote("resume"));
     try std.testing.expect(!commandRejectsRootRemote("fork"));
     try std.testing.expect(!commandRejectsRootRemote("remote-fork"));
@@ -3718,6 +4075,7 @@ test "root remote is only accepted for interactive commands" {
 test "root cwd is deferred for prompt fallback commands" {
     try std.testing.expect(rootCommandAppliesCwdBeforeDispatch("doctor"));
     try std.testing.expect(rootCommandAppliesCwdBeforeDispatch("resume"));
+    try std.testing.expect(rootCommandAppliesCwdBeforeDispatch("archive"));
     try std.testing.expect(!rootCommandAppliesCwdBeforeDispatch("exec"));
     try std.testing.expect(!rootCommandAppliesCwdBeforeDispatch("sandbox"));
     try std.testing.expect(!rootCommandAppliesCwdBeforeDispatch("--help"));
@@ -3767,6 +4125,9 @@ test "root semantic checks defer to help and version tails" {
     try std.testing.expect(try rootArgsTailHasHelpOrVersion(std.testing.allocator, &.{ "-C", "does-not-exist", "resume", "--last", "--help" }));
     try std.testing.expect(try rootArgsTailHasHelpOrVersion(std.testing.allocator, &.{ "-C", "does-not-exist", "resume", "--include-non-interactive", "--help" }));
     try std.testing.expect(try rootArgsTailHasHelpOrVersion(std.testing.allocator, &.{ "-C", "does-not-exist", "resume", "--help", "--bad" }));
+    try std.testing.expect(try rootArgsTailHasHelpOrVersion(std.testing.allocator, &.{ "-C", "does-not-exist", "archive", "--help" }));
+    try std.testing.expect(try rootArgsTailHasHelpOrVersion(std.testing.allocator, &.{ "--strict-config", "-c", "foo.bar=1", "delete", "--force", "--help" }));
+    try std.testing.expect(try rootArgsTailHasHelpOrVersion(std.testing.allocator, &.{ "-C", "does-not-exist", "unarchive", "session-id", "--help" }));
     try std.testing.expect(try rootArgsTailHasHelpOrVersion(std.testing.allocator, &.{ "-C", "does-not-exist", "fork", "--last", "--help" }));
     try std.testing.expect(try rootArgsTailHasHelpOrVersion(std.testing.allocator, &.{ "--strict-config", "-c", "foo.bar=1", "remote-fork", "--last", "--help" }));
     try std.testing.expect(try rootArgsTailHasHelpOrVersion(std.testing.allocator, &.{ "--remote", "ws://127.0.0.1:1", "exec-server", "--strict-config", "--help" }));
@@ -3841,6 +4202,7 @@ test "root semantic checks defer to help and version tails" {
     try std.testing.expect(!(try rootArgsTailHasHelpOrVersion(std.testing.allocator, &.{ "--strict-config", "-c", "foo.bar=1", "review", "--base", "--help" })));
     try std.testing.expect(!(try rootArgsTailHasHelpOrVersion(std.testing.allocator, &.{ "--remote", "ws://127.0.0.1:1", "review", "one", "two", "--help" })));
     try std.testing.expect(!(try rootArgsTailHasHelpOrVersion(std.testing.allocator, &.{ "resume", "--sandbox", "bogus", "--help" })));
+    try std.testing.expect(!(try rootArgsTailHasHelpOrVersion(std.testing.allocator, &.{ "archive", "--sandbox", "bogus", "--help" })));
     try std.testing.expect(!(try rootArgsTailHasHelpOrVersion(std.testing.allocator, &.{ "fork", "--profile", "../bad", "--help" })));
     try std.testing.expect(!(try rootArgsTailHasHelpOrVersion(std.testing.allocator, &.{ "remote-fork", "--approval-policy", "bogus", "--help" })));
     try std.testing.expect(!(try rootArgsTailHasHelpOrVersion(std.testing.allocator, &.{ "--remote", "ws://127.0.0.1:1", "exec", "--base", "main", "--help" })));
@@ -3890,6 +4252,9 @@ test "root strict config is rejected for unsupported subcommands" {
     try std.testing.expect(strictConfigUnsupportedSubcommandName("exec-server") == null);
     try std.testing.expect(strictConfigUnsupportedSubcommandName("mcp-server") == null);
     try std.testing.expect(strictConfigUnsupportedSubcommandName("resume") == null);
+    try std.testing.expect(strictConfigUnsupportedSubcommandName("archive") == null);
+    try std.testing.expect(strictConfigUnsupportedSubcommandName("delete") == null);
+    try std.testing.expect(strictConfigUnsupportedSubcommandName("unarchive") == null);
     try std.testing.expect(strictConfigUnsupportedSubcommandName("fork") == null);
     try std.testing.expect(strictConfigUnsupportedSubcommandName("write this prompt") == null);
     try std.testing.expectEqualStrings("features", strictConfigUnsupportedSubcommandName("features").?);
@@ -3902,6 +4267,9 @@ test "root profile overlay is restricted to runtime subcommands" {
     try std.testing.expect(profileV2UnsupportedSubcommandName("e") == null);
     try std.testing.expect(profileV2UnsupportedSubcommandName("review") == null);
     try std.testing.expect(profileV2UnsupportedSubcommandName("resume") == null);
+    try std.testing.expect(profileV2UnsupportedSubcommandName("archive") == null);
+    try std.testing.expect(profileV2UnsupportedSubcommandName("delete") == null);
+    try std.testing.expect(profileV2UnsupportedSubcommandName("unarchive") == null);
     try std.testing.expect(profileV2UnsupportedSubcommandName("fork") == null);
     try std.testing.expect(profileV2UnsupportedSubcommandName("mcp") == null);
     try std.testing.expect(profileV2UnsupportedSubcommandName("sandbox") == null);
