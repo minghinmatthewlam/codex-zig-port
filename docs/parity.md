@@ -464,10 +464,13 @@ process-local registry and returns the Rust-shaped empty response,
 WebSocket, performs the Rust-shaped initialize/initialized handshake, calls
 exec-server `environment/info`, and returns shell info plus canonical
 `file://` cwd values; the Zig `exec-server` serves its own local shell/cwd
-through that RPC. Full persistent exec-server attachment, configured
-connection-timeout enforcement, connected/disconnected notification emission,
-ready-state recovery, and environment selection/cwd resolution for thread and
-turn execution remain planned.
+through that RPC. `environment/add` also stores `connectTimeoutMs`, and
+`environment/info` enforces it for stalled WebSocket upgrade handshakes while
+using Rust-shaped initialize and `environment/info` response deadlines. Full
+persistent exec-server attachment, exact TCP/DNS/TLS connect-deadline depth,
+connected/disconnected notification emission, ready-state recovery, and
+environment selection/cwd resolution for thread and turn execution remain
+planned.
 
 Additional app-server server-request generation coverage: generated TypeScript
 artifacts now include the top-level `ServerRequest` union for
