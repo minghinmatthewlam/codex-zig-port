@@ -80,7 +80,9 @@ emits a Rust-shaped JSON report with `schemaVersion`, `generatedAt`,
 bounded local checks cover install/update detection, Rust-shaped install context
 details for package-layout and standalone release installs, package-manager
 provenance, inherited package-manager env suppression for dev builds, PATH entry
-reporting, npm global-root mismatch diagnostics, runtime,
+reporting, npm global-root mismatch diagnostics, runtime provenance, system OS
+version/language/editor/pager environment reporting, Git executable/PATH and
+repository metadata reporting,
 package-layout bundled `rg` detection through `codex-path`, standalone bundled
 `rg` detection through `codex-resources`, real system `rg` readiness probing,
 config load, auth presence, MCP config parsing, sandbox config, proxy and

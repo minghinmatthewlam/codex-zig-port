@@ -1,6 +1,6 @@
 # Feature Parity Gap List
 
-Last checked: 2026-07-24.
+Last checked: 2026-07-25.
 
 This file tracks user-facing feature parity against the local Rust Codex CLI
 reference, not CI, release, OSS hygiene, byte-for-byte fixture parity, or
@@ -9,7 +9,7 @@ purely internal generator parity. The current reference is:
 - Rust checkout: `/Users/matthewlam/dev/codex` at
   `5381240f57fe326b13bc81325f3c61596592fc7a`
 - Installed Rust CLI: `codex-cli 0.145.0`
-- Zig checkout: `966367e9678bc01dffbbe21070fcfef84d7426cd`
+- Zig checkout: `9b8b4581e5aa99cca294a5d1b1a18918b710fbb4`
 - Zig CLI: `codex-zig 0.0.1`
 
 The source evidence for this pass was the Rust and Zig root help output,
@@ -23,7 +23,10 @@ Rust's `turn_processor.rs`, `protocol/v2/turn.rs`, and
 app-server smoke. Local CLI session archive command parity was checked against
 Rust `codex archive|delete|unarchive --help`, targeted missing-target behavior,
 Rust CLI/session archive command sources, Zig storage helpers, and
-`cli-session-archive-commands-e2e`.
+`cli-session-archive-commands-e2e`. Doctor system/git environment parity was
+checked against Rust `doctor/system.rs` and `doctor/git.rs`, installed Rust/Zig
+`doctor --summary --ascii --no-color` output, and
+`cli-doctor-environment-e2e`.
 
 ## Priority Rules
 
@@ -194,6 +197,8 @@ Rust CLI/session archive command sources, Zig storage helpers, and
   help, human output, JSON top-level fields, grouped check rows, and
   `--json`, `--summary`, `--all`, `--no-color`, `--ascii`, `-c/--config`,
   `--enable`, and `--disable` parsing, plus real `rg` readiness probing,
+  system OS version/language/editor/pager environment reporting, Git executable,
+  PATH, repository root, `.git` entry, branch, and fsmonitor reporting,
   Rust-shaped install context details for package-layout and standalone release
   installs, package-manager provenance details, inherited package-manager env
   suppression for dev builds, PATH entry reporting, npm global-root mismatch
