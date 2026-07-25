@@ -7531,6 +7531,7 @@ const EXTERNAL_AGENT_CONFIG_MIGRATION_ITEM_TYPE_TS =
     \\  | "SUBAGENTS"
     \\  | "HOOKS"
     \\  | "COMMANDS"
+    \\  | "MEMORY"
     \\  | "SESSIONS";
     \\
     ;
@@ -7651,13 +7652,118 @@ const EXTERNAL_AGENT_CONFIG_IMPORT_PARAMS_TS =
 
 const EXTERNAL_AGENT_CONFIG_IMPORT_RESPONSE_TS =
     GENERATED_TS_HEADER ++
-    \\export interface ExternalAgentConfigImportResponse {}
+    \\export interface ExternalAgentConfigImportResponse {
+    \\  importId: string;
+    \\}
+    \\
+    ;
+
+const EXTERNAL_AGENT_CONFIG_IMPORT_ITEM_TYPE_SUCCESS_TS =
+    GENERATED_TS_HEADER ++
+    \\import type { ExternalAgentConfigMigrationItemType } from "./ExternalAgentConfigMigrationItemType";
+    \\
+    \\export interface ExternalAgentConfigImportItemTypeSuccess {
+    \\  itemType: ExternalAgentConfigMigrationItemType;
+    \\  cwd: string | null;
+    \\  source: string | null;
+    \\  target: string | null;
+    \\}
+    \\
+    ;
+
+const EXTERNAL_AGENT_CONFIG_IMPORT_ITEM_TYPE_FAILURE_TS =
+    GENERATED_TS_HEADER ++
+    \\import type { ExternalAgentConfigMigrationItemType } from "./ExternalAgentConfigMigrationItemType";
+    \\
+    \\export interface ExternalAgentConfigImportItemTypeFailure {
+    \\  itemType: ExternalAgentConfigMigrationItemType;
+    \\  errorType: string | null;
+    \\  subErrorType: string | null;
+    \\  failureStage: string;
+    \\  message: string;
+    \\  cwd: string | null;
+    \\  source: string | null;
+    \\}
+    \\
+    ;
+
+const EXTERNAL_AGENT_CONFIG_IMPORT_TYPE_RESULT_TS =
+    GENERATED_TS_HEADER ++
+    \\import type { ExternalAgentConfigImportItemTypeFailure } from "./ExternalAgentConfigImportItemTypeFailure";
+    \\import type { ExternalAgentConfigImportItemTypeSuccess } from "./ExternalAgentConfigImportItemTypeSuccess";
+    \\import type { ExternalAgentConfigMigrationItemType } from "./ExternalAgentConfigMigrationItemType";
+    \\
+    \\export interface ExternalAgentConfigImportTypeResult {
+    \\  itemType: ExternalAgentConfigMigrationItemType;
+    \\  successes: ExternalAgentConfigImportItemTypeSuccess[];
+    \\  failures: ExternalAgentConfigImportItemTypeFailure[];
+    \\}
     \\
     ;
 
 const EXTERNAL_AGENT_CONFIG_IMPORT_COMPLETED_NOTIFICATION_TS =
     GENERATED_TS_HEADER ++
-    \\export interface ExternalAgentConfigImportCompletedNotification {}
+    \\import type { ExternalAgentConfigImportTypeResult } from "./ExternalAgentConfigImportTypeResult";
+    \\
+    \\export interface ExternalAgentConfigImportCompletedNotification {
+    \\  importId: string;
+    \\  itemTypeResults: ExternalAgentConfigImportTypeResult[];
+    \\}
+    \\
+    ;
+
+const EXTERNAL_AGENT_CONFIG_IMPORT_PROGRESS_NOTIFICATION_TS =
+    GENERATED_TS_HEADER ++
+    \\import type { ExternalAgentConfigImportTypeResult } from "./ExternalAgentConfigImportTypeResult";
+    \\
+    \\export interface ExternalAgentConfigImportProgressNotification {
+    \\  importId: string;
+    \\  itemTypeResults: ExternalAgentConfigImportTypeResult[];
+    \\}
+    \\
+    ;
+
+const EXTERNAL_AGENT_IMPORTED_CONNECTOR_SOURCE_TS =
+    GENERATED_TS_HEADER ++
+    \\export type ExternalAgentImportedConnectorSource = "remoteMcpServersConfig";
+    \\
+    ;
+
+const EXTERNAL_AGENT_IMPORTED_CONNECTOR_CANDIDATE_TS =
+    GENERATED_TS_HEADER ++
+    \\import type { ExternalAgentImportedConnectorSource } from "./ExternalAgentImportedConnectorSource";
+    \\
+    \\export interface ExternalAgentImportedConnectorCandidate {
+    \\  name: string;
+    \\  sessionCount: number;
+    \\  source: ExternalAgentImportedConnectorSource;
+    \\}
+    \\
+    ;
+
+const EXTERNAL_AGENT_CONFIG_IMPORT_HISTORY_TS =
+    GENERATED_TS_HEADER ++
+    \\import type { ExternalAgentConfigImportItemTypeFailure } from "./ExternalAgentConfigImportItemTypeFailure";
+    \\import type { ExternalAgentConfigImportItemTypeSuccess } from "./ExternalAgentConfigImportItemTypeSuccess";
+    \\
+    \\export interface ExternalAgentConfigImportHistory {
+    \\  importId: string;
+    \\  completedAtMs: bigint;
+    \\  successes: ExternalAgentConfigImportItemTypeSuccess[];
+    \\  failures: ExternalAgentConfigImportItemTypeFailure[];
+    \\}
+    \\
+    ;
+
+const EXTERNAL_AGENT_CONFIG_IMPORT_HISTORIES_READ_RESPONSE_TS =
+    GENERATED_TS_HEADER ++
+    \\import type { ExternalAgentConfigImportHistory } from "./ExternalAgentConfigImportHistory";
+    \\import type { ExternalAgentImportedConnectorCandidate } from "./ExternalAgentImportedConnectorCandidate";
+    \\
+    \\export interface ExternalAgentConfigImportHistoriesReadResponse {
+    \\  data: ExternalAgentConfigImportHistory[];
+    \\  connectors: ExternalAgentImportedConnectorCandidate[];
+    \\}
     \\
     ;
 
@@ -12078,6 +12184,9 @@ const CLIENT_REQUEST_TS =
     \\      params: ExternalAgentConfigImportParams;
     \\    }
     \\  | {
+    \\      method: "externalAgentConfig/import/readHistories";
+    \\    }
+    \\  | {
     \\      method: "mcpServerStatus/list";
     \\      params?: McpServerStatusListParams | null;
     \\    }
@@ -12391,6 +12500,7 @@ const CLIENT_RESPONSE_TS =
     \\import type { ExperimentalFeatureEnablementSetResponse } from "./v2/ExperimentalFeatureEnablementSetResponse";
     \\import type { ExperimentalFeatureListResponse } from "./v2/ExperimentalFeatureListResponse";
     \\import type { ExternalAgentConfigDetectResponse } from "./v2/ExternalAgentConfigDetectResponse";
+    \\import type { ExternalAgentConfigImportHistoriesReadResponse } from "./v2/ExternalAgentConfigImportHistoriesReadResponse";
     \\import type { ExternalAgentConfigImportResponse } from "./v2/ExternalAgentConfigImportResponse";
     \\import type { EnvironmentAddResponse } from "./v2/EnvironmentAddResponse";
     \\import type { EnvironmentInfoResponse } from "./v2/EnvironmentInfoResponse";
@@ -12761,6 +12871,11 @@ const CLIENT_RESPONSE_TS =
     \\      id: RequestId;
     \\      method: "externalAgentConfig/import";
     \\      result: ExternalAgentConfigImportResponse;
+    \\    }
+    \\  | {
+    \\      id: RequestId;
+    \\      method: "externalAgentConfig/import/readHistories";
+    \\      result: ExternalAgentConfigImportHistoriesReadResponse;
     \\    }
     \\  | {
     \\      id: RequestId;
@@ -13192,6 +13307,7 @@ const SERVER_NOTIFICATION_TS =
     \\import type { EnvironmentConnectionNotification } from "./v2/EnvironmentConnectionNotification";
     \\import type { ErrorNotification } from "./v2/ErrorNotification";
     \\import type { ExternalAgentConfigImportCompletedNotification } from "./v2/ExternalAgentConfigImportCompletedNotification";
+    \\import type { ExternalAgentConfigImportProgressNotification } from "./v2/ExternalAgentConfigImportProgressNotification";
     \\import type { FileChangeOutputDeltaNotification } from "./v2/FileChangeOutputDeltaNotification";
     \\import type { FileChangePatchUpdatedNotification } from "./v2/FileChangePatchUpdatedNotification";
     \\import type { FsChangedNotification } from "./v2/FsChangedNotification";
@@ -13271,6 +13387,10 @@ const SERVER_NOTIFICATION_TS =
     \\  | {
     \\      method: "externalAgentConfig/import/completed";
     \\      params: ExternalAgentConfigImportCompletedNotification;
+    \\    }
+    \\  | {
+    \\      method: "externalAgentConfig/import/progress";
+    \\      params: ExternalAgentConfigImportProgressNotification;
     \\    }
     \\  | {
     \\      method: "command/exec/outputDelta";
@@ -13787,10 +13907,18 @@ const V2_INDEX_TS =
     \\export type { ExternalAgentConfigDetectParams } from "./ExternalAgentConfigDetectParams";
     \\export type { ExternalAgentConfigDetectResponse } from "./ExternalAgentConfigDetectResponse";
     \\export type { ExternalAgentConfigImportCompletedNotification } from "./ExternalAgentConfigImportCompletedNotification";
+    \\export type { ExternalAgentConfigImportHistoriesReadResponse } from "./ExternalAgentConfigImportHistoriesReadResponse";
+    \\export type { ExternalAgentConfigImportHistory } from "./ExternalAgentConfigImportHistory";
+    \\export type { ExternalAgentConfigImportItemTypeFailure } from "./ExternalAgentConfigImportItemTypeFailure";
+    \\export type { ExternalAgentConfigImportItemTypeSuccess } from "./ExternalAgentConfigImportItemTypeSuccess";
     \\export type { ExternalAgentConfigImportParams } from "./ExternalAgentConfigImportParams";
+    \\export type { ExternalAgentConfigImportProgressNotification } from "./ExternalAgentConfigImportProgressNotification";
     \\export type { ExternalAgentConfigImportResponse } from "./ExternalAgentConfigImportResponse";
+    \\export type { ExternalAgentConfigImportTypeResult } from "./ExternalAgentConfigImportTypeResult";
     \\export type { ExternalAgentConfigMigrationItem } from "./ExternalAgentConfigMigrationItem";
     \\export type { ExternalAgentConfigMigrationItemType } from "./ExternalAgentConfigMigrationItemType";
+    \\export type { ExternalAgentImportedConnectorCandidate } from "./ExternalAgentImportedConnectorCandidate";
+    \\export type { ExternalAgentImportedConnectorSource } from "./ExternalAgentImportedConnectorSource";
     \\export type { HookMigration } from "./HookMigration";
     \\export type { McpServerMigration } from "./McpServerMigration";
     \\export type { MigrationDetails } from "./MigrationDetails";
@@ -19861,7 +19989,7 @@ const EXTERNAL_AGENT_CONFIG_MIGRATION_ITEM_TYPE_JSON_SCHEMA =
     \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
     \\  "title": "ExternalAgentConfigMigrationItemType",
     \\  "type": "string",
-    \\  "enum": ["AGENTS_MD", "CONFIG", "SKILLS", "PLUGINS", "MCP_SERVER_CONFIG", "SUBAGENTS", "HOOKS", "COMMANDS", "SESSIONS"]
+    \\  "enum": ["AGENTS_MD", "CONFIG", "SKILLS", "PLUGINS", "MCP_SERVER_CONFIG", "SUBAGENTS", "HOOKS", "COMMANDS", "MEMORY", "SESSIONS"]
     \\}
     \\
 ;
@@ -19997,7 +20125,7 @@ const EXTERNAL_AGENT_CONFIG_MIGRATION_ITEM_JSON_SCHEMA =
     \\    }
     \\  },
     \\  "$defs": {
-    \\    "ExternalAgentConfigMigrationItemType": { "type": "string", "enum": ["AGENTS_MD", "CONFIG", "SKILLS", "PLUGINS", "MCP_SERVER_CONFIG", "SUBAGENTS", "HOOKS", "COMMANDS", "SESSIONS"] },
+    \\    "ExternalAgentConfigMigrationItemType": { "type": "string", "enum": ["AGENTS_MD", "CONFIG", "SKILLS", "PLUGINS", "MCP_SERVER_CONFIG", "SUBAGENTS", "HOOKS", "COMMANDS", "MEMORY", "SESSIONS"] },
     \\    "MigrationDetails": { "type": "object", "properties": { "plugins": { "type": "array", "default": [], "items": { "$ref": "#/$defs/PluginsMigration" } }, "sessions": { "type": "array", "default": [], "items": { "$ref": "#/$defs/SessionMigration" } }, "mcpServers": { "type": "array", "default": [], "items": { "$ref": "#/$defs/McpServerMigration" } }, "hooks": { "type": "array", "default": [], "items": { "$ref": "#/$defs/HookMigration" } }, "subagents": { "type": "array", "default": [], "items": { "$ref": "#/$defs/SubagentMigration" } }, "commands": { "type": "array", "default": [], "items": { "$ref": "#/$defs/CommandMigration" } } }, "additionalProperties": false },
     \\    "PluginsMigration": { "type": "object", "required": ["marketplaceName", "pluginNames"], "properties": { "marketplaceName": { "type": "string" }, "pluginNames": { "type": "array", "items": { "type": "string" } } }, "additionalProperties": false },
     \\    "SessionMigration": { "type": "object", "required": ["path", "cwd"], "properties": { "path": { "type": "string" }, "cwd": { "type": "string" }, "title": { "type": ["string", "null"] } }, "additionalProperties": false },
@@ -20064,6 +20192,74 @@ const EXTERNAL_AGENT_CONFIG_IMPORT_RESPONSE_JSON_SCHEMA =
     \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
     \\  "title": "ExternalAgentConfigImportResponse",
     \\  "type": "object",
+    \\  "required": ["importId"],
+    \\  "properties": {
+    \\    "importId": { "type": "string" }
+    \\  },
+    \\  "additionalProperties": false
+    \\}
+    \\
+;
+
+const EXTERNAL_AGENT_CONFIG_IMPORT_ITEM_TYPE_SUCCESS_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "ExternalAgentConfigImportItemTypeSuccess",
+    \\  "type": "object",
+    \\  "required": ["itemType"],
+    \\  "properties": {
+    \\    "itemType": { "$ref": "#/$defs/ExternalAgentConfigMigrationItemType" },
+    \\    "cwd": { "type": ["string", "null"] },
+    \\    "source": { "type": ["string", "null"] },
+    \\    "target": { "type": ["string", "null"] }
+    \\  },
+    \\  "$defs": {
+    \\    "ExternalAgentConfigMigrationItemType": { "type": "string", "enum": ["AGENTS_MD", "CONFIG", "SKILLS", "PLUGINS", "MCP_SERVER_CONFIG", "SUBAGENTS", "HOOKS", "COMMANDS", "MEMORY", "SESSIONS"] }
+    \\  },
+    \\  "additionalProperties": false
+    \\}
+    \\
+;
+
+const EXTERNAL_AGENT_CONFIG_IMPORT_ITEM_TYPE_FAILURE_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "ExternalAgentConfigImportItemTypeFailure",
+    \\  "type": "object",
+    \\  "required": ["failureStage", "itemType", "message"],
+    \\  "properties": {
+    \\    "itemType": { "$ref": "#/$defs/ExternalAgentConfigMigrationItemType" },
+    \\    "errorType": { "type": ["string", "null"] },
+    \\    "subErrorType": { "type": ["string", "null"] },
+    \\    "failureStage": { "type": "string" },
+    \\    "message": { "type": "string" },
+    \\    "cwd": { "type": ["string", "null"] },
+    \\    "source": { "type": ["string", "null"] }
+    \\  },
+    \\  "$defs": {
+    \\    "ExternalAgentConfigMigrationItemType": { "type": "string", "enum": ["AGENTS_MD", "CONFIG", "SKILLS", "PLUGINS", "MCP_SERVER_CONFIG", "SUBAGENTS", "HOOKS", "COMMANDS", "MEMORY", "SESSIONS"] }
+    \\  },
+    \\  "additionalProperties": false
+    \\}
+    \\
+;
+
+const EXTERNAL_AGENT_CONFIG_IMPORT_TYPE_RESULT_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "ExternalAgentConfigImportTypeResult",
+    \\  "type": "object",
+    \\  "required": ["failures", "itemType", "successes"],
+    \\  "properties": {
+    \\    "itemType": { "$ref": "#/$defs/ExternalAgentConfigMigrationItemType" },
+    \\    "successes": { "type": "array", "items": { "$ref": "#/$defs/ExternalAgentConfigImportItemTypeSuccess" } },
+    \\    "failures": { "type": "array", "items": { "$ref": "#/$defs/ExternalAgentConfigImportItemTypeFailure" } }
+    \\  },
+    \\  "$defs": {
+    \\    "ExternalAgentConfigMigrationItemType": { "type": "string", "enum": ["AGENTS_MD", "CONFIG", "SKILLS", "PLUGINS", "MCP_SERVER_CONFIG", "SUBAGENTS", "HOOKS", "COMMANDS", "MEMORY", "SESSIONS"] },
+    \\    "ExternalAgentConfigImportItemTypeSuccess": { "$ref": "ExternalAgentConfigImportItemTypeSuccess.json" },
+    \\    "ExternalAgentConfigImportItemTypeFailure": { "$ref": "ExternalAgentConfigImportItemTypeFailure.json" }
+    \\  },
     \\  "additionalProperties": false
     \\}
     \\
@@ -20074,6 +20270,101 @@ const EXTERNAL_AGENT_CONFIG_IMPORT_COMPLETED_NOTIFICATION_JSON_SCHEMA =
     \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
     \\  "title": "ExternalAgentConfigImportCompletedNotification",
     \\  "type": "object",
+    \\  "required": ["importId", "itemTypeResults"],
+    \\  "properties": {
+    \\    "importId": { "type": "string" },
+    \\    "itemTypeResults": { "type": "array", "items": { "$ref": "#/$defs/ExternalAgentConfigImportTypeResult" } }
+    \\  },
+    \\  "$defs": {
+    \\    "ExternalAgentConfigImportTypeResult": { "$ref": "ExternalAgentConfigImportTypeResult.json" }
+    \\  },
+    \\  "additionalProperties": false
+    \\}
+    \\
+;
+
+const EXTERNAL_AGENT_CONFIG_IMPORT_PROGRESS_NOTIFICATION_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "ExternalAgentConfigImportProgressNotification",
+    \\  "type": "object",
+    \\  "required": ["importId", "itemTypeResults"],
+    \\  "properties": {
+    \\    "importId": { "type": "string" },
+    \\    "itemTypeResults": { "type": "array", "items": { "$ref": "#/$defs/ExternalAgentConfigImportTypeResult" } }
+    \\  },
+    \\  "$defs": {
+    \\    "ExternalAgentConfigImportTypeResult": { "$ref": "ExternalAgentConfigImportTypeResult.json" }
+    \\  },
+    \\  "additionalProperties": false
+    \\}
+    \\
+;
+
+const EXTERNAL_AGENT_IMPORTED_CONNECTOR_SOURCE_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "ExternalAgentImportedConnectorSource",
+    \\  "type": "string",
+    \\  "enum": ["remoteMcpServersConfig"]
+    \\}
+    \\
+;
+
+const EXTERNAL_AGENT_IMPORTED_CONNECTOR_CANDIDATE_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "ExternalAgentImportedConnectorCandidate",
+    \\  "type": "object",
+    \\  "required": ["name", "sessionCount", "source"],
+    \\  "properties": {
+    \\    "name": { "type": "string" },
+    \\    "sessionCount": { "type": "integer", "minimum": 0 },
+    \\    "source": { "$ref": "#/$defs/ExternalAgentImportedConnectorSource" }
+    \\  },
+    \\  "$defs": {
+    \\    "ExternalAgentImportedConnectorSource": { "type": "string", "enum": ["remoteMcpServersConfig"] }
+    \\  },
+    \\  "additionalProperties": false
+    \\}
+    \\
+;
+
+const EXTERNAL_AGENT_CONFIG_IMPORT_HISTORY_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "ExternalAgentConfigImportHistory",
+    \\  "type": "object",
+    \\  "required": ["completedAtMs", "failures", "importId", "successes"],
+    \\  "properties": {
+    \\    "importId": { "type": "string" },
+    \\    "completedAtMs": { "type": "integer", "format": "int64" },
+    \\    "successes": { "type": "array", "items": { "$ref": "#/$defs/ExternalAgentConfigImportItemTypeSuccess" } },
+    \\    "failures": { "type": "array", "items": { "$ref": "#/$defs/ExternalAgentConfigImportItemTypeFailure" } }
+    \\  },
+    \\  "$defs": {
+    \\    "ExternalAgentConfigImportItemTypeSuccess": { "$ref": "ExternalAgentConfigImportItemTypeSuccess.json" },
+    \\    "ExternalAgentConfigImportItemTypeFailure": { "$ref": "ExternalAgentConfigImportItemTypeFailure.json" }
+    \\  },
+    \\  "additionalProperties": false
+    \\}
+    \\
+;
+
+const EXTERNAL_AGENT_CONFIG_IMPORT_HISTORIES_READ_RESPONSE_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "ExternalAgentConfigImportHistoriesReadResponse",
+    \\  "type": "object",
+    \\  "required": ["connectors", "data"],
+    \\  "properties": {
+    \\    "data": { "type": "array", "items": { "$ref": "#/$defs/ExternalAgentConfigImportHistory" } },
+    \\    "connectors": { "type": "array", "items": { "$ref": "#/$defs/ExternalAgentImportedConnectorCandidate" } }
+    \\  },
+    \\  "$defs": {
+    \\    "ExternalAgentConfigImportHistory": { "$ref": "ExternalAgentConfigImportHistory.json" },
+    \\    "ExternalAgentImportedConnectorCandidate": { "$ref": "ExternalAgentImportedConnectorCandidate.json" }
+    \\  },
     \\  "additionalProperties": false
     \\}
     \\
@@ -26695,7 +26986,7 @@ const APP_SERVER_PROTOCOL_SCHEMA_BUNDLE =
     \\    },
     \\    "ExternalAgentConfigMigrationItemType": {
     \\      "type": "string",
-    \\      "enum": ["AGENTS_MD", "CONFIG", "SKILLS", "PLUGINS", "MCP_SERVER_CONFIG", "SUBAGENTS", "HOOKS", "COMMANDS", "SESSIONS"]
+    \\      "enum": ["AGENTS_MD", "CONFIG", "SKILLS", "PLUGINS", "MCP_SERVER_CONFIG", "SUBAGENTS", "HOOKS", "COMMANDS", "MEMORY", "SESSIONS"]
     \\    },
     \\    "PluginsMigration": {
     \\      "type": "object",
@@ -26802,10 +27093,97 @@ const APP_SERVER_PROTOCOL_SCHEMA_BUNDLE =
     \\    },
     \\    "ExternalAgentConfigImportResponse": {
     \\      "type": "object",
+    \\      "required": ["importId"],
+    \\      "properties": {
+    \\        "importId": { "type": "string" }
+    \\      },
+    \\      "additionalProperties": false
+    \\    },
+    \\    "ExternalAgentConfigImportItemTypeSuccess": {
+    \\      "type": "object",
+    \\      "required": ["itemType"],
+    \\      "properties": {
+    \\        "itemType": { "$ref": "#/$defs/ExternalAgentConfigMigrationItemType" },
+    \\        "cwd": { "type": ["string", "null"] },
+    \\        "source": { "type": ["string", "null"] },
+    \\        "target": { "type": ["string", "null"] }
+    \\      },
+    \\      "additionalProperties": false
+    \\    },
+    \\    "ExternalAgentConfigImportItemTypeFailure": {
+    \\      "type": "object",
+    \\      "required": ["failureStage", "itemType", "message"],
+    \\      "properties": {
+    \\        "itemType": { "$ref": "#/$defs/ExternalAgentConfigMigrationItemType" },
+    \\        "errorType": { "type": ["string", "null"] },
+    \\        "subErrorType": { "type": ["string", "null"] },
+    \\        "failureStage": { "type": "string" },
+    \\        "message": { "type": "string" },
+    \\        "cwd": { "type": ["string", "null"] },
+    \\        "source": { "type": ["string", "null"] }
+    \\      },
+    \\      "additionalProperties": false
+    \\    },
+    \\    "ExternalAgentConfigImportTypeResult": {
+    \\      "type": "object",
+    \\      "required": ["failures", "itemType", "successes"],
+    \\      "properties": {
+    \\        "itemType": { "$ref": "#/$defs/ExternalAgentConfigMigrationItemType" },
+    \\        "successes": { "type": "array", "items": { "$ref": "#/$defs/ExternalAgentConfigImportItemTypeSuccess" } },
+    \\        "failures": { "type": "array", "items": { "$ref": "#/$defs/ExternalAgentConfigImportItemTypeFailure" } }
+    \\      },
     \\      "additionalProperties": false
     \\    },
     \\    "ExternalAgentConfigImportCompletedNotification": {
     \\      "type": "object",
+    \\      "required": ["importId", "itemTypeResults"],
+    \\      "properties": {
+    \\        "importId": { "type": "string" },
+    \\        "itemTypeResults": { "type": "array", "items": { "$ref": "#/$defs/ExternalAgentConfigImportTypeResult" } }
+    \\      },
+    \\      "additionalProperties": false
+    \\    },
+    \\    "ExternalAgentConfigImportProgressNotification": {
+    \\      "type": "object",
+    \\      "required": ["importId", "itemTypeResults"],
+    \\      "properties": {
+    \\        "importId": { "type": "string" },
+    \\        "itemTypeResults": { "type": "array", "items": { "$ref": "#/$defs/ExternalAgentConfigImportTypeResult" } }
+    \\      },
+    \\      "additionalProperties": false
+    \\    },
+    \\    "ExternalAgentImportedConnectorSource": {
+    \\      "type": "string",
+    \\      "enum": ["remoteMcpServersConfig"]
+    \\    },
+    \\    "ExternalAgentImportedConnectorCandidate": {
+    \\      "type": "object",
+    \\      "required": ["name", "sessionCount", "source"],
+    \\      "properties": {
+    \\        "name": { "type": "string" },
+    \\        "sessionCount": { "type": "integer", "minimum": 0 },
+    \\        "source": { "$ref": "#/$defs/ExternalAgentImportedConnectorSource" }
+    \\      },
+    \\      "additionalProperties": false
+    \\    },
+    \\    "ExternalAgentConfigImportHistory": {
+    \\      "type": "object",
+    \\      "required": ["completedAtMs", "failures", "importId", "successes"],
+    \\      "properties": {
+    \\        "importId": { "type": "string" },
+    \\        "completedAtMs": { "type": "integer", "format": "int64" },
+    \\        "successes": { "type": "array", "items": { "$ref": "#/$defs/ExternalAgentConfigImportItemTypeSuccess" } },
+    \\        "failures": { "type": "array", "items": { "$ref": "#/$defs/ExternalAgentConfigImportItemTypeFailure" } }
+    \\      },
+    \\      "additionalProperties": false
+    \\    },
+    \\    "ExternalAgentConfigImportHistoriesReadResponse": {
+    \\      "type": "object",
+    \\      "required": ["connectors", "data"],
+    \\      "properties": {
+    \\        "data": { "type": "array", "items": { "$ref": "#/$defs/ExternalAgentConfigImportHistory" } },
+    \\        "connectors": { "type": "array", "items": { "$ref": "#/$defs/ExternalAgentImportedConnectorCandidate" } }
+    \\      },
     \\      "additionalProperties": false
     \\    },
     \\    "McpServerStatusDetail": {
@@ -30924,7 +31302,15 @@ const APP_SERVER_JSON_SCHEMA_FILES = [_]SchemaFile{
     .{ .name = "ExternalAgentConfigDetectResponse.json", .contents = EXTERNAL_AGENT_CONFIG_DETECT_RESPONSE_JSON_SCHEMA },
     .{ .name = "ExternalAgentConfigImportParams.json", .contents = EXTERNAL_AGENT_CONFIG_IMPORT_PARAMS_JSON_SCHEMA },
     .{ .name = "ExternalAgentConfigImportResponse.json", .contents = EXTERNAL_AGENT_CONFIG_IMPORT_RESPONSE_JSON_SCHEMA },
+    .{ .name = "ExternalAgentConfigImportItemTypeSuccess.json", .contents = EXTERNAL_AGENT_CONFIG_IMPORT_ITEM_TYPE_SUCCESS_JSON_SCHEMA },
+    .{ .name = "ExternalAgentConfigImportItemTypeFailure.json", .contents = EXTERNAL_AGENT_CONFIG_IMPORT_ITEM_TYPE_FAILURE_JSON_SCHEMA },
+    .{ .name = "ExternalAgentConfigImportTypeResult.json", .contents = EXTERNAL_AGENT_CONFIG_IMPORT_TYPE_RESULT_JSON_SCHEMA },
     .{ .name = "ExternalAgentConfigImportCompletedNotification.json", .contents = EXTERNAL_AGENT_CONFIG_IMPORT_COMPLETED_NOTIFICATION_JSON_SCHEMA },
+    .{ .name = "ExternalAgentConfigImportProgressNotification.json", .contents = EXTERNAL_AGENT_CONFIG_IMPORT_PROGRESS_NOTIFICATION_JSON_SCHEMA },
+    .{ .name = "ExternalAgentImportedConnectorSource.json", .contents = EXTERNAL_AGENT_IMPORTED_CONNECTOR_SOURCE_JSON_SCHEMA },
+    .{ .name = "ExternalAgentImportedConnectorCandidate.json", .contents = EXTERNAL_AGENT_IMPORTED_CONNECTOR_CANDIDATE_JSON_SCHEMA },
+    .{ .name = "ExternalAgentConfigImportHistory.json", .contents = EXTERNAL_AGENT_CONFIG_IMPORT_HISTORY_JSON_SCHEMA },
+    .{ .name = "ExternalAgentConfigImportHistoriesReadResponse.json", .contents = EXTERNAL_AGENT_CONFIG_IMPORT_HISTORIES_READ_RESPONSE_JSON_SCHEMA },
     .{ .name = "McpServerStatusDetail.json", .contents = MCP_SERVER_STATUS_DETAIL_JSON_SCHEMA },
     .{ .name = "McpServerStatusListParams.json", .contents = MCP_SERVER_STATUS_LIST_PARAMS_JSON_SCHEMA },
     .{ .name = "v2/ListMcpServerStatusParams.json", .contents = MCP_SERVER_STATUS_LIST_PARAMS_JSON_SCHEMA },
@@ -31247,8 +31633,16 @@ const APP_SERVER_JSON_SCHEMA_VERSIONED_ALIASES = [_][]const u8{
     "v2/ExternalAgentConfigDetectParams.json",
     "v2/ExternalAgentConfigDetectResponse.json",
     "v2/ExternalAgentConfigImportCompletedNotification.json",
+    "v2/ExternalAgentConfigImportHistoriesReadResponse.json",
+    "v2/ExternalAgentConfigImportHistory.json",
+    "v2/ExternalAgentConfigImportItemTypeFailure.json",
+    "v2/ExternalAgentConfigImportItemTypeSuccess.json",
     "v2/ExternalAgentConfigImportParams.json",
+    "v2/ExternalAgentConfigImportProgressNotification.json",
     "v2/ExternalAgentConfigImportResponse.json",
+    "v2/ExternalAgentConfigImportTypeResult.json",
+    "v2/ExternalAgentImportedConnectorCandidate.json",
+    "v2/ExternalAgentImportedConnectorSource.json",
     "v2/FeedbackUploadParams.json",
     "v2/FeedbackUploadResponse.json",
     "v2/FileChangeOutputDeltaNotification.json",
@@ -31742,7 +32136,15 @@ const APP_SERVER_TS_FILES = [_]SchemaFile{
     .{ .name = "v2/ExternalAgentConfigDetectResponse.ts", .contents = EXTERNAL_AGENT_CONFIG_DETECT_RESPONSE_TS },
     .{ .name = "v2/ExternalAgentConfigImportParams.ts", .contents = EXTERNAL_AGENT_CONFIG_IMPORT_PARAMS_TS },
     .{ .name = "v2/ExternalAgentConfigImportResponse.ts", .contents = EXTERNAL_AGENT_CONFIG_IMPORT_RESPONSE_TS },
+    .{ .name = "v2/ExternalAgentConfigImportItemTypeSuccess.ts", .contents = EXTERNAL_AGENT_CONFIG_IMPORT_ITEM_TYPE_SUCCESS_TS },
+    .{ .name = "v2/ExternalAgentConfigImportItemTypeFailure.ts", .contents = EXTERNAL_AGENT_CONFIG_IMPORT_ITEM_TYPE_FAILURE_TS },
+    .{ .name = "v2/ExternalAgentConfigImportTypeResult.ts", .contents = EXTERNAL_AGENT_CONFIG_IMPORT_TYPE_RESULT_TS },
     .{ .name = "v2/ExternalAgentConfigImportCompletedNotification.ts", .contents = EXTERNAL_AGENT_CONFIG_IMPORT_COMPLETED_NOTIFICATION_TS },
+    .{ .name = "v2/ExternalAgentConfigImportProgressNotification.ts", .contents = EXTERNAL_AGENT_CONFIG_IMPORT_PROGRESS_NOTIFICATION_TS },
+    .{ .name = "v2/ExternalAgentImportedConnectorSource.ts", .contents = EXTERNAL_AGENT_IMPORTED_CONNECTOR_SOURCE_TS },
+    .{ .name = "v2/ExternalAgentImportedConnectorCandidate.ts", .contents = EXTERNAL_AGENT_IMPORTED_CONNECTOR_CANDIDATE_TS },
+    .{ .name = "v2/ExternalAgentConfigImportHistory.ts", .contents = EXTERNAL_AGENT_CONFIG_IMPORT_HISTORY_TS },
+    .{ .name = "v2/ExternalAgentConfigImportHistoriesReadResponse.ts", .contents = EXTERNAL_AGENT_CONFIG_IMPORT_HISTORIES_READ_RESPONSE_TS },
     .{ .name = "v2/McpServerStatusDetail.ts", .contents = MCP_SERVER_STATUS_DETAIL_TS },
     .{ .name = "v2/ListMcpServerStatusParams.ts", .contents = LIST_MCP_SERVER_STATUS_PARAMS_TS },
     .{ .name = "v2/ListMcpServerStatusResponse.ts", .contents = LIST_MCP_SERVER_STATUS_RESPONSE_TS },
@@ -58125,7 +58527,8 @@ fn isConfigMethod(method: []const u8) bool {
         std.mem.eql(u8, method, "config/batchWrite") or
         std.mem.eql(u8, method, "configRequirements/read") or
         std.mem.eql(u8, method, "externalAgentConfig/detect") or
-        std.mem.eql(u8, method, "externalAgentConfig/import");
+        std.mem.eql(u8, method, "externalAgentConfig/import") or
+        std.mem.eql(u8, method, "externalAgentConfig/import/readHistories");
 }
 
 fn handleConfigMethod(
@@ -58156,6 +58559,9 @@ fn handleConfigMethod(
     }
     if (std.mem.eql(u8, method, "externalAgentConfig/import")) {
         return handleExternalAgentConfigImport(allocator, state, id_value, params_value);
+    }
+    if (std.mem.eql(u8, method, "externalAgentConfig/import/readHistories")) {
+        return handleExternalAgentConfigImportReadHistories(allocator, id_value, params_value);
     }
     return try renderJsonRpcError(allocator, id_value, -32601, "unknown config method");
 }
@@ -58200,6 +58606,18 @@ const ExternalAgentConfigImportItem = struct {
     details: ?std.json.Value = null,
 };
 
+const ExternalAgentConfigImportSuccess = struct {
+    item_type: []const u8,
+    cwd: ?[]const u8 = null,
+    source: ?[]const u8 = null,
+    target: ?[]const u8 = null,
+
+    fn deinit(self: *ExternalAgentConfigImportSuccess, allocator: std.mem.Allocator) void {
+        if (self.source) |source| allocator.free(source);
+        if (self.target) |target| allocator.free(target);
+    }
+};
+
 fn handleExternalAgentConfigImport(
     allocator: std.mem.Allocator,
     state: *AppServerState,
@@ -58242,8 +58660,14 @@ fn handleExternalAgentConfigImport(
             try import_items.append(allocator, .{ .item_type = item_type.string, .cwd = cwd, .details = details });
         }
     }
+    const import_id = generateUuidString(allocator) catch |err| {
+        return renderJsonRpcErrorForFailure(allocator, id_value, "externalAgentConfig/import failed to generate import id", err);
+    };
+    defer allocator.free(import_id);
+    const import_response_json = try renderExternalAgentConfigImportResponseJson(allocator, import_id);
+    defer allocator.free(import_response_json);
     if (migration_items.array.items.len == 0) {
-        return renderJsonRpcResult(allocator, id_value, "{}");
+        return renderJsonRpcResult(allocator, id_value, import_response_json);
     }
     if (!all_items_supported) {
         return renderJsonRpcError(allocator, id_value, -32603, "externalAgentConfig/import migration items are parsed but not implemented yet");
@@ -58254,6 +58678,9 @@ fn handleExternalAgentConfigImport(
         return renderJsonRpcErrorForFailure(allocator, id_value, "externalAgentConfig/import failed to resolve CODEX_HOME", err);
     };
     defer allocator.free(codex_home);
+
+    var successes = std.ArrayList(ExternalAgentConfigImportSuccess).empty;
+    defer deinitExternalAgentConfigImportSuccesses(allocator, &successes);
 
     for (import_items.items) |item| {
         if (std.mem.eql(u8, item.item_type, "CONFIG")) {
@@ -58293,12 +58720,36 @@ fn handleExternalAgentConfigImport(
                 return renderJsonRpcErrorForFailure(allocator, id_value, "externalAgentConfig/import failed to import sessions", err);
             };
         }
+        appendExternalAgentConfigImportSuccessesForItem(allocator, codex_home, &successes, item) catch |err| {
+            return renderJsonRpcErrorForFailure(allocator, id_value, "externalAgentConfig/import failed to record import result", err);
+        };
     }
     if (needs_runtime_refresh) clearSkillsListCache(allocator, state);
 
-    const response = try renderJsonRpcResult(allocator, id_value, "{}");
+    const completed_at_ms = currentUnixMilliseconds();
+    const history_json = try renderExternalAgentConfigImportHistory(allocator, import_id, completed_at_ms, successes.items);
+    defer allocator.free(history_json);
+    appendExternalAgentConfigImportHistory(allocator, codex_home, history_json) catch |err| {
+        return renderJsonRpcErrorForFailure(allocator, id_value, "externalAgentConfig/import failed to save import history", err);
+    };
+
+    const item_type_results_json = try renderExternalAgentConfigImportTypeResults(allocator, import_items.items, successes.items);
+    defer allocator.free(item_type_results_json);
+
+    const response = try renderJsonRpcResult(allocator, id_value, import_response_json);
     defer allocator.free(response);
-    return renderResultWithExternalAgentConfigImportCompletedNotification(allocator, response);
+    return renderResultWithExternalAgentConfigImportNotifications(allocator, response, import_id, completed_at_ms, item_type_results_json);
+}
+
+fn handleExternalAgentConfigImportReadHistories(allocator: std.mem.Allocator, id_value: std.json.Value, params_value: ?std.json.Value) ![]const u8 {
+    if (try validateUnitOrObjectParams(allocator, id_value, params_value)) |response| return response;
+    const codex_home = resolveCodexHome(allocator) catch |err| {
+        return renderJsonRpcErrorForFailure(allocator, id_value, "externalAgentConfig/import/readHistories failed to resolve CODEX_HOME", err);
+    };
+    defer allocator.free(codex_home);
+    const result = try renderExternalAgentConfigImportHistoriesReadResponse(allocator, codex_home);
+    defer allocator.free(result);
+    return renderJsonRpcResult(allocator, id_value, result);
 }
 
 fn externalAgentImportNeedsRuntimeRefresh(items: []const ExternalAgentConfigImportItem) bool {
@@ -58311,6 +58762,283 @@ fn externalAgentImportNeedsRuntimeRefresh(items: []const ExternalAgentConfigImpo
             std.mem.eql(u8, item.item_type, "COMMANDS")) return true;
     }
     return false;
+}
+
+fn deinitExternalAgentConfigImportSuccesses(allocator: std.mem.Allocator, successes: *std.ArrayList(ExternalAgentConfigImportSuccess)) void {
+    for (successes.items) |*success| success.deinit(allocator);
+    successes.deinit(allocator);
+}
+
+fn appendExternalAgentConfigImportSuccess(
+    allocator: std.mem.Allocator,
+    successes: *std.ArrayList(ExternalAgentConfigImportSuccess),
+    item_type: []const u8,
+    cwd: ?[]const u8,
+    source: ?[]const u8,
+    target: ?[]const u8,
+) !void {
+    const source_copy = if (source) |value| try allocator.dupe(u8, value) else null;
+    errdefer if (source_copy) |value| allocator.free(value);
+    const target_copy = if (target) |value| try allocator.dupe(u8, value) else null;
+    errdefer if (target_copy) |value| allocator.free(value);
+    var success = ExternalAgentConfigImportSuccess{
+        .item_type = item_type,
+        .cwd = cwd,
+        .source = source_copy,
+        .target = target_copy,
+    };
+    errdefer success.deinit(allocator);
+    try successes.append(allocator, success);
+}
+
+fn appendExternalAgentConfigImportSuccessesForItem(
+    allocator: std.mem.Allocator,
+    codex_home: []const u8,
+    successes: *std.ArrayList(ExternalAgentConfigImportSuccess),
+    item: ExternalAgentConfigImportItem,
+) !void {
+    if (std.mem.eql(u8, item.item_type, "CONFIG")) {
+        return appendExternalAgentConfigImportConfigSuccess(allocator, codex_home, successes, item);
+    }
+    if (std.mem.eql(u8, item.item_type, "MCP_SERVER_CONFIG")) {
+        if (try appendExternalAgentNamedDetailSuccesses(allocator, successes, item, "mcpServers")) return;
+        return appendExternalAgentConfigImportSuccess(allocator, successes, item.item_type, item.cwd, null, null);
+    }
+    if (std.mem.eql(u8, item.item_type, "HOOKS")) {
+        return appendExternalAgentConfigImportHooksSuccess(allocator, codex_home, successes, item);
+    }
+    if (std.mem.eql(u8, item.item_type, "AGENTS_MD")) {
+        return appendExternalAgentConfigImportAgentsMdSuccess(allocator, codex_home, successes, item);
+    }
+    if (std.mem.eql(u8, item.item_type, "PLUGINS")) {
+        if (try appendExternalAgentPluginDetailSuccesses(allocator, successes, item)) return;
+        return appendExternalAgentConfigImportSuccess(allocator, successes, item.item_type, item.cwd, null, null);
+    }
+    if (std.mem.eql(u8, item.item_type, "SKILLS")) {
+        return appendExternalAgentConfigImportSkillsSuccess(allocator, codex_home, successes, item);
+    }
+    if (std.mem.eql(u8, item.item_type, "COMMANDS")) {
+        return appendExternalAgentConfigImportCommandsSuccess(allocator, codex_home, successes, item);
+    }
+    if (std.mem.eql(u8, item.item_type, "SUBAGENTS")) {
+        return appendExternalAgentConfigImportSubagentsSuccess(allocator, codex_home, successes, item);
+    }
+    if (std.mem.eql(u8, item.item_type, "SESSIONS")) {
+        _ = try appendExternalAgentSessionDetailSuccesses(allocator, codex_home, successes, item);
+        return;
+    }
+    return appendExternalAgentConfigImportSuccess(allocator, successes, item.item_type, item.cwd, null, null);
+}
+
+fn appendExternalAgentConfigImportConfigSuccess(
+    allocator: std.mem.Allocator,
+    codex_home: []const u8,
+    successes: *std.ArrayList(ExternalAgentConfigImportSuccess),
+    item: ExternalAgentConfigImportItem,
+) !void {
+    if (try externalAgentImportRepoRootForItem(allocator, item)) |repo_root| {
+        defer allocator.free(repo_root);
+        const source = try externalAgentProjectSettingsPath(allocator, repo_root);
+        defer allocator.free(source);
+        const target = try externalAgentProjectConfigPath(allocator, repo_root);
+        defer allocator.free(target);
+        return appendExternalAgentConfigImportSuccess(allocator, successes, item.item_type, item.cwd, source, target);
+    }
+    const source = try externalAgentHomeSettingsPath(allocator);
+    defer allocator.free(source);
+    const target = try config.configTomlPath(allocator, codex_home);
+    defer allocator.free(target);
+    return appendExternalAgentConfigImportSuccess(allocator, successes, item.item_type, item.cwd, source, target);
+}
+
+fn appendExternalAgentConfigImportHooksSuccess(
+    allocator: std.mem.Allocator,
+    codex_home: []const u8,
+    successes: *std.ArrayList(ExternalAgentConfigImportSuccess),
+    item: ExternalAgentConfigImportItem,
+) !void {
+    if (try externalAgentImportRepoRootForItem(allocator, item)) |repo_root| {
+        defer allocator.free(repo_root);
+        const source = try externalAgentProjectDirPath(allocator, repo_root);
+        defer allocator.free(source);
+        const target = try externalAgentProjectTargetHooksPath(allocator, repo_root);
+        defer allocator.free(target);
+        return appendExternalAgentConfigImportSuccess(allocator, successes, item.item_type, item.cwd, source, target);
+    }
+    const source = try externalAgentHomePath(allocator);
+    defer allocator.free(source);
+    const target = try externalAgentTargetHooksPath(allocator, codex_home);
+    defer allocator.free(target);
+    return appendExternalAgentConfigImportSuccess(allocator, successes, item.item_type, item.cwd, source, target);
+}
+
+fn appendExternalAgentConfigImportAgentsMdSuccess(
+    allocator: std.mem.Allocator,
+    codex_home: []const u8,
+    successes: *std.ArrayList(ExternalAgentConfigImportSuccess),
+    item: ExternalAgentConfigImportItem,
+) !void {
+    if (try externalAgentImportRepoRootForItem(allocator, item)) |repo_root| {
+        defer allocator.free(repo_root);
+        const source = (try externalAgentProjectAgentsMdSourcePath(allocator, repo_root)) orelse {
+            const target = try externalAgentProjectTargetAgentsMdPath(allocator, repo_root);
+            defer allocator.free(target);
+            return appendExternalAgentConfigImportSuccess(allocator, successes, item.item_type, item.cwd, null, target);
+        };
+        defer allocator.free(source);
+        const target = try externalAgentProjectTargetAgentsMdPath(allocator, repo_root);
+        defer allocator.free(target);
+        return appendExternalAgentConfigImportSuccess(allocator, successes, item.item_type, item.cwd, source, target);
+    }
+    const source = try externalAgentHomeAgentsMdPath(allocator);
+    defer allocator.free(source);
+    const target = try externalAgentTargetAgentsMdPath(allocator, codex_home);
+    defer allocator.free(target);
+    return appendExternalAgentConfigImportSuccess(allocator, successes, item.item_type, item.cwd, source, target);
+}
+
+fn appendExternalAgentConfigImportSkillsSuccess(
+    allocator: std.mem.Allocator,
+    codex_home: []const u8,
+    successes: *std.ArrayList(ExternalAgentConfigImportSuccess),
+    item: ExternalAgentConfigImportItem,
+) !void {
+    if (try externalAgentImportRepoRootForItem(allocator, item)) |repo_root| {
+        defer allocator.free(repo_root);
+        const source = try externalAgentProjectSkillsPath(allocator, repo_root);
+        defer allocator.free(source);
+        const target = try externalAgentProjectTargetSkillsPath(allocator, repo_root);
+        defer allocator.free(target);
+        return appendExternalAgentConfigImportSuccess(allocator, successes, item.item_type, item.cwd, source, target);
+    }
+    const source = try externalAgentHomeSkillsPath(allocator);
+    defer allocator.free(source);
+    const target = try externalAgentTargetSkillsPath(allocator, codex_home);
+    defer allocator.free(target);
+    return appendExternalAgentConfigImportSuccess(allocator, successes, item.item_type, item.cwd, source, target);
+}
+
+fn appendExternalAgentConfigImportCommandsSuccess(
+    allocator: std.mem.Allocator,
+    codex_home: []const u8,
+    successes: *std.ArrayList(ExternalAgentConfigImportSuccess),
+    item: ExternalAgentConfigImportItem,
+) !void {
+    if (try externalAgentImportRepoRootForItem(allocator, item)) |repo_root| {
+        defer allocator.free(repo_root);
+        const source = try externalAgentProjectCommandsPath(allocator, repo_root);
+        defer allocator.free(source);
+        const target = try externalAgentProjectTargetSkillsPath(allocator, repo_root);
+        defer allocator.free(target);
+        return appendExternalAgentConfigImportSuccess(allocator, successes, item.item_type, item.cwd, source, target);
+    }
+    const source = try externalAgentHomeCommandsPath(allocator);
+    defer allocator.free(source);
+    const target = try externalAgentTargetSkillsPath(allocator, codex_home);
+    defer allocator.free(target);
+    return appendExternalAgentConfigImportSuccess(allocator, successes, item.item_type, item.cwd, source, target);
+}
+
+fn appendExternalAgentConfigImportSubagentsSuccess(
+    allocator: std.mem.Allocator,
+    codex_home: []const u8,
+    successes: *std.ArrayList(ExternalAgentConfigImportSuccess),
+    item: ExternalAgentConfigImportItem,
+) !void {
+    if (try externalAgentImportRepoRootForItem(allocator, item)) |repo_root| {
+        defer allocator.free(repo_root);
+        const source = try externalAgentProjectSubagentsPath(allocator, repo_root);
+        defer allocator.free(source);
+        const target = try externalAgentProjectTargetSubagentsPath(allocator, repo_root);
+        defer allocator.free(target);
+        return appendExternalAgentConfigImportSuccess(allocator, successes, item.item_type, item.cwd, source, target);
+    }
+    const source = try externalAgentHomeSubagentsPath(allocator);
+    defer allocator.free(source);
+    const target = try externalAgentTargetSubagentsPath(allocator, codex_home);
+    defer allocator.free(target);
+    return appendExternalAgentConfigImportSuccess(allocator, successes, item.item_type, item.cwd, source, target);
+}
+
+fn externalAgentImportRepoRootForItem(allocator: std.mem.Allocator, item: ExternalAgentConfigImportItem) !?[]const u8 {
+    const cwd = item.cwd orelse return null;
+    if (cwd.len == 0) return null;
+    return findExternalAgentRepoRoot(allocator, cwd);
+}
+
+fn appendExternalAgentNamedDetailSuccesses(
+    allocator: std.mem.Allocator,
+    successes: *std.ArrayList(ExternalAgentConfigImportSuccess),
+    item: ExternalAgentConfigImportItem,
+    detail_field: []const u8,
+) !bool {
+    const details = item.details orelse return false;
+    if (details != .object) return false;
+    const values = details.object.get(detail_field) orelse return false;
+    if (values != .array) return false;
+    for (values.array.items) |value| {
+        if (value != .object) continue;
+        const name = externalAgentJsonString(value.object, "name") orelse continue;
+        try appendExternalAgentConfigImportSuccess(allocator, successes, item.item_type, item.cwd, name, name);
+    }
+    return true;
+}
+
+fn appendExternalAgentPluginDetailSuccesses(
+    allocator: std.mem.Allocator,
+    successes: *std.ArrayList(ExternalAgentConfigImportSuccess),
+    item: ExternalAgentConfigImportItem,
+) !bool {
+    const details = item.details orelse return false;
+    if (details != .object) return false;
+    const plugins = details.object.get("plugins") orelse return false;
+    if (plugins != .array) return false;
+    for (plugins.array.items) |group| {
+        if (group != .object) continue;
+        const marketplace_name = externalAgentJsonString(group.object, "marketplaceName") orelse continue;
+        const plugin_names = group.object.get("pluginNames") orelse continue;
+        if (plugin_names != .array) continue;
+        for (plugin_names.array.items) |plugin_name_value| {
+            if (plugin_name_value != .string) continue;
+            const plugin_id = try std.fmt.allocPrint(allocator, "{s}@{s}", .{ plugin_name_value.string, marketplace_name });
+            defer allocator.free(plugin_id);
+            try appendExternalAgentConfigImportSuccess(allocator, successes, item.item_type, item.cwd, plugin_id, plugin_id);
+        }
+    }
+    return true;
+}
+
+fn appendExternalAgentSessionDetailSuccesses(
+    allocator: std.mem.Allocator,
+    codex_home: []const u8,
+    successes: *std.ArrayList(ExternalAgentConfigImportSuccess),
+    item: ExternalAgentConfigImportItem,
+) !bool {
+    const details = item.details orelse return false;
+    if (details != .object) return false;
+    const sessions = details.object.get("sessions") orelse return false;
+    if (sessions != .array) return false;
+    var ledger = try loadExternalAgentSessionImportLedger(allocator, codex_home);
+    defer ledger.deinit(allocator);
+    for (sessions.array.items) |session| {
+        if (session != .object) continue;
+        const path = externalAgentJsonString(session.object, "path") orelse continue;
+        const source_path = externalAgentSessionSourcePath(allocator, path) catch |err| switch (err) {
+            error.OutOfMemory => return err,
+            else => continue,
+        };
+        defer allocator.free(source_path);
+        const imported_thread_id = externalAgentImportedThreadIdForSource(ledger, source_path);
+        try appendExternalAgentConfigImportSuccess(allocator, successes, item.item_type, item.cwd, source_path, imported_thread_id);
+    }
+    return true;
+}
+
+fn externalAgentImportedThreadIdForSource(ledger: ExternalAgentSessionImportLedger, source_path: []const u8) ?[]const u8 {
+    for (ledger.records.items) |record| {
+        if (std.mem.eql(u8, record.source_path, source_path)) return record.imported_thread_id;
+    }
+    return null;
 }
 
 fn importExternalAgentConfig(allocator: std.mem.Allocator, codex_home: []const u8, cwd: ?[]const u8) !void {
@@ -58686,6 +59414,7 @@ fn isExternalAgentConfigMigrationItemType(value: []const u8) bool {
         std.mem.eql(u8, value, "SUBAGENTS") or
         std.mem.eql(u8, value, "HOOKS") or
         std.mem.eql(u8, value, "COMMANDS") or
+        std.mem.eql(u8, value, "MEMORY") or
         std.mem.eql(u8, value, "SESSIONS");
 }
 
@@ -59172,6 +59901,7 @@ const ExternalAgentPluginMigrationDetails = struct {
     }
 };
 
+const EXTERNAL_AGENT_CONFIG_IMPORT_HISTORY_FILE = "external_agent_config_import_histories.jsonl";
 const EXTERNAL_AGENT_SESSION_IMPORT_LEDGER_FILE = "external_agent_session_imports.json";
 const EXTERNAL_AGENT_SESSION_IMPORT_MAX_COUNT: usize = 50;
 const EXTERNAL_AGENT_SESSION_IMPORT_MAX_AGE_SECONDS: i64 = 30 * 24 * 60 * 60;
@@ -62373,12 +63103,187 @@ fn splitTomlKeyPath(key_path: []const u8) struct { ?[]const u8, []const u8 } {
     return .{ null, key_path };
 }
 
-fn renderResultWithExternalAgentConfigImportCompletedNotification(allocator: std.mem.Allocator, response: []const u8) ![]const u8 {
-    return std.fmt.allocPrint(
-        allocator,
-        "{s}\n{{\"method\":\"externalAgentConfig/import/completed\",\"params\":{{}}}}",
-        .{response},
-    );
+fn renderExternalAgentConfigImportResponseJson(allocator: std.mem.Allocator, import_id: []const u8) ![]const u8 {
+    var result = std.ArrayList(u8).empty;
+    errdefer result.deinit(allocator);
+    try result.appendSlice(allocator, "{\"importId\":");
+    try appendJsonString(allocator, &result, import_id);
+    try result.appendSlice(allocator, "}");
+    return result.toOwnedSlice(allocator);
+}
+
+fn renderExternalAgentConfigImportTypeResults(
+    allocator: std.mem.Allocator,
+    import_items: []const ExternalAgentConfigImportItem,
+    successes: []const ExternalAgentConfigImportSuccess,
+) ![]const u8 {
+    var result = std.ArrayList(u8).empty;
+    errdefer result.deinit(allocator);
+    try result.appendSlice(allocator, "[");
+    var first = true;
+    for (import_items, 0..) |item, index| {
+        if (externalAgentImportItemTypeSeen(import_items[0..index], item.item_type)) continue;
+        if (!first) try result.appendSlice(allocator, ",");
+        try result.appendSlice(allocator, "{\"itemType\":");
+        try appendJsonString(allocator, &result, item.item_type);
+        try result.appendSlice(allocator, ",\"successes\":");
+        try appendExternalAgentConfigImportSuccessArray(allocator, &result, successes, item.item_type);
+        try result.appendSlice(allocator, ",\"failures\":[]}");
+        first = false;
+    }
+    try result.appendSlice(allocator, "]");
+    return result.toOwnedSlice(allocator);
+}
+
+fn externalAgentImportItemTypeSeen(items: []const ExternalAgentConfigImportItem, item_type: []const u8) bool {
+    for (items) |item| {
+        if (std.mem.eql(u8, item.item_type, item_type)) return true;
+    }
+    return false;
+}
+
+fn appendExternalAgentConfigImportSuccessArray(
+    allocator: std.mem.Allocator,
+    result: *std.ArrayList(u8),
+    successes: []const ExternalAgentConfigImportSuccess,
+    filter_item_type: ?[]const u8,
+) !void {
+    try result.appendSlice(allocator, "[");
+    var first = true;
+    for (successes) |success| {
+        if (filter_item_type) |item_type| {
+            if (!std.mem.eql(u8, success.item_type, item_type)) continue;
+        }
+        if (!first) try result.appendSlice(allocator, ",");
+        try appendExternalAgentConfigImportSuccessObject(allocator, result, success);
+        first = false;
+    }
+    try result.appendSlice(allocator, "]");
+}
+
+fn appendExternalAgentConfigImportSuccessObject(
+    allocator: std.mem.Allocator,
+    result: *std.ArrayList(u8),
+    success: ExternalAgentConfigImportSuccess,
+) !void {
+    try result.appendSlice(allocator, "{\"itemType\":");
+    try appendJsonString(allocator, result, success.item_type);
+    try result.appendSlice(allocator, ",\"cwd\":");
+    try appendOptionalJsonString(allocator, result, success.cwd);
+    try result.appendSlice(allocator, ",\"source\":");
+    try appendOptionalJsonString(allocator, result, success.source);
+    try result.appendSlice(allocator, ",\"target\":");
+    try appendOptionalJsonString(allocator, result, success.target);
+    try result.appendSlice(allocator, "}");
+}
+
+fn renderExternalAgentConfigImportHistory(
+    allocator: std.mem.Allocator,
+    import_id: []const u8,
+    completed_at_ms: i64,
+    successes: []const ExternalAgentConfigImportSuccess,
+) ![]const u8 {
+    var result = std.ArrayList(u8).empty;
+    errdefer result.deinit(allocator);
+    try result.appendSlice(allocator, "{\"importId\":");
+    try appendJsonString(allocator, &result, import_id);
+    try result.appendSlice(allocator, ",\"completedAtMs\":");
+    try appendInt(allocator, &result, completed_at_ms);
+    try result.appendSlice(allocator, ",\"successes\":");
+    try appendExternalAgentConfigImportSuccessArray(allocator, &result, successes, null);
+    try result.appendSlice(allocator, ",\"failures\":[]}");
+    return result.toOwnedSlice(allocator);
+}
+
+fn appendExternalAgentConfigImportHistory(allocator: std.mem.Allocator, codex_home: []const u8, history_json: []const u8) !void {
+    const path = try externalAgentConfigImportHistoryPath(allocator, codex_home);
+    defer allocator.free(path);
+    const previous = readTextFile(allocator, path) catch |err| switch (err) {
+        error.FileNotFound => try allocator.dupe(u8, ""),
+        error.NotDir => try allocator.dupe(u8, ""),
+        else => return err,
+    };
+    defer allocator.free(previous);
+
+    var out = std.ArrayList(u8).empty;
+    defer out.deinit(allocator);
+    try out.appendSlice(allocator, previous);
+    if (previous.len > 0 and previous[previous.len - 1] != '\n') try out.append(allocator, '\n');
+    try out.appendSlice(allocator, history_json);
+    try out.append(allocator, '\n');
+    try writeTextFile(path, out.items);
+}
+
+fn renderExternalAgentConfigImportHistoriesReadResponse(allocator: std.mem.Allocator, codex_home: []const u8) ![]const u8 {
+    const path = try externalAgentConfigImportHistoryPath(allocator, codex_home);
+    defer allocator.free(path);
+    const bytes = readTextFile(allocator, path) catch |err| switch (err) {
+        error.FileNotFound => return allocator.dupe(u8, "{\"data\":[],\"connectors\":[]}"),
+        error.NotDir => return allocator.dupe(u8, "{\"data\":[],\"connectors\":[]}"),
+        else => return err,
+    };
+    defer allocator.free(bytes);
+
+    var result = std.ArrayList(u8).empty;
+    errdefer result.deinit(allocator);
+    try result.appendSlice(allocator, "{\"data\":[");
+    var first = true;
+    var lines = std.mem.splitScalar(u8, bytes, '\n');
+    while (lines.next()) |line_raw| {
+        const line = std.mem.trim(u8, line_raw, " \t\r");
+        if (line.len == 0) continue;
+        var parsed = std.json.parseFromSlice(std.json.Value, allocator, line, .{}) catch |err| switch (err) {
+            error.OutOfMemory => return err,
+            else => continue,
+        };
+        defer parsed.deinit();
+        if (parsed.value != .object) continue;
+        if (!first) try result.appendSlice(allocator, ",");
+        try result.appendSlice(allocator, line);
+        first = false;
+    }
+    try result.appendSlice(allocator, "],\"connectors\":[]}");
+    return result.toOwnedSlice(allocator);
+}
+
+fn externalAgentConfigImportHistoryPath(allocator: std.mem.Allocator, codex_home: []const u8) ![]const u8 {
+    return std.fs.path.join(allocator, &.{ codex_home, EXTERNAL_AGENT_CONFIG_IMPORT_HISTORY_FILE });
+}
+
+fn renderResultWithExternalAgentConfigImportNotifications(
+    allocator: std.mem.Allocator,
+    response: []const u8,
+    import_id: []const u8,
+    emitted_at_ms: i64,
+    item_type_results_json: []const u8,
+) ![]const u8 {
+    var result = std.ArrayList(u8).empty;
+    errdefer result.deinit(allocator);
+    try result.appendSlice(allocator, response);
+    try result.append(allocator, '\n');
+    try appendExternalAgentConfigImportNotification(allocator, &result, "externalAgentConfig/import/progress", import_id, emitted_at_ms, item_type_results_json);
+    try result.append(allocator, '\n');
+    try appendExternalAgentConfigImportNotification(allocator, &result, "externalAgentConfig/import/completed", import_id, emitted_at_ms, item_type_results_json);
+    return result.toOwnedSlice(allocator);
+}
+
+fn appendExternalAgentConfigImportNotification(
+    allocator: std.mem.Allocator,
+    result: *std.ArrayList(u8),
+    method: []const u8,
+    import_id: []const u8,
+    emitted_at_ms: i64,
+    item_type_results_json: []const u8,
+) !void {
+    try result.appendSlice(allocator, "{\"emittedAtMs\":");
+    try appendInt(allocator, result, emitted_at_ms);
+    try result.appendSlice(allocator, ",\"method\":");
+    try appendJsonString(allocator, result, method);
+    try result.appendSlice(allocator, ",\"params\":{\"importId\":");
+    try appendJsonString(allocator, result, import_id);
+    try result.appendSlice(allocator, ",\"itemTypeResults\":");
+    try result.appendSlice(allocator, item_type_results_json);
+    try result.appendSlice(allocator, "}}");
 }
 
 fn handleConfigRequirementsRead(allocator: std.mem.Allocator, id_value: std.json.Value, params_value: ?std.json.Value) ![]const u8 {

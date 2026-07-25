@@ -43258,6 +43258,41 @@ def run_external_agent_config_rpc_smoke(binary: Path) -> None:
         )
         return read_json_line(proc, 5)
 
+    def rpc_no_params(request_id: str, method: str) -> dict:
+        write_json_line(
+            proc,
+            {"jsonrpc": "2.0", "id": request_id, "method": method},
+        )
+        return read_json_line(proc, 5)
+
+    def assert_import_response(response: dict, request_id: str) -> str:
+        assert response["id"] == request_id
+        import_id = response["result"]["importId"]
+        assert isinstance(import_id, str)
+        assert import_id
+        return import_id
+
+    def assert_import_notifications(
+        import_id: str, expected_item_types: list[str]
+    ) -> dict:
+        progress = read_json_line(proc, 5)
+        completed = read_json_line(proc, 5)
+        for message, method in [
+            (progress, "externalAgentConfig/import/progress"),
+            (completed, "externalAgentConfig/import/completed"),
+        ]:
+            assert message["method"] == method
+            assert isinstance(message["emittedAtMs"], int)
+            params = message["params"]
+            assert params["importId"] == import_id
+            item_type_results = params["itemTypeResults"]
+            assert [item["itemType"] for item in item_type_results] == expected_item_types
+            for item in item_type_results:
+                assert isinstance(item["successes"], list)
+                assert item["failures"] == []
+        assert progress["params"] == completed["params"]
+        return completed["params"]
+
     try:
         write_json_line(
             proc,
@@ -43311,13 +43346,51 @@ def run_external_agent_config_rpc_smoke(binary: Path) -> None:
         assert invalid_cwds["error"]["code"] == -32602
         assert "cwds must be an array of strings or null" in invalid_cwds["error"]["message"]
 
+        initial_histories = rpc_no_params(
+            "external-agent-read-histories-initial",
+            "externalAgentConfig/import/readHistories",
+        )
+        assert initial_histories["id"] == "external-agent-read-histories-initial"
+        assert initial_histories["result"] == {"data": [], "connectors": []}
+
+        null_histories = rpc(
+            "external-agent-read-histories-null",
+            "externalAgentConfig/import/readHistories",
+            None,
+        )
+        assert null_histories["id"] == "external-agent-read-histories-null"
+        assert null_histories["result"] == {"data": [], "connectors": []}
+
+        object_histories = rpc(
+            "external-agent-read-histories-object",
+            "externalAgentConfig/import/readHistories",
+            {},
+        )
+        assert object_histories["id"] == "external-agent-read-histories-object"
+        assert object_histories["result"] == {"data": [], "connectors": []}
+
+        invalid_histories = rpc(
+            "external-agent-read-histories-invalid",
+            "externalAgentConfig/import/readHistories",
+            "bad",
+        )
+        assert invalid_histories["id"] == "external-agent-read-histories-invalid"
+        assert invalid_histories["error"]["code"] == -32600
+        assert "expected unit" in invalid_histories["error"]["message"]
+
         empty_import = rpc(
             "external-agent-import-empty",
             "externalAgentConfig/import",
             {"migrationItems": []},
         )
-        assert empty_import["id"] == "external-agent-import-empty"
-        assert empty_import["result"] == {}
+        empty_import_id = assert_import_response(empty_import, "external-agent-import-empty")
+
+        after_empty_histories = rpc_no_params(
+            "external-agent-read-histories-after-empty",
+            "externalAgentConfig/import/readHistories",
+        )
+        assert after_empty_histories["id"] == "external-agent-read-histories-after-empty"
+        assert after_empty_histories["result"] == {"data": [], "connectors": []}
 
         invalid_import = rpc(
             "external-agent-import-invalid",
@@ -43342,13 +43415,15 @@ def run_external_agent_config_rpc_smoke(binary: Path) -> None:
                 ]
             },
         )
-        assert session_noop_import["id"] == "external-agent-import-sessions-empty"
-        assert session_noop_import["result"] == {}
-        import_notification = read_json_line(proc, 5)
-        assert import_notification == {
-            "method": "externalAgentConfig/import/completed",
-            "params": {},
-        }
+        session_noop_import_id = assert_import_response(
+            session_noop_import,
+            "external-agent-import-sessions-empty",
+        )
+        session_noop_notification = assert_import_notifications(
+            session_noop_import_id,
+            ["SESSIONS"],
+        )
+        assert session_noop_notification["itemTypeResults"][0]["successes"] == []
 
         claude_home = external_home / ".claude"
         claude_home.mkdir()
@@ -43432,13 +43507,18 @@ def run_external_agent_config_rpc_smoke(binary: Path) -> None:
             "externalAgentConfig/import",
             {"migrationItems": detected_sessions["result"]["items"]},
         )
-        assert session_import["id"] == "external-agent-import-sessions"
-        assert session_import["result"] == {}
-        import_notification = read_json_line(proc, 5)
-        assert import_notification == {
-            "method": "externalAgentConfig/import/completed",
-            "params": {},
-        }
+        session_import_id = assert_import_response(
+            session_import,
+            "external-agent-import-sessions",
+        )
+        session_notification = assert_import_notifications(
+            session_import_id,
+            ["SESSIONS"],
+        )
+        session_successes = session_notification["itemTypeResults"][0]["successes"]
+        assert len(session_successes) == 1
+        assert session_successes[0]["itemType"] == "SESSIONS"
+        assert session_successes[0]["source"] == resolved_session_path
         ledger = json.loads(
             (codex_home / "external_agent_session_imports.json").read_text(
                 encoding="utf-8"
@@ -43448,6 +43528,7 @@ def run_external_agent_config_rpc_smoke(binary: Path) -> None:
         assert ledger["records"][0]["source_path"] == resolved_session_path
         assert len(ledger["records"][0]["content_sha256"]) == 64
         assert ledger["records"][0]["imported_thread_id"]
+        assert session_successes[0]["target"] == ledger["records"][0]["imported_thread_id"]
 
         rollout_files = sorted((codex_home / "sessions" / "zig").glob("rollout-*.jsonl"))
         assert len(rollout_files) == 1
@@ -43671,13 +43752,23 @@ def run_external_agent_config_rpc_smoke(binary: Path) -> None:
             "externalAgentConfig/import",
             {"migrationItems": detected_config["result"]["items"]},
         )
-        assert config_import["id"] == "external-agent-import-config"
-        assert config_import["result"] == {}
-        import_notification = read_json_line(proc, 5)
-        assert import_notification == {
-            "method": "externalAgentConfig/import/completed",
-            "params": {},
-        }
+        config_import_id = assert_import_response(
+            config_import,
+            "external-agent-import-config",
+        )
+        config_notification = assert_import_notifications(
+            config_import_id,
+            ["CONFIG"],
+        )
+        config_successes = config_notification["itemTypeResults"][0]["successes"]
+        assert config_successes == [
+            {
+                "itemType": "CONFIG",
+                "cwd": None,
+                "source": str(claude_home / "settings.json"),
+                "target": str(codex_home / "config.toml"),
+            }
+        ]
         assert (codex_home / "config.toml").read_text(encoding="utf-8") == (
             'sandbox_mode = "workspace-write"\n'
             "\n"
@@ -43762,13 +43853,28 @@ def run_external_agent_config_rpc_smoke(binary: Path) -> None:
             "externalAgentConfig/import",
             {"migrationItems": detected_mcp["result"]["items"]},
         )
-        assert mcp_import["id"] == "external-agent-import-mcp"
-        assert mcp_import["result"] == {}
-        mcp_notification = read_json_line(proc, 5)
-        assert mcp_notification == {
-            "method": "externalAgentConfig/import/completed",
-            "params": {},
-        }
+        mcp_import_id = assert_import_response(
+            mcp_import,
+            "external-agent-import-mcp",
+        )
+        mcp_notification = assert_import_notifications(
+            mcp_import_id,
+            ["MCP_SERVER_CONFIG"],
+        )
+        assert mcp_notification["itemTypeResults"][0]["successes"] == [
+            {
+                "itemType": "MCP_SERVER_CONFIG",
+                "cwd": None,
+                "source": "api",
+                "target": "api",
+            },
+            {
+                "itemType": "MCP_SERVER_CONFIG",
+                "cwd": None,
+                "source": "docs",
+                "target": "docs",
+            },
+        ]
         home_config_text = (codex_home / "config.toml").read_text(encoding="utf-8")
         for fragment in (
             "[mcp_servers.api]\n",
@@ -43898,13 +44004,11 @@ def run_external_agent_config_rpc_smoke(binary: Path) -> None:
             "externalAgentConfig/import",
             {"migrationItems": detected_hooks["result"]["items"]},
         )
-        assert hooks_import["id"] == "external-agent-import-hooks"
-        assert hooks_import["result"] == {}
-        hooks_notification = read_json_line(proc, 5)
-        assert hooks_notification == {
-            "method": "externalAgentConfig/import/completed",
-            "params": {},
-        }
+        hooks_import_id = assert_import_response(
+            hooks_import,
+            "external-agent-import-hooks",
+        )
+        assert_import_notifications(hooks_import_id, ["HOOKS"])
         assert json.loads((codex_home / "hooks.json").read_text(encoding="utf-8")) == {
             "hooks": {
                 "PreToolUse": [
@@ -43982,13 +44086,11 @@ def run_external_agent_config_rpc_smoke(binary: Path) -> None:
             "externalAgentConfig/import",
             {"migrationItems": detected_agents_md["result"]["items"]},
         )
-        assert agents_md_import["id"] == "external-agent-import-agents-md"
-        assert agents_md_import["result"] == {}
-        agents_md_notification = read_json_line(proc, 5)
-        assert agents_md_notification == {
-            "method": "externalAgentConfig/import/completed",
-            "params": {},
-        }
+        agents_md_import_id = assert_import_response(
+            agents_md_import,
+            "external-agent-import-agents-md",
+        )
+        assert_import_notifications(agents_md_import_id, ["AGENTS_MD"])
         assert (codex_home / "AGENTS.md").read_text(encoding="utf-8") == (
             "Use Codex, AGENTS.md, Codex, and xclaude."
         )
@@ -44054,13 +44156,11 @@ def run_external_agent_config_rpc_smoke(binary: Path) -> None:
             "externalAgentConfig/import",
             {"migrationItems": detected_skills["result"]["items"]},
         )
-        assert skills_import["id"] == "external-agent-import-skills"
-        assert skills_import["result"] == {}
-        skills_notification = read_json_line(proc, 5)
-        assert skills_notification == {
-            "method": "externalAgentConfig/import/completed",
-            "params": {},
-        }
+        skills_import_id = assert_import_response(
+            skills_import,
+            "external-agent-import-skills",
+        )
+        assert_import_notifications(skills_import_id, ["SKILLS"])
         assert (target_skills / "skill-a" / "SKILL.md").read_text(encoding="utf-8") == (
             "---\n"
             "name: skill-a\n"
@@ -44126,13 +44226,11 @@ def run_external_agent_config_rpc_smoke(binary: Path) -> None:
             "externalAgentConfig/import",
             {"migrationItems": detected_commands["result"]["items"]},
         )
-        assert commands_import["id"] == "external-agent-import-commands"
-        assert commands_import["result"] == {}
-        commands_notification = read_json_line(proc, 5)
-        assert commands_notification == {
-            "method": "externalAgentConfig/import/completed",
-            "params": {},
-        }
+        commands_import_id = assert_import_response(
+            commands_import,
+            "external-agent-import-commands",
+        )
+        assert_import_notifications(commands_import_id, ["COMMANDS"])
         assert (
             target_skills / "source-command-review" / "SKILL.md"
         ).read_text(encoding="utf-8") == (
@@ -44202,13 +44300,11 @@ def run_external_agent_config_rpc_smoke(binary: Path) -> None:
             "externalAgentConfig/import",
             {"migrationItems": detected_subagents["result"]["items"]},
         )
-        assert subagents_import["id"] == "external-agent-import-subagents"
-        assert subagents_import["result"] == {}
-        subagents_notification = read_json_line(proc, 5)
-        assert subagents_notification == {
-            "method": "externalAgentConfig/import/completed",
-            "params": {},
-        }
+        subagents_import_id = assert_import_response(
+            subagents_import,
+            "external-agent-import-subagents",
+        )
+        assert_import_notifications(subagents_import_id, ["SUBAGENTS"])
         assert (codex_home / "agents" / "researcher.toml").read_text(
             encoding="utf-8"
         ) == (
@@ -44302,13 +44398,11 @@ def run_external_agent_config_rpc_smoke(binary: Path) -> None:
             "externalAgentConfig/import",
             {"migrationItems": detected_plugins["result"]["items"]},
         )
-        assert plugins_import["id"] == "external-agent-import-plugins"
-        assert plugins_import["result"] == {}
-        plugins_notification = read_json_line(proc, 5)
-        assert plugins_notification == {
-            "method": "externalAgentConfig/import/completed",
-            "params": {},
-        }
+        plugins_import_id = assert_import_response(
+            plugins_import,
+            "external-agent-import-plugins",
+        )
+        assert_import_notifications(plugins_import_id, ["PLUGINS"])
         home_plugin_config = (codex_home / "config.toml").read_text(encoding="utf-8")
         assert "[marketplaces.home-market]\n" in home_plugin_config
         assert 'source = "' in home_plugin_config
@@ -44561,13 +44655,27 @@ def run_external_agent_config_rpc_smoke(binary: Path) -> None:
             "externalAgentConfig/import",
             {"migrationItems": detected_project["result"]["items"]},
         )
-        assert project_import["id"] == "external-agent-import-project"
-        assert project_import["result"] == {}
-        project_notification = read_json_line(proc, 5)
-        assert project_notification == {
-            "method": "externalAgentConfig/import/completed",
-            "params": {},
-        }
+        project_import_id = assert_import_response(
+            project_import,
+            "external-agent-import-project",
+        )
+        project_notification = assert_import_notifications(
+            project_import_id,
+            [item["itemType"] for item in detected_project["result"]["items"]],
+        )
+        project_mcp_result = next(
+            item
+            for item in project_notification["itemTypeResults"]
+            if item["itemType"] == "MCP_SERVER_CONFIG"
+        )
+        assert project_mcp_result["successes"] == [
+            {
+                "itemType": "MCP_SERVER_CONFIG",
+                "cwd": str(project_root),
+                "source": "project_api",
+                "target": "project_api",
+            }
+        ]
         project_config_text = (project_root / ".codex" / "config.toml").read_text(
             encoding="utf-8"
         )
@@ -44660,6 +44768,42 @@ def run_external_agent_config_rpc_smoke(binary: Path) -> None:
         )
         assert detect_after_project["id"] == "external-agent-detect-after-project"
         assert detect_after_project["result"] == {"items": []}
+
+        import_histories = rpc_no_params(
+            "external-agent-read-histories-after-imports",
+            "externalAgentConfig/import/readHistories",
+        )
+        assert import_histories["id"] == "external-agent-read-histories-after-imports"
+        assert import_histories["result"]["connectors"] == []
+        history_by_id = {
+            history["importId"]: history
+            for history in import_histories["result"]["data"]
+        }
+        assert empty_import_id not in history_by_id
+        expected_history_ids = [
+            session_noop_import_id,
+            session_import_id,
+            config_import_id,
+            mcp_import_id,
+            hooks_import_id,
+            agents_md_import_id,
+            skills_import_id,
+            commands_import_id,
+            subagents_import_id,
+            plugins_import_id,
+            project_import_id,
+        ]
+        assert list(history_by_id.keys()) == expected_history_ids
+        for history in history_by_id.values():
+            assert isinstance(history["completedAtMs"], int)
+            assert history["failures"] == []
+        assert history_by_id[session_noop_import_id]["successes"] == []
+        assert history_by_id[session_import_id]["successes"] == session_successes
+        assert history_by_id[config_import_id]["successes"] == config_successes
+        assert (
+            history_by_id[mcp_import_id]["successes"]
+            == mcp_notification["itemTypeResults"][0]["successes"]
+        )
     finally:
         if proc.stdin is not None:
             proc.stdin.close()
@@ -52212,6 +52356,7 @@ def run_json_schema_smoke(binary: Path) -> None:
             )
         )
         assert "MCP_SERVER_CONFIG" in external_item_type["enum"]
+        assert "MEMORY" in external_item_type["enum"]
         external_item = json.loads(
             (out_dir / "ExternalAgentConfigMigrationItem.json").read_text(
                 encoding="utf-8"
@@ -52252,13 +52397,81 @@ def run_json_schema_smoke(binary: Path) -> None:
                 encoding="utf-8"
             )
         )
+        assert external_import_response["required"] == ["importId"]
+        assert external_import_response["properties"]["importId"]["type"] == "string"
         assert external_import_response["additionalProperties"] is False
+        external_import_success = json.loads(
+            (
+                out_dir / "ExternalAgentConfigImportItemTypeSuccess.json"
+            ).read_text(encoding="utf-8")
+        )
+        assert external_import_success["required"] == ["itemType"]
+        assert external_import_success["properties"]["source"]["type"] == [
+            "string",
+            "null",
+        ]
+        external_import_failure = json.loads(
+            (
+                out_dir / "ExternalAgentConfigImportItemTypeFailure.json"
+            ).read_text(encoding="utf-8")
+        )
+        assert external_import_failure["required"] == [
+            "failureStage",
+            "itemType",
+            "message",
+        ]
+        external_import_type_result = json.loads(
+            (out_dir / "ExternalAgentConfigImportTypeResult.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        assert external_import_type_result["required"] == [
+            "failures",
+            "itemType",
+            "successes",
+        ]
         external_import_completed = json.loads(
             (
                 out_dir / "ExternalAgentConfigImportCompletedNotification.json"
             ).read_text(encoding="utf-8")
         )
+        assert external_import_completed["required"] == [
+            "importId",
+            "itemTypeResults",
+        ]
         assert external_import_completed["additionalProperties"] is False
+        external_import_progress = json.loads(
+            (
+                out_dir / "ExternalAgentConfigImportProgressNotification.json"
+            ).read_text(encoding="utf-8")
+        )
+        assert external_import_progress["required"] == [
+            "importId",
+            "itemTypeResults",
+        ]
+        external_import_history = json.loads(
+            (out_dir / "ExternalAgentConfigImportHistory.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        assert external_import_history["required"] == [
+            "completedAtMs",
+            "failures",
+            "importId",
+            "successes",
+        ]
+        external_import_histories = json.loads(
+            (
+                out_dir / "ExternalAgentConfigImportHistoriesReadResponse.json"
+            ).read_text(encoding="utf-8")
+        )
+        assert external_import_histories["required"] == ["connectors", "data"]
+        external_connector = json.loads(
+            (out_dir / "ExternalAgentImportedConnectorCandidate.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        assert external_connector["required"] == ["name", "sessionCount", "source"]
         mcp_status_detail = json.loads(
             (out_dir / "McpServerStatusDetail.json").read_text(encoding="utf-8")
         )
@@ -54328,7 +54541,15 @@ def run_json_schema_smoke(binary: Path) -> None:
         assert "ExternalAgentConfigDetectResponse" in bundle["$defs"]
         assert "ExternalAgentConfigImportParams" in bundle["$defs"]
         assert "ExternalAgentConfigImportResponse" in bundle["$defs"]
+        assert "ExternalAgentConfigImportItemTypeSuccess" in bundle["$defs"]
+        assert "ExternalAgentConfigImportItemTypeFailure" in bundle["$defs"]
+        assert "ExternalAgentConfigImportTypeResult" in bundle["$defs"]
         assert "ExternalAgentConfigImportCompletedNotification" in bundle["$defs"]
+        assert "ExternalAgentConfigImportProgressNotification" in bundle["$defs"]
+        assert "ExternalAgentImportedConnectorSource" in bundle["$defs"]
+        assert "ExternalAgentImportedConnectorCandidate" in bundle["$defs"]
+        assert "ExternalAgentConfigImportHistory" in bundle["$defs"]
+        assert "ExternalAgentConfigImportHistoriesReadResponse" in bundle["$defs"]
         assert "McpServerStatusDetail" in bundle["$defs"]
         assert "McpServerStatusListParams" in bundle["$defs"]
         assert "McpServerAuthStatus" in bundle["$defs"]
@@ -54972,6 +55193,9 @@ def run_json_schema_smoke(binary: Path) -> None:
             "MCP_SERVER_CONFIG"
             in bundle["$defs"]["ExternalAgentConfigMigrationItemType"]["enum"]
         )
+        assert "MEMORY" in bundle["$defs"]["ExternalAgentConfigMigrationItemType"][
+            "enum"
+        ]
         assert (
             bundle["$defs"]["ExternalAgentConfigMigrationItem"]["properties"][
                 "itemType"
@@ -54999,17 +55223,50 @@ def run_json_schema_smoke(binary: Path) -> None:
             == "#/$defs/ExternalAgentConfigMigrationItem"
         )
         assert (
-            bundle["$defs"]["ExternalAgentConfigImportResponse"][
-                "additionalProperties"
+            bundle["$defs"]["ExternalAgentConfigImportResponse"]["required"]
+            == ["importId"]
+        )
+        assert (
+            bundle["$defs"]["ExternalAgentConfigImportItemTypeSuccess"][
+                "required"
             ]
-            is False
+            == ["itemType"]
+        )
+        assert (
+            bundle["$defs"]["ExternalAgentConfigImportItemTypeFailure"][
+                "required"
+            ]
+            == ["failureStage", "itemType", "message"]
+        )
+        assert (
+            bundle["$defs"]["ExternalAgentConfigImportTypeResult"]["required"]
+            == ["failures", "itemType", "successes"]
         )
         assert (
             bundle["$defs"]["ExternalAgentConfigImportCompletedNotification"][
-                "additionalProperties"
+                "required"
             ]
-            is False
+            == ["importId", "itemTypeResults"]
         )
+        assert (
+            bundle["$defs"]["ExternalAgentConfigImportProgressNotification"][
+                "required"
+            ]
+            == ["importId", "itemTypeResults"]
+        )
+        assert (
+            bundle["$defs"]["ExternalAgentConfigImportHistory"]["required"]
+            == ["completedAtMs", "failures", "importId", "successes"]
+        )
+        assert (
+            bundle["$defs"]["ExternalAgentConfigImportHistoriesReadResponse"][
+                "required"
+            ]
+            == ["connectors", "data"]
+        )
+        assert bundle["$defs"]["ExternalAgentImportedConnectorSource"]["enum"] == [
+            "remoteMcpServersConfig"
+        ]
         assert bundle["$defs"]["McpServerStatusDetail"]["enum"] == [
             "full",
             "toolsAndAuthOnly",
@@ -55816,6 +56073,7 @@ def run_typescript_generation_smoke(binary: Path) -> None:
         assert "params?: ExternalAgentConfigDetectParams | null;" in client_request
         assert 'method: "externalAgentConfig/import";' in client_request
         assert "params: ExternalAgentConfigImportParams;" in client_request
+        assert 'method: "externalAgentConfig/import/readHistories";' in client_request
         assert 'method: "mcpServerStatus/list";' in client_request
         assert "params?: McpServerStatusListParams | null;" in client_request
         assert 'method: "mcpServer/resource/read";' in client_request
@@ -56689,6 +56947,10 @@ def run_typescript_generation_smoke(binary: Path) -> None:
             in server_notification
         )
         assert (
+            'import type { ExternalAgentConfigImportProgressNotification } from "./v2/ExternalAgentConfigImportProgressNotification";'
+            in server_notification
+        )
+        assert (
             'import type { FuzzyFileSearchSessionUpdatedNotification } from "./FuzzyFileSearchSessionUpdatedNotification";'
             in server_notification
         )
@@ -56845,6 +57107,11 @@ def run_typescript_generation_smoke(binary: Path) -> None:
         assert 'method: "externalAgentConfig/import/completed";' in server_notification
         assert (
             "params: ExternalAgentConfigImportCompletedNotification;"
+            in server_notification
+        )
+        assert 'method: "externalAgentConfig/import/progress";' in server_notification
+        assert (
+            "params: ExternalAgentConfigImportProgressNotification;"
             in server_notification
         )
         assert 'method: "process/outputDelta";' in server_notification
@@ -57052,6 +57319,10 @@ def run_typescript_generation_smoke(binary: Path) -> None:
             'import type { ExternalAgentConfigImportResponse } from "./v2/ExternalAgentConfigImportResponse";'
             in client_response
         )
+        assert (
+            'import type { ExternalAgentConfigImportHistoriesReadResponse } from "./v2/ExternalAgentConfigImportHistoriesReadResponse";'
+            in client_response
+        )
         for import_name in [
             "EnvironmentAddResponse",
             "EnvironmentInfoResponse",
@@ -57176,6 +57447,11 @@ def run_typescript_generation_smoke(binary: Path) -> None:
         assert "result: ExternalAgentConfigDetectResponse;" in client_response
         assert 'method: "externalAgentConfig/import";' in client_response
         assert "result: ExternalAgentConfigImportResponse;" in client_response
+        assert 'method: "externalAgentConfig/import/readHistories";' in client_response
+        assert (
+            "result: ExternalAgentConfigImportHistoriesReadResponse;"
+            in client_response
+        )
         assert 'method: "mcpServerStatus/list";' in client_response
         assert "result: McpServerStatusListResponse;" in client_response
         assert 'method: "mcpServer/resource/read";' in client_response
@@ -58202,6 +58478,7 @@ def run_typescript_generation_smoke(binary: Path) -> None:
         ).read_text(encoding="utf-8")
         assert '"AGENTS_MD"' in external_type
         assert '"MCP_SERVER_CONFIG"' in external_type
+        assert '"MEMORY"' in external_type
         migration_details = (out_dir / "v2" / "MigrationDetails.ts").read_text(
             encoding="utf-8"
         )
@@ -58240,16 +58517,69 @@ def run_typescript_generation_smoke(binary: Path) -> None:
         external_import_response = (
             out_dir / "v2" / "ExternalAgentConfigImportResponse.ts"
         ).read_text(encoding="utf-8")
+        assert "importId: string;" in external_import_response
+        external_import_success = (
+            out_dir / "v2" / "ExternalAgentConfigImportItemTypeSuccess.ts"
+        ).read_text(encoding="utf-8")
         assert (
-            "export interface ExternalAgentConfigImportResponse {}"
-            in external_import_response
+            'import type { ExternalAgentConfigMigrationItemType } from "./ExternalAgentConfigMigrationItemType";'
+            in external_import_success
+        )
+        assert "source: string | null;" in external_import_success
+        external_import_failure = (
+            out_dir / "v2" / "ExternalAgentConfigImportItemTypeFailure.ts"
+        ).read_text(encoding="utf-8")
+        assert "failureStage: string;" in external_import_failure
+        assert "message: string;" in external_import_failure
+        external_import_type_result = (
+            out_dir / "v2" / "ExternalAgentConfigImportTypeResult.ts"
+        ).read_text(encoding="utf-8")
+        assert (
+            'import type { ExternalAgentConfigImportItemTypeSuccess } from "./ExternalAgentConfigImportItemTypeSuccess";'
+            in external_import_type_result
+        )
+        assert (
+            "successes: ExternalAgentConfigImportItemTypeSuccess[];"
+            in external_import_type_result
         )
         external_import_completed = (
             out_dir / "v2" / "ExternalAgentConfigImportCompletedNotification.ts"
         ).read_text(encoding="utf-8")
         assert (
-            "export interface ExternalAgentConfigImportCompletedNotification {}"
+            'import type { ExternalAgentConfigImportTypeResult } from "./ExternalAgentConfigImportTypeResult";'
             in external_import_completed
+        )
+        assert "importId: string;" in external_import_completed
+        assert (
+            "itemTypeResults: ExternalAgentConfigImportTypeResult[];"
+            in external_import_completed
+        )
+        external_import_progress = (
+            out_dir / "v2" / "ExternalAgentConfigImportProgressNotification.ts"
+        ).read_text(encoding="utf-8")
+        assert (
+            "itemTypeResults: ExternalAgentConfigImportTypeResult[];"
+            in external_import_progress
+        )
+        external_connector_source = (
+            out_dir / "v2" / "ExternalAgentImportedConnectorSource.ts"
+        ).read_text(encoding="utf-8")
+        assert '"remoteMcpServersConfig"' in external_connector_source
+        external_connector = (
+            out_dir / "v2" / "ExternalAgentImportedConnectorCandidate.ts"
+        ).read_text(encoding="utf-8")
+        assert "sessionCount: number;" in external_connector
+        external_import_history = (
+            out_dir / "v2" / "ExternalAgentConfigImportHistory.ts"
+        ).read_text(encoding="utf-8")
+        assert "completedAtMs: bigint;" in external_import_history
+        external_import_histories = (
+            out_dir / "v2" / "ExternalAgentConfigImportHistoriesReadResponse.ts"
+        ).read_text(encoding="utf-8")
+        assert "data: ExternalAgentConfigImportHistory[];" in external_import_histories
+        assert (
+            "connectors: ExternalAgentImportedConnectorCandidate[];"
+            in external_import_histories
         )
         mcp_status_detail = (
             out_dir / "v2" / "McpServerStatusDetail.ts"
@@ -60190,8 +60520,16 @@ def run_typescript_generation_smoke(binary: Path) -> None:
             "ExternalAgentConfigDetectParams",
             "ExternalAgentConfigDetectResponse",
             "ExternalAgentConfigImportCompletedNotification",
+            "ExternalAgentConfigImportHistoriesReadResponse",
+            "ExternalAgentConfigImportHistory",
+            "ExternalAgentConfigImportItemTypeFailure",
+            "ExternalAgentConfigImportItemTypeSuccess",
             "ExternalAgentConfigImportParams",
+            "ExternalAgentConfigImportProgressNotification",
             "ExternalAgentConfigImportResponse",
+            "ExternalAgentConfigImportTypeResult",
+            "ExternalAgentImportedConnectorCandidate",
+            "ExternalAgentImportedConnectorSource",
             "ExternalAgentConfigMigrationItem",
             "ExternalAgentConfigMigrationItemType",
             "HookMigration",
