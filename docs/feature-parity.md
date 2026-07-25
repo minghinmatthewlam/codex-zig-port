@@ -50,6 +50,12 @@ local thread-store behavior, generated `ThreadItemEntry` / `ThreadItemsList*`
 protocol artifacts, experimental API gating, params validation, and the Zig
 stdio app-server smoke. It currently returns Rust's local unsupported
 `-32601` response; full item pagination remains planned.
+App-server `app/read` and `app/installed` parity was checked against Rust's
+isolated local/offline behavior, generated `AppsRead*`, `ConnectorMetadata`,
+`AppsInstalled*`, and `InstalledApp` protocol artifacts, params validation, and
+the Zig stdio app-server smoke. They currently expose Rust-shaped empty
+hosted-connector metadata/runtime snapshots for local no-runtime setups; hosted
+connector metadata and installed runtime snapshot population remain planned.
 
 ## Priority Rules
 

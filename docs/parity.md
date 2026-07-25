@@ -1119,6 +1119,18 @@ honoring notification opt-out. Broader cache invalidation semantics,
 workspace-gated app availability, cloud app requirements, and full config layer
 fidelity remain planned.
 
+Additional app-server app detail/runtime coverage: `app/read` validates
+required `appIds`, optional `includeTools`, duplicate app-id deduplication, and
+the Rust 100-id limit, returns Rust-shaped empty `apps` with deduplicated
+`missingAppIds` for local/offline no-runtime connector setups, and is included
+in current TypeScript and JSON schema generation with `ConnectorMetadata` and
+`AppToolSummary`. `app/installed` validates required object params, optional
+`threadId` UUID/load state, and optional `forceRefresh`, returns Rust-shaped
+empty installed connector snapshots for current local/offline no-runtime
+setups, and is included in current TypeScript and JSON schema generation with
+`InstalledApp`. Hosted connector metadata reads, public tool summaries, and
+populated installed runtime snapshots remain planned.
+
 Additional app-server experimental-feature enablement coverage:
 `experimentalFeature/enablement/set` now rejects legacy feature aliases with
 Rust-shaped canonical-key guidance, such as `connectors` -> `apps`, while

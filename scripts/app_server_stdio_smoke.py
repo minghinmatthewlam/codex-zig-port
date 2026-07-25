@@ -46294,8 +46294,12 @@ def run_apps_list_rpc_smoke(binary: Path) -> None:
         env=env,
     )
 
-    def rpc(request_id: str, params: object = _OMIT) -> dict:
-        payload = {"jsonrpc": "2.0", "id": request_id, "method": "app/list"}
+    def rpc(
+        request_id: str,
+        params: object = _OMIT,
+        method: str = "app/list",
+    ) -> dict:
+        payload = {"jsonrpc": "2.0", "id": request_id, "method": method}
         if params is not _OMIT:
             payload["params"] = params
         write_json_line(proc, payload)
@@ -46556,6 +46560,83 @@ def run_apps_list_rpc_smoke(binary: Path) -> None:
             "nextCursor": None,
         }
 
+        apps_read_local = rpc(
+            "apps-read-local-missing",
+            {"appIds": ["gmail", "missing", "gmail"], "includeTools": True},
+            method="app/read",
+        )
+        assert apps_read_local["id"] == "apps-read-local-missing"
+        assert apps_read_local["result"] == {
+            "apps": [],
+            "missingAppIds": ["gmail", "missing"],
+        }
+
+        apps_read_empty = rpc("apps-read-empty", {"appIds": []}, method="app/read")
+        assert apps_read_empty["id"] == "apps-read-empty"
+        assert apps_read_empty["result"] == {"apps": [], "missingAppIds": []}
+
+        apps_read_missing_params = rpc("apps-read-missing-params", method="app/read")
+        assert apps_read_missing_params["id"] == "apps-read-missing-params"
+        assert apps_read_missing_params["error"]["code"] == -32600
+        assert "missing field `params`" in apps_read_missing_params["error"]["message"]
+
+        apps_read_invalid_item = rpc(
+            "apps-read-invalid-item",
+            {"appIds": ["gmail", 5]},
+            method="app/read",
+        )
+        assert apps_read_invalid_item["id"] == "apps-read-invalid-item"
+        assert apps_read_invalid_item["error"]["code"] == -32600
+        assert "expected a string" in apps_read_invalid_item["error"]["message"]
+
+        apps_read_too_many = rpc(
+            "apps-read-too-many",
+            {"appIds": [str(index) for index in range(101)]},
+            method="app/read",
+        )
+        assert apps_read_too_many["id"] == "apps-read-too-many"
+        assert apps_read_too_many["error"]["code"] == -32602
+        assert "app/read accepts at most 100 appIds" in apps_read_too_many["error"][
+            "message"
+        ]
+
+        apps_installed_empty = rpc(
+            "apps-installed-empty",
+            {},
+            method="app/installed",
+        )
+        assert apps_installed_empty["id"] == "apps-installed-empty"
+        assert apps_installed_empty["result"] == {"apps": []}
+
+        apps_installed_null_thread = rpc(
+            "apps-installed-null-thread",
+            {"threadId": None, "forceRefresh": True},
+            method="app/installed",
+        )
+        assert apps_installed_null_thread["id"] == "apps-installed-null-thread"
+        assert apps_installed_null_thread["result"] == {"apps": []}
+
+        apps_installed_missing_thread = rpc(
+            "apps-installed-missing-thread",
+            {"threadId": "00000000-0000-0000-0000-000000000000"},
+            method="app/installed",
+        )
+        assert apps_installed_missing_thread["id"] == "apps-installed-missing-thread"
+        assert apps_installed_missing_thread["error"]["code"] == -32600
+        assert (
+            "thread not found: 00000000-0000-0000-0000-000000000000"
+            in apps_installed_missing_thread["error"]["message"]
+        )
+
+        apps_installed_bad_refresh = rpc(
+            "apps-installed-bad-refresh",
+            {"forceRefresh": "yes"},
+            method="app/installed",
+        )
+        assert apps_installed_bad_refresh["id"] == "apps-installed-bad-refresh"
+        assert apps_installed_bad_refresh["error"]["code"] == -32600
+        assert "expected a boolean" in apps_installed_bad_refresh["error"]["message"]
+
         write_json_line(
             proc,
             {
@@ -46594,6 +46675,14 @@ def run_apps_list_rpc_smoke(binary: Path) -> None:
             "data": [calendar_app, gmail_app, slack_app, zoom_app],
             "nextCursor": None,
         }
+
+        apps_installed_loaded_thread = rpc(
+            "apps-installed-loaded-thread",
+            {"threadId": thread_id},
+            method="app/installed",
+        )
+        assert apps_installed_loaded_thread["id"] == "apps-installed-loaded-thread"
+        assert apps_installed_loaded_thread["result"] == {"apps": []}
 
         invalid_cursor = rpc("apps-list-invalid-cursor", {"cursor": "bad"})
         assert invalid_cursor["id"] == "apps-list-invalid-cursor"
@@ -49880,6 +49969,55 @@ def run_json_schema_smoke(binary: Path) -> None:
             ]["items"]["type"]
             == "string"
         )
+        apps_read_params = json.loads(
+            (out_dir / "AppsReadParams.json").read_text(encoding="utf-8")
+        )
+        assert apps_read_params["title"] == "AppsReadParams"
+        assert apps_read_params["required"] == ["appIds"]
+        assert apps_read_params["properties"]["appIds"]["items"]["type"] == "string"
+        assert apps_read_params["properties"]["includeTools"]["type"] == "boolean"
+        apps_read_response = json.loads(
+            (out_dir / "AppsReadResponse.json").read_text(encoding="utf-8")
+        )
+        assert apps_read_response["title"] == "AppsReadResponse"
+        assert apps_read_response["required"] == ["apps", "missingAppIds"]
+        assert (
+            apps_read_response["properties"]["apps"]["items"]["$ref"]
+            == "#/$defs/ConnectorMetadata"
+        )
+        assert apps_read_response["$defs"]["ConnectorMetadata"]["required"] == [
+            "id",
+            "name",
+        ]
+        assert (
+            apps_read_response["$defs"]["ConnectorMetadata"]["properties"][
+                "toolSummaries"
+            ]["items"]["$ref"]
+            == "#/$defs/AppToolSummary"
+        )
+        apps_installed_params = json.loads(
+            (out_dir / "AppsInstalledParams.json").read_text(encoding="utf-8")
+        )
+        assert apps_installed_params["title"] == "AppsInstalledParams"
+        assert apps_installed_params["properties"]["threadId"]["type"] == [
+            "string",
+            "null",
+        ]
+        assert apps_installed_params["properties"]["forceRefresh"]["type"] == "boolean"
+        apps_installed_response = json.loads(
+            (out_dir / "AppsInstalledResponse.json").read_text(encoding="utf-8")
+        )
+        assert apps_installed_response["title"] == "AppsInstalledResponse"
+        assert apps_installed_response["required"] == ["apps"]
+        assert (
+            apps_installed_response["properties"]["apps"]["items"]["$ref"]
+            == "#/$defs/InstalledApp"
+        )
+        assert apps_installed_response["$defs"]["InstalledApp"]["required"] == [
+            "id",
+            "enabled",
+            "callable",
+        ]
         app_list_updated = json.loads(
             (out_dir / "AppListUpdatedNotification.json").read_text(
                 encoding="utf-8"
@@ -52643,7 +52781,14 @@ def run_json_schema_smoke(binary: Path) -> None:
         assert "AppMetadata" in bundle["$defs"]
         assert "AppInfo" in bundle["$defs"]
         assert "AppSummary" in bundle["$defs"]
+        assert "AppToolSummary" in bundle["$defs"]
+        assert "ConnectorMetadata" in bundle["$defs"]
+        assert "InstalledApp" in bundle["$defs"]
         assert "AppsListResponse" in bundle["$defs"]
+        assert "AppsReadParams" in bundle["$defs"]
+        assert "AppsReadResponse" in bundle["$defs"]
+        assert "AppsInstalledParams" in bundle["$defs"]
+        assert "AppsInstalledResponse" in bundle["$defs"]
         assert "AppListUpdatedNotification" in bundle["$defs"]
         assert "RemoteControlConnectionStatus" in bundle["$defs"]
         assert "RemoteControlStatusChangedNotification" in bundle["$defs"]
@@ -52994,6 +53139,34 @@ def run_json_schema_smoke(binary: Path) -> None:
         assert bundle["$defs"]["AppsListResponse"]["properties"]["data"]["items"][
             "$ref"
         ] == "#/$defs/AppInfo"
+        assert (
+            bundle["$defs"]["AppsReadParams"]["properties"]["appIds"]["items"][
+                "type"
+            ]
+            == "string"
+        )
+        assert (
+            bundle["$defs"]["AppsReadResponse"]["properties"]["apps"]["items"][
+                "$ref"
+            ]
+            == "#/$defs/ConnectorMetadata"
+        )
+        assert (
+            bundle["$defs"]["ConnectorMetadata"]["properties"]["toolSummaries"][
+                "items"
+            ]["$ref"]
+            == "#/$defs/AppToolSummary"
+        )
+        assert (
+            bundle["$defs"]["AppsInstalledParams"]["properties"]["threadId"]["type"]
+            == ["string", "null"]
+        )
+        assert (
+            bundle["$defs"]["AppsInstalledResponse"]["properties"]["apps"]["items"][
+                "$ref"
+            ]
+            == "#/$defs/InstalledApp"
+        )
         assert (
             bundle["$defs"]["AppListUpdatedNotification"]["properties"]["data"][
                 "items"
@@ -53889,6 +54062,14 @@ def run_typescript_generation_smoke(binary: Path) -> None:
             in client_request
         )
         assert (
+            'import type { AppsReadParams } from "./v2/AppsReadParams";'
+            in client_request
+        )
+        assert (
+            'import type { AppsInstalledParams } from "./v2/AppsInstalledParams";'
+            in client_request
+        )
+        assert (
             'import type { FuzzyFileSearchParams } from "./FuzzyFileSearchParams";'
             in client_request
         )
@@ -54013,6 +54194,10 @@ def run_typescript_generation_smoke(binary: Path) -> None:
         assert "params: SendAddCreditsNudgeEmailParams;" in client_request
         assert 'method: "app/list";' in client_request
         assert "params?: AppsListParams | null;" in client_request
+        assert 'method: "app/read";' in client_request
+        assert "params: AppsReadParams;" in client_request
+        assert 'method: "app/installed";' in client_request
+        assert "params: AppsInstalledParams;" in client_request
         for method, params_type in [
             ("fs/readFile", "FsReadFileParams"),
             ("fs/writeFile", "FsWriteFileParams"),
@@ -55195,6 +55380,14 @@ def run_typescript_generation_smoke(binary: Path) -> None:
             in client_response
         )
         assert (
+            'import type { AppsReadResponse } from "./v2/AppsReadResponse";'
+            in client_response
+        )
+        assert (
+            'import type { AppsInstalledResponse } from "./v2/AppsInstalledResponse";'
+            in client_response
+        )
+        assert (
             'import type { FuzzyFileSearchResponse } from "./FuzzyFileSearchResponse";'
             in client_response
         )
@@ -55278,6 +55471,10 @@ def run_typescript_generation_smoke(binary: Path) -> None:
         assert "result: SendAddCreditsNudgeEmailResponse;" in client_response
         assert 'method: "app/list";' in client_response
         assert "result: AppsListResponse;" in client_response
+        assert 'method: "app/read";' in client_response
+        assert "result: AppsReadResponse;" in client_response
+        assert 'method: "app/installed";' in client_response
+        assert "result: AppsInstalledResponse;" in client_response
         for method, response_type in [
             ("marketplace/add", "MarketplaceAddResponse"),
             ("marketplace/remove", "MarketplaceRemoveResponse"),
@@ -55608,6 +55805,16 @@ def run_typescript_generation_smoke(binary: Path) -> None:
         assert "limit?: number | null;" in apps_list_params
         assert "threadId?: string | null;" in apps_list_params
         assert "forceRefetch?: boolean;" in apps_list_params
+        apps_read_params = (out_dir / "v2" / "AppsReadParams.ts").read_text(
+            encoding="utf-8"
+        )
+        assert "appIds: string[];" in apps_read_params
+        assert "includeTools?: boolean;" in apps_read_params
+        apps_installed_params = (
+            out_dir / "v2" / "AppsInstalledParams.ts"
+        ).read_text(encoding="utf-8")
+        assert "threadId?: string | null;" in apps_installed_params
+        assert "forceRefresh?: boolean;" in apps_installed_params
         app_info = (out_dir / "v2" / "AppInfo.ts").read_text(encoding="utf-8")
         assert 'import type { AppBranding } from "./AppBranding";' not in app_info
         assert 'import type { AppMetadata } from "./AppMetadata";' not in app_info
@@ -55615,12 +55822,53 @@ def run_typescript_generation_smoke(binary: Path) -> None:
         assert "appMetadata: Record<string, unknown> | null;" in app_info
         assert "labels: Record<string, unknown> | null;" in app_info
         assert "pluginDisplayNames: string[];" in app_info
+        app_tool_summary = (
+            out_dir / "v2" / "AppToolSummary.ts"
+        ).read_text(encoding="utf-8")
+        assert "name: string;" in app_tool_summary
+        assert "title: string | null;" in app_tool_summary
+        assert "description: string;" in app_tool_summary
+        connector_metadata = (
+            out_dir / "v2" / "ConnectorMetadata.ts"
+        ).read_text(encoding="utf-8")
+        assert (
+            'import type { AppToolSummary } from "./AppToolSummary";'
+            in connector_metadata
+        )
+        assert "id: string;" in connector_metadata
+        assert "iconUrl: string | null;" in connector_metadata
+        assert "pluginDisplayNames: string[];" in connector_metadata
+        assert "toolSummaries: AppToolSummary[] | null;" in connector_metadata
+        installed_app = (out_dir / "v2" / "InstalledApp.ts").read_text(
+            encoding="utf-8"
+        )
+        assert "id: string;" in installed_app
+        assert "runtimeName: string | null;" in installed_app
+        assert "enabled: boolean;" in installed_app
+        assert "callable: boolean;" in installed_app
         apps_list_response = (
             out_dir / "v2" / "AppsListResponse.ts"
         ).read_text(encoding="utf-8")
         assert 'import type { AppInfo } from "./AppInfo";' in apps_list_response
         assert "data: AppInfo[];" in apps_list_response
         assert "nextCursor: string | null;" in apps_list_response
+        apps_read_response = (
+            out_dir / "v2" / "AppsReadResponse.ts"
+        ).read_text(encoding="utf-8")
+        assert (
+            'import type { ConnectorMetadata } from "./ConnectorMetadata";'
+            in apps_read_response
+        )
+        assert "apps: ConnectorMetadata[];" in apps_read_response
+        assert "missingAppIds: string[];" in apps_read_response
+        apps_installed_response = (
+            out_dir / "v2" / "AppsInstalledResponse.ts"
+        ).read_text(encoding="utf-8")
+        assert (
+            'import type { InstalledApp } from "./InstalledApp";'
+            in apps_installed_response
+        )
+        assert "apps: InstalledApp[];" in apps_installed_response
         app_list_updated = (
             out_dir / "v2" / "AppListUpdatedNotification.ts"
         ).read_text(encoding="utf-8")
@@ -57748,8 +57996,15 @@ def run_typescript_generation_smoke(binary: Path) -> None:
             "AppReview",
             "AppScreenshot",
             "AppSummary",
+            "AppToolSummary",
+            "AppsInstalledParams",
+            "AppsInstalledResponse",
             "AppsListParams",
             "AppsListResponse",
+            "AppsReadParams",
+            "AppsReadResponse",
+            "ConnectorMetadata",
+            "InstalledApp",
         ]:
             assert (
                 f'export type {{ {app_export} }} from "./{app_export}";'

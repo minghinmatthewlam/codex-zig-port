@@ -5172,6 +5172,24 @@ const APPS_LIST_PARAMS_TS =
     \\
     ;
 
+const APPS_READ_PARAMS_TS =
+    GENERATED_TS_HEADER ++
+    \\export interface AppsReadParams {
+    \\  appIds: string[];
+    \\  includeTools?: boolean;
+    \\}
+    \\
+    ;
+
+const APPS_INSTALLED_PARAMS_TS =
+    GENERATED_TS_HEADER ++
+    \\export interface AppsInstalledParams {
+    \\  threadId?: string | null;
+    \\  forceRefresh?: boolean;
+    \\}
+    \\
+    ;
+
 const MARKETPLACE_ADD_PARAMS_TS =
     GENERATED_TS_HEADER ++
     \\export interface MarketplaceAddParams {
@@ -5795,6 +5813,45 @@ const APP_SUMMARY_TS =
     \\
     ;
 
+const APP_TOOL_SUMMARY_TS =
+    GENERATED_TS_HEADER ++
+    \\export interface AppToolSummary {
+    \\  name: string;
+    \\  title: string | null;
+    \\  description: string;
+    \\}
+    \\
+    ;
+
+const CONNECTOR_METADATA_TS =
+    GENERATED_TS_HEADER ++
+    \\import type { AppToolSummary } from "./AppToolSummary";
+    \\
+    \\export interface ConnectorMetadata {
+    \\  id: string;
+    \\  name: string;
+    \\  description: string | null;
+    \\  iconUrl: string | null;
+    \\  iconUrlDark: string | null;
+    \\  distributionChannel: string | null;
+    \\  installUrl: string | null;
+    \\  pluginDisplayNames: string[];
+    \\  toolSummaries: AppToolSummary[] | null;
+    \\}
+    \\
+    ;
+
+const INSTALLED_APP_TS =
+    GENERATED_TS_HEADER ++
+    \\export interface InstalledApp {
+    \\  id: string;
+    \\  runtimeName: string | null;
+    \\  enabled: boolean;
+    \\  callable: boolean;
+    \\}
+    \\
+    ;
+
 const APPS_LIST_RESPONSE_TS =
     GENERATED_TS_HEADER ++
     \\import type { AppInfo } from "./AppInfo";
@@ -5802,6 +5859,27 @@ const APPS_LIST_RESPONSE_TS =
     \\export interface AppsListResponse {
     \\  data: AppInfo[];
     \\  nextCursor: string | null;
+    \\}
+    \\
+    ;
+
+const APPS_READ_RESPONSE_TS =
+    GENERATED_TS_HEADER ++
+    \\import type { ConnectorMetadata } from "./ConnectorMetadata";
+    \\
+    \\export interface AppsReadResponse {
+    \\  apps: ConnectorMetadata[];
+    \\  missingAppIds: string[];
+    \\}
+    \\
+    ;
+
+const APPS_INSTALLED_RESPONSE_TS =
+    GENERATED_TS_HEADER ++
+    \\import type { InstalledApp } from "./InstalledApp";
+    \\
+    \\export interface AppsInstalledResponse {
+    \\  apps: InstalledApp[];
     \\}
     \\
     ;
@@ -11098,7 +11176,9 @@ const THREAD_REALTIME_LIST_VOICES_RESPONSE_TS =
 
 const CLIENT_REQUEST_TS =
     GENERATED_TS_HEADER ++
+    \\import type { AppsInstalledParams } from "./v2/AppsInstalledParams";
     \\import type { AppsListParams } from "./v2/AppsListParams";
+    \\import type { AppsReadParams } from "./v2/AppsReadParams";
     \\import type { CancelLoginAccountParams } from "./v2/CancelLoginAccountParams";
     \\import type { CommandExecParams } from "./v2/CommandExecParams";
     \\import type { CommandExecResizeParams } from "./v2/CommandExecResizeParams";
@@ -11236,6 +11316,14 @@ const CLIENT_REQUEST_TS =
     \\  | {
     \\      method: "app/list";
     \\      params?: AppsListParams | null;
+    \\    }
+    \\  | {
+    \\      method: "app/read";
+    \\      params: AppsReadParams;
+    \\    }
+    \\  | {
+    \\      method: "app/installed";
+    \\      params: AppsInstalledParams;
     \\    }
     \\  | {
     \\      method: "hooks/list";
@@ -11639,7 +11727,9 @@ const CLIENT_REQUEST_TS =
 
 const CLIENT_RESPONSE_TS =
     GENERATED_TS_HEADER ++
+    \\import type { AppsInstalledResponse } from "./v2/AppsInstalledResponse";
     \\import type { AppsListResponse } from "./v2/AppsListResponse";
+    \\import type { AppsReadResponse } from "./v2/AppsReadResponse";
     \\import type { CancelLoginAccountResponse } from "./v2/CancelLoginAccountResponse";
     \\import type { CommandExecResponse } from "./v2/CommandExecResponse";
     \\import type { CommandExecResizeResponse } from "./v2/CommandExecResizeResponse";
@@ -11791,6 +11881,16 @@ const CLIENT_RESPONSE_TS =
     \\      id: RequestId;
     \\      method: "app/list";
     \\      result: AppsListResponse;
+    \\    }
+    \\  | {
+    \\      id: RequestId;
+    \\      method: "app/read";
+    \\      result: AppsReadResponse;
+    \\    }
+    \\  | {
+    \\      id: RequestId;
+    \\      method: "app/installed";
+    \\      result: AppsInstalledResponse;
     \\    }
     \\  | {
     \\      id: RequestId;
@@ -12773,12 +12873,19 @@ const V2_INDEX_TS =
     \\export type { AppReview } from "./AppReview";
     \\export type { AppsListParams } from "./AppsListParams";
     \\export type { AppsListResponse } from "./AppsListResponse";
+    \\export type { AppsReadParams } from "./AppsReadParams";
+    \\export type { AppsReadResponse } from "./AppsReadResponse";
+    \\export type { AppsInstalledParams } from "./AppsInstalledParams";
+    \\export type { AppsInstalledResponse } from "./AppsInstalledResponse";
     \\export type { AppScreenshot } from "./AppScreenshot";
     \\export type { AppSummary } from "./AppSummary";
+    \\export type { AppToolSummary } from "./AppToolSummary";
     \\export type { AppToolApproval } from "./AppToolApproval";
     \\export type { AppToolsConfig } from "./AppToolsConfig";
     \\export type { AppsConfig } from "./AppsConfig";
     \\export type { AppsDefaultConfig } from "./AppsDefaultConfig";
+    \\export type { ConnectorMetadata } from "./ConnectorMetadata";
+    \\export type { InstalledApp } from "./InstalledApp";
     \\export type { AnalyticsConfig } from "./AnalyticsConfig";
     \\export type { ApprovalsReviewer } from "./ApprovalsReviewer";
     \\export type { AskForApproval } from "./AskForApproval";
@@ -15220,6 +15327,35 @@ const APPS_LIST_PARAMS_JSON_SCHEMA =
     \\
 ;
 
+const APPS_READ_PARAMS_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "AppsReadParams",
+    \\  "type": "object",
+    \\  "required": ["appIds"],
+    \\  "properties": {
+    \\    "appIds": { "type": "array", "items": { "type": "string" } },
+    \\    "includeTools": { "type": "boolean" }
+    \\  },
+    \\  "additionalProperties": true
+    \\}
+    \\
+;
+
+const APPS_INSTALLED_PARAMS_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "AppsInstalledParams",
+    \\  "type": "object",
+    \\  "properties": {
+    \\    "threadId": { "type": ["string", "null"] },
+    \\    "forceRefresh": { "type": "boolean" }
+    \\  },
+    \\  "additionalProperties": true
+    \\}
+    \\
+;
+
 const APPS_LIST_RESPONSE_JSON_SCHEMA =
     \\{
     \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -15297,6 +15433,79 @@ const APPS_LIST_RESPONSE_JSON_SCHEMA =
     \\        "isAccessible": { "type": "boolean", "default": false },
     \\        "isEnabled": { "type": "boolean", "default": true },
     \\        "pluginDisplayNames": { "type": "array", "items": { "type": "string" }, "default": [] }
+    \\      },
+    \\      "additionalProperties": false
+    \\    }
+    \\  },
+    \\  "additionalProperties": false
+    \\}
+    \\
+;
+
+const APPS_READ_RESPONSE_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "AppsReadResponse",
+    \\  "type": "object",
+    \\  "required": ["apps", "missingAppIds"],
+    \\  "properties": {
+    \\    "apps": { "type": "array", "items": { "$ref": "#/$defs/ConnectorMetadata" } },
+    \\    "missingAppIds": { "type": "array", "items": { "type": "string" } }
+    \\  },
+    \\  "$defs": {
+    \\    "AppToolSummary": {
+    \\      "type": "object",
+    \\      "required": ["name", "description"],
+    \\      "properties": {
+    \\        "name": { "type": "string" },
+    \\        "title": { "type": ["string", "null"] },
+    \\        "description": { "type": "string" }
+    \\      },
+    \\      "additionalProperties": false
+    \\    },
+    \\    "ConnectorMetadata": {
+    \\      "type": "object",
+    \\      "required": ["id", "name"],
+    \\      "properties": {
+    \\        "id": { "type": "string" },
+    \\        "name": { "type": "string" },
+    \\        "description": { "type": ["string", "null"] },
+    \\        "iconUrl": { "type": ["string", "null"] },
+    \\        "iconUrlDark": { "type": ["string", "null"] },
+    \\        "distributionChannel": { "type": ["string", "null"] },
+    \\        "installUrl": { "type": ["string", "null"] },
+    \\        "pluginDisplayNames": { "type": "array", "items": { "type": "string" }, "default": [] },
+    \\        "toolSummaries": {
+    \\          "type": ["array", "null"],
+    \\          "items": { "$ref": "#/$defs/AppToolSummary" }
+    \\        }
+    \\      },
+    \\      "additionalProperties": false
+    \\    }
+    \\  },
+    \\  "additionalProperties": false
+    \\}
+    \\
+;
+
+const APPS_INSTALLED_RESPONSE_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "AppsInstalledResponse",
+    \\  "type": "object",
+    \\  "required": ["apps"],
+    \\  "properties": {
+    \\    "apps": { "type": "array", "items": { "$ref": "#/$defs/InstalledApp" } }
+    \\  },
+    \\  "$defs": {
+    \\    "InstalledApp": {
+    \\      "type": "object",
+    \\      "required": ["id", "enabled", "callable"],
+    \\      "properties": {
+    \\        "id": { "type": "string" },
+    \\        "runtimeName": { "type": ["string", "null"] },
+    \\        "enabled": { "type": "boolean" },
+    \\        "callable": { "type": "boolean" }
     \\      },
     \\      "additionalProperties": false
     \\    }
@@ -25611,6 +25820,23 @@ const APP_SERVER_PROTOCOL_SCHEMA_BUNDLE =
     \\      },
     \\      "additionalProperties": true
     \\    },
+    \\    "AppsReadParams": {
+    \\      "type": "object",
+    \\      "required": ["appIds"],
+    \\      "properties": {
+    \\        "appIds": { "type": "array", "items": { "type": "string" } },
+    \\        "includeTools": { "type": "boolean" }
+    \\      },
+    \\      "additionalProperties": true
+    \\    },
+    \\    "AppsInstalledParams": {
+    \\      "type": "object",
+    \\      "properties": {
+    \\        "threadId": { "type": ["string", "null"] },
+    \\        "forceRefresh": { "type": "boolean" }
+    \\      },
+    \\      "additionalProperties": true
+    \\    },
     \\    "AppBranding": {
     \\      "type": "object",
     \\      "required": ["isDiscoverableApp"],
@@ -25692,12 +25918,69 @@ const APP_SERVER_PROTOCOL_SCHEMA_BUNDLE =
     \\      },
     \\      "additionalProperties": false
     \\    },
+    \\    "AppToolSummary": {
+    \\      "type": "object",
+    \\      "required": ["name", "description"],
+    \\      "properties": {
+    \\        "name": { "type": "string" },
+    \\        "title": { "type": ["string", "null"] },
+    \\        "description": { "type": "string" }
+    \\      },
+    \\      "additionalProperties": false
+    \\    },
+    \\    "ConnectorMetadata": {
+    \\      "type": "object",
+    \\      "required": ["id", "name"],
+    \\      "properties": {
+    \\        "id": { "type": "string" },
+    \\        "name": { "type": "string" },
+    \\        "description": { "type": ["string", "null"] },
+    \\        "iconUrl": { "type": ["string", "null"] },
+    \\        "iconUrlDark": { "type": ["string", "null"] },
+    \\        "distributionChannel": { "type": ["string", "null"] },
+    \\        "installUrl": { "type": ["string", "null"] },
+    \\        "pluginDisplayNames": { "type": "array", "items": { "type": "string" }, "default": [] },
+    \\        "toolSummaries": {
+    \\          "type": ["array", "null"],
+    \\          "items": { "$ref": "#/$defs/AppToolSummary" }
+    \\        }
+    \\      },
+    \\      "additionalProperties": false
+    \\    },
+    \\    "InstalledApp": {
+    \\      "type": "object",
+    \\      "required": ["id", "enabled", "callable"],
+    \\      "properties": {
+    \\        "id": { "type": "string" },
+    \\        "runtimeName": { "type": ["string", "null"] },
+    \\        "enabled": { "type": "boolean" },
+    \\        "callable": { "type": "boolean" }
+    \\      },
+    \\      "additionalProperties": false
+    \\    },
     \\    "AppsListResponse": {
     \\      "type": "object",
     \\      "required": ["data", "nextCursor"],
     \\      "properties": {
     \\        "data": { "type": "array", "items": { "$ref": "#/$defs/AppInfo" } },
     \\        "nextCursor": { "type": ["string", "null"] }
+    \\      },
+    \\      "additionalProperties": false
+    \\    },
+    \\    "AppsReadResponse": {
+    \\      "type": "object",
+    \\      "required": ["apps", "missingAppIds"],
+    \\      "properties": {
+    \\        "apps": { "type": "array", "items": { "$ref": "#/$defs/ConnectorMetadata" } },
+    \\        "missingAppIds": { "type": "array", "items": { "type": "string" } }
+    \\      },
+    \\      "additionalProperties": false
+    \\    },
+    \\    "AppsInstalledResponse": {
+    \\      "type": "object",
+    \\      "required": ["apps"],
+    \\      "properties": {
+    \\        "apps": { "type": "array", "items": { "$ref": "#/$defs/InstalledApp" } }
     \\      },
     \\      "additionalProperties": false
     \\    },
@@ -28298,6 +28581,10 @@ const APP_SERVER_JSON_SCHEMA_FILES = [_]SchemaFile{
     .{ .name = "AccountRateLimitsUpdatedNotification.json", .contents = ACCOUNT_RATE_LIMITS_UPDATED_NOTIFICATION_JSON_SCHEMA },
     .{ .name = "AppsListParams.json", .contents = APPS_LIST_PARAMS_JSON_SCHEMA },
     .{ .name = "AppsListResponse.json", .contents = APPS_LIST_RESPONSE_JSON_SCHEMA },
+    .{ .name = "AppsReadParams.json", .contents = APPS_READ_PARAMS_JSON_SCHEMA },
+    .{ .name = "AppsReadResponse.json", .contents = APPS_READ_RESPONSE_JSON_SCHEMA },
+    .{ .name = "AppsInstalledParams.json", .contents = APPS_INSTALLED_PARAMS_JSON_SCHEMA },
+    .{ .name = "AppsInstalledResponse.json", .contents = APPS_INSTALLED_RESPONSE_JSON_SCHEMA },
     .{ .name = "AppListUpdatedNotification.json", .contents = APP_LIST_UPDATED_NOTIFICATION_JSON_SCHEMA },
     .{ .name = "v2/MarketplaceAddParams.json", .contents = MARKETPLACE_ADD_PARAMS_JSON_SCHEMA },
     .{ .name = "v2/MarketplaceAddResponse.json", .contents = MARKETPLACE_ADD_RESPONSE_JSON_SCHEMA },
@@ -28671,8 +28958,12 @@ const APP_SERVER_JSON_SCHEMA_VERSIONED_ALIASES = [_][]const u8{
     "v2/AccountUpdatedNotification.json",
     "v2/AgentMessageDeltaNotification.json",
     "v2/AppListUpdatedNotification.json",
+    "v2/AppsInstalledParams.json",
+    "v2/AppsInstalledResponse.json",
     "v2/AppsListParams.json",
     "v2/AppsListResponse.json",
+    "v2/AppsReadParams.json",
+    "v2/AppsReadResponse.json",
     "v2/CancelLoginAccountParams.json",
     "v2/CancelLoginAccountResponse.json",
     "v2/CommandExecOutputDeltaNotification.json",
@@ -28958,6 +29249,8 @@ const APP_SERVER_TS_FILES = [_]SchemaFile{
     .{ .name = "v2/GetAccountRateLimitsResponse.ts", .contents = GET_ACCOUNT_RATE_LIMITS_RESPONSE_TS },
     .{ .name = "v2/AccountRateLimitsUpdatedNotification.ts", .contents = ACCOUNT_RATE_LIMITS_UPDATED_NOTIFICATION_TS },
     .{ .name = "v2/AppsListParams.ts", .contents = APPS_LIST_PARAMS_TS },
+    .{ .name = "v2/AppsReadParams.ts", .contents = APPS_READ_PARAMS_TS },
+    .{ .name = "v2/AppsInstalledParams.ts", .contents = APPS_INSTALLED_PARAMS_TS },
     .{ .name = "v2/MarketplaceAddParams.ts", .contents = MARKETPLACE_ADD_PARAMS_TS },
     .{ .name = "v2/MarketplaceAddResponse.ts", .contents = MARKETPLACE_ADD_RESPONSE_TS },
     .{ .name = "v2/MarketplaceInterface.ts", .contents = MARKETPLACE_INTERFACE_TS },
@@ -29012,7 +29305,12 @@ const APP_SERVER_TS_FILES = [_]SchemaFile{
     .{ .name = "v2/AppMetadata.ts", .contents = APP_METADATA_TS },
     .{ .name = "v2/AppInfo.ts", .contents = APP_INFO_TS },
     .{ .name = "v2/AppSummary.ts", .contents = APP_SUMMARY_TS },
+    .{ .name = "v2/AppToolSummary.ts", .contents = APP_TOOL_SUMMARY_TS },
+    .{ .name = "v2/ConnectorMetadata.ts", .contents = CONNECTOR_METADATA_TS },
+    .{ .name = "v2/InstalledApp.ts", .contents = INSTALLED_APP_TS },
     .{ .name = "v2/AppsListResponse.ts", .contents = APPS_LIST_RESPONSE_TS },
+    .{ .name = "v2/AppsReadResponse.ts", .contents = APPS_READ_RESPONSE_TS },
+    .{ .name = "v2/AppsInstalledResponse.ts", .contents = APPS_INSTALLED_RESPONSE_TS },
     .{ .name = "v2/AppListUpdatedNotification.ts", .contents = APP_LIST_UPDATED_NOTIFICATION_TS },
     .{ .name = "v2/RemoteControlConnectionStatus.ts", .contents = REMOTE_CONTROL_CONNECTION_STATUS_TS },
     .{ .name = "v2/RemoteControlStatusChangedNotification.ts", .contents = REMOTE_CONTROL_STATUS_CHANGED_NOTIFICATION_TS },
@@ -30623,6 +30921,12 @@ fn handleJsonRpcLine(allocator: std.mem.Allocator, state: *AppServerState, line:
     }
     if (std.mem.eql(u8, method, "app/list")) {
         return try handleAppsList(allocator, state, id_value.?, object.get("params"));
+    }
+    if (std.mem.eql(u8, method, "app/read")) {
+        return try handleAppsRead(allocator, id_value.?, object.get("params"));
+    }
+    if (std.mem.eql(u8, method, "app/installed")) {
+        return try handleAppsInstalled(allocator, state, id_value.?, object.get("params"));
     }
     if (isReviewMethod(method)) {
         return try handleReviewMethod(allocator, state, id_value.?, method, object.get("params"));
@@ -32876,6 +33180,118 @@ fn handleAppsList(
     defer allocator.free(result_json);
 
     return renderJsonRpcResult(allocator, id_value, result_json);
+}
+
+fn handleAppsRead(
+    allocator: std.mem.Allocator,
+    id_value: std.json.Value,
+    params_value: ?std.json.Value,
+) ![]const u8 {
+    const params = params_value orelse return renderJsonRpcError(allocator, id_value, -32600, "Invalid request: missing field `params`");
+    if (params == .null) return renderJsonRpcError(allocator, id_value, -32600, "Invalid request: missing field `params`");
+    if (params != .object) {
+        if (params == .array) {
+            const message = try std.fmt.allocPrint(allocator, "Invalid request: invalid length {d}, expected struct AppsReadParams with 2 elements", .{params.array.items.len});
+            defer allocator.free(message);
+            return renderJsonRpcError(allocator, id_value, -32600, message);
+        }
+        return renderJsonRpcError(allocator, id_value, -32600, "Invalid request: expected struct AppsReadParams");
+    }
+
+    const object = params.object;
+    const app_ids_value = object.get("appIds") orelse return renderJsonRpcError(allocator, id_value, -32600, "Invalid request: missing field `appIds`");
+    if (app_ids_value != .array) {
+        if (app_ids_value == .string) {
+            const message = try std.fmt.allocPrint(allocator, "Invalid request: invalid type: string \"{s}\", expected a sequence", .{app_ids_value.string});
+            defer allocator.free(message);
+            return renderJsonRpcError(allocator, id_value, -32600, message);
+        }
+        return renderJsonRpcError(allocator, id_value, -32600, "Invalid request: expected a sequence");
+    }
+    if (app_ids_value.array.items.len > 100) {
+        return renderJsonRpcError(allocator, id_value, -32602, "app/read accepts at most 100 appIds");
+    }
+    if (object.get("includeTools")) |value| {
+        if (value != .bool) {
+            if (value == .string) {
+                const message = try std.fmt.allocPrint(allocator, "Invalid request: invalid type: string \"{s}\", expected a boolean", .{value.string});
+                defer allocator.free(message);
+                return renderJsonRpcError(allocator, id_value, -32600, message);
+            }
+            return renderJsonRpcError(allocator, id_value, -32600, "Invalid request: expected a boolean");
+        }
+    }
+
+    var missing_app_ids = std.ArrayList([]const u8).empty;
+    defer missing_app_ids.deinit(allocator);
+    for (app_ids_value.array.items) |item| {
+        if (item != .string) {
+            if (item == .integer) {
+                const message = try std.fmt.allocPrint(allocator, "Invalid request: invalid type: integer `{d}`, expected a string", .{item.integer});
+                defer allocator.free(message);
+                return renderJsonRpcError(allocator, id_value, -32600, message);
+            }
+            return renderJsonRpcError(allocator, id_value, -32600, "Invalid request: expected a string");
+        }
+        if (!stringSliceContains(missing_app_ids.items, item.string)) {
+            try missing_app_ids.append(allocator, item.string);
+        }
+    }
+
+    var result = std.ArrayList(u8).empty;
+    defer result.deinit(allocator);
+    try result.appendSlice(allocator, "{\"apps\":[],\"missingAppIds\":");
+    try appendJsonStringArray(allocator, &result, missing_app_ids.items);
+    try result.appendSlice(allocator, "}");
+    return renderJsonRpcResult(allocator, id_value, result.items);
+}
+
+fn handleAppsInstalled(
+    allocator: std.mem.Allocator,
+    state: *AppServerState,
+    id_value: std.json.Value,
+    params_value: ?std.json.Value,
+) ![]const u8 {
+    const params = params_value orelse return renderJsonRpcError(allocator, id_value, -32600, "Invalid request: missing field `params`");
+    if (params == .null) return renderJsonRpcError(allocator, id_value, -32600, "Invalid request: missing field `params`");
+    if (params != .object) {
+        if (params == .array) {
+            const message = try std.fmt.allocPrint(allocator, "Invalid request: invalid length {d}, expected struct AppsInstalledParams with 2 elements", .{params.array.items.len});
+            defer allocator.free(message);
+            return renderJsonRpcError(allocator, id_value, -32600, message);
+        }
+        return renderJsonRpcError(allocator, id_value, -32600, "Invalid request: expected struct AppsInstalledParams");
+    }
+
+    const object = params.object;
+    if (object.get("threadId")) |value| {
+        if (value != .null) {
+            if (value != .string) {
+                if (value == .integer) {
+                    const message = try std.fmt.allocPrint(allocator, "Invalid request: invalid type: integer `{d}`, expected a string", .{value.integer});
+                    defer allocator.free(message);
+                    return renderJsonRpcError(allocator, id_value, -32600, message);
+                }
+                return renderJsonRpcError(allocator, id_value, -32600, "Invalid request: expected a string");
+            }
+            if (!isUuidString(value.string)) {
+                return renderInvalidThreadId(allocator, id_value, value.string);
+            }
+            _ = findLoadedThread(state, value.string) orelse return renderThreadNotFound(allocator, id_value, value.string);
+        }
+    }
+    if (object.get("forceRefresh")) |value| {
+        if (value != .bool) {
+            if (value == .string) {
+                const message = try std.fmt.allocPrint(allocator, "Invalid request: invalid type: string \"{s}\", expected a boolean", .{value.string});
+                defer allocator.free(message);
+                return renderJsonRpcError(allocator, id_value, -32600, message);
+            }
+            return renderJsonRpcError(allocator, id_value, -32600, "Invalid request: expected a boolean");
+        }
+    }
+
+    return renderJsonRpcResult(allocator, id_value, "{\"apps\":[]}");
 }
 
 fn queueAppListUpdatedNotificationAfterEnablement(allocator: std.mem.Allocator, state: *AppServerState) !void {
