@@ -872,9 +872,12 @@ serialized by the daemon operation lock plus PID reservation lock. Top-level
 `remote-control start` enables the daemon remote-control setting, starts or
 reuses the PID-backed managed app-server, sends `remoteControl/enable` over the
 control socket, and prints Rust-shaped JSON or human readiness output with
-daemon app-server path/version details. The updater loop's live standalone
-installer refresh/reexec behavior and the full Rust websocket/cloud
-remote-control backend remain planned.
+daemon app-server path/version details. App-server RPC toggles also now persist
+non-ephemeral remote-control preference changes into matching existing state-DB
+enrollment rows while ephemeral toggles remain process-local. The updater
+loop's live standalone installer refresh/reexec behavior, state-DB enrollment
+creation, and the full Rust websocket/cloud remote-control backend remain
+planned.
 
 The high-level `app/list` summary in the table above is expanded by the
 detailed app-list note below: authenticated ChatGPT connector directory page
@@ -1034,8 +1037,12 @@ conflicting-pairing-code, not-enrolled, and ChatGPT-auth-required errors for
 those backend-dependent methods, includes generated `RemoteControlEnableParams`,
 `RemoteControlDisableParams`, `RemoteControlPairing*`,
 `RemoteControlClients*`, and `RemoteControlClient` protocol artifacts, and
-exposes `remote_control` as enabled through app-server feature APIs while the
-full Rust websocket/cloud remote-control backend remains planned.
+persists non-ephemeral enable/disable preference changes into matching existing
+state-DB `remote_control_enrollments.remote_control_enabled` rows while
+leaving that durable preference unchanged for `ephemeral: true`, and exposes
+`remote_control` as enabled through app-server feature APIs while the full Rust
+websocket/cloud remote-control backend and enrollment creation path remain
+planned.
 Config loading now creates, canonicalizes, and reuses the same persisted
 `CODEX_HOME/installation_id` UUID that Rust uses for client metadata instead of
 falling back to the old Zig placeholder when the file is missing.

@@ -64,9 +64,12 @@ generated `RemoteControlEnableParams`, `RemoteControlDisableParams`,
 protocol artifacts, and the Zig stdio app-server smoke. Zig now accepts
 nullable `remoteControl/enable|disable` params with Rust's optional `ephemeral`
 flag, validates pairing/client params with Rust-shaped `-32600` errors
-including the conflicting-pairing-code rejection, and returns Rust's local
-disabled, not-enrolled, and ChatGPT-auth-required errors until the full
-websocket/cloud backend is implemented.
+including the conflicting-pairing-code rejection, and updates existing
+state-DB `remote_control_enrollments.remote_control_enabled` rows for
+non-ephemeral enable/disable while leaving that durable preference unchanged
+for `ephemeral: true`. It still returns Rust's local disabled, not-enrolled,
+and ChatGPT-auth-required errors until the full websocket/cloud backend and
+enrollment creation path are implemented.
 App-server account usage, workspace-message, and rate-limit reset-credit
 parity was checked against installed Rust `codex app-server --stdio` behavior,
 isolated ChatGPT/no-auth/API-key homes, generated TypeScript/JSON Schema
@@ -425,12 +428,15 @@ runtime override handling, and the Zig stdio app-server smoke.
   `remoteControl/pairing/start`, `remoteControl/pairing/status`,
   `remoteControl/client/list`, and `remoteControl/client/revoke` with generated
   TypeScript/JSON Schema artifacts and Rust-shaped local disabled,
-  conflicting-pairing-code, not-enrolled, or ChatGPT-auth-required errors, and
+  conflicting-pairing-code, not-enrolled, or ChatGPT-auth-required errors,
+  persists non-ephemeral remote-control preference changes into matching
+  existing state-DB enrollment rows while preserving durable preference on
+  ephemeral toggles, and
   exposes `remote_control` as enabled through app-server feature APIs.
   Normal config loading also creates/reuses the same persisted installation UUID
   instead of falling back to the old Zig placeholder.
   Remaining remote-control parity is the full Rust websocket/cloud connection
-  backend behind the reported connecting status.
+  backend and enrollment creation path behind the reported connecting status.
 - App-server permission-profile coverage is implemented for desktop clients:
   `permissionProfile/list` returns Rust's three built-in permission profile ids
   first, includes system/user/trusted-project/legacy-managed
