@@ -41,6 +41,7 @@ const sandbox_mod = @import("sandbox.zig");
 const session_mod = @import("session.zig");
 const session_store = @import("session_store.zig");
 const skills_list = @import("skills_list.zig");
+const sqlite = @import("sqlite.zig");
 const thread_state = @import("thread_state.zig");
 const tool_runner = @import("tools.zig");
 const uuid_mod = @import("uuid.zig");
@@ -542,6 +543,7 @@ const AppServerState = struct {
     bypass_hook_trust: bool = false,
     remote_control_enabled: bool = false,
     session_source: []const u8 = "vscode",
+    app_server_client_name: ?[]const u8 = null,
     active_profile: ?[]const u8 = null,
     runtime_overrides: config.RuntimeOverrides = .{},
     thread_unloading_delay_ms: i64 = THREAD_UNLOADING_DELAY_MS,
@@ -569,6 +571,7 @@ const AppServerState = struct {
 
     fn deinit(self: *AppServerState, allocator: std.mem.Allocator) void {
         clearAppServerConnectionState(allocator, self);
+        clearAppServerClientName(allocator, self);
         self.cli_feature_overrides.deinit(allocator);
         self.runtime_feature_enablement.deinit(allocator);
         for (self.loaded_threads.items) |*thread| thread.deinit(allocator);
@@ -43380,11 +43383,17 @@ fn handleRemoteControlMethod(
         if (std.mem.eql(u8, method, "remoteControl/enable")) {
             const changed = !state.remote_control_enabled;
             state.remote_control_enabled = true;
+            if (!remoteControlToggleIsEphemeral(params_value)) {
+                try persistRemoteControlPreferenceBestEffort(allocator, state, true);
+            }
             return handleRemoteControlStatusMutation(allocator, state, id_value, "connecting", changed);
         }
         if (std.mem.eql(u8, method, "remoteControl/disable")) {
             const changed = state.remote_control_enabled;
             state.remote_control_enabled = false;
+            if (!remoteControlToggleIsEphemeral(params_value)) {
+                try persistRemoteControlPreferenceBestEffort(allocator, state, false);
+            }
             return handleRemoteControlStatusMutation(allocator, state, id_value, "disabled", changed);
         }
         const status = if (state.remote_control_enabled) "connecting" else "disabled";
@@ -43438,6 +43447,87 @@ fn validateRemoteControlToggleParams(allocator: std.mem.Allocator, params_value:
         if (value != .bool) return try remoteControlInvalidTypeMessage(allocator, value, "a boolean");
     }
     return null;
+}
+
+fn remoteControlToggleIsEphemeral(params_value: ?std.json.Value) bool {
+    const params = params_value orelse return false;
+    if (params != .object) return false;
+    const ephemeral = params.object.get("ephemeral") orelse return false;
+    return ephemeral == .bool and ephemeral.bool;
+}
+
+fn persistRemoteControlPreferenceBestEffort(allocator: std.mem.Allocator, state: *const AppServerState, enabled: bool) !void {
+    var cfg = loadAppServerConfigWithOptions(allocator, state, .{}) catch |err| switch (err) {
+        error.OutOfMemory => return err,
+        else => return,
+    };
+    defer cfg.deinit(allocator);
+
+    var credentials = auth_mod.loadCliAuthNoRefreshForConfig(allocator, &cfg) catch |err| switch (err) {
+        error.OutOfMemory => return err,
+        else => return,
+    };
+    defer credentials.deinit(allocator);
+
+    const account_id = credentials.account_id orelse return;
+    const websocket_url = remoteControlWebsocketUrl(allocator, cfg.chatgpt_base_url) catch |err| switch (err) {
+        error.OutOfMemory => return err,
+        else => return,
+    };
+    defer allocator.free(websocket_url);
+
+    _ = updateRemoteControlPreference(allocator, configSqliteHome(cfg), websocket_url, account_id, state.app_server_client_name, enabled) catch |err| switch (err) {
+        error.OutOfMemory => return err,
+        else => return,
+    };
+}
+
+fn remoteControlWebsocketUrl(allocator: std.mem.Allocator, base_url: []const u8) ![]const u8 {
+    const trimmed = std.mem.trimEnd(u8, base_url, "/");
+    if (std.mem.startsWith(u8, trimmed, "https://")) {
+        return std.fmt.allocPrint(allocator, "wss://{s}/wham/remote/control/server", .{trimmed["https://".len..]});
+    }
+    if (std.mem.startsWith(u8, trimmed, "http://")) {
+        return std.fmt.allocPrint(allocator, "ws://{s}/wham/remote/control/server", .{trimmed["http://".len..]});
+    }
+    return error.InvalidRemoteControlUrl;
+}
+
+fn updateRemoteControlPreference(
+    allocator: std.mem.Allocator,
+    sqlite_home: []const u8,
+    websocket_url: []const u8,
+    account_id: []const u8,
+    app_server_client_name: ?[]const u8,
+    enabled: bool,
+) !bool {
+    const state_path = try memory_reset.resolveStateDbPathForSqliteHome(allocator, sqlite_home);
+    defer allocator.free(state_path);
+    if (!try memory_reset.stateDbExists(allocator, state_path)) return false;
+
+    const db = try sqlite.openReadWrite(allocator, state_path);
+    defer sqlite.close(db);
+
+    const statement = sqlite.prepare(allocator, db,
+        \\UPDATE remote_control_enrollments
+        \\SET remote_control_enabled = ?, updated_at = ?
+        \\WHERE websocket_url = ? AND account_id = ? AND app_server_client_name = ?
+    ) catch |err| switch (err) {
+        error.SqlitePrepareFailed => return false,
+        else => return err,
+    };
+    defer sqlite.finalize(statement);
+
+    try sqlite.bindInt64(statement, 1, if (enabled) 1 else 0);
+    try sqlite.bindInt64(statement, 2, currentUnixSeconds());
+    try sqlite.bindText(statement, 3, websocket_url);
+    try sqlite.bindText(statement, 4, account_id);
+    try sqlite.bindText(statement, 5, app_server_client_name orelse "");
+
+    return switch (sqlite.step(statement)) {
+        sqlite.SQLITE_DONE => sqlite.changes(db) > 0,
+        else => error.RemoteControlPreferenceStepFailed,
+    };
 }
 
 fn validateRemoteControlPairingStartParams(allocator: std.mem.Allocator, params_value: ?std.json.Value) !?[]const u8 {
@@ -51452,9 +51542,19 @@ fn appendThreadPermissionProfileFileSystemJson(allocator: std.mem.Allocator, res
 
 fn updateInitializeCapabilities(allocator: std.mem.Allocator, state: *AppServerState, params_value: ?std.json.Value) !void {
     clearOptOutNotificationMethods(allocator, state);
+    clearAppServerClientName(allocator, state);
     state.experimental_api_enabled = false;
     const params = params_value orelse return;
     if (params != .object) return;
+    if (params.object.get("clientInfo")) |client_info| {
+        if (client_info == .object) {
+            if (client_info.object.get("name")) |name| {
+                if (name == .string and name.string.len > 0) {
+                    state.app_server_client_name = try allocator.dupe(u8, name.string);
+                }
+            }
+        }
+    }
     const capabilities = params.object.get("capabilities") orelse return;
     if (capabilities == .null) return;
     if (capabilities != .object) return;
@@ -51470,6 +51570,11 @@ fn updateInitializeCapabilities(allocator: std.mem.Allocator, state: *AppServerS
         errdefer allocator.free(owned);
         try state.opt_out_notification_methods.append(allocator, owned);
     }
+}
+
+fn clearAppServerClientName(allocator: std.mem.Allocator, state: *AppServerState) void {
+    if (state.app_server_client_name) |name| allocator.free(name);
+    state.app_server_client_name = null;
 }
 
 fn experimentalReasonForRequestMethod(method: []const u8) ?[]const u8 {
@@ -77092,6 +77197,32 @@ test "app-server initialize emits remote-control status snapshot" {
     try std.testing.expect(std.mem.indexOf(u8, state.pending_notifications.items[0], "\"method\":\"remoteControl/status/changed\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, state.pending_notifications.items[0], "\"status\":\"disabled\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, state.pending_notifications.items[0], "\"environmentId\":null") != null);
+}
+
+test "app-server initialize stores client name for remote-control persistence key" {
+    const allocator = std.testing.allocator;
+    var state = AppServerState{};
+    defer state.deinit(allocator);
+
+    const response = try handleJsonRpcLine(
+        allocator,
+        &state,
+        "{\"jsonrpc\":\"2.0\",\"id\":\"initialize\",\"method\":\"initialize\",\"params\":{\"clientInfo\":{\"name\":\"codex-app-server-tests\",\"version\":\"0\"}}}",
+    );
+    defer allocator.free(response.?);
+
+    try std.testing.expectEqualStrings("codex-app-server-tests", state.app_server_client_name.?);
+}
+
+test "remote-control websocket URL uses Rust remote-control endpoint path" {
+    const allocator = std.testing.allocator;
+    const https_url = try remoteControlWebsocketUrl(allocator, "https://chatgpt.com/backend-api/");
+    defer allocator.free(https_url);
+    try std.testing.expectEqualStrings("wss://chatgpt.com/backend-api/wham/remote/control/server", https_url);
+
+    const http_url = try remoteControlWebsocketUrl(allocator, "http://localhost:8080/backend-api");
+    defer allocator.free(http_url);
+    try std.testing.expectEqualStrings("ws://localhost:8080/backend-api/wham/remote/control/server", http_url);
 }
 
 test "app-server initialize reflects remote-control runtime flag" {

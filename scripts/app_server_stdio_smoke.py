@@ -1125,6 +1125,57 @@ def seed_memory_state_db(codex_home: Path) -> Path:
     return db_path
 
 
+def seed_remote_control_state_db(
+    codex_home: Path,
+    websocket_url: str,
+    account_id: str,
+    app_server_client_name: str | None,
+    enabled: bool | None,
+) -> Path:
+    db_path = codex_home / "state_5.sqlite"
+    with sqlite3.connect(db_path) as db:
+        db.executescript(
+            """
+            CREATE TABLE remote_control_enrollments (
+                websocket_url TEXT NOT NULL,
+                account_id TEXT NOT NULL,
+                app_server_client_name TEXT NOT NULL,
+                server_id TEXT NOT NULL,
+                environment_id TEXT NOT NULL,
+                server_name TEXT NOT NULL,
+                remote_control_enabled INTEGER,
+                updated_at INTEGER NOT NULL,
+                PRIMARY KEY (websocket_url, account_id, app_server_client_name)
+            );
+            """
+        )
+        db.execute(
+            """
+            INSERT INTO remote_control_enrollments (
+                websocket_url,
+                account_id,
+                app_server_client_name,
+                server_id,
+                environment_id,
+                server_name,
+                remote_control_enabled,
+                updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                websocket_url,
+                account_id,
+                app_server_client_name or "",
+                "server-id",
+                "environment-id",
+                "Seeded Remote Control Server",
+                None if enabled is None else int(enabled),
+                1,
+            ),
+        )
+    return db_path
+
+
 def seed_feedback_logs_db(
     codex_home: Path,
     rows: list[tuple[int, int, str, str, str | None, str | None]],
@@ -48114,6 +48165,34 @@ def run_experimental_feature_rpc_smoke(binary: Path) -> None:
 
 def run_remote_control_status_notification_smoke(binary: Path) -> None:
     codex_home = Path(tempfile.mkdtemp(prefix="codex-zig-remote-status-", dir="/tmp"))
+    remote_control_base_url = "http://localhost:8080/backend-api"
+    remote_control_websocket_url = (
+        "ws://localhost:8080/backend-api/wham/remote/control/server"
+    )
+    remote_control_account_id = "account_id"
+    remote_control_client_name = "app-server-smoke"
+    (codex_home / "config.toml").write_text(
+        f'chatgpt_base_url = "{remote_control_base_url}"\n',
+        encoding="utf-8",
+    )
+    (codex_home / "auth.json").write_text(
+        json.dumps(
+            {
+                "tokens": {
+                    "access_token": "remote-control-token",
+                    "account_id": remote_control_account_id,
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    remote_control_state_db = seed_remote_control_state_db(
+        codex_home,
+        remote_control_websocket_url,
+        remote_control_account_id,
+        remote_control_client_name,
+        None,
+    )
     env = os.environ.copy()
     env["CODEX_HOME"] = str(codex_home)
     proc = subprocess.Popen(
@@ -48132,7 +48211,7 @@ def run_remote_control_status_notification_smoke(binary: Path) -> None:
                 "id": "initialize-remote-control-status",
                 "method": "initialize",
                 "params": {
-                    "clientInfo": {"name": "app-server-smoke", "version": "0"},
+                    "clientInfo": {"name": remote_control_client_name, "version": "0"},
                     "capabilities": {"experimentalApi": True},
                 },
             },
@@ -48447,18 +48526,64 @@ def run_remote_control_status_notification_smoke(binary: Path) -> None:
             == 'Invalid request: invalid type: string "yes", expected a boolean'
         )
 
+        def remote_control_preference() -> int | None:
+            return sqlite_row(
+                remote_control_state_db,
+                """
+                SELECT remote_control_enabled
+                FROM remote_control_enrollments
+                WHERE websocket_url = ?
+                    AND account_id = ?
+                    AND app_server_client_name = ?
+                """,
+                (
+                    remote_control_websocket_url,
+                    remote_control_account_id,
+                    remote_control_client_name,
+                ),
+            )[0]
+
+        assert remote_control_preference() is None
+
+        enable_persistent = rpc(
+            "remote-enable-persistent",
+            "remoteControl/enable",
+        )
+        assert enable_persistent["id"] == "remote-enable-persistent"
+        assert enable_persistent["result"]["status"] == "connecting"
+        assert remote_control_preference() == 1
+        enable_persistent_status = read_json_line(
+            proc, 5, include_remote_control_status=True
+        )
+        assert enable_persistent_status["method"] == "remoteControl/status/changed"
+        assert enable_persistent_status["params"]["status"] == "connecting"
+
         write_json_line(
             proc,
             {
                 "jsonrpc": "2.0",
-                "id": "remote-disable-ephemeral-disabled",
+                "id": "remote-disable-ephemeral-preserves-preference",
                 "method": "remoteControl/disable",
                 "params": {"ephemeral": True},
             },
         )
-        disable_ephemeral_disabled = read_json_line(proc, 5)
-        assert disable_ephemeral_disabled["id"] == "remote-disable-ephemeral-disabled"
-        assert disable_ephemeral_disabled["result"]["status"] == "disabled"
+        disable_ephemeral = read_json_line(proc, 5)
+        assert disable_ephemeral["id"] == "remote-disable-ephemeral-preserves-preference"
+        assert disable_ephemeral["result"]["status"] == "disabled"
+        assert remote_control_preference() == 1
+        disable_ephemeral_status = read_json_line(
+            proc, 5, include_remote_control_status=True
+        )
+        assert disable_ephemeral_status["method"] == "remoteControl/status/changed"
+        assert disable_ephemeral_status["params"]["status"] == "disabled"
+
+        disable_persistent = rpc(
+            "remote-disable-persistent",
+            "remoteControl/disable",
+        )
+        assert disable_persistent["id"] == "remote-disable-persistent"
+        assert disable_persistent["result"]["status"] == "disabled"
+        assert remote_control_preference() == 0
 
         write_json_line(
             proc,
@@ -48472,6 +48597,7 @@ def run_remote_control_status_notification_smoke(binary: Path) -> None:
         enabled = read_json_line(proc, 5)
         assert enabled["id"] == "remote-enable-before-pair"
         assert enabled["result"]["status"] == "connecting"
+        assert remote_control_preference() == 0
         enabled_status = read_json_line(proc, 5, include_remote_control_status=True)
         assert enabled_status["method"] == "remoteControl/status/changed"
         assert enabled_status["params"]["status"] == "connecting"
