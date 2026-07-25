@@ -1517,20 +1517,23 @@ Additional app-server realtime stop coverage: `thread/realtime/stop` validates `
 
 Additional app-server realtime text append coverage: `thread/realtime/appendText` validates `threadId` and text string params, returns Rust-shaped `thread not found` responses for valid missing threads in the current no-thread runtime, and is included in current TypeScript and JSON schema generation until full realtime session lifecycle parity lands.
 
+Additional app-server realtime speech append coverage: `thread/realtime/appendSpeech` validates `threadId` and speakable text string params, returns Rust-shaped `thread not found` responses for valid missing threads in the current no-thread runtime, and is included in current TypeScript and JSON schema generation until full realtime session lifecycle parity lands.
+
 Additional app-server realtime audio append coverage: `thread/realtime/appendAudio` validates `threadId` and realtime audio chunk params, returns Rust-shaped `thread not found` responses for valid missing threads in the current no-thread runtime, and is included in current TypeScript and JSON schema generation until full realtime session lifecycle parity lands.
 
 Additional app-server realtime start coverage: `thread/realtime/start` validates `threadId`, output modality, prompt/session/voice, and realtime transport params, returns Rust-shaped `thread not found` responses for valid missing threads in the current no-thread runtime, and is included in current TypeScript and JSON schema generation until full loaded-thread realtime session lifecycle parity lands.
 
 Additional app-server loaded-thread realtime feature coverage:
 `thread/realtime/start`, `thread/realtime/stop`,
-`thread/realtime/appendText`, and `thread/realtime/appendAudio` now reject
+`thread/realtime/appendText`, `thread/realtime/appendSpeech`, and
+`thread/realtime/appendAudio` now reject
 already-loaded threads with Rust's `thread {id} does not support realtime
 conversation` error while the `realtime_conversation` feature is disabled. When
 the feature is enabled, the websocket transport has an in-process lifecycle:
 `thread/realtime/start` records a thread-scoped session and emits
 `thread/realtime/started` with the requested realtime session id or the thread
-session id, active `appendText`/`appendAudio` requests return Rust-shaped empty
-responses, inactive appends emit `thread/realtime/error`, and
+session id, active `appendText`/`appendSpeech`/`appendAudio` requests return
+Rust-shaped empty responses, inactive appends emit `thread/realtime/error`, and
 `thread/realtime/stop` clears the active session and emits
 `thread/realtime/closed` with reason `requested`. WebRTC SDP exchange, upstream
 Realtime API websocket streaming, transcript/audio/backend item fanout, and

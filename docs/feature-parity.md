@@ -538,7 +538,7 @@ runtime override handling, and the Zig stdio app-server smoke.
   `account/rateLimitResetCredit/consume`, `account/usage/read`,
   `account/workspaceMessages/read`, `environment/add`, `environment/info`,
   `environment/status`, `externalAgentConfig/import/readHistories`,
-  `mock/experimentalMethod`, and `thread/realtime/appendSpeech`.
+  and `mock/experimentalMethod`.
 - Finish desktop app and remote-control user flows beyond launching/opening:
   phone fork/share flow, durable daemon control, and local browser controller
   parity.

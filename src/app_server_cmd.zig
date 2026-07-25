@@ -11345,6 +11345,27 @@ const THREAD_REALTIME_APPEND_TEXT_RESPONSE_TS =
     \\
     ;
 
+const THREAD_REALTIME_APPEND_SPEECH_PARAMS_TS =
+    GENERATED_TS_HEADER ++
+    \\/**
+    \\ * EXPERIMENTAL - append speakable text to thread realtime.
+    \\ */
+    \\export interface ThreadRealtimeAppendSpeechParams {
+    \\  threadId: string;
+    \\  text: string;
+    \\}
+    \\
+    ;
+
+const THREAD_REALTIME_APPEND_SPEECH_RESPONSE_TS =
+    GENERATED_TS_HEADER ++
+    \\/**
+    \\ * EXPERIMENTAL - response for appending realtime speech.
+    \\ */
+    \\export interface ThreadRealtimeAppendSpeechResponse {}
+    \\
+    ;
+
 const THREAD_REALTIME_AUDIO_CHUNK_TS =
     GENERATED_TS_HEADER ++
     \\export interface ThreadRealtimeAudioChunk {
@@ -11595,6 +11616,7 @@ const CLIENT_REQUEST_TS =
     \\import type { ThreadMetadataUpdateParams } from "./v2/ThreadMetadataUpdateParams";
     \\import type { ThreadReadParams } from "./v2/ThreadReadParams";
     \\import type { ThreadRealtimeAppendAudioParams } from "./v2/ThreadRealtimeAppendAudioParams";
+    \\import type { ThreadRealtimeAppendSpeechParams } from "./v2/ThreadRealtimeAppendSpeechParams";
     \\import type { ThreadRealtimeAppendTextParams } from "./v2/ThreadRealtimeAppendTextParams";
     \\import type { ThreadRealtimeListVoicesParams } from "./v2/ThreadRealtimeListVoicesParams";
     \\import type { ThreadRealtimeStartParams } from "./v2/ThreadRealtimeStartParams";
@@ -12067,6 +12089,10 @@ const CLIENT_REQUEST_TS =
     \\      params: ThreadRealtimeAppendTextParams;
     \\    }
     \\  | {
+    \\      method: "thread/realtime/appendSpeech";
+    \\      params: ThreadRealtimeAppendSpeechParams;
+    \\    }
+    \\  | {
     \\      method: "thread/realtime/appendAudio";
     \\      params: ThreadRealtimeAppendAudioParams;
     \\    }
@@ -12188,6 +12214,7 @@ const CLIENT_RESPONSE_TS =
     \\import type { ThreadMetadataUpdateResponse } from "./v2/ThreadMetadataUpdateResponse";
     \\import type { ThreadReadResponse } from "./v2/ThreadReadResponse";
     \\import type { ThreadRealtimeAppendAudioResponse } from "./v2/ThreadRealtimeAppendAudioResponse";
+    \\import type { ThreadRealtimeAppendSpeechResponse } from "./v2/ThreadRealtimeAppendSpeechResponse";
     \\import type { ThreadRealtimeAppendTextResponse } from "./v2/ThreadRealtimeAppendTextResponse";
     \\import type { ThreadRealtimeListVoicesResponse } from "./v2/ThreadRealtimeListVoicesResponse";
     \\import type { ThreadRealtimeStartResponse } from "./v2/ThreadRealtimeStartResponse";
@@ -12776,6 +12803,11 @@ const CLIENT_RESPONSE_TS =
     \\      id: RequestId;
     \\      method: "thread/realtime/appendText";
     \\      result: ThreadRealtimeAppendTextResponse;
+    \\    }
+    \\  | {
+    \\      id: RequestId;
+    \\      method: "thread/realtime/appendSpeech";
+    \\      result: ThreadRealtimeAppendSpeechResponse;
     \\    }
     \\  | {
     \\      id: RequestId;
@@ -13771,6 +13803,8 @@ const V2_INDEX_TS =
     \\export type { ThreadSearchTextRange } from "./ThreadSearchTextRange";
     \\export type { ThreadRealtimeAppendAudioParams } from "./ThreadRealtimeAppendAudioParams";
     \\export type { ThreadRealtimeAppendAudioResponse } from "./ThreadRealtimeAppendAudioResponse";
+    \\export type { ThreadRealtimeAppendSpeechParams } from "./ThreadRealtimeAppendSpeechParams";
+    \\export type { ThreadRealtimeAppendSpeechResponse } from "./ThreadRealtimeAppendSpeechResponse";
     \\export type { ThreadRealtimeAppendTextParams } from "./ThreadRealtimeAppendTextParams";
     \\export type { ThreadRealtimeAppendTextResponse } from "./ThreadRealtimeAppendTextResponse";
     \\export type { ThreadRealtimeAudioChunk } from "./ThreadRealtimeAudioChunk";
@@ -24702,6 +24736,33 @@ const THREAD_REALTIME_APPEND_TEXT_RESPONSE_JSON_SCHEMA =
     \\
 ;
 
+const THREAD_REALTIME_APPEND_SPEECH_PARAMS_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "ThreadRealtimeAppendSpeechParams",
+    \\  "description": "EXPERIMENTAL - append speakable text to thread realtime.",
+    \\  "type": "object",
+    \\  "required": ["threadId", "text"],
+    \\  "properties": {
+    \\    "threadId": { "type": "string" },
+    \\    "text": { "type": "string" }
+    \\  },
+    \\  "additionalProperties": true
+    \\}
+    \\
+;
+
+const THREAD_REALTIME_APPEND_SPEECH_RESPONSE_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "ThreadRealtimeAppendSpeechResponse",
+    \\  "description": "EXPERIMENTAL - response for appending realtime speech.",
+    \\  "type": "object",
+    \\  "additionalProperties": false
+    \\}
+    \\
+;
+
 const THREAD_REALTIME_AUDIO_CHUNK_JSON_SCHEMA =
     \\{
     \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -29654,6 +29715,19 @@ const APP_SERVER_PROTOCOL_SCHEMA_BUNDLE =
     \\      "type": "object",
     \\      "additionalProperties": false
     \\    },
+    \\    "ThreadRealtimeAppendSpeechParams": {
+    \\      "type": "object",
+    \\      "required": ["threadId", "text"],
+    \\      "properties": {
+    \\        "threadId": { "type": "string" },
+    \\        "text": { "type": "string" }
+    \\      },
+    \\      "additionalProperties": true
+    \\    },
+    \\    "ThreadRealtimeAppendSpeechResponse": {
+    \\      "type": "object",
+    \\      "additionalProperties": false
+    \\    },
     \\    "ThreadRealtimeAudioChunk": {
     \\      "type": "object",
     \\      "required": ["data", "numChannels", "sampleRate"],
@@ -30244,6 +30318,8 @@ const APP_SERVER_JSON_SCHEMA_FILES = [_]SchemaFile{
     .{ .name = "ThreadRealtimeStartResponse.json", .contents = THREAD_REALTIME_START_RESPONSE_JSON_SCHEMA },
     .{ .name = "ThreadRealtimeAppendTextParams.json", .contents = THREAD_REALTIME_APPEND_TEXT_PARAMS_JSON_SCHEMA },
     .{ .name = "ThreadRealtimeAppendTextResponse.json", .contents = THREAD_REALTIME_APPEND_TEXT_RESPONSE_JSON_SCHEMA },
+    .{ .name = "ThreadRealtimeAppendSpeechParams.json", .contents = THREAD_REALTIME_APPEND_SPEECH_PARAMS_JSON_SCHEMA },
+    .{ .name = "ThreadRealtimeAppendSpeechResponse.json", .contents = THREAD_REALTIME_APPEND_SPEECH_RESPONSE_JSON_SCHEMA },
     .{ .name = "ThreadRealtimeAudioChunk.json", .contents = THREAD_REALTIME_AUDIO_CHUNK_JSON_SCHEMA },
     .{ .name = "ThreadRealtimeAppendAudioParams.json", .contents = THREAD_REALTIME_APPEND_AUDIO_PARAMS_JSON_SCHEMA },
     .{ .name = "ThreadRealtimeAppendAudioResponse.json", .contents = THREAD_REALTIME_APPEND_AUDIO_RESPONSE_JSON_SCHEMA },
@@ -31106,6 +31182,8 @@ const APP_SERVER_TS_FILES = [_]SchemaFile{
     .{ .name = "v2/ThreadRealtimeStartResponse.ts", .contents = THREAD_REALTIME_START_RESPONSE_TS },
     .{ .name = "v2/ThreadRealtimeAppendTextParams.ts", .contents = THREAD_REALTIME_APPEND_TEXT_PARAMS_TS },
     .{ .name = "v2/ThreadRealtimeAppendTextResponse.ts", .contents = THREAD_REALTIME_APPEND_TEXT_RESPONSE_TS },
+    .{ .name = "v2/ThreadRealtimeAppendSpeechParams.ts", .contents = THREAD_REALTIME_APPEND_SPEECH_PARAMS_TS },
+    .{ .name = "v2/ThreadRealtimeAppendSpeechResponse.ts", .contents = THREAD_REALTIME_APPEND_SPEECH_RESPONSE_TS },
     .{ .name = "v2/ThreadRealtimeAudioChunk.ts", .contents = THREAD_REALTIME_AUDIO_CHUNK_TS },
     .{ .name = "v2/ThreadRealtimeAppendAudioParams.ts", .contents = THREAD_REALTIME_APPEND_AUDIO_PARAMS_TS },
     .{ .name = "v2/ThreadRealtimeAppendAudioResponse.ts", .contents = THREAD_REALTIME_APPEND_AUDIO_RESPONSE_TS },
@@ -42403,6 +42481,7 @@ fn isThreadMethod(method: []const u8) bool {
         std.mem.eql(u8, method, "thread/items/list") or
         std.mem.eql(u8, method, "thread/realtime/start") or
         std.mem.eql(u8, method, "thread/realtime/appendAudio") or
+        std.mem.eql(u8, method, "thread/realtime/appendSpeech") or
         std.mem.eql(u8, method, "thread/realtime/appendText") or
         std.mem.eql(u8, method, "thread/realtime/stop") or
         std.mem.eql(u8, method, "thread/realtime/listVoices");
@@ -43317,26 +43396,10 @@ fn handleThreadMethod(
         try stopLoadedThreadRealtime(allocator, state, thread_index);
         return renderJsonRpcResult(allocator, id_value, "{}");
     }
-    if (std.mem.eql(u8, method, "thread/realtime/appendText")) {
-        const object = parseThreadObjectParams(params_value) catch |err| switch (err) {
-            error.InvalidThreadParams => return renderThreadObjectParamsError(allocator, id_value, method),
-        };
-        const thread_id = requiredThreadIdParam(object) catch |err| switch (err) {
-            error.MissingThreadId => return renderJsonRpcError(allocator, id_value, -32602, "threadId must be a string"),
-        };
-        const text = object.get("text") orelse return renderJsonRpcError(allocator, id_value, -32602, "text must be a string");
-        if (text != .string) return renderJsonRpcError(allocator, id_value, -32602, "text must be a string");
-        if (!isUuidString(thread_id)) {
-            return renderInvalidThreadId(allocator, id_value, thread_id);
-        }
-        const thread_index = findLoadedThreadIndex(state, thread_id) orelse {
-            return renderThreadNotFound(allocator, id_value, thread_id);
-        };
-        if (!(try appServerFeatureEnabled(allocator, state, "realtime_conversation"))) {
-            return renderThreadRealtimeFeatureDisabled(allocator, id_value, thread_id);
-        }
-        try requireLoadedThreadRealtimeRunning(allocator, state, thread_index);
-        return renderJsonRpcResult(allocator, id_value, "{}");
+    if (std.mem.eql(u8, method, "thread/realtime/appendText") or
+        std.mem.eql(u8, method, "thread/realtime/appendSpeech"))
+    {
+        return handleThreadRealtimeAppendTextLike(allocator, state, id_value, method, params_value);
     }
     if (std.mem.eql(u8, method, "thread/realtime/appendAudio")) {
         const object = parseThreadObjectParams(params_value) catch |err| switch (err) {
@@ -49759,6 +49822,7 @@ fn experimentalReasonForRequestMethod(method: []const u8) ?[]const u8 {
         "thread/items/list",
         "thread/realtime/start",
         "thread/realtime/appendAudio",
+        "thread/realtime/appendSpeech",
         "thread/realtime/appendText",
         "thread/realtime/stop",
         "thread/realtime/listVoices",
@@ -49948,6 +50012,34 @@ fn renderThreadRealtimeFeatureDisabled(allocator: std.mem.Allocator, id_value: s
     );
     defer allocator.free(message);
     return renderJsonRpcError(allocator, id_value, -32600, message);
+}
+
+fn handleThreadRealtimeAppendTextLike(
+    allocator: std.mem.Allocator,
+    state: *AppServerState,
+    id_value: std.json.Value,
+    method: []const u8,
+    params_value: ?std.json.Value,
+) ![]const u8 {
+    const object = parseThreadObjectParams(params_value) catch |err| switch (err) {
+        error.InvalidThreadParams => return renderThreadObjectParamsError(allocator, id_value, method),
+    };
+    const thread_id = requiredThreadIdParam(object) catch |err| switch (err) {
+        error.MissingThreadId => return renderJsonRpcError(allocator, id_value, -32602, "threadId must be a string"),
+    };
+    const text = object.get("text") orelse return renderJsonRpcError(allocator, id_value, -32602, "text must be a string");
+    if (text != .string) return renderJsonRpcError(allocator, id_value, -32602, "text must be a string");
+    if (!isUuidString(thread_id)) {
+        return renderInvalidThreadId(allocator, id_value, thread_id);
+    }
+    const thread_index = findLoadedThreadIndex(state, thread_id) orelse {
+        return renderThreadNotFound(allocator, id_value, thread_id);
+    };
+    if (!(try appServerFeatureEnabled(allocator, state, "realtime_conversation"))) {
+        return renderThreadRealtimeFeatureDisabled(allocator, id_value, thread_id);
+    }
+    try requireLoadedThreadRealtimeRunning(allocator, state, thread_index);
+    return renderJsonRpcResult(allocator, id_value, "{}");
 }
 
 fn startLoadedThreadRealtime(

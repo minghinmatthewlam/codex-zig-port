@@ -89,6 +89,7 @@ EXPERIMENTAL_API_METHODS = [
     "thread/items/list",
     "thread/realtime/start",
     "thread/realtime/appendAudio",
+    "thread/realtime/appendSpeech",
     "thread/realtime/appendText",
     "thread/realtime/stop",
     "thread/realtime/listVoices",
@@ -5151,6 +5152,88 @@ def exercise_json_rpc(write_line, read_line) -> None:
     write_line(
         {
             "jsonrpc": "2.0",
+            "id": "thread-realtime-append-speech-invalid-params",
+            "method": "thread/realtime/appendSpeech",
+            "params": [],
+        }
+    )
+    thread_realtime_append_speech_invalid_params = read_line()
+    assert (
+        thread_realtime_append_speech_invalid_params["id"]
+        == "thread-realtime-append-speech-invalid-params"
+    )
+    assert thread_realtime_append_speech_invalid_params["error"]["code"] == -32602
+    assert (
+        "thread/realtime/appendSpeech params must be an object"
+        in thread_realtime_append_speech_invalid_params["error"]["message"]
+    )
+
+    write_line(
+        {
+            "jsonrpc": "2.0",
+            "id": "thread-realtime-append-speech-invalid-text",
+            "method": "thread/realtime/appendSpeech",
+            "params": {
+                "threadId": "00000000-0000-0000-0000-000000000018",
+                "text": 123,
+            },
+        }
+    )
+    thread_realtime_append_speech_invalid_text = read_line()
+    assert (
+        thread_realtime_append_speech_invalid_text["id"]
+        == "thread-realtime-append-speech-invalid-text"
+    )
+    assert thread_realtime_append_speech_invalid_text["error"]["code"] == -32602
+    assert (
+        "text must be a string"
+        in thread_realtime_append_speech_invalid_text["error"]["message"]
+    )
+
+    write_line(
+        {
+            "jsonrpc": "2.0",
+            "id": "thread-realtime-append-speech-invalid-thread",
+            "method": "thread/realtime/appendSpeech",
+            "params": {"threadId": "not-a-uuid", "text": "hello"},
+        }
+    )
+    thread_realtime_append_speech_invalid_thread = read_line()
+    assert (
+        thread_realtime_append_speech_invalid_thread["id"]
+        == "thread-realtime-append-speech-invalid-thread"
+    )
+    assert thread_realtime_append_speech_invalid_thread["error"]["code"] == -32600
+    assert (
+        "invalid thread id: not-a-uuid"
+        in thread_realtime_append_speech_invalid_thread["error"]["message"]
+    )
+
+    write_line(
+        {
+            "jsonrpc": "2.0",
+            "id": "thread-realtime-append-speech-missing",
+            "method": "thread/realtime/appendSpeech",
+            "params": {
+                "threadId": "00000000-0000-0000-0000-000000000018",
+                "text": "hello",
+            },
+        }
+    )
+    thread_realtime_append_speech_missing = read_line()
+    assert (
+        thread_realtime_append_speech_missing["id"]
+        == "thread-realtime-append-speech-missing"
+    )
+    assert thread_realtime_append_speech_missing["error"]["code"] == -32600
+    assert (
+        "thread not found: 00000000-0000-0000-0000-000000000018"
+        in thread_realtime_append_speech_missing["error"]["message"]
+    )
+
+    write_line(
+        {
+            "jsonrpc": "2.0",
             "id": "thread-realtime-append-audio-invalid-params",
             "method": "thread/realtime/appendAudio",
             "params": [],
@@ -6597,6 +6680,19 @@ def run_thread_realtime_lifecycle_smoke(binary: Path) -> None:
         append_text_active = read_json_line(proc, 5)
         assert append_text_active["id"] == "thread-realtime-append-text-active"
         assert append_text_active["result"] == {}
+
+        write_json_line(
+            proc,
+            {
+                "jsonrpc": "2.0",
+                "id": "thread-realtime-append-speech-active",
+                "method": "thread/realtime/appendSpeech",
+                "params": {"threadId": thread_id, "text": "speak realtime"},
+            },
+        )
+        append_speech_active = read_json_line(proc, 5)
+        assert append_speech_active["id"] == "thread-realtime-append-speech-active"
+        assert append_speech_active["result"] == {}
 
         write_json_line(
             proc,
@@ -53347,6 +53443,23 @@ def run_json_schema_smoke(binary: Path) -> None:
             )
         )
         assert thread_realtime_append_text_response["additionalProperties"] is False
+        thread_realtime_append_speech = json.loads(
+            (out_dir / "ThreadRealtimeAppendSpeechParams.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        assert thread_realtime_append_speech["required"] == ["threadId", "text"]
+        assert (
+            thread_realtime_append_speech["properties"]["threadId"]["type"]
+            == "string"
+        )
+        assert thread_realtime_append_speech["properties"]["text"]["type"] == "string"
+        thread_realtime_append_speech_response = json.loads(
+            (out_dir / "ThreadRealtimeAppendSpeechResponse.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        assert thread_realtime_append_speech_response["additionalProperties"] is False
         thread_realtime_audio_chunk = json.loads(
             (out_dir / "ThreadRealtimeAudioChunk.json").read_text(encoding="utf-8")
         )
@@ -53662,6 +53775,8 @@ def run_json_schema_smoke(binary: Path) -> None:
         assert "ThreadRealtimeStartResponse" in bundle["$defs"]
         assert "ThreadRealtimeStopResponse" in bundle["$defs"]
         assert "ThreadRealtimeAppendTextResponse" in bundle["$defs"]
+        assert "ThreadRealtimeAppendSpeechParams" in bundle["$defs"]
+        assert "ThreadRealtimeAppendSpeechResponse" in bundle["$defs"]
         assert "ThreadRealtimeAudioChunk" in bundle["$defs"]
         assert "ThreadRealtimeAppendAudioResponse" in bundle["$defs"]
         for realtime_notification_def in [
@@ -55100,6 +55215,8 @@ def run_typescript_generation_smoke(binary: Path) -> None:
         assert "params: ThreadRealtimeStopParams;" in client_request
         assert 'method: "thread/realtime/appendText";' in client_request
         assert "params: ThreadRealtimeAppendTextParams;" in client_request
+        assert 'method: "thread/realtime/appendSpeech";' in client_request
+        assert "params: ThreadRealtimeAppendSpeechParams;" in client_request
         assert 'method: "thread/realtime/appendAudio";' in client_request
         assert "params: ThreadRealtimeAppendAudioParams;" in client_request
         assert 'method: "config/read";' in client_request
@@ -56390,6 +56507,8 @@ def run_typescript_generation_smoke(binary: Path) -> None:
         assert "result: ThreadRealtimeStopResponse;" in client_response
         assert 'method: "thread/realtime/appendText";' in client_response
         assert "result: ThreadRealtimeAppendTextResponse;" in client_response
+        assert 'method: "thread/realtime/appendSpeech";' in client_response
+        assert "result: ThreadRealtimeAppendSpeechResponse;" in client_response
         assert 'method: "thread/realtime/appendAudio";' in client_response
         assert "result: ThreadRealtimeAppendAudioResponse;" in client_response
         for method, response_type in [
@@ -58655,6 +58774,18 @@ def run_typescript_generation_smoke(binary: Path) -> None:
             "export interface ThreadRealtimeAppendTextResponse {}"
             in thread_realtime_append_text_response
         )
+        thread_realtime_append_speech = (
+            out_dir / "v2" / "ThreadRealtimeAppendSpeechParams.ts"
+        ).read_text(encoding="utf-8")
+        assert "threadId: string;" in thread_realtime_append_speech
+        assert "text: string;" in thread_realtime_append_speech
+        thread_realtime_append_speech_response = (
+            out_dir / "v2" / "ThreadRealtimeAppendSpeechResponse.ts"
+        ).read_text(encoding="utf-8")
+        assert (
+            "export interface ThreadRealtimeAppendSpeechResponse {}"
+            in thread_realtime_append_speech_response
+        )
         thread_realtime_audio_chunk = (
             out_dir / "v2" / "ThreadRealtimeAudioChunk.ts"
         ).read_text(encoding="utf-8")
@@ -59721,6 +59852,14 @@ def run_typescript_generation_smoke(binary: Path) -> None:
         )
         assert (
             'export type { ThreadRealtimeAppendTextResponse } from "./ThreadRealtimeAppendTextResponse";'
+            in v2_index
+        )
+        assert (
+            'export type { ThreadRealtimeAppendSpeechParams } from "./ThreadRealtimeAppendSpeechParams";'
+            in v2_index
+        )
+        assert (
+            'export type { ThreadRealtimeAppendSpeechResponse } from "./ThreadRealtimeAppendSpeechResponse";'
             in v2_index
         )
         assert (
