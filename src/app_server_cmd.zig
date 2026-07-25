@@ -34,6 +34,7 @@ const plugin_config = @import("plugin_config.zig");
 const plugin_list = @import("plugin_list.zig");
 const plan_tool = @import("plan_tool.zig");
 const product_restriction = @import("product_restriction.zig");
+const remote_ws_client = @import("remote_ws_client.zig");
 const remote_plugin = @import("remote_plugin.zig");
 const review_output_mod = @import("review_output.zig");
 const review_prompt = @import("review_prompt.zig");
@@ -43786,23 +43787,29 @@ fn handleEnvironmentMethod(
         return renderJsonRpcResult(allocator, id_value, result);
     }
 
-    const connection_error = if (entry.disconnected_error) |message|
-        try allocator.dupe(u8, message)
-    else
-        try std.fmt.allocPrint(
+    if (entry.disconnected_error) |connection_error| {
+        const message = try std.fmt.allocPrint(
             allocator,
-            "exec-server connection attempt failed: failed to connect to exec-server websocket `{s}`: live exec-server connections are not supported yet",
-            .{entry.exec_server_url},
+            "failed to get info for environment `{s}`: {s}",
+            .{ environment_id, connection_error },
         );
-    defer allocator.free(connection_error);
+        defer allocator.free(message);
+        return renderJsonRpcError(allocator, id_value, -32603, message);
+    }
 
-    const message = try std.fmt.allocPrint(
-        allocator,
-        "failed to get info for environment `{s}`: {s}",
-        .{ environment_id, connection_error },
-    );
-    defer allocator.free(message);
-    return renderJsonRpcError(allocator, id_value, -32603, message);
+    const result = fetchExecServerEnvironmentInfoResult(allocator, entry) catch |err| {
+        const connection_error = try execServerEnvironmentInfoErrorMessage(allocator, entry.exec_server_url, err);
+        defer allocator.free(connection_error);
+        const message = try std.fmt.allocPrint(
+            allocator,
+            "failed to get info for environment `{s}`: {s}",
+            .{ environment_id, connection_error },
+        );
+        defer allocator.free(message);
+        return renderJsonRpcError(allocator, id_value, -32603, message);
+    };
+    defer allocator.free(result);
+    return renderJsonRpcResult(allocator, id_value, result);
 }
 
 fn findEnvironmentEntryIndex(state: *const AppServerState, environment_id: []const u8) ?usize {
@@ -43860,6 +43867,339 @@ fn renderEnvironmentStatusResult(
     }
     try result.append(allocator, '}');
     return try result.toOwnedSlice(allocator);
+}
+
+const ExecServerWebSocketScheme = enum { ws, wss };
+
+const ExecServerWebSocketUrl = struct {
+    scheme: ExecServerWebSocketScheme,
+    host: []const u8,
+    port: u16,
+    target: []const u8,
+};
+
+fn fetchExecServerEnvironmentInfoResult(allocator: std.mem.Allocator, entry: *const EnvironmentEntry) ![]const u8 {
+    const parts = try parseExecServerWebSocketUrl(entry.exec_server_url);
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var connection: remote_ws_client.Connection = undefined;
+    switch (parts.scheme) {
+        .ws => {
+            const connect_host = remote_ws_client.remoteWebSocketConnectHost(parts.host);
+            const stream = try connectExecServerWebSocketTcp(io, connect_host, parts.port);
+            connection.initPlain(allocator, io, stream);
+        },
+        .wss => try connection.initTls(allocator, io, parts.host, parts.port),
+    }
+    defer connection.deinit();
+
+    const reader = connection.reader();
+    const writer = connection.writer();
+    try performExecServerEnvironmentWebSocketHandshake(allocator, reader, writer, parts);
+
+    try writeExecServerClientWebSocketTextFrame(allocator, writer, "{\"jsonrpc\":\"2.0\",\"id\":\"initialize\",\"method\":\"initialize\",\"params\":{\"clientName\":\"codex-zig-app-server\"}}");
+    const initialize_response = try readExecServerServerWebSocketTextFrame(allocator, reader, writer) orelse return error.ExecServerWebSocketClosed;
+    defer allocator.free(initialize_response);
+    try validateExecServerJsonRpcResult(allocator, initialize_response, "initialize");
+
+    try writeExecServerClientWebSocketTextFrame(allocator, writer, "{\"jsonrpc\":\"2.0\",\"method\":\"initialized\"}");
+    try writeExecServerClientWebSocketTextFrame(allocator, writer, "{\"jsonrpc\":\"2.0\",\"id\":\"environment-info\",\"method\":\"environment/info\",\"params\":{}}");
+    const info_response = try readExecServerServerWebSocketTextFrame(allocator, reader, writer) orelse return error.ExecServerWebSocketClosed;
+    defer allocator.free(info_response);
+    return renderEnvironmentInfoResultFromExecServerResponse(allocator, info_response);
+}
+
+fn execServerEnvironmentInfoErrorMessage(
+    allocator: std.mem.Allocator,
+    exec_server_url: []const u8,
+    err: anyerror,
+) ![]const u8 {
+    const reason = switch (err) {
+        error.UnsupportedExecServerWebSocketScheme => "URL error: URL scheme not supported",
+        error.InvalidExecServerWebSocketUrl => "URL error: URL is invalid",
+        error.RemoteWebSocketHandshakeFailed => "websocket handshake failed",
+        error.ExecServerWebSocketClosed => "websocket closed before environment/info response",
+        error.ExecServerJsonRpcError => "exec-server returned an error response",
+        error.InvalidExecServerEnvironmentInfoResponse => "exec-server returned invalid environment/info response",
+        else => @errorName(err),
+    };
+    return std.fmt.allocPrint(
+        allocator,
+        "exec-server connection attempt failed: failed to connect to exec-server websocket `{s}`: {s}",
+        .{ exec_server_url, reason },
+    );
+}
+
+fn parseExecServerWebSocketUrl(value: []const u8) !ExecServerWebSocketUrl {
+    const scheme: ExecServerWebSocketScheme = if (std.mem.startsWith(u8, value, "ws://"))
+        .ws
+    else if (std.mem.startsWith(u8, value, "wss://"))
+        .wss
+    else
+        return error.UnsupportedExecServerWebSocketScheme;
+    const rest = switch (scheme) {
+        .ws => value["ws://".len..],
+        .wss => value["wss://".len..],
+    };
+    if (rest.len == 0 or std.mem.indexOfScalar(u8, rest, '#') != null) return error.InvalidExecServerWebSocketUrl;
+
+    const target_start = std.mem.indexOfAny(u8, rest, "/?") orelse rest.len;
+    const authority = rest[0..target_start];
+    const target = rest[target_start..];
+    if (authority.len == 0) return error.InvalidExecServerWebSocketUrl;
+
+    var host: []const u8 = undefined;
+    var port: u16 = undefined;
+    if (authority[0] == '[') {
+        const close_index = std.mem.indexOfScalar(u8, authority, ']') orelse return error.InvalidExecServerWebSocketUrl;
+        if (close_index + 1 < authority.len and authority[close_index + 1] != ':') return error.InvalidExecServerWebSocketUrl;
+        port = if (close_index + 1 == authority.len)
+            defaultExecServerWebSocketPort(scheme)
+        else port_blk: {
+            const port_text = authority[close_index + 2 ..];
+            if (port_text.len == 0) return error.InvalidExecServerWebSocketUrl;
+            break :port_blk std.fmt.parseUnsigned(u16, port_text, 10) catch return error.InvalidExecServerWebSocketUrl;
+        };
+        host = authority[0 .. close_index + 1];
+    } else {
+        const colon_index = std.mem.lastIndexOfScalar(u8, authority, ':');
+        host = if (colon_index) |index| authority[0..index] else authority;
+        if (host.len == 0) return error.InvalidExecServerWebSocketUrl;
+        port = if (colon_index) |index| port_blk: {
+            const port_text = authority[index + 1 ..];
+            if (port_text.len == 0) return error.InvalidExecServerWebSocketUrl;
+            break :port_blk std.fmt.parseUnsigned(u16, port_text, 10) catch return error.InvalidExecServerWebSocketUrl;
+        } else defaultExecServerWebSocketPort(scheme);
+    }
+    if (host.len == 0) return error.InvalidExecServerWebSocketUrl;
+    return .{ .scheme = scheme, .host = host, .port = port, .target = target };
+}
+
+fn defaultExecServerWebSocketPort(scheme: ExecServerWebSocketScheme) u16 {
+    return switch (scheme) {
+        .ws => 80,
+        .wss => 443,
+    };
+}
+
+fn connectExecServerWebSocketTcp(io: std.Io, host: []const u8, port: u16) !net.Stream {
+    if (net.IpAddress.parse(host, port)) |address| {
+        var mutable_address = address;
+        return try mutable_address.connect(io, .{ .mode = .stream });
+    } else |_| {}
+    const host_name = try net.HostName.init(host);
+    return try host_name.connect(io, port, .{ .mode = .stream });
+}
+
+fn performExecServerEnvironmentWebSocketHandshake(
+    allocator: std.mem.Allocator,
+    reader: *std.Io.Reader,
+    writer: *std.Io.Writer,
+    parts: ExecServerWebSocketUrl,
+) !void {
+    var nonce: [16]u8 = undefined;
+    try std.Io.Threaded.global_single_threaded.io().randomSecure(&nonce);
+    var key_buffer: [24]u8 = undefined;
+    const key = std.base64.standard.Encoder.encode(&key_buffer, &nonce);
+    const target = if (parts.target.len == 0) "/" else parts.target;
+    if (target[0] == '?') {
+        try writer.print(
+            "GET /{s} HTTP/1.1\r\nHost: {s}:{d}\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: {s}\r\nSec-WebSocket-Version: 13\r\n\r\n",
+            .{ target, parts.host, parts.port, key },
+        );
+    } else {
+        try writer.print(
+            "GET {s} HTTP/1.1\r\nHost: {s}:{d}\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: {s}\r\nSec-WebSocket-Version: 13\r\n\r\n",
+            .{ target, parts.host, parts.port, key },
+        );
+    }
+    try writer.flush();
+
+    const response = try readExecServerHttpHeaderBlock(allocator, reader);
+    defer allocator.free(response);
+    if (!execServerWebSocketStatusIsSwitchingProtocols(response)) return error.RemoteWebSocketHandshakeFailed;
+    const expected_accept = try websocketAcceptValue(allocator, key);
+    defer allocator.free(expected_accept);
+    const actual_accept = execServerHttpHeaderValue(response, "sec-websocket-accept") orelse return error.RemoteWebSocketHandshakeFailed;
+    if (!std.mem.eql(u8, actual_accept, expected_accept)) return error.RemoteWebSocketHandshakeFailed;
+}
+
+fn readExecServerHttpHeaderBlock(allocator: std.mem.Allocator, reader: *std.Io.Reader) ![]u8 {
+    var out = std.ArrayList(u8).empty;
+    errdefer out.deinit(allocator);
+    while (out.items.len < 64 * 1024) {
+        const byte = try reader.takeByte();
+        try out.append(allocator, byte);
+        if (out.items.len >= 4 and std.mem.eql(u8, out.items[out.items.len - 4 ..], "\r\n\r\n")) {
+            return out.toOwnedSlice(allocator);
+        }
+    }
+    return error.RemoteWebSocketHandshakeTooLarge;
+}
+
+fn execServerWebSocketStatusIsSwitchingProtocols(response: []const u8) bool {
+    const line_end = std.mem.indexOf(u8, response, "\r\n") orelse response.len;
+    const status_line = response[0..line_end];
+    return std.mem.startsWith(u8, status_line, "HTTP/1.1 101") or
+        std.mem.startsWith(u8, status_line, "HTTP/1.0 101");
+}
+
+fn execServerHttpHeaderValue(response: []const u8, name: []const u8) ?[]const u8 {
+    var lines = std.mem.splitSequence(u8, response, "\r\n");
+    _ = lines.next();
+    while (lines.next()) |line| {
+        if (line.len == 0) break;
+        const colon = std.mem.indexOfScalar(u8, line, ':') orelse continue;
+        const header_name = std.mem.trim(u8, line[0..colon], " \t");
+        if (!std.ascii.eqlIgnoreCase(header_name, name)) continue;
+        return std.mem.trim(u8, line[colon + 1 ..], " \t");
+    }
+    return null;
+}
+
+fn writeExecServerClientWebSocketTextFrame(
+    allocator: std.mem.Allocator,
+    writer: *std.Io.Writer,
+    payload: []const u8,
+) !void {
+    try writeExecServerClientWebSocketFrame(allocator, writer, 0x1, payload);
+}
+
+fn writeExecServerClientWebSocketFrame(
+    allocator: std.mem.Allocator,
+    writer: *std.Io.Writer,
+    opcode: u8,
+    payload: []const u8,
+) !void {
+    var mask: [4]u8 = undefined;
+    try std.Io.Threaded.global_single_threaded.io().randomSecure(&mask);
+    const masked = try allocator.alloc(u8, payload.len);
+    defer allocator.free(masked);
+    for (payload, 0..) |byte, index| {
+        masked[index] = byte ^ mask[index % mask.len];
+    }
+
+    try writer.writeByte(0x80 | (opcode & 0x0f));
+    if (payload.len <= 125) {
+        try writer.writeByte(0x80 | @as(u8, @intCast(payload.len)));
+    } else if (payload.len <= std.math.maxInt(u16)) {
+        try writer.writeByte(0x80 | 126);
+        try writer.writeInt(u16, @intCast(payload.len), .big);
+    } else {
+        try writer.writeByte(0x80 | 127);
+        try writer.writeInt(u64, @intCast(payload.len), .big);
+    }
+    try writer.writeAll(&mask);
+    try writer.writeAll(masked);
+    try writer.flush();
+}
+
+fn readExecServerServerWebSocketTextFrame(
+    allocator: std.mem.Allocator,
+    reader: *std.Io.Reader,
+    writer: *std.Io.Writer,
+) !?[]u8 {
+    while (true) {
+        const first = reader.takeByte() catch |err| switch (err) {
+            error.EndOfStream => return null,
+            else => return err,
+        };
+        const second = try reader.takeByte();
+        const fin = (first & 0x80) != 0;
+        const opcode = first & 0x0f;
+        const masked = (second & 0x80) != 0;
+        var payload_len: u64 = second & 0x7f;
+        if (payload_len == 126) {
+            payload_len = try reader.takeInt(u16, .big);
+        } else if (payload_len == 127) {
+            payload_len = try reader.takeInt(u64, .big);
+        }
+        if (!fin) return error.UnsupportedWebSocketFragment;
+        if (payload_len > max_app_server_json_rpc_line_bytes) return error.WebSocketFrameTooLarge;
+
+        var zero_mask = [4]u8{ 0, 0, 0, 0 };
+        const mask: *const [4]u8 = if (masked) try reader.takeArray(4) else &zero_mask;
+        const payload = try allocator.alloc(u8, @intCast(payload_len));
+        errdefer allocator.free(payload);
+        try reader.readSliceAll(payload);
+        if (masked) {
+            for (payload, 0..) |*byte, index| {
+                byte.* ^= mask[index % mask.len];
+            }
+        }
+
+        switch (opcode) {
+            0x1 => return payload,
+            0x8 => {
+                try writeExecServerClientWebSocketFrame(allocator, writer, 0x8, payload);
+                allocator.free(payload);
+                return null;
+            },
+            0x9 => {
+                try writeExecServerClientWebSocketFrame(allocator, writer, 0xA, payload);
+                allocator.free(payload);
+                continue;
+            },
+            0xA => {
+                allocator.free(payload);
+                continue;
+            },
+            else => {
+                allocator.free(payload);
+                return error.UnsupportedWebSocketOpcode;
+            },
+        }
+    }
+}
+
+fn validateExecServerJsonRpcResult(allocator: std.mem.Allocator, payload: []const u8, expected_id: []const u8) !void {
+    var parsed = std.json.parseFromSlice(std.json.Value, allocator, payload, .{}) catch return error.InvalidExecServerEnvironmentInfoResponse;
+    defer parsed.deinit();
+    if (parsed.value != .object) return error.InvalidExecServerEnvironmentInfoResponse;
+    const object = parsed.value.object;
+    if (object.get("error") != null) return error.ExecServerJsonRpcError;
+    const id = object.get("id") orelse return error.InvalidExecServerEnvironmentInfoResponse;
+    if (id != .string or !std.mem.eql(u8, id.string, expected_id)) return error.InvalidExecServerEnvironmentInfoResponse;
+    if (object.get("result") == null) return error.InvalidExecServerEnvironmentInfoResponse;
+}
+
+fn renderEnvironmentInfoResultFromExecServerResponse(allocator: std.mem.Allocator, payload: []const u8) ![]const u8 {
+    var parsed = std.json.parseFromSlice(std.json.Value, allocator, payload, .{}) catch return error.InvalidExecServerEnvironmentInfoResponse;
+    defer parsed.deinit();
+    if (parsed.value != .object) return error.InvalidExecServerEnvironmentInfoResponse;
+    const object = parsed.value.object;
+    if (object.get("error") != null) return error.ExecServerJsonRpcError;
+    const id = object.get("id") orelse return error.InvalidExecServerEnvironmentInfoResponse;
+    if (id != .string or !std.mem.eql(u8, id.string, "environment-info")) return error.InvalidExecServerEnvironmentInfoResponse;
+    const result = object.get("result") orelse return error.InvalidExecServerEnvironmentInfoResponse;
+    if (result != .object) return error.InvalidExecServerEnvironmentInfoResponse;
+    const shell = result.object.get("shell") orelse return error.InvalidExecServerEnvironmentInfoResponse;
+    if (shell != .object) return error.InvalidExecServerEnvironmentInfoResponse;
+    const shell_name = shell.object.get("name") orelse return error.InvalidExecServerEnvironmentInfoResponse;
+    const shell_path = shell.object.get("path") orelse return error.InvalidExecServerEnvironmentInfoResponse;
+    if (shell_name != .string or shell_path != .string) return error.InvalidExecServerEnvironmentInfoResponse;
+    const cwd = result.object.get("cwd");
+    if (cwd) |cwd_value| {
+        if (cwd_value != .null and cwd_value != .string) return error.InvalidExecServerEnvironmentInfoResponse;
+    }
+
+    var out = std.ArrayList(u8).empty;
+    errdefer out.deinit(allocator);
+    try out.appendSlice(allocator, "{\"shell\":{\"name\":");
+    try appendJsonString(allocator, &out, shell_name.string);
+    try out.appendSlice(allocator, ",\"path\":");
+    try appendJsonString(allocator, &out, shell_path.string);
+    try out.appendSlice(allocator, "},\"cwd\":");
+    if (cwd) |cwd_value| {
+        if (cwd_value == .string) {
+            try appendJsonString(allocator, &out, cwd_value.string);
+        } else {
+            try out.appendSlice(allocator, "null");
+        }
+    } else {
+        try out.appendSlice(allocator, "null");
+    }
+    try out.append(allocator, '}');
+    return out.toOwnedSlice(allocator);
 }
 
 fn handleRemoteControlStatusMutation(

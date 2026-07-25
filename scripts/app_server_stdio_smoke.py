@@ -48165,6 +48165,7 @@ def run_experimental_feature_rpc_smoke(binary: Path) -> None:
 
 def run_remote_control_status_notification_smoke(binary: Path) -> None:
     codex_home = Path(tempfile.mkdtemp(prefix="codex-zig-remote-status-", dir="/tmp"))
+    exec_server_proc: subprocess.Popen[str] | None = None
     remote_control_base_url = "http://localhost:8080/backend-api"
     remote_control_websocket_url = (
         "ws://localhost:8080/backend-api/wham/remote/control/server"
@@ -48352,6 +48353,35 @@ def run_remote_control_status_notification_smoke(binary: Path) -> None:
             {"environmentId": "env-ws"},
         )
         assert env_ws_status["result"] == {"status": "pending"}
+
+        exec_server_proc = subprocess.Popen(
+            [str(binary), "exec-server"],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            env=env,
+        )
+        exec_host, exec_port = wait_for_websocket_bind(exec_server_proc, 5)
+        env_add_live = rpc(
+            "environment-add-live",
+            "environment/add",
+            {
+                "environmentId": "env-live",
+                "execServerUrl": f"ws://{exec_host}:{exec_port}",
+                "connectTimeoutMs": 1000,
+            },
+        )
+        assert env_add_live["result"] == {}
+        env_live_info = rpc(
+            "environment-info-live",
+            "environment/info",
+            {"environmentId": "env-live"},
+        )
+        assert env_live_info["id"] == "environment-info-live"
+        assert env_live_info["result"]["shell"]["name"]
+        assert env_live_info["result"]["shell"]["path"]
+        assert env_live_info["result"]["cwd"] == Path.cwd().resolve().as_uri()
 
         write_json_line(
             proc,
@@ -48619,6 +48649,14 @@ def run_remote_control_status_notification_smoke(binary: Path) -> None:
             == "remote control pairing is unavailable until enrollment completes"
         )
     finally:
+        if exec_server_proc is not None:
+            if exec_server_proc.poll() is None:
+                exec_server_proc.terminate()
+                try:
+                    exec_server_proc.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    exec_server_proc.kill()
+                    exec_server_proc.wait(timeout=5)
         if proc.stdin is not None:
             proc.stdin.close()
         try:
