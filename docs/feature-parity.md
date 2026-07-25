@@ -1,6 +1,6 @@
 # Feature Parity Gap List
 
-Last checked: 2026-06-04.
+Last checked: 2026-07-24.
 
 This file tracks user-facing feature parity against the local Rust Codex CLI
 reference, not CI, release, OSS hygiene, byte-for-byte fixture parity, or
@@ -9,7 +9,7 @@ purely internal generator parity. The current reference is:
 - Rust checkout: `/Users/matthewlam/dev/codex` at
   `5381240f57fe326b13bc81325f3c61596592fc7a`
 - Installed Rust CLI: `codex-cli 0.145.0`
-- Zig checkout: `b32b51ab1c496d8b778581f6c60d9a1284fefdb9`
+- Zig checkout: `966367e9678bc01dffbbe21070fcfef84d7426cd`
 - Zig CLI: `codex-zig 0.0.1`
 
 The source evidence for this pass was the Rust and Zig root help output,
@@ -20,7 +20,10 @@ Zig TUI help in `src/tui.zig`, and the broader narrative tracker in
 `docs/parity.md`. App-server turn input-size parity was checked against
 Rust's `turn_processor.rs`, `protocol/v2/turn.rs`, and
 `MAX_USER_INPUT_TEXT_CHARS` definition, then verified through the Zig stdio
-app-server smoke.
+app-server smoke. Local CLI session archive command parity was checked against
+Rust `codex archive|delete|unarchive --help`, targeted missing-target behavior,
+Rust CLI/session archive command sources, Zig storage helpers, and
+`cli-session-archive-commands-e2e`.
 
 ## Priority Rules
 
@@ -267,6 +270,18 @@ app-server smoke.
   completions expose Rust-visible aliases plus hidden internal Rust command
   entries such as `responses-api-proxy` and `stdio-to-uds`; `help
   stdio-to-uds` now resolves like the command-local help path.
+- Top-level local `archive`, `delete`, and `unarchive` command coverage is
+  implemented for saved rollout files under `$CODEX_HOME`: command help and
+  completions advertise the Rust-visible commands, UUID targets take precedence
+  over exact session-name matches, names resolve from `session_index.jsonl`
+  before transcript metadata titles, archive/unarchive move files between
+  active and archived rollout roots, `delete --force UUID` removes active or
+  archived rollouts, non-forced delete refuses to confirm without an
+  interactive terminal, and missing-name versus missing-UUID errors match the
+  Rust CLI behavior probed for this slice. Command-local `--remote` is parsed
+  but explicitly rejected rather than silently mutating local storage; remote
+  thread-store archive/delete/unarchive remains in the remote desktop depth
+  bucket.
 - App-server generator command discovery now matches the implemented Rust
   surface: `app-server --help` advertises `generate-ts` and
   `generate-json-schema`, generator-local `--help` prints command help, valid
@@ -369,13 +384,15 @@ app-server smoke.
 
 ### Sessions, Threads, Resume, and Fork
 
-- Bring resume/fork/list/read/archive/unarchive/rollback behavior closer to
-  Rust state DB behavior. Local `thread/list` now covers active-vs-archived,
-  provider/source/cwd/search, pagination, status, default interactive source
-  filtering including Rust's `atlas`/`chatgpt` custom interactive sources,
-  Rust structured custom/subagent source metadata from rollout files and local
-  SQLite rows, source response shapes, and relative cwd normalization; remaining
-  work is remote thread-store behavior and deeper state-DB/schema fidelity.
+- Bring resume/fork/list/read/rollback behavior closer to Rust state DB
+  behavior, and deepen already-covered local archive/unarchive/delete semantics
+  with full state-DB metadata parity. Local `thread/list` now covers
+  active-vs-archived, provider/source/cwd/search, pagination, status, default
+  interactive source filtering including Rust's `atlas`/`chatgpt` custom
+  interactive sources, Rust structured custom/subagent source metadata from
+  rollout files and local SQLite rows, source response shapes, and relative cwd
+  normalization; remaining work is remote thread-store behavior and deeper
+  state-DB/schema fidelity.
 - Add richer resume/fork picker UI in the TUI, including Rust-like grouping,
   filtering, selected row details, cwd display, and remote/imported session
   handling.
