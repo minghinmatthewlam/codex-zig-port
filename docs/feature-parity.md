@@ -63,6 +63,10 @@ It stores extra skill roots for subsequent `skills/list` calls on the
 connection, emits `skills/changed` before the setter response, clears the
 skills-list cache, supports clearing roots with an empty list, and rejects
 relative paths with the Rust-shaped AbsolutePathBuf error.
+App-server `thread/settings/update` parity was checked against installed Rust
+`codex app-server --stdio` behavior with `experimentalApi`, generated
+`ThreadSettings*` protocol artifacts, experimental API gating, loaded-thread
+runtime override handling, and the Zig stdio app-server smoke.
 
 ## Priority Rules
 
@@ -405,6 +409,11 @@ relative paths with the Rust-shaped AbsolutePathBuf error.
   server-request dispatch, remaining lifecycle notification depth, and full
   Rust command/process lifecycle depth beyond current buffered-deferred,
   streamed/stdin/PTY socket transport coverage.
+- Close remaining app-server thread-settings depth: `thread/settings/update`
+  now updates already-loaded thread runtime settings, emits
+  `thread/settings/updated`, honors experimental API gating, and is included in
+  TypeScript/JSON Schema generation. Remaining depth is active permission
+  profile rendering and Rust's arbitrary reasoning-effort / Ultra semantics.
 - Close remaining app-server thread history depth: `thread/resume` now supports
   the experimental `initialTurnsPage` bootstrap field and explicit page
   `itemsView` handling, while standalone `thread/turns/list` now defaults to
@@ -500,6 +509,14 @@ relative paths with the Rust-shaped AbsolutePathBuf error.
 - Complete the remaining cloud task flows behind `codex cloud`: task creation,
   status/list, apply, diff, and TUI picker behavior against the current backend
   contract.
+- Close the current generated app-server `ClientRequest` method-set gaps:
+  `account/rateLimitResetCredit/consume`, `account/usage/read`,
+  `account/workspaceMessages/read`, `environment/add`, `environment/info`,
+  `environment/status`, `externalAgentConfig/import/readHistories`,
+  `mock/experimentalMethod`, `remoteControl/client/list`,
+  `remoteControl/client/revoke`, `remoteControl/pairing/start`,
+  `remoteControl/pairing/status`, `thread/realtime/appendSpeech`,
+  `thread/search`, and `thread/searchOccurrences`.
 - Finish desktop app and remote-control user flows beyond launching/opening:
   phone fork/share flow, durable daemon control, and local browser controller
   parity.

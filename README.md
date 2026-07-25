@@ -261,18 +261,22 @@ The first demo slice targets macOS and focuses on the interactive CLI surface:
   when `turn/start` writes stdin to model-started terminal sessions
 - clean model-started app-server PTY sessions through
   `thread/backgroundTerminals/clean` for clients with `experimentalApi`
+- update loaded app-server thread runtime settings through
+  `thread/settings/update`, emit `thread/settings/updated`, and generate the
+  corresponding TypeScript and JSON Schema protocol artifacts
 - require `initialize.params.capabilities.experimentalApi` for implemented
   Rust experimental app-server request methods, including `memory/reset`,
-  `thread/goal/*`, `thread/memoryMode/set`, `thread/turns/list`,
-  `thread/realtime/*`, `thread/backgroundTerminals/clean`, `process/*`,
-  `collaborationMode/list`, and `fuzzyFileSearch/session*`
+  `thread/goal/*`, `thread/memoryMode/set`, `thread/settings/update`,
+  `thread/turns/list`, `thread/realtime/*`,
+  `thread/backgroundTerminals/clean`, `process/*`, `collaborationMode/list`,
+  and `fuzzyFileSearch/session*`
 - require `initialize.params.capabilities.experimentalApi` for implemented
   Rust experimental app-server request fields on `thread/start`,
   `thread/resume`, `thread/fork`, `turn/start`, `turn/steer`,
   `command/exec`, and `account/login/start`
 - suppress implemented Rust experimental app-server server notifications,
-  including `thread/goal/*` and `process/*`, until the client enables
-  `experimentalApi`
+  including `thread/goal/*`, `thread/settings/updated`, and `process/*`, until
+  the client enables `experimentalApi`
 - emit app-server `remoteControl/status/changed` after `initialize` with the
   current disabled remote-control status, honoring notification opt-out
 - emit app-server `app/list/updated` after `experimentalFeature/enablement/set`

@@ -84,6 +84,7 @@ EXPERIMENTAL_API_METHODS = [
     "thread/goal/get",
     "thread/goal/clear",
     "thread/memoryMode/set",
+    "thread/settings/update",
     "thread/turns/list",
     "thread/items/list",
     "thread/realtime/start",
@@ -6045,6 +6046,116 @@ def run_thread_started_opt_out_smoke(binary: Path) -> None:
         loaded = read_json_line(proc, 5)
         assert loaded["id"] == "loaded-after-opted-out-start"
         assert loaded["result"] == {"data": [thread_id], "nextCursor": None}
+
+        assert proc.stdin is not None
+        proc.stdin.close()
+        proc.wait(timeout=5)
+        if proc.returncode != 0:
+            raise AssertionError(f"app-server exited {proc.returncode}: {proc.stderr.read()}")
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+            proc.wait(timeout=5)
+        shutil.rmtree(codex_home, ignore_errors=True)
+
+
+def run_thread_settings_update_smoke(binary: Path) -> None:
+    codex_home = Path(tempfile.mkdtemp(prefix="codex-zig-thread-settings-", dir="/tmp"))
+    env = os.environ.copy()
+    env["CODEX_HOME"] = str(codex_home)
+    proc = subprocess.Popen(
+        [str(binary), "app-server"],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        env=env,
+    )
+    try:
+        write_json_line(
+            proc,
+            {
+                "jsonrpc": "2.0",
+                "id": "initialize",
+                "method": "initialize",
+                "params": {
+                    "clientInfo": {"name": "app-server-smoke", "version": "0"},
+                    "capabilities": {
+                        "experimentalApi": True,
+                        "optOutNotificationMethods": [
+                            "thread/started",
+                            "configWarning",
+                            "remoteControl/status/changed",
+                        ],
+                    },
+                },
+            },
+        )
+        initialized = read_json_line(proc, 5)
+        assert initialized["id"] == "initialize"
+
+        write_json_line(
+            proc,
+            {
+                "jsonrpc": "2.0",
+                "id": "thread-start-settings",
+                "method": "thread/start",
+                "params": {"ephemeral": True},
+            },
+        )
+        started = read_json_line(proc, 5)
+        assert started["id"] == "thread-start-settings"
+        thread_id = started["result"]["thread"]["id"]
+
+        settings_params = {
+            "threadId": thread_id,
+            "model": "gpt-5",
+            "serviceTier": "flex",
+            "effort": "high",
+            "summary": "detailed",
+            "personality": "pragmatic",
+            "approvalPolicy": "never",
+            "approvalsReviewer": "user",
+            "sandboxPolicy": {"type": "readOnly", "networkAccess": False},
+        }
+        write_json_line(
+            proc,
+            {
+                "jsonrpc": "2.0",
+                "id": "thread-settings-update",
+                "method": "thread/settings/update",
+                "params": settings_params,
+            },
+        )
+        response = read_json_line(proc, 5)
+        assert response == {"jsonrpc": "2.0", "id": "thread-settings-update", "result": {}}
+
+        notification = read_json_line(proc, 5)
+        assert notification["jsonrpc"] == "2.0"
+        assert notification["method"] == "thread/settings/updated"
+        assert notification["params"]["threadId"] == thread_id
+        thread_settings = notification["params"]["threadSettings"]
+        assert thread_settings["model"] == "gpt-5"
+        assert thread_settings["serviceTier"] == "flex"
+        assert thread_settings["effort"] == "high"
+        assert thread_settings["summary"] == "detailed"
+        assert thread_settings["personality"] == "pragmatic"
+        assert thread_settings["approvalPolicy"] == "never"
+        assert thread_settings["approvalsReviewer"] == "user"
+        assert thread_settings["sandboxPolicy"] == {
+            "type": "readOnly",
+            "networkAccess": False,
+        }
+        assert thread_settings["activePermissionProfile"] is None
+        assert thread_settings["multiAgentMode"] == "explicitRequestOnly"
+        assert thread_settings["collaborationMode"] == {
+            "mode": "default",
+            "settings": {
+                "model": "gpt-5",
+                "reasoning_effort": "high",
+                "developer_instructions": None,
+            },
+        }
 
         assert proc.stdin is not None
         proc.stdin.close()
@@ -59188,6 +59299,8 @@ def main() -> None:
     print("app-server-stdio-e2e: ok")
     run_thread_started_opt_out_smoke(binary)
     print("app-server-thread-started-opt-out-e2e: ok")
+    run_thread_settings_update_smoke(binary)
+    print("app-server-thread-settings-update-e2e: ok")
     run_thread_idle_unload_smoke(binary)
     print("app-server-thread-idle-unload-e2e: ok")
     run_unix_idle_unload_after_disconnect_smoke(binary)

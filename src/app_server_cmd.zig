@@ -4371,6 +4371,16 @@ const MODE_KIND_TS =
     \\
     ;
 
+const MULTI_AGENT_MODE_TS =
+    GENERATED_TS_HEADER ++
+    \\/**
+    \\ * Controls the effective multi-agent delegation instructions for a turn. `custom` means the
+    \\ * configured mode hint defines the policy instead of a built-in policy.
+    \\ */
+    \\export type MultiAgentMode = { custom: string } | "explicitRequestOnly" | "proactive";
+    \\
+    ;
+
 const RESOURCE_TS =
     GENERATED_TS_HEADER ++
     \\import type { JsonValue } from "./serde_json/JsonValue";
@@ -8590,6 +8600,124 @@ const THREAD_START_RESPONSE_TS =
     \\
     ;
 
+const THREAD_SETTINGS_TS =
+    GENERATED_TS_HEADER ++
+    \\import type { AbsolutePathBuf } from "../AbsolutePathBuf";
+    \\import type { CollaborationMode } from "../CollaborationMode";
+    \\import type { MultiAgentMode } from "../MultiAgentMode";
+    \\import type { Personality } from "../Personality";
+    \\import type { ReasoningEffort } from "../ReasoningEffort";
+    \\import type { ReasoningSummary } from "../ReasoningSummary";
+    \\import type { ActivePermissionProfile } from "./ActivePermissionProfile";
+    \\import type { ApprovalsReviewer } from "./ApprovalsReviewer";
+    \\import type { AskForApproval } from "./AskForApproval";
+    \\import type { SandboxPolicy } from "./SandboxPolicy";
+    \\
+    \\export interface ThreadSettings {
+    \\  cwd: AbsolutePathBuf;
+    \\  approvalPolicy: AskForApproval;
+    \\  approvalsReviewer: ApprovalsReviewer;
+    \\  sandboxPolicy: SandboxPolicy;
+    \\  activePermissionProfile: ActivePermissionProfile | null;
+    \\  model: string;
+    \\  modelProvider: string;
+    \\  serviceTier: string | null;
+    \\  effort: ReasoningEffort | null;
+    \\  summary: ReasoningSummary | null;
+    \\  collaborationMode: CollaborationMode;
+    \\  /**
+    \\   * @deprecated Always `explicitRequestOnly`. Use `effort` for Ultra behavior.
+    \\   */
+    \\  multiAgentMode: MultiAgentMode;
+    \\  personality: Personality | null;
+    \\}
+    \\
+    ;
+
+const THREAD_SETTINGS_UPDATE_PARAMS_TS =
+    GENERATED_TS_HEADER ++
+    \\import type { CollaborationMode } from "../CollaborationMode";
+    \\import type { MultiAgentMode } from "../MultiAgentMode";
+    \\import type { Personality } from "../Personality";
+    \\import type { ReasoningEffort } from "../ReasoningEffort";
+    \\import type { ReasoningSummary } from "../ReasoningSummary";
+    \\import type { ApprovalsReviewer } from "./ApprovalsReviewer";
+    \\import type { AskForApproval } from "./AskForApproval";
+    \\import type { SandboxPolicy } from "./SandboxPolicy";
+    \\
+    \\export interface ThreadSettingsUpdateParams {
+    \\  threadId: string;
+    \\  /**
+    \\   * Override the working directory for subsequent turns.
+    \\   */
+    \\  cwd?: string | null;
+    \\  /**
+    \\   * Override the approval policy for subsequent turns.
+    \\   */
+    \\  approvalPolicy?: AskForApproval | null;
+    \\  /**
+    \\   * Override where approval requests are routed for subsequent turns.
+    \\   */
+    \\  approvalsReviewer?: ApprovalsReviewer | null;
+    \\  /**
+    \\   * Override the sandbox policy for subsequent turns.
+    \\   */
+    \\  sandboxPolicy?: SandboxPolicy | null;
+    \\  /**
+    \\   * Select a named permissions profile id for subsequent turns. Cannot be combined with
+    \\   * `sandboxPolicy`.
+    \\   */
+    \\  permissions?: string | null;
+    \\  /**
+    \\   * Override the model for subsequent turns.
+    \\   */
+    \\  model?: string | null;
+    \\  /**
+    \\   * Override the service tier for subsequent turns. `null` clears the current service tier;
+    \\   * omission leaves it unchanged.
+    \\   */
+    \\  serviceTier?: string | null;
+    \\  /**
+    \\   * Override the reasoning effort for subsequent turns.
+    \\   */
+    \\  effort?: ReasoningEffort | null;
+    \\  /**
+    \\   * Override the reasoning summary for subsequent turns.
+    \\   */
+    \\  summary?: ReasoningSummary | null;
+    \\  /**
+    \\   * EXPERIMENTAL - Set a pre-set collaboration mode for subsequent turns.
+    \\   */
+    \\  collaborationMode?: CollaborationMode | null;
+    \\  /**
+    \\   * @deprecated Ignored. Use `effort: "ultra"` for proactive multi-agent behavior.
+    \\   */
+    \\  multiAgentMode?: MultiAgentMode | null;
+    \\  /**
+    \\   * Override the personality for subsequent turns.
+    \\   */
+    \\  personality?: Personality | null;
+    \\}
+    \\
+    ;
+
+const THREAD_SETTINGS_UPDATE_RESPONSE_TS =
+    GENERATED_TS_HEADER ++
+    \\export interface ThreadSettingsUpdateResponse {}
+    \\
+    ;
+
+const THREAD_SETTINGS_UPDATED_NOTIFICATION_TS =
+    GENERATED_TS_HEADER ++
+    \\import type { ThreadSettings } from "./ThreadSettings";
+    \\
+    \\export interface ThreadSettingsUpdatedNotification {
+    \\  threadId: string;
+    \\  threadSettings: ThreadSettings;
+    \\}
+    \\
+    ;
+
 const THREAD_STARTED_NOTIFICATION_TS =
     GENERATED_TS_HEADER ++
     \\import type { Thread } from "./Thread";
@@ -11290,6 +11418,7 @@ const CLIENT_REQUEST_TS =
     \\import type { ThreadResumeParams } from "./v2/ThreadResumeParams";
     \\import type { ThreadRollbackParams } from "./v2/ThreadRollbackParams";
     \\import type { ThreadSetNameParams } from "./v2/ThreadSetNameParams";
+    \\import type { ThreadSettingsUpdateParams } from "./v2/ThreadSettingsUpdateParams";
     \\import type { ThreadShellCommandParams } from "./v2/ThreadShellCommandParams";
     \\import type { ThreadStartParams } from "./v2/ThreadStartParams";
     \\import type { ThreadTurnsListParams } from "./v2/ThreadTurnsListParams";
@@ -11700,6 +11829,10 @@ const CLIENT_REQUEST_TS =
     \\      params: ThreadMetadataUpdateParams;
     \\    }
     \\  | {
+    \\      method: "thread/settings/update";
+    \\      params: ThreadSettingsUpdateParams;
+    \\    }
+    \\  | {
     \\      method: "thread/read";
     \\      params: ThreadReadParams;
     \\    }
@@ -11848,6 +11981,7 @@ const CLIENT_RESPONSE_TS =
     \\import type { ThreadResumeResponse } from "./v2/ThreadResumeResponse";
     \\import type { ThreadRollbackResponse } from "./v2/ThreadRollbackResponse";
     \\import type { ThreadSetNameResponse } from "./v2/ThreadSetNameResponse";
+    \\import type { ThreadSettingsUpdateResponse } from "./v2/ThreadSettingsUpdateResponse";
     \\import type { ThreadShellCommandResponse } from "./v2/ThreadShellCommandResponse";
     \\import type { ThreadStartResponse } from "./v2/ThreadStartResponse";
     \\import type { ThreadTurnsListResponse } from "./v2/ThreadTurnsListResponse";
@@ -12364,6 +12498,11 @@ const CLIENT_RESPONSE_TS =
     \\    }
     \\  | {
     \\      id: RequestId;
+    \\      method: "thread/settings/update";
+    \\      result: ThreadSettingsUpdateResponse;
+    \\    }
+    \\  | {
+    \\      id: RequestId;
     \\      method: "thread/read";
     \\      result: ThreadReadResponse;
     \\    }
@@ -12523,6 +12662,7 @@ const SERVER_NOTIFICATION_TS =
     \\import type { ThreadRealtimeStartedNotification } from "./v2/ThreadRealtimeStartedNotification";
     \\import type { ThreadRealtimeTranscriptDeltaNotification } from "./v2/ThreadRealtimeTranscriptDeltaNotification";
     \\import type { ThreadRealtimeTranscriptDoneNotification } from "./v2/ThreadRealtimeTranscriptDoneNotification";
+    \\import type { ThreadSettingsUpdatedNotification } from "./v2/ThreadSettingsUpdatedNotification";
     \\import type { ThreadStartedNotification } from "./v2/ThreadStartedNotification";
     \\import type { ThreadStatusChangedNotification } from "./v2/ThreadStatusChangedNotification";
     \\import type { ThreadTokenUsageUpdatedNotification } from "./v2/ThreadTokenUsageUpdatedNotification";
@@ -12635,6 +12775,10 @@ const SERVER_NOTIFICATION_TS =
     \\  | {
     \\      method: "thread/goal/cleared";
     \\      params: ThreadGoalClearedNotification;
+    \\    }
+    \\  | {
+    \\      method: "thread/settings/updated";
+    \\      params: ThreadSettingsUpdatedNotification;
     \\    }
     \\  | {
     \\      method: "thread/tokenUsage/updated";
@@ -12850,6 +12994,7 @@ const INDEX_TS =
     \\export type { LocalShellStatus } from "./LocalShellStatus";
     \\export type { MessagePhase } from "./MessagePhase";
     \\export type { ModeKind } from "./ModeKind";
+    \\export type { MultiAgentMode } from "./MultiAgentMode";
     \\export type { ParsedCommand } from "./ParsedCommand";
     \\export type { Personality } from "./Personality";
     \\export type { PlanType } from "./PlanType";
@@ -13387,6 +13532,10 @@ const V2_INDEX_TS =
     \\export type { ThreadRollbackResponse } from "./ThreadRollbackResponse";
     \\export type { ThreadSetNameParams } from "./ThreadSetNameParams";
     \\export type { ThreadSetNameResponse } from "./ThreadSetNameResponse";
+    \\export type { ThreadSettings } from "./ThreadSettings";
+    \\export type { ThreadSettingsUpdateParams } from "./ThreadSettingsUpdateParams";
+    \\export type { ThreadSettingsUpdateResponse } from "./ThreadSettingsUpdateResponse";
+    \\export type { ThreadSettingsUpdatedNotification } from "./ThreadSettingsUpdatedNotification";
     \\export type { ThreadShellCommandParams } from "./ThreadShellCommandParams";
     \\export type { ThreadShellCommandResponse } from "./ThreadShellCommandResponse";
     \\export type { ThreadSortKey } from "./ThreadSortKey";
@@ -13523,6 +13672,15 @@ const CLIENT_REQUEST_JSON_SCHEMA =
     \\      "properties": {
     \\        "method": { "const": "thread/start" },
     \\        "params": { "$ref": "v2/ThreadStartParams.json" }
+    \\      },
+    \\      "additionalProperties": true
+    \\    },
+    \\    {
+    \\      "type": "object",
+    \\      "required": ["method", "params"],
+    \\      "properties": {
+    \\        "method": { "const": "thread/settings/update" },
+    \\        "params": { "$ref": "v2/ThreadSettingsUpdateParams.json" }
     \\      },
     \\      "additionalProperties": true
     \\    },
@@ -13692,6 +13850,15 @@ const SERVER_NOTIFICATION_JSON_SCHEMA =
     \\      "properties": {
     \\        "method": { "const": "thread/started" },
     \\        "params": { "$ref": "v2/ThreadStartedNotification.json" }
+    \\      },
+    \\      "additionalProperties": true
+    \\    },
+    \\    {
+    \\      "type": "object",
+    \\      "required": ["method", "params"],
+    \\      "properties": {
+    \\        "method": { "const": "thread/settings/updated" },
+    \\        "params": { "$ref": "v2/ThreadSettingsUpdatedNotification.json" }
     \\      },
     \\      "additionalProperties": true
     \\    },
@@ -20839,6 +21006,178 @@ const THREAD_START_RESPONSE_JSON_SCHEMA =
     \\
 ;
 
+const THREAD_SETTINGS_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "ThreadSettings",
+    \\  "type": "object",
+    \\  "required": ["cwd", "approvalPolicy", "approvalsReviewer", "sandboxPolicy", "activePermissionProfile", "model", "modelProvider", "serviceTier", "effort", "summary", "collaborationMode", "multiAgentMode", "personality"],
+    \\  "properties": {
+    \\    "cwd": { "type": "string" },
+    \\    "approvalPolicy": { "enum": ["untrusted", "on-failure", "on-request", "never"] },
+    \\    "approvalsReviewer": { "enum": ["user", "auto_review", "guardian_subagent"] },
+    \\    "sandboxPolicy": { "$ref": "SandboxPolicy.json" },
+    \\    "activePermissionProfile": {
+    \\      "anyOf": [
+    \\        true,
+    \\        { "type": "null" }
+    \\      ]
+    \\    },
+    \\    "model": { "type": "string" },
+    \\    "modelProvider": { "type": "string" },
+    \\    "serviceTier": { "type": ["string", "null"] },
+    \\    "effort": { "type": ["string", "null"] },
+    \\    "summary": { "enum": ["auto", "concise", "detailed", "none", null] },
+    \\    "collaborationMode": { "$ref": "#/$defs/ThreadSettingsCollaborationMode" },
+    \\    "multiAgentMode": { "$ref": "#/$defs/MultiAgentMode" },
+    \\    "personality": { "enum": ["none", "friendly", "pragmatic", null] }
+    \\  },
+    \\  "$defs": {
+    \\    "ThreadSettingsCollaborationMode": {
+    \\      "type": "object",
+    \\      "required": ["mode", "settings"],
+    \\      "properties": {
+    \\        "mode": { "enum": ["plan", "default"] },
+    \\        "settings": { "$ref": "#/$defs/ThreadSettingsCollaborationModeSettings" }
+    \\      },
+    \\      "additionalProperties": true
+    \\    },
+    \\    "ThreadSettingsCollaborationModeSettings": {
+    \\      "type": "object",
+    \\      "required": ["model", "reasoning_effort", "developer_instructions"],
+    \\      "properties": {
+    \\        "model": { "type": "string" },
+    \\        "reasoning_effort": { "type": ["string", "null"] },
+    \\        "developer_instructions": { "type": ["string", "null"] }
+    \\      },
+    \\      "additionalProperties": true
+    \\    },
+    \\    "MultiAgentMode": {
+    \\      "oneOf": [
+    \\        { "enum": ["explicitRequestOnly", "proactive"] },
+    \\        {
+    \\          "type": "object",
+    \\          "required": ["custom"],
+    \\          "properties": {
+    \\            "custom": { "type": "string" }
+    \\          },
+    \\          "additionalProperties": false
+    \\        }
+    \\      ]
+    \\    }
+    \\  },
+    \\  "additionalProperties": true
+    \\}
+    \\
+;
+
+const THREAD_SETTINGS_UPDATE_PARAMS_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "ThreadSettingsUpdateParams",
+    \\  "type": "object",
+    \\  "required": ["threadId"],
+    \\  "properties": {
+    \\    "threadId": { "type": "string" },
+    \\    "cwd": { "type": ["string", "null"] },
+    \\    "approvalPolicy": { "enum": ["untrusted", "on-failure", "on-request", "never", null] },
+    \\    "approvalsReviewer": { "enum": ["user", "auto_review", "guardian_subagent", null] },
+    \\    "sandboxPolicy": {
+    \\      "oneOf": [
+    \\        { "$ref": "SandboxPolicy.json" },
+    \\        { "type": "null" }
+    \\      ]
+    \\    },
+    \\    "permissions": {
+    \\      "anyOf": [
+    \\        { "type": "string" },
+    \\        { "type": "object" },
+    \\        { "type": "null" }
+    \\      ]
+    \\    },
+    \\    "model": { "type": ["string", "null"] },
+    \\    "modelProvider": { "type": ["string", "null"] },
+    \\    "serviceTier": { "type": ["string", "null"] },
+    \\    "effort": { "type": ["string", "null"] },
+    \\    "summary": { "enum": ["auto", "concise", "detailed", "none", null] },
+    \\    "collaborationMode": {
+    \\      "anyOf": [
+    \\        { "$ref": "#/$defs/ThreadSettingsCollaborationMode" },
+    \\        { "type": "null" }
+    \\      ]
+    \\    },
+    \\    "multiAgentMode": {
+    \\      "anyOf": [
+    \\        { "$ref": "#/$defs/MultiAgentMode" },
+    \\        { "type": "null" }
+    \\      ]
+    \\    },
+    \\    "personality": { "enum": ["none", "friendly", "pragmatic", null] }
+    \\  },
+    \\  "$defs": {
+    \\    "ThreadSettingsCollaborationMode": {
+    \\      "type": "object",
+    \\      "required": ["mode", "settings"],
+    \\      "properties": {
+    \\        "mode": { "enum": ["plan", "default"] },
+    \\        "settings": { "$ref": "#/$defs/ThreadSettingsCollaborationModeSettings" }
+    \\      },
+    \\      "additionalProperties": true
+    \\    },
+    \\    "ThreadSettingsCollaborationModeSettings": {
+    \\      "type": "object",
+    \\      "required": ["model", "reasoning_effort", "developer_instructions"],
+    \\      "properties": {
+    \\        "model": { "type": "string" },
+    \\        "reasoning_effort": { "type": ["string", "null"] },
+    \\        "developer_instructions": { "type": ["string", "null"] }
+    \\      },
+    \\      "additionalProperties": true
+    \\    },
+    \\    "MultiAgentMode": {
+    \\      "oneOf": [
+    \\        { "enum": ["explicitRequestOnly", "proactive"] },
+    \\        {
+    \\          "type": "object",
+    \\          "required": ["custom"],
+    \\          "properties": {
+    \\            "custom": { "type": "string" }
+    \\          },
+    \\          "additionalProperties": false
+    \\        }
+    \\      ]
+    \\    }
+    \\  },
+    \\  "additionalProperties": true
+    \\}
+    \\
+;
+
+const THREAD_SETTINGS_UPDATE_RESPONSE_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "ThreadSettingsUpdateResponse",
+    \\  "type": "object",
+    \\  "additionalProperties": false
+    \\}
+    \\
+;
+
+const THREAD_SETTINGS_UPDATED_NOTIFICATION_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "ThreadSettingsUpdatedNotification",
+    \\  "type": "object",
+    \\  "required": ["threadId", "threadSettings"],
+    \\  "properties": {
+    \\    "threadId": { "type": "string" },
+    \\    "threadSettings": { "$ref": "ThreadSettings.json" }
+    \\  },
+    \\  "additionalProperties": true
+    \\}
+    \\
+;
+
 const THREAD_STARTED_NOTIFICATION_JSON_SCHEMA =
     \\{
     \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -26864,6 +27203,118 @@ const APP_SERVER_PROTOCOL_SCHEMA_BUNDLE =
     \\      },
     \\      "additionalProperties": true
     \\    },
+    \\    "ThreadSettingsCollaborationMode": {
+    \\      "type": "object",
+    \\      "required": ["mode", "settings"],
+    \\      "properties": {
+    \\        "mode": { "enum": ["plan", "default"] },
+    \\        "settings": { "$ref": "#/$defs/ThreadSettingsCollaborationModeSettings" }
+    \\      },
+    \\      "additionalProperties": true
+    \\    },
+    \\    "ThreadSettingsCollaborationModeSettings": {
+    \\      "type": "object",
+    \\      "required": ["model", "reasoning_effort", "developer_instructions"],
+    \\      "properties": {
+    \\        "model": { "type": "string" },
+    \\        "reasoning_effort": { "type": ["string", "null"] },
+    \\        "developer_instructions": { "type": ["string", "null"] }
+    \\      },
+    \\      "additionalProperties": true
+    \\    },
+    \\    "MultiAgentMode": {
+    \\      "oneOf": [
+    \\        { "enum": ["explicitRequestOnly", "proactive"] },
+    \\        {
+    \\          "type": "object",
+    \\          "required": ["custom"],
+    \\          "properties": {
+    \\            "custom": { "type": "string" }
+    \\          },
+    \\          "additionalProperties": false
+    \\        }
+    \\      ]
+    \\    },
+    \\    "ThreadSettings": {
+    \\      "type": "object",
+    \\      "required": ["cwd", "approvalPolicy", "approvalsReviewer", "sandboxPolicy", "activePermissionProfile", "model", "modelProvider", "serviceTier", "effort", "summary", "collaborationMode", "multiAgentMode", "personality"],
+    \\      "properties": {
+    \\        "cwd": { "type": "string" },
+    \\        "approvalPolicy": { "enum": ["untrusted", "on-failure", "on-request", "never"] },
+    \\        "approvalsReviewer": { "enum": ["user", "auto_review", "guardian_subagent"] },
+    \\        "sandboxPolicy": { "$ref": "#/$defs/SandboxPolicy" },
+    \\        "activePermissionProfile": {
+    \\          "anyOf": [
+    \\            true,
+    \\            { "type": "null" }
+    \\          ]
+    \\        },
+    \\        "model": { "type": "string" },
+    \\        "modelProvider": { "type": "string" },
+    \\        "serviceTier": { "type": ["string", "null"] },
+    \\        "effort": { "type": ["string", "null"] },
+    \\        "summary": { "enum": ["auto", "concise", "detailed", "none", null] },
+    \\        "collaborationMode": { "$ref": "#/$defs/ThreadSettingsCollaborationMode" },
+    \\        "multiAgentMode": { "$ref": "#/$defs/MultiAgentMode" },
+    \\        "personality": { "enum": ["none", "friendly", "pragmatic", null] }
+    \\      },
+    \\      "additionalProperties": true
+    \\    },
+    \\    "ThreadSettingsUpdateParams": {
+    \\      "type": "object",
+    \\      "required": ["threadId"],
+    \\      "properties": {
+    \\        "threadId": { "type": "string" },
+    \\        "cwd": { "type": ["string", "null"] },
+    \\        "approvalPolicy": { "enum": ["untrusted", "on-failure", "on-request", "never", null] },
+    \\        "approvalsReviewer": { "enum": ["user", "auto_review", "guardian_subagent", null] },
+    \\        "sandboxPolicy": {
+    \\          "oneOf": [
+    \\            { "$ref": "#/$defs/SandboxPolicy" },
+    \\            { "type": "null" }
+    \\          ]
+    \\        },
+    \\        "permissions": {
+    \\          "anyOf": [
+    \\            { "type": "string" },
+    \\            { "type": "object" },
+    \\            { "type": "null" }
+    \\          ]
+    \\        },
+    \\        "model": { "type": ["string", "null"] },
+    \\        "modelProvider": { "type": ["string", "null"] },
+    \\        "serviceTier": { "type": ["string", "null"] },
+    \\        "effort": { "type": ["string", "null"] },
+    \\        "summary": { "enum": ["auto", "concise", "detailed", "none", null] },
+    \\        "collaborationMode": {
+    \\          "anyOf": [
+    \\            { "$ref": "#/$defs/ThreadSettingsCollaborationMode" },
+    \\            { "type": "null" }
+    \\          ]
+    \\        },
+    \\        "multiAgentMode": {
+    \\          "anyOf": [
+    \\            { "$ref": "#/$defs/MultiAgentMode" },
+    \\            { "type": "null" }
+    \\          ]
+    \\        },
+    \\        "personality": { "enum": ["none", "friendly", "pragmatic", null] }
+    \\      },
+    \\      "additionalProperties": true
+    \\    },
+    \\    "ThreadSettingsUpdateResponse": {
+    \\      "type": "object",
+    \\      "additionalProperties": false
+    \\    },
+    \\    "ThreadSettingsUpdatedNotification": {
+    \\      "type": "object",
+    \\      "required": ["threadId", "threadSettings"],
+    \\      "properties": {
+    \\        "threadId": { "type": "string" },
+    \\        "threadSettings": { "$ref": "#/$defs/ThreadSettings" }
+    \\      },
+    \\      "additionalProperties": true
+    \\    },
     \\    "ThreadStartedNotification": {
     \\      "type": "object",
     \\      "required": ["thread"],
@@ -28871,6 +29322,10 @@ const APP_SERVER_JSON_SCHEMA_FILES = [_]SchemaFile{
     .{ .name = "ThreadLoadedListResponse.json", .contents = THREAD_LOADED_LIST_RESPONSE_JSON_SCHEMA },
     .{ .name = "ThreadStartParams.json", .contents = THREAD_START_PARAMS_JSON_SCHEMA },
     .{ .name = "ThreadStartResponse.json", .contents = THREAD_START_RESPONSE_JSON_SCHEMA },
+    .{ .name = "ThreadSettings.json", .contents = THREAD_SETTINGS_JSON_SCHEMA },
+    .{ .name = "ThreadSettingsUpdateParams.json", .contents = THREAD_SETTINGS_UPDATE_PARAMS_JSON_SCHEMA },
+    .{ .name = "ThreadSettingsUpdateResponse.json", .contents = THREAD_SETTINGS_UPDATE_RESPONSE_JSON_SCHEMA },
+    .{ .name = "ThreadSettingsUpdatedNotification.json", .contents = THREAD_SETTINGS_UPDATED_NOTIFICATION_JSON_SCHEMA },
     .{ .name = "ThreadStartedNotification.json", .contents = THREAD_STARTED_NOTIFICATION_JSON_SCHEMA },
     .{ .name = "ThreadStatus.json", .contents = THREAD_STATUS_JSON_SCHEMA },
     .{ .name = "ThreadStatusChangedNotification.json", .contents = THREAD_STATUS_CHANGED_NOTIFICATION_JSON_SCHEMA },
@@ -29183,6 +29638,10 @@ const APP_SERVER_JSON_SCHEMA_VERSIONED_ALIASES = [_][]const u8{
     "v2/ThreadShellCommandResponse.json",
     "v2/ThreadStartParams.json",
     "v2/ThreadStartResponse.json",
+    "v2/ThreadSettings.json",
+    "v2/ThreadSettingsUpdateParams.json",
+    "v2/ThreadSettingsUpdateResponse.json",
+    "v2/ThreadSettingsUpdatedNotification.json",
     "v2/ThreadStartedNotification.json",
     "v2/ThreadStatusChangedNotification.json",
     "v2/ThreadTokenUsageUpdatedNotification.json",
@@ -29266,6 +29725,7 @@ const APP_SERVER_TS_FILES = [_]SchemaFile{
     .{ .name = "InternalSessionSource.ts", .contents = INTERNAL_SESSION_SOURCE_TS },
     .{ .name = "MessagePhase.ts", .contents = MESSAGE_PHASE_TS },
     .{ .name = "ModeKind.ts", .contents = MODE_KIND_TS },
+    .{ .name = "MultiAgentMode.ts", .contents = MULTI_AGENT_MODE_TS },
     .{ .name = "NetworkPolicyAmendment.ts", .contents = NETWORK_POLICY_AMENDMENT_TS },
     .{ .name = "NetworkPolicyRuleAction.ts", .contents = NETWORK_POLICY_RULE_ACTION_TS },
     .{ .name = "ParsedCommand.ts", .contents = PARSED_COMMAND_TS },
@@ -29619,6 +30079,10 @@ const APP_SERVER_TS_FILES = [_]SchemaFile{
     .{ .name = "v2/ThreadLoadedListResponse.ts", .contents = THREAD_LOADED_LIST_RESPONSE_TS },
     .{ .name = "v2/ThreadStartParams.ts", .contents = THREAD_START_PARAMS_TS },
     .{ .name = "v2/ThreadStartResponse.ts", .contents = THREAD_START_RESPONSE_TS },
+    .{ .name = "v2/ThreadSettings.ts", .contents = THREAD_SETTINGS_TS },
+    .{ .name = "v2/ThreadSettingsUpdateParams.ts", .contents = THREAD_SETTINGS_UPDATE_PARAMS_TS },
+    .{ .name = "v2/ThreadSettingsUpdateResponse.ts", .contents = THREAD_SETTINGS_UPDATE_RESPONSE_TS },
+    .{ .name = "v2/ThreadSettingsUpdatedNotification.ts", .contents = THREAD_SETTINGS_UPDATED_NOTIFICATION_TS },
     .{ .name = "v2/ThreadStartedNotification.ts", .contents = THREAD_STARTED_NOTIFICATION_TS },
     .{ .name = "v2/ThreadActiveFlag.ts", .contents = THREAD_ACTIVE_FLAG_TS },
     .{ .name = "v2/ThreadStatus.ts", .contents = THREAD_STATUS_TS },
@@ -37999,6 +38463,105 @@ fn applyTurnStartRuntimeOverrides(
     try applyLoadedThreadOssModeToConfig(allocator, cfg, thread);
 }
 
+fn handleThreadSettingsUpdate(
+    allocator: std.mem.Allocator,
+    state: *AppServerState,
+    id_value: std.json.Value,
+    params_value: ?std.json.Value,
+) ![]const u8 {
+    const object = parseThreadObjectParams(params_value) catch |err| switch (err) {
+        error.InvalidThreadParams => return renderThreadObjectParamsError(allocator, id_value, "thread/settings/update"),
+    };
+    const thread_id = requiredThreadIdParam(object) catch |err| switch (err) {
+        error.MissingThreadId => return renderJsonRpcError(allocator, id_value, -32602, "threadId must be a string"),
+    };
+    if (!isUuidString(thread_id)) {
+        return renderInvalidThreadId(allocator, id_value, thread_id);
+    }
+    if (validateThreadSettingsUpdateParams(object)) |message| {
+        return renderJsonRpcError(allocator, id_value, -32602, message);
+    }
+    const thread_index = findLoadedThreadIndex(state, thread_id) orelse {
+        return renderThreadNotFound(allocator, id_value, thread_id);
+    };
+    const thread = &state.loaded_threads.items[thread_index];
+
+    var cfg = loadConfigForLoadedThread(allocator, state, thread) catch |err| {
+        return renderJsonRpcErrorForFailure(allocator, id_value, "thread/settings/update failed to load config", err);
+    };
+    defer cfg.deinit(allocator);
+
+    const project_cwd = turnContextProjectConfigCwd(allocator, thread, object) catch |err| {
+        return renderJsonRpcErrorForFailure(allocator, id_value, "thread/settings/update failed to resolve cwd", err);
+    };
+    defer allocator.free(project_cwd);
+
+    applyProjectLayersToConfigForCwd(allocator, &cfg, project_cwd) catch |err| {
+        return renderJsonRpcErrorForFailure(allocator, id_value, "thread/settings/update failed to load project config", err);
+    };
+
+    var runtime_requirements = loadConfigRequirementsReadRequirements(allocator) catch |err| {
+        return renderJsonRpcErrorForFailure(allocator, id_value, "thread/settings/update failed to load config requirements", err);
+    };
+    defer runtime_requirements.deinit(allocator);
+
+    validateTurnScalarRequirementOverrides(allocator, cfg.codex_home, project_cwd, object, runtime_requirements) catch |err| switch (err) {
+        error.InvalidTurnContextOverride => return renderJsonRpcError(allocator, id_value, -32602, "invalid thread settings override"),
+        else => return renderRuntimeRequirementOverrideError(allocator, id_value, err),
+    };
+
+    applyTurnStartRuntimeConfigOverrides(allocator, &cfg, thread, object) catch |err| switch (err) {
+        error.InvalidTurnContextOverride => return renderJsonRpcError(allocator, id_value, -32602, "invalid thread settings override"),
+        else => return err,
+    };
+    applyRuntimeScalarRequirementsToConfigWithRequirements(&cfg, runtime_requirements) catch |err| {
+        return renderJsonRpcErrorForFailure(allocator, id_value, "thread/settings/update failed to apply config requirements", err);
+    };
+
+    applyTurnStartRuntimeOverrides(allocator, &cfg, thread, object, true) catch |err| switch (err) {
+        error.InvalidTurnContextOverride => return renderJsonRpcError(allocator, id_value, -32602, "invalid thread settings override"),
+        else => return err,
+    };
+    applyRuntimeScalarRequirementsToLoadedThreadWithRequirements(allocator, thread, runtime_requirements) catch |err| {
+        return renderJsonRpcErrorForFailure(allocator, id_value, "thread/settings/update failed to apply runtime requirements", err);
+    };
+
+    const notification = try renderThreadSettingsUpdatedNotification(allocator, thread);
+    try queuePendingServerNotification(allocator, state, "thread/settings/updated", notification);
+    return renderJsonRpcResult(allocator, id_value, "{}");
+}
+
+fn validateThreadSettingsUpdateParams(object: std.json.ObjectMap) ?[]const u8 {
+    inline for (&.{
+        "model",
+        "modelProvider",
+        "serviceTier",
+        "cwd",
+        "approvalPolicy",
+        "sandbox",
+    }) |field| {
+        if (!threadSettingsOptionalStringFieldIsValid(object, field)) return "thread settings string overrides must be strings or null";
+    }
+    if (!threadSettingsOptionalFieldIsStringObjectOrNull(object, "permissions")) return "permissions must be a string, profile object, or null";
+    if (object.get("sandboxPolicy")) |sandbox_policy| {
+        if (sandbox_policy != .null and sandbox_policy != .object) return "sandboxPolicy must be an object or null";
+    }
+    const has_permissions = object.get("permissions") != null and object.get("permissions").? != .null;
+    const has_sandbox_policy = object.get("sandboxPolicy") != null and object.get("sandboxPolicy").? != .null;
+    if (has_permissions and has_sandbox_policy) return "`permissions` cannot be combined with `sandboxPolicy`";
+    return null;
+}
+
+fn threadSettingsOptionalStringFieldIsValid(object: std.json.ObjectMap, name: []const u8) bool {
+    const value = object.get(name) orelse return true;
+    return value == .null or value == .string;
+}
+
+fn threadSettingsOptionalFieldIsStringObjectOrNull(object: std.json.ObjectMap, name: []const u8) bool {
+    const value = object.get(name) orelse return true;
+    return value == .null or value == .string or value == .object;
+}
+
 fn applySandboxPermissionProfileToLoadedThread(
     allocator: std.mem.Allocator,
     cfg: *config.Config,
@@ -40865,6 +41428,7 @@ fn isThreadMethod(method: []const u8) bool {
         std.mem.eql(u8, method, "thread/goal/clear") or
         std.mem.eql(u8, method, "thread/memoryMode/set") or
         std.mem.eql(u8, method, "thread/metadata/update") or
+        std.mem.eql(u8, method, "thread/settings/update") or
         std.mem.eql(u8, method, "thread/read") or
         std.mem.eql(u8, method, "thread/turns/list") or
         std.mem.eql(u8, method, "thread/items/list") or
@@ -41625,6 +42189,9 @@ fn handleThreadMethod(
         const result = try renderStoredThreadReadResponse(allocator, &stored_thread, false);
         defer allocator.free(result);
         return renderJsonRpcResult(allocator, id_value, result);
+    }
+    if (std.mem.eql(u8, method, "thread/settings/update")) {
+        return handleThreadSettingsUpdate(allocator, state, id_value, params_value);
     }
     if (std.mem.eql(u8, method, "thread/read")) {
         const object = parseThreadObjectParams(params_value) catch |err| switch (err) {
@@ -46390,6 +46957,17 @@ fn renderThreadStartedNotification(allocator: std.mem.Allocator, thread: *const 
     return result.toOwnedSlice(allocator);
 }
 
+fn renderThreadSettingsUpdatedNotification(allocator: std.mem.Allocator, thread: *const LoadedThread) ![]const u8 {
+    var result = std.ArrayList(u8).empty;
+    errdefer result.deinit(allocator);
+    try result.appendSlice(allocator, "{\"jsonrpc\":\"2.0\",\"method\":\"thread/settings/updated\",\"params\":{\"threadId\":");
+    try appendJsonString(allocator, &result, thread.id);
+    try result.appendSlice(allocator, ",\"threadSettings\":");
+    try appendThreadSettingsJson(allocator, &result, thread);
+    try result.appendSlice(allocator, "}}");
+    return result.toOwnedSlice(allocator);
+}
+
 fn queueThreadStartedNotification(allocator: std.mem.Allocator, state: *AppServerState, notification: []const u8) !void {
     if (notificationMethodOptedOut(state, "thread/started")) {
         allocator.free(notification);
@@ -47846,6 +48424,44 @@ fn appendThreadSandboxPolicyJson(allocator: std.mem.Allocator, result: *std.Arra
     }
 }
 
+fn appendThreadSettingsJson(allocator: std.mem.Allocator, result: *std.ArrayList(u8), thread: *const LoadedThread) !void {
+    try result.appendSlice(allocator, "{\"cwd\":");
+    try appendJsonString(allocator, result, thread.cwd);
+    try result.appendSlice(allocator, ",\"approvalPolicy\":");
+    try appendJsonString(allocator, result, thread.approval_policy);
+    try result.appendSlice(allocator, ",\"approvalsReviewer\":");
+    try appendJsonString(allocator, result, thread.approvals_reviewer);
+    try result.appendSlice(allocator, ",\"sandboxPolicy\":");
+    try appendThreadSandboxPolicyJson(allocator, result, thread);
+    try result.appendSlice(allocator, ",\"activePermissionProfile\":null,\"model\":");
+    try appendJsonString(allocator, result, thread.model);
+    try result.appendSlice(allocator, ",\"modelProvider\":");
+    try appendJsonString(allocator, result, thread.model_provider);
+    try result.appendSlice(allocator, ",\"serviceTier\":");
+    try appendOptionalJsonString(allocator, result, thread.service_tier);
+    try result.appendSlice(allocator, ",\"effort\":");
+    try appendOptionalJsonString(allocator, result, thread.reasoning_effort);
+    try result.appendSlice(allocator, ",\"summary\":");
+    try appendOptionalJsonString(allocator, result, thread.reasoning_summary);
+    try result.appendSlice(allocator, ",\"collaborationMode\":");
+    try appendThreadSettingsCollaborationModeJson(allocator, result, thread);
+    try result.appendSlice(allocator, ",\"multiAgentMode\":\"explicitRequestOnly\",\"personality\":");
+    try appendOptionalJsonString(allocator, result, thread.personality);
+    try result.append(allocator, '}');
+}
+
+fn appendThreadSettingsCollaborationModeJson(allocator: std.mem.Allocator, result: *std.ArrayList(u8), thread: *const LoadedThread) !void {
+    try result.appendSlice(allocator, "{\"mode\":");
+    try appendJsonString(allocator, result, thread.collaboration_mode);
+    try result.appendSlice(allocator, ",\"settings\":{\"model\":");
+    try appendJsonString(allocator, result, thread.model);
+    try result.appendSlice(allocator, ",\"reasoning_effort\":");
+    try appendOptionalJsonString(allocator, result, thread.reasoning_effort);
+    try result.appendSlice(allocator, ",\"developer_instructions\":");
+    try appendOptionalJsonString(allocator, result, thread.collaboration_developer_instructions);
+    try result.appendSlice(allocator, "}}");
+}
+
 fn appendThreadPermissionProfileJson(allocator: std.mem.Allocator, result: *std.ArrayList(u8), thread: *const LoadedThread) !void {
     if (thread.sandbox_external) {
         try result.appendSlice(allocator, "{\"type\":\"external\",\"network\":{\"enabled\":");
@@ -47936,6 +48552,7 @@ fn experimentalReasonForRequestMethod(method: []const u8) ?[]const u8 {
         "thread/goal/get",
         "thread/goal/clear",
         "thread/memoryMode/set",
+        "thread/settings/update",
         "thread/turns/list",
         "thread/items/list",
         "thread/realtime/start",
@@ -47956,6 +48573,7 @@ fn experimentalReasonForServerNotificationMethod(method: []const u8) ?[]const u8
     inline for (&.{
         .{ .method = "thread/goal/updated", .reason = "thread/goal/updated" },
         .{ .method = "thread/goal/cleared", .reason = "thread/goal/cleared" },
+        .{ .method = "thread/settings/updated", .reason = "thread/settings/updated" },
         .{ .method = "process/outputDelta", .reason = "process/outputDelta" },
         .{ .method = "process/exited", .reason = "process/exited" },
         .{ .method = "thread/realtime/started", .reason = "thread/realtime/started" },

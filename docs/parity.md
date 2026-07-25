@@ -1447,6 +1447,20 @@ Additional app-server thread memory-mode coverage: `thread/memoryMode/set` valid
 
 Additional app-server thread metadata coverage: `thread/metadata/update` validates `threadId`, requires `gitInfo` to include at least one Git field, rejects empty string metadata fields with Rust-shaped errors, rejects ephemeral loaded threads, patches, persists, restores, and returns `gitInfo` for persistent loaded Zig threads with Rust-shaped trim/null semantics, appends Rust-shaped `session_meta` Git metadata updates for local saved/state-DB-rollout threads while preserving state-DB-backed memory-mode, model-provider, cwd, and CLI-version metadata, updates local state-DB `threads.git_*` rows when present, returns Rust-shaped `thread not found` responses for missing stored threads, and is included in current TypeScript and JSON schema generation with an opaque thread response until full thread schema parity lands. Remote stored-thread metadata updates remain planned.
 
+Additional app-server thread settings coverage: `thread/settings/update`
+requires `experimentalApi`, validates `threadId`, updates already-loaded
+thread runtime settings for model, service tier, reasoning effort, reasoning
+summary, personality, approval policy, approvals reviewer, cwd, collaboration
+mode, sandbox policy, and permission-profile selections through the same loaded
+thread override path as `turn/start`, reloads project/runtime requirements
+before applying updates, emits `thread/settings/updated`, and returns a
+Rust-shaped empty response object. Generated TypeScript and JSON Schema now
+include `MultiAgentMode`, `ThreadSettings`, `ThreadSettingsUpdateParams`,
+`ThreadSettingsUpdateResponse`, and `ThreadSettingsUpdatedNotification`, and
+the stdio app-server smoke verifies the update response and notification shape.
+Active permission profile rendering is currently `null`, and Rust's arbitrary
+reasoning-effort / Ultra semantics remain planned.
+
 Additional app-server model-facing goal tool coverage: app-server `turn/start`
 now exposes `get_goal`, `create_goal`, and `update_goal` function tools for
 non-ephemeral loaded threads when `[features].goals` is enabled. Tool calls
