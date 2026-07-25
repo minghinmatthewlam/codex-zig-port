@@ -2464,7 +2464,6 @@ test "session archive target resolution matches names and UUIDs by scope" {
 
     const active_id = "11111111-1111-4111-8111-111111111111";
     const archived_id = "22222222-2222-4222-8222-222222222222";
-    const shadow_id = "33333333-3333-4333-8333-333333333333";
 
     const active_path = try std.fs.path.join(allocator, &.{ root, "sessions", "zig", "rollout-11111111-1111-4111-8111-111111111111.jsonl" });
     defer allocator.free(active_path);
@@ -2504,7 +2503,6 @@ test "session archive target resolution matches names and UUIDs by scope" {
 
     try std.testing.expect((try resolveSessionArchiveTarget(allocator, root, "Archived Title", .active)) == null);
     try std.testing.expect((try resolveSessionArchiveTarget(allocator, root, "missing", .active_or_archived)) == null);
-    _ = shadow_id;
 }
 
 test "delete rollout removes active or archived sessions" {
