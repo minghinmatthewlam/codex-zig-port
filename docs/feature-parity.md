@@ -554,13 +554,12 @@ runtime override handling, and the Zig stdio app-server smoke.
 - Complete the remaining cloud task flows behind `codex cloud`: task creation,
   status/list, apply, diff, and TUI picker behavior against the current backend
   contract.
-- Close the current user-facing generated app-server `ClientRequest` method-set
-  gap: `externalAgentConfig/import/readHistories`. The remaining
-  `mock/experimentalMethod` difference is Rust test-only/non-user-facing and
-  is tracked separately from feature parity.
+- No current user-facing generated app-server `ClientRequest` method-set gap is
+  known. The remaining `mock/experimentalMethod` difference is Rust
+  test-only/non-user-facing and is tracked separately from feature parity.
 - Close the remaining generated app-server `ServerNotification` method-set
-  gaps: `externalAgentConfig/import/progress`, `rawResponse/completed`,
-  `turn/moderationMetadata`, and `model/safetyBuffering/updated`.
+  gaps: `rawResponse/completed`, `turn/moderationMetadata`, and
+  `model/safetyBuffering/updated`.
 - Finish desktop app and remote-control user flows beyond launching/opening:
   phone fork/share flow, durable daemon control, and local browser controller
   parity.

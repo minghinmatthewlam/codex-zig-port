@@ -1227,9 +1227,10 @@ remains planned.
 Additional app-server ServerNotification TypeScript union coverage: generated
 TypeScript now includes Rust-side `thread/environment/connected` and
 `thread/environment/disconnected` notification methods with
-`EnvironmentConnectionNotification` payload artifacts. The remaining generated
-`ServerNotification` method-set gaps are
-`externalAgentConfig/import/progress`, `rawResponse/completed`,
+`EnvironmentConnectionNotification` payload artifacts, plus
+`externalAgentConfig/import/progress` with the same import progress payload
+shape used by completed import notifications. The remaining generated
+`ServerNotification` method-set gaps are `rawResponse/completed`,
 `turn/moderationMetadata`, and `model/safetyBuffering/updated`.
 
 Additional app-server review/start coverage: `review/start` now validates
@@ -1276,8 +1277,8 @@ enabled in Codex user config, plus recent home-scoped external-agent session
 JSONL files under `${HOME}/.claude/projects` with path/cwd/title details while
 skipping missing-cwd, stale, unreadable, and already-imported current-content
 sessions. `externalAgentConfig/import` validates
-`migrationItems`, accepts an empty no-op import with an empty Rust-shaped
-response, imports home- and project-scoped `CONFIG` items by translating
+`migrationItems`, accepts an empty no-op import by returning only an `importId`,
+imports home- and project-scoped `CONFIG` items by translating
 supported `env` scalar values into `[shell_environment_policy.set]`, local
 settings overrides, and `sandbox.enabled = true` into
 `sandbox_mode = "workspace-write"` without overwriting existing target keys,
@@ -1299,13 +1300,23 @@ the imported session title, replays the `<EXTERNAL SESSION IMPORTED>` marker
 through `thread/read`, renders imported user/assistant/import-marker items as a
 single completed turn through `thread/read` and `thread/turns/list`, records the
 current source hash in `external_agent_session_imports.json`, refreshes
-connection-local skill discovery caches for runtime-affecting imports, then emits
-`externalAgentConfig/import/completed`. TypeScript and JSON schema generation
-include the detect/import request and response shapes, migration item/detail
-types, and the `externalAgentConfig/import/completed` notification shape.
-Background session imports, large-session compaction before first follow-up,
-remote/background plugin imports, loaded-thread runtime refresh, and richer
-import progress notifications remain planned.
+connection-local skill discovery caches for runtime-affecting imports, returns
+an `importId`, records non-empty imports in
+`external_agent_config_import_histories.jsonl`, then emits
+`externalAgentConfig/import/progress` and
+`externalAgentConfig/import/completed` notifications with Rust-shaped
+`itemTypeResults`, success rows, failure arrays, and shared `importId` /
+`emittedAtMs` values. `externalAgentConfig/import/readHistories` accepts
+omitted/null/object params, rejects non-unit params, returns persisted import
+history rows, and currently returns an empty remote connector candidate list.
+TypeScript and JSON schema generation include the detect/import/read-history
+request and response shapes, migration item/detail types, import success/failure
+and type-result types, the `MEMORY` migration item enum value, imported
+connector candidate types, and the import progress/completed notification
+shapes. Background session imports, large-session compaction before first
+follow-up, remote/background plugin imports, loaded-thread runtime refresh,
+actual `MEMORY` migration behavior, and remote connector candidate population
+remain planned.
 
 Additional app-server thread elicitation coverage: `thread/increment_elicitation` and `thread/decrement_elicitation` now track an in-memory out-of-band elicitation counter for already-loaded threads, return Rust-shaped `count` and `paused` response fields, preserve invalid/missing thread errors, and reject decrementing a zero counter with Rust's invalid-request message. Full timeout-pause integration with live command execution remains planned.
 
