@@ -557,9 +557,9 @@ runtime override handling, and the Zig stdio app-server smoke.
 - No current user-facing generated app-server `ClientRequest` method-set gap is
   known. The remaining `mock/experimentalMethod` difference is Rust
   test-only/non-user-facing and is tracked separately from feature parity.
-- Close the remaining generated app-server `ServerNotification` method-set
-  gaps: `rawResponse/completed`, `turn/moderationMetadata`, and
-  `model/safetyBuffering/updated`.
+- No current user-facing generated app-server `ServerNotification` method-set
+  gap is known. Current Rust exposes `rawResponseItem/completed`; the stale
+  `rawResponse/completed` name is not a Rust-side notification.
 - Finish desktop app and remote-control user flows beyond launching/opening:
   phone fork/share flow, durable daemon control, and local browser controller
   parity.
