@@ -2333,11 +2333,259 @@ def decoded_process_output(messages: list[dict], process_handle: str, stream: st
     return b"".join(chunks)
 
 
+def decoded_command_exec_output(messages: list[dict], process_id: str, stream: str = "stdout") -> bytes:
+    chunks: list[bytes] = []
+    for message in messages:
+        if message.get("method") != "command/exec/outputDelta":
+            continue
+        params = message["params"]
+        if params["processId"] != process_id or params["stream"] != stream:
+            continue
+        chunks.append(base64.b64decode(params["deltaBase64"]))
+    return b"".join(chunks)
+
+
+def read_rpc_messages_until(
+    label: str,
+    read_json: Callable[[], dict],
+    timeout: float,
+    predicate: Callable[[list[dict]], bool],
+) -> list[dict]:
+    deadline = time.monotonic() + timeout
+    messages: list[dict] = []
+    while True:
+        if time.monotonic() >= deadline:
+            raise AssertionError(f"timed out waiting for {label}: {messages!r}")
+        try:
+            messages.append(read_json())
+        except Exception as exc:
+            raise AssertionError(f"timed out waiting for {label}: {messages!r}") from exc
+        if predicate(messages):
+            return messages
+
+
+def find_response(messages: list[dict], request_id: str) -> dict:
+    for message in messages:
+        if message.get("id") == request_id:
+            return message
+    raise AssertionError(f"missing response for {request_id}: {messages!r}")
+
+
+def find_response_or_none(messages: list[dict], request_id: str) -> dict | None:
+    for message in messages:
+        if message.get("id") == request_id:
+            return message
+    return None
+
+
+def has_response(messages: list[dict], request_id: str) -> bool:
+    return find_response_or_none(messages, request_id) is not None
+
+
 def find_process_exited(messages: list[dict], process_handle: str) -> dict:
     for message in messages:
         if message.get("method") == "process/exited" and message["params"]["processHandle"] == process_handle:
             return message
     raise AssertionError(f"missing process/exited for {process_handle}: {messages!r}")
+
+
+def exercise_non_stdio_command_exec_session(
+    label: str,
+    write_json: Callable[[dict], None],
+    read_json: Callable[[], dict],
+) -> None:
+    command_id = f"{label}-command-exec-streaming"
+    process_id = f"{label}-command-proc"
+    command_text = f"{label}-command"
+    command_output = command_text.encode("utf-8")
+    write_json(
+        {
+            "jsonrpc": "2.0",
+            "id": command_id,
+            "method": "command/exec",
+            "params": {
+                "command": [
+                    sys.executable,
+                    "-c",
+                    f"import sys; sys.stdout.write({command_text!r})",
+                ],
+                "processId": process_id,
+                "streamStdoutStderr": True,
+            },
+        }
+    )
+    command_messages = read_rpc_messages_until(
+        command_id,
+        read_json,
+        5,
+        lambda messages: has_response(messages, command_id)
+        and decoded_command_exec_output(messages, process_id) == command_output,
+    )
+    command_response = find_response(command_messages, command_id)
+    assert command_response["result"] == {
+        "exitCode": 0,
+        "stdout": "",
+        "stderr": "",
+    }
+
+    stdin_id = f"{label}-command-exec-stdin"
+    stdin_write_id = f"{label}-command-exec-stdin-write"
+    stdin_process_id = f"{label}-command-stdin-proc"
+    stdin_payload = f"{label}-stdin\n".encode("utf-8")
+    stdin_output = b"echo:" + stdin_payload
+    write_json(
+        {
+            "jsonrpc": "2.0",
+            "id": stdin_id,
+            "method": "command/exec",
+            "params": {
+                "command": [
+                    sys.executable,
+                    "-c",
+                    "import sys; data=sys.stdin.read(); sys.stdout.write('echo:' + data)",
+                ],
+                "processId": stdin_process_id,
+                "streamStdin": True,
+                "streamStdoutStderr": True,
+            },
+        }
+    )
+    write_json(
+        {
+            "jsonrpc": "2.0",
+            "id": stdin_write_id,
+            "method": "command/exec/write",
+            "params": {
+                "processId": stdin_process_id,
+                "deltaBase64": base64.b64encode(stdin_payload).decode("ascii"),
+                "closeStdin": True,
+            },
+        }
+    )
+    stdin_messages = read_rpc_messages_until(
+        stdin_id,
+        read_json,
+        5,
+        lambda messages: has_response(messages, stdin_id)
+        and has_response(messages, stdin_write_id)
+        and decoded_command_exec_output(messages, stdin_process_id) == stdin_output,
+    )
+    stdin_write_response = find_response(stdin_messages, stdin_write_id)
+    stdin_response = find_response(stdin_messages, stdin_id)
+    assert stdin_write_response["result"] == {}
+    assert stdin_response["result"] == {
+        "exitCode": 0,
+        "stdout": "",
+        "stderr": "",
+    }
+
+
+def exercise_non_stdio_process_session(
+    label: str,
+    write_json: Callable[[dict], None],
+    read_json: Callable[[], dict],
+) -> None:
+    process_id = f"{label}-process-spawn-streaming"
+    process_handle = f"{label}-proc-stream"
+    process_text = f"{label}-process"
+    process_output = process_text.encode("utf-8")
+    write_json(
+        {
+            "jsonrpc": "2.0",
+            "id": process_id,
+            "method": "process/spawn",
+            "params": {
+                "command": [
+                    sys.executable,
+                    "-c",
+                    f"import sys; sys.stdout.write({process_text!r})",
+                ],
+                "processHandle": process_handle,
+                "cwd": tempfile.gettempdir(),
+                "streamStdoutStderr": True,
+            },
+        }
+    )
+    process_messages = read_rpc_messages_until(
+        process_id,
+        read_json,
+        5,
+        lambda messages: has_response(messages, process_id)
+        and any(
+            message.get("method") == "process/exited"
+            and message["params"]["processHandle"] == process_handle
+            for message in messages
+        )
+        and decoded_process_output(messages, process_handle) == process_output,
+    )
+    process_spawn = find_response(process_messages, process_id)
+    process_exited = find_process_exited(process_messages, process_handle)
+    assert process_spawn["result"] == {}
+    assert process_exited["params"] == {
+        "processHandle": process_handle,
+        "exitCode": 0,
+        "stdout": "",
+        "stdoutCapReached": False,
+        "stderr": "",
+        "stderrCapReached": False,
+    }
+
+    stdin_id = f"{label}-process-spawn-stdin"
+    stdin_write_id = f"{label}-process-write-stdin"
+    stdin_handle = f"{label}-proc-stdin"
+    stdin_payload = f"{label}-stdin\n".encode("utf-8")
+    stdin_output = b"stdin:" + stdin_payload
+    write_json(
+        {
+            "jsonrpc": "2.0",
+            "id": stdin_id,
+            "method": "process/spawn",
+            "params": {
+                "command": [
+                    sys.executable,
+                    "-c",
+                    "import sys; data=sys.stdin.read(); sys.stdout.write('stdin:' + data); sys.stdout.flush()",
+                ],
+                "processHandle": stdin_handle,
+                "cwd": tempfile.gettempdir(),
+                "streamStdin": True,
+                "streamStdoutStderr": True,
+            },
+        }
+    )
+    stdin_spawn = read_json()
+    assert stdin_spawn["id"] == stdin_id
+    assert stdin_spawn["result"] == {}
+    write_json(
+        {
+            "jsonrpc": "2.0",
+            "id": stdin_write_id,
+            "method": "process/writeStdin",
+            "params": {
+                "processHandle": stdin_handle,
+                "deltaBase64": base64.b64encode(stdin_payload).decode("ascii"),
+                "closeStdin": True,
+            },
+        }
+    )
+    stdin_messages = read_rpc_messages_until(
+        stdin_id,
+        read_json,
+        5,
+        lambda messages: has_response(messages, stdin_write_id)
+        and any(
+            message.get("method") == "process/exited"
+            and message["params"]["processHandle"] == stdin_handle
+            for message in messages
+        )
+        and decoded_process_output(messages, stdin_handle) == stdin_output,
+    )
+    stdin_write = find_response(stdin_messages, stdin_write_id)
+    stdin_exited = find_process_exited(stdin_messages, stdin_handle)
+    assert stdin_write["result"] == {}
+    assert stdin_exited["params"]["exitCode"] == 0
+    assert stdin_exited["params"]["stdout"] == ""
+    assert stdin_exited["params"]["stderr"] == ""
 
 
 def write_json_line(proc: subprocess.Popen[str], payload: dict) -> None:
@@ -47297,26 +47545,15 @@ def exercise_unix_socket_connection_state_reset(socket_path: Path) -> None:
                 unsubscribe = read_json_line_from_socket(reader)
                 assert unsubscribe["id"] == "connection-reset-unsubscribe"
                 assert unsubscribe["result"] == {"status": "notSubscribed"}
-                write_json_line_to_socket(
-                    writer,
-                    {
-                        "jsonrpc": "2.0",
-                        "id": "unix-process-spawn-stdio-only",
-                        "method": "process/spawn",
-                        "params": {
-                            "command": [sys.executable, "-c", "import sys; sys.stdin.read()"],
-                            "processHandle": "unix-proc-stdio-only",
-                            "cwd": tempfile.gettempdir(),
-                            "streamStdin": True,
-                        },
-                    },
+                exercise_non_stdio_command_exec_session(
+                    "unix",
+                    lambda payload: write_json_line_to_socket(writer, payload),
+                    lambda: read_json_line_from_socket(reader),
                 )
-                process_spawn = read_json_line_from_socket(reader)
-                assert process_spawn["id"] == "unix-process-spawn-stdio-only"
-                assert process_spawn["error"]["code"] == -32603
-                assert (
-                    "stdio app-server transport only"
-                    in process_spawn["error"]["message"]
+                exercise_non_stdio_process_session(
+                    "unix",
+                    lambda payload: write_json_line_to_socket(writer, payload),
+                    lambda: read_json_line_from_socket(reader),
                 )
 
 
@@ -47985,23 +48222,16 @@ def exercise_websocket_connection_state_reset(host: str, port: int, bearer_token
         unsubscribe = websocket.read_json()
         assert unsubscribe["id"] == "websocket-reset-unsubscribe"
         assert unsubscribe["result"] == {"status": "notSubscribed"}
-        websocket.write_json(
-            {
-                "jsonrpc": "2.0",
-                "id": "websocket-process-spawn-stdio-only",
-                "method": "process/spawn",
-                "params": {
-                    "command": [sys.executable, "-c", "import sys; sys.stdin.read()"],
-                    "processHandle": "websocket-proc-stdio-only",
-                    "cwd": tempfile.gettempdir(),
-                    "streamStdin": True,
-                },
-            }
+        exercise_non_stdio_command_exec_session(
+            "websocket",
+            websocket.write_json,
+            websocket.read_json,
         )
-        process_spawn = websocket.read_json()
-        assert process_spawn["id"] == "websocket-process-spawn-stdio-only"
-        assert process_spawn["error"]["code"] == -32603
-        assert "stdio app-server transport only" in process_spawn["error"]["message"]
+        exercise_non_stdio_process_session(
+            "websocket",
+            websocket.write_json,
+            websocket.read_json,
+        )
     finally:
         websocket.close()
 

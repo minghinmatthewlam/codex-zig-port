@@ -50738,8 +50738,8 @@ fn handleCommandExec(allocator: std.mem.Allocator, state: *AppServerState, id_va
     if ((tty or stream_stdin or stream_stdout_stderr) and process_id == null) {
         return try renderJsonRpcError(allocator, id_value, -32600, "command/exec tty or streaming requires a client-supplied processId");
     }
-    if ((tty or stream_stdin) and !state.deferred_command_exec_stdio) {
-        return try renderJsonRpcError(allocator, id_value, -32603, "command/exec tty and stdin streaming are currently implemented for stdio app-server transport only");
+    if ((tty or stream_stdin) and !commandExecCanDeferForTransport(state)) {
+        return try renderJsonRpcError(allocator, id_value, -32603, "command/exec tty and stdin streaming are not supported for the current app-server transport");
     }
     const stream_output = stream_stdout_stderr or tty;
 
@@ -50864,7 +50864,7 @@ fn handleCommandExec(allocator: std.mem.Allocator, state: *AppServerState, id_va
     const effective_output_cap: ?usize = if (disable_output_cap) null else output_bytes_cap orelse COMMAND_EXEC_DEFAULT_OUTPUT_BYTES_CAP;
     const env_map = if (child_env) |*map| map else null;
 
-    if (state.deferred_command_exec_stdio and (tty or stream_stdin or stream_output)) {
+    if (commandExecCanDeferForTransport(state) and (tty or stream_stdin or stream_output)) {
         return try startDeferredCommandExecProcess(
             allocator,
             state,
@@ -50949,8 +50949,8 @@ fn handleProcessSpawn(allocator: std.mem.Allocator, state: *AppServerState, id_v
         error.InvalidCommandExecTerminalSizeObject => return renderJsonRpcError(allocator, id_value, -32602, "size must be an object"),
         error.InvalidCommandExecTerminalSize => return renderJsonRpcError(allocator, id_value, -32602, "process size rows and cols must be greater than 0"),
     };
-    if ((tty or stream_stdin) and !state.deferred_command_exec_stdio) {
-        return renderJsonRpcError(allocator, id_value, -32603, "process/spawn tty and stdin streaming are currently implemented for stdio app-server transport only");
+    if ((tty or stream_stdin) and !commandExecCanDeferForTransport(state)) {
+        return renderJsonRpcError(allocator, id_value, -32603, "process/spawn tty and stdin streaming are not supported for the current app-server transport");
     }
 
     const effective_output_cap = processOptionalOutputBytesCap(object, "outputBytesCap", COMMAND_EXEC_DEFAULT_OUTPUT_BYTES_CAP) catch |err| {
@@ -50984,7 +50984,7 @@ fn handleProcessSpawn(allocator: std.mem.Allocator, state: *AppServerState, id_v
 
     const env_map = if (child_env) |*map| map else null;
     const stream_output = stream_stdout_stderr or tty;
-    if (state.deferred_command_exec_stdio and (tty or stream_stdin or stream_output)) {
+    if (commandExecCanDeferForTransport(state) and (tty or stream_stdin or stream_output)) {
         return startDeferredProcessSpawn(
             allocator,
             state,
@@ -51088,6 +51088,7 @@ const ActiveCommandExecSession = struct {
     stdin_file: ?std.Io.File,
     pty_master_file: ?std.Io.File = null,
     pid: ?std.posix.pid_t,
+    output_target: AppServerBackgroundNotificationTarget = .stdout,
     stream_stdin: bool,
     stream_stdout_stderr: bool,
     tty: bool,
@@ -51107,8 +51108,13 @@ const ActiveCommandExecSession = struct {
         }
         allocator.free(self.process_id);
         if (self.request_id_json) |request_id_json| allocator.free(request_id_json);
+        self.output_target.deinit(allocator);
     }
 };
+
+fn commandExecCanDeferForTransport(state: *const AppServerState) bool {
+    return state.deferred_command_exec_stdio or state.connection_output != null;
+}
 
 fn startDeferredCommandExecProcess(
     allocator: std.mem.Allocator,
@@ -51243,6 +51249,9 @@ fn startActiveCommandExecSession(
     errdefer if (request_id_json) |value| allocator.free(value);
     const owned_process_id = try allocator.dupe(u8, process_id);
     errdefer allocator.free(owned_process_id);
+    var output_target = try makeAppServerBackgroundNotificationTarget(allocator, state.connection_output);
+    var output_target_owned = true;
+    errdefer if (output_target_owned) output_target.deinit(allocator);
 
     const session = try allocator.create(ActiveCommandExecSession);
     var session_owned = true;
@@ -51261,6 +51270,7 @@ fn startActiveCommandExecSession(
         .stdin_file = stdin_file,
         .pty_master_file = pty_master_file,
         .pid = pid,
+        .output_target = output_target,
         .stream_stdin = stream_stdin or tty,
         .stream_stdout_stderr = stream_stdout_stderr,
         .tty = tty,
@@ -51283,6 +51293,7 @@ fn startActiveCommandExecSession(
     });
     session.thread = thread;
     child_owned = false;
+    output_target_owned = false;
     session_owned = false;
     session_appended = false;
 }
@@ -51306,7 +51317,7 @@ fn deferredCommandExecWorker(
             .process => renderProcessExitedNotification(allocator, session.process_id, 1, "", message, false, false),
         } catch return;
         defer allocator.free(response);
-        writeStdoutLine(response) catch {};
+        session.output_target.send(response) catch {};
     };
 }
 
@@ -51404,7 +51415,7 @@ fn runDeferredCommandExecWorker(
         .process => try renderProcessExitedNotification(allocator, session.process_id, exit_code, stdout_response, stderr_response, stdout_cap_reached, stderr_cap_reached),
     };
     defer allocator.free(response);
-    try writeStdoutLine(response);
+    try session.output_target.send(response);
     markCommandExecSessionFinished(session);
 }
 
@@ -51489,13 +51500,13 @@ fn readDeferredCommandExecPipeChunk(
     const cap_reached = commandExecOutputCapReached(observed_len.*, session.output_bytes_cap);
     if (cap_reached and cap_notified.*) return true;
     if (cap_reached) cap_notified.* = true;
-    try writeActiveSessionOutputDeltaStdout(allocator, session, stream, capped, cap_reached);
+    try writeActiveSessionOutputDelta(allocator, session, stream, capped, cap_reached);
     return true;
 }
 
-fn writeActiveSessionOutputDeltaStdout(
+fn writeActiveSessionOutputDelta(
     allocator: std.mem.Allocator,
-    session: *const ActiveCommandExecSession,
+    session: *ActiveCommandExecSession,
     stream: []const u8,
     bytes: []const u8,
     cap_reached: bool,
@@ -51526,7 +51537,7 @@ fn writeActiveSessionOutputDeltaStdout(
         .{ method, id_key, process_id_json, stream_json, delta_json, if (cap_reached) "true" else "false" },
     );
     defer allocator.free(notification);
-    try writeStdoutLine(notification);
+    try session.output_target.send(notification);
 }
 
 fn renderCommandExecResponseFromIdJson(
