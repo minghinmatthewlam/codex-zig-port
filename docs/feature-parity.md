@@ -566,9 +566,10 @@ runtime override handling, and the Zig stdio app-server smoke.
 
 ### Cloud and Desktop Features
 
-- Complete the remaining cloud task flows behind `codex cloud`: task creation,
-  status/list, apply, diff, and TUI picker behavior against the current backend
-  contract.
+- Cloud task command coverage is implemented for `codex cloud exec`, `status`,
+  `list`, `diff`, `apply`, and the line-oriented picker against the current
+  backend contract. Remaining Cloud depth is richer full-screen picker/new-task
+  composer polish and deeper apply diagnostics, not a missing command flow.
 - No current user-facing generated app-server `ClientRequest` method-set gap is
   known. The remaining `mock/experimentalMethod` difference is Rust
   test-only/non-user-facing and is tracked separately from feature parity.
@@ -618,6 +619,6 @@ runtime override handling, and the Zig stdio app-server smoke.
 5. Rich plugin/app TUI management plus remaining remote/cache depth.
 6. Session/thread store parity needed by resume/fork and desktop clients.
 7. MCP lifecycle depth.
-8. Cloud task feature completion.
+8. Cloud task picker and apply-diagnostic polish.
 
 This order favors visible feature holes before deeper exact-behavior polish.
