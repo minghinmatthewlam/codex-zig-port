@@ -89,10 +89,14 @@ generated `EnvironmentAdd*`, `EnvironmentInfo*`, `EnvironmentShellInfo`,
 protocol artifacts, and the Zig stdio app-server smoke. Zig now validates
 malformed params before experimental capability gating like Rust, supports
 process-local `environment/add`,
-`environment/status` unknown/disconnected/pending responses, and returns
-Rust-shaped `environment/info` errors when no live exec-server shell info is
-available. Full live exec-server attachment, connected/disconnected notification
-emission, ready status, shell info, and cwd resolution remain planned.
+`environment/status` unknown/disconnected/pending responses, and performs
+on-demand `environment/info` WebSocket calls against configured live
+exec-servers, returning Rust-shaped shell info plus canonical `file://` cwd
+values. The Zig `exec-server` now serves its local shell/cwd through the same
+`environment/info` RPC. Full persistent exec-server attachment, configured
+connection-timeout enforcement, connected/disconnected notification emission,
+ready status, and environment selection/cwd resolution for thread/turn
+execution remain planned.
 App-server `app/read` and `app/installed` parity was checked against Rust's
 isolated local/offline behavior, generated `AppsRead*`, `ConnectorMetadata`,
 `AppsInstalled*`, and `InstalledApp` protocol artifacts, params validation, and

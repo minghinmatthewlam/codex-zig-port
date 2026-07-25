@@ -459,11 +459,15 @@ Runtime validation matches Rust's observed ordering by rejecting malformed
 params before experimental capability gating. `environment/add` maintains a
 process-local registry and returns the Rust-shaped empty response,
 `environment/status` returns Rust-shaped `unknown`, `disconnected`, or
-`pending` responses for missing, non-websocket, and websocket URLs, and
-`environment/info` returns Rust-shaped unknown/disconnected JSON-RPC errors
-until shell/cwd info can be read from a live exec-server connection. Full live
-exec-server attachment, connected/disconnected notification emission,
-ready-state recovery, shell info, and cwd resolution remain planned.
+`pending` responses for missing, non-websocket, and websocket URLs.
+`environment/info` now connects on demand to a configured live exec-server over
+WebSocket, performs the Rust-shaped initialize/initialized handshake, calls
+exec-server `environment/info`, and returns shell info plus canonical
+`file://` cwd values; the Zig `exec-server` serves its own local shell/cwd
+through that RPC. Full persistent exec-server attachment, configured
+connection-timeout enforcement, connected/disconnected notification emission,
+ready-state recovery, and environment selection/cwd resolution for thread and
+turn execution remain planned.
 
 Additional app-server server-request generation coverage: generated TypeScript
 artifacts now include the top-level `ServerRequest` union for
