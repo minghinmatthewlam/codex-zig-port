@@ -6042,6 +6042,14 @@ const REMOTE_CONTROL_STATUS_CHANGED_NOTIFICATION_TS =
     \\
     ;
 
+const REMOTE_CONTROL_ENABLE_PARAMS_TS =
+    GENERATED_TS_HEADER ++
+    \\export interface RemoteControlEnableParams {
+    \\  ephemeral?: boolean;
+    \\}
+    \\
+    ;
+
 const REMOTE_CONTROL_ENABLE_RESPONSE_TS =
     GENERATED_TS_HEADER ++
     \\import type { RemoteControlConnectionStatus } from "./RemoteControlConnectionStatus";
@@ -6051,6 +6059,14 @@ const REMOTE_CONTROL_ENABLE_RESPONSE_TS =
     \\  serverName: string;
     \\  installationId: string;
     \\  environmentId: string | null;
+    \\}
+    \\
+    ;
+
+const REMOTE_CONTROL_DISABLE_PARAMS_TS =
+    GENERATED_TS_HEADER ++
+    \\export interface RemoteControlDisableParams {
+    \\  ephemeral?: boolean;
     \\}
     \\
     ;
@@ -11955,6 +11971,8 @@ const CLIENT_REQUEST_TS =
     \\import type { ProcessWriteStdinParams } from "./v2/ProcessWriteStdinParams";
     \\import type { RemoteControlClientsListParams } from "./v2/RemoteControlClientsListParams";
     \\import type { RemoteControlClientsRevokeParams } from "./v2/RemoteControlClientsRevokeParams";
+    \\import type { RemoteControlDisableParams } from "./v2/RemoteControlDisableParams";
+    \\import type { RemoteControlEnableParams } from "./v2/RemoteControlEnableParams";
     \\import type { RemoteControlPairingStartParams } from "./v2/RemoteControlPairingStartParams";
     \\import type { RemoteControlPairingStatusParams } from "./v2/RemoteControlPairingStatusParams";
     \\import type { ReviewStartParams } from "./v2/ReviewStartParams";
@@ -12250,9 +12268,11 @@ const CLIENT_REQUEST_TS =
     \\    }
     \\  | {
     \\      method: "remoteControl/enable";
+    \\      params?: RemoteControlEnableParams | null;
     \\    }
     \\  | {
     \\      method: "remoteControl/disable";
+    \\      params?: RemoteControlDisableParams | null;
     \\    }
     \\  | {
     \\      method: "remoteControl/status/read";
@@ -13826,7 +13846,9 @@ const V2_INDEX_TS =
     \\export type { RemoteControlClientsRevokeParams } from "./RemoteControlClientsRevokeParams";
     \\export type { RemoteControlClientsRevokeResponse } from "./RemoteControlClientsRevokeResponse";
     \\export type { RemoteControlConnectionStatus } from "./RemoteControlConnectionStatus";
+    \\export type { RemoteControlDisableParams } from "./RemoteControlDisableParams";
     \\export type { RemoteControlDisableResponse } from "./RemoteControlDisableResponse";
+    \\export type { RemoteControlEnableParams } from "./RemoteControlEnableParams";
     \\export type { RemoteControlEnableResponse } from "./RemoteControlEnableResponse";
     \\export type { RemoteControlPairingStartParams } from "./RemoteControlPairingStartParams";
     \\export type { RemoteControlPairingStartResponse } from "./RemoteControlPairingStartResponse";
@@ -14536,7 +14558,12 @@ const CLIENT_REQUEST_JSON_SCHEMA =
     \\      "required": ["method"],
     \\      "properties": {
     \\        "method": { "const": "remoteControl/enable" },
-    \\        "params": { "type": "null" }
+    \\        "params": {
+    \\          "anyOf": [
+    \\            { "$ref": "v2/RemoteControlEnableParams.json" },
+    \\            { "type": "null" }
+    \\          ]
+    \\        }
     \\      },
     \\      "additionalProperties": true
     \\    },
@@ -14545,7 +14572,12 @@ const CLIENT_REQUEST_JSON_SCHEMA =
     \\      "required": ["method"],
     \\      "properties": {
     \\        "method": { "const": "remoteControl/disable" },
-    \\        "params": { "type": "null" }
+    \\        "params": {
+    \\          "anyOf": [
+    \\            { "$ref": "v2/RemoteControlDisableParams.json" },
+    \\            { "type": "null" }
+    \\          ]
+    \\        }
     \\      },
     \\      "additionalProperties": true
     \\    },
@@ -17624,6 +17656,19 @@ const REMOTE_CONTROL_STATUS_CHANGED_NOTIFICATION_JSON_SCHEMA =
     \\
 ;
 
+const REMOTE_CONTROL_ENABLE_PARAMS_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "RemoteControlEnableParams",
+    \\  "type": "object",
+    \\  "properties": {
+    \\    "ephemeral": { "type": "boolean" }
+    \\  },
+    \\  "additionalProperties": true
+    \\}
+    \\
+;
+
 const REMOTE_CONTROL_ENABLE_RESPONSE_JSON_SCHEMA =
     \\{
     \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -17641,6 +17686,19 @@ const REMOTE_CONTROL_ENABLE_RESPONSE_JSON_SCHEMA =
     \\      "type": "string",
     \\      "enum": ["disabled", "connecting", "connected", "errored"]
     \\    }
+    \\  },
+    \\  "additionalProperties": true
+    \\}
+    \\
+;
+
+const REMOTE_CONTROL_DISABLE_PARAMS_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "RemoteControlDisableParams",
+    \\  "type": "object",
+    \\  "properties": {
+    \\    "ephemeral": { "type": "boolean" }
     \\  },
     \\  "additionalProperties": true
     \\}
@@ -28287,6 +28345,13 @@ const APP_SERVER_PROTOCOL_SCHEMA_BUNDLE =
     \\      },
     \\      "additionalProperties": true
     \\    },
+    \\    "RemoteControlEnableParams": {
+    \\      "type": "object",
+    \\      "properties": {
+    \\        "ephemeral": { "type": "boolean" }
+    \\      },
+    \\      "additionalProperties": true
+    \\    },
     \\    "RemoteControlEnableResponse": {
     \\      "type": "object",
     \\      "required": ["status", "serverName", "installationId"],
@@ -28295,6 +28360,13 @@ const APP_SERVER_PROTOCOL_SCHEMA_BUNDLE =
     \\        "serverName": { "type": "string" },
     \\        "installationId": { "type": "string" },
     \\        "environmentId": { "type": ["string", "null"] }
+    \\      },
+    \\      "additionalProperties": true
+    \\    },
+    \\    "RemoteControlDisableParams": {
+    \\      "type": "object",
+    \\      "properties": {
+    \\        "ephemeral": { "type": "boolean" }
     \\      },
     \\      "additionalProperties": true
     \\    },
@@ -31284,7 +31356,9 @@ const APP_SERVER_JSON_SCHEMA_FILES = [_]SchemaFile{
     .{ .name = "v2/PluginUninstallResponse.json", .contents = PLUGIN_UNINSTALL_RESPONSE_JSON_SCHEMA },
     .{ .name = "RemoteControlConnectionStatus.json", .contents = REMOTE_CONTROL_CONNECTION_STATUS_JSON_SCHEMA },
     .{ .name = "RemoteControlStatusChangedNotification.json", .contents = REMOTE_CONTROL_STATUS_CHANGED_NOTIFICATION_JSON_SCHEMA },
+    .{ .name = "RemoteControlEnableParams.json", .contents = REMOTE_CONTROL_ENABLE_PARAMS_JSON_SCHEMA },
     .{ .name = "RemoteControlEnableResponse.json", .contents = REMOTE_CONTROL_ENABLE_RESPONSE_JSON_SCHEMA },
+    .{ .name = "RemoteControlDisableParams.json", .contents = REMOTE_CONTROL_DISABLE_PARAMS_JSON_SCHEMA },
     .{ .name = "RemoteControlDisableResponse.json", .contents = REMOTE_CONTROL_DISABLE_RESPONSE_JSON_SCHEMA },
     .{ .name = "RemoteControlStatusReadResponse.json", .contents = REMOTE_CONTROL_STATUS_READ_RESPONSE_JSON_SCHEMA },
     .{ .name = "RemoteControlPairingStartParams.json", .contents = REMOTE_CONTROL_PAIRING_START_PARAMS_JSON_SCHEMA },
@@ -31306,6 +31380,8 @@ const APP_SERVER_JSON_SCHEMA_FILES = [_]SchemaFile{
     .{ .name = "EnvironmentStatusKind.json", .contents = ENVIRONMENT_STATUS_KIND_JSON_SCHEMA },
     .{ .name = "EnvironmentStatusParams.json", .contents = ENVIRONMENT_STATUS_PARAMS_JSON_SCHEMA },
     .{ .name = "EnvironmentStatusResponse.json", .contents = ENVIRONMENT_STATUS_RESPONSE_JSON_SCHEMA },
+    .{ .name = "v2/RemoteControlEnableParams.json", .contents = REMOTE_CONTROL_ENABLE_PARAMS_JSON_SCHEMA },
+    .{ .name = "v2/RemoteControlDisableParams.json", .contents = REMOTE_CONTROL_DISABLE_PARAMS_JSON_SCHEMA },
     .{ .name = "v2/RemoteControlPairingStartParams.json", .contents = REMOTE_CONTROL_PAIRING_START_PARAMS_JSON_SCHEMA },
     .{ .name = "v2/RemoteControlPairingStartResponse.json", .contents = REMOTE_CONTROL_PAIRING_START_RESPONSE_JSON_SCHEMA },
     .{ .name = "v2/RemoteControlPairingStatusParams.json", .contents = REMOTE_CONTROL_PAIRING_STATUS_PARAMS_JSON_SCHEMA },
@@ -32108,7 +32184,9 @@ const APP_SERVER_TS_FILES = [_]SchemaFile{
     .{ .name = "v2/AppListUpdatedNotification.ts", .contents = APP_LIST_UPDATED_NOTIFICATION_TS },
     .{ .name = "v2/RemoteControlConnectionStatus.ts", .contents = REMOTE_CONTROL_CONNECTION_STATUS_TS },
     .{ .name = "v2/RemoteControlStatusChangedNotification.ts", .contents = REMOTE_CONTROL_STATUS_CHANGED_NOTIFICATION_TS },
+    .{ .name = "v2/RemoteControlEnableParams.ts", .contents = REMOTE_CONTROL_ENABLE_PARAMS_TS },
     .{ .name = "v2/RemoteControlEnableResponse.ts", .contents = REMOTE_CONTROL_ENABLE_RESPONSE_TS },
+    .{ .name = "v2/RemoteControlDisableParams.ts", .contents = REMOTE_CONTROL_DISABLE_PARAMS_TS },
     .{ .name = "v2/RemoteControlDisableResponse.ts", .contents = REMOTE_CONTROL_DISABLE_RESPONSE_TS },
     .{ .name = "v2/RemoteControlStatusReadResponse.ts", .contents = REMOTE_CONTROL_STATUS_READ_RESPONSE_TS },
     .{ .name = "v2/RemoteControlPairingStartParams.ts", .contents = REMOTE_CONTROL_PAIRING_START_PARAMS_TS },
@@ -43281,7 +43359,17 @@ fn handleRemoteControlMethod(
         std.mem.eql(u8, method, "remoteControl/disable") or
         std.mem.eql(u8, method, "remoteControl/status/read"))
     {
-        if (params_value) |params| {
+        if (std.mem.eql(u8, method, "remoteControl/enable")) {
+            if (try validateRemoteControlToggleParams(allocator, params_value, "RemoteControlEnableParams")) |message| {
+                defer allocator.free(message);
+                return renderJsonRpcError(allocator, id_value, -32600, message);
+            }
+        } else if (std.mem.eql(u8, method, "remoteControl/disable")) {
+            if (try validateRemoteControlToggleParams(allocator, params_value, "RemoteControlDisableParams")) |message| {
+                defer allocator.free(message);
+                return renderJsonRpcError(allocator, id_value, -32600, message);
+            }
+        } else if (params_value) |params| {
             if (params != .null) {
                 const message = try std.fmt.allocPrint(allocator, "{s} params must be null or omitted", .{method});
                 defer allocator.free(message);
@@ -43342,6 +43430,16 @@ fn remoteControlPairingUnavailableMessage(state: *const AppServerState) []const 
     return "remote control pairing is unavailable until enrollment completes";
 }
 
+fn validateRemoteControlToggleParams(allocator: std.mem.Allocator, params_value: ?std.json.Value, struct_name: []const u8) !?[]const u8 {
+    const params = params_value orelse return null;
+    if (params == .null) return null;
+    if (params != .object) return try std.fmt.allocPrint(allocator, "Invalid request: expected struct {s}", .{struct_name});
+    if (params.object.get("ephemeral")) |value| {
+        if (value != .bool) return try remoteControlInvalidTypeMessage(allocator, value, "a boolean");
+    }
+    return null;
+}
+
 fn validateRemoteControlPairingStartParams(allocator: std.mem.Allocator, params_value: ?std.json.Value) !?[]const u8 {
     const params = params_value orelse return try remoteControlMissingParamsMessage(allocator);
     if (params == .null) return try remoteControlMissingParamsMessage(allocator);
@@ -43358,20 +43456,21 @@ fn validateRemoteControlPairingStatusParams(allocator: std.mem.Allocator, params
     if (params == .null) return try remoteControlMissingParamsMessage(allocator);
     if (params != .object) return try allocator.dupe(u8, "Invalid request: expected struct RemoteControlPairingStatusParams");
     const object = params.object;
-    var has_code = false;
+    var non_null_code_count: u8 = 0;
     if (object.get("pairingCode")) |value| {
         if (value != .null) {
             if (value != .string) return try remoteControlInvalidTypeMessage(allocator, value, "a string");
-            has_code = true;
+            non_null_code_count += 1;
         }
     }
     if (object.get("manualPairingCode")) |value| {
         if (value != .null) {
             if (value != .string) return try remoteControlInvalidTypeMessage(allocator, value, "a string");
-            has_code = true;
+            non_null_code_count += 1;
         }
     }
-    if (!has_code) return try allocator.dupe(u8, "remoteControl/pairing/status requires pairingCode or manualPairingCode");
+    if (non_null_code_count == 0) return try allocator.dupe(u8, "remoteControl/pairing/status requires pairingCode or manualPairingCode");
+    if (non_null_code_count > 1) return try allocator.dupe(u8, "remoteControl/pairing/status accepts either pairingCode or manualPairingCode, not both");
     return null;
 }
 

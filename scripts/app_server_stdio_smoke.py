@@ -48329,6 +48329,26 @@ def run_remote_control_status_notification_smoke(binary: Path) -> None:
             proc,
             {
                 "jsonrpc": "2.0",
+                "id": "remote-pair-status-conflict",
+                "method": "remoteControl/pairing/status",
+                "params": {
+                    "pairingCode": "pair-code",
+                    "manualPairingCode": "MANUAL-CODE",
+                },
+            },
+        )
+        pair_status_conflict = read_json_line(proc, 5)
+        assert pair_status_conflict["id"] == "remote-pair-status-conflict"
+        assert pair_status_conflict["error"]["code"] == -32600
+        assert (
+            pair_status_conflict["error"]["message"]
+            == "remoteControl/pairing/status accepts either pairingCode or manualPairingCode, not both"
+        )
+
+        write_json_line(
+            proc,
+            {
+                "jsonrpc": "2.0",
                 "id": "remote-client-list-missing",
                 "method": "remoteControl/client/list",
                 "params": {},
@@ -48414,9 +48434,39 @@ def run_remote_control_status_notification_smoke(binary: Path) -> None:
             proc,
             {
                 "jsonrpc": "2.0",
+                "id": "remote-enable-invalid-ephemeral",
+                "method": "remoteControl/enable",
+                "params": {"ephemeral": "yes"},
+            },
+        )
+        enable_invalid_ephemeral = read_json_line(proc, 5)
+        assert enable_invalid_ephemeral["id"] == "remote-enable-invalid-ephemeral"
+        assert enable_invalid_ephemeral["error"]["code"] == -32600
+        assert (
+            enable_invalid_ephemeral["error"]["message"]
+            == 'Invalid request: invalid type: string "yes", expected a boolean'
+        )
+
+        write_json_line(
+            proc,
+            {
+                "jsonrpc": "2.0",
+                "id": "remote-disable-ephemeral-disabled",
+                "method": "remoteControl/disable",
+                "params": {"ephemeral": True},
+            },
+        )
+        disable_ephemeral_disabled = read_json_line(proc, 5)
+        assert disable_ephemeral_disabled["id"] == "remote-disable-ephemeral-disabled"
+        assert disable_ephemeral_disabled["result"]["status"] == "disabled"
+
+        write_json_line(
+            proc,
+            {
+                "jsonrpc": "2.0",
                 "id": "remote-enable-before-pair",
                 "method": "remoteControl/enable",
-                "params": None,
+                "params": {"ephemeral": True},
             },
         )
         enabled = read_json_line(proc, 5)
@@ -50984,6 +51034,29 @@ def run_json_schema_smoke(binary: Path) -> None:
             "remoteControl/client/list",
             "remoteControl/client/revoke",
         }
+        remote_enable_schema = next(
+            item
+            for item in client_request["oneOf"]
+            if item["properties"]["method"].get("const") == "remoteControl/enable"
+        )
+        assert (
+            remote_enable_schema["properties"]["params"]["anyOf"][0]["$ref"]
+            == "v2/RemoteControlEnableParams.json"
+        )
+        assert remote_enable_schema["properties"]["params"]["anyOf"][1]["type"] == "null"
+        remote_disable_schema = next(
+            item
+            for item in client_request["oneOf"]
+            if item["properties"]["method"].get("const") == "remoteControl/disable"
+        )
+        assert (
+            remote_disable_schema["properties"]["params"]["anyOf"][0]["$ref"]
+            == "v2/RemoteControlDisableParams.json"
+        )
+        assert (
+            remote_disable_schema["properties"]["params"]["anyOf"][1]["type"]
+            == "null"
+        )
         environment_methods = {
             item["properties"]["method"]["const"]: item["properties"]["params"]["$ref"]
             for item in client_request["oneOf"]
@@ -51665,6 +51738,15 @@ def run_json_schema_smoke(binary: Path) -> None:
         )
         assert remote_status_changed["properties"]["serverName"]["type"] == "string"
         assert remote_status_changed["properties"]["installationId"]["type"] == "string"
+        for params_name in [
+            "RemoteControlEnableParams",
+            "RemoteControlDisableParams",
+        ]:
+            params_schema = json.loads(
+                (out_dir / f"{params_name}.json").read_text(encoding="utf-8")
+            )
+            assert params_schema["properties"]["ephemeral"]["type"] == "boolean"
+            assert (out_dir / "v2" / f"{params_name}.json").is_file()
         for response_name in [
             "RemoteControlEnableResponse",
             "RemoteControlDisableResponse",
@@ -54950,6 +55032,16 @@ def run_json_schema_smoke(binary: Path) -> None:
             ]["$ref"]
             == "#/$defs/RemoteControlConnectionStatus"
         )
+        for remote_control_params_def in [
+            "RemoteControlEnableParams",
+            "RemoteControlDisableParams",
+        ]:
+            assert (
+                bundle["$defs"][remote_control_params_def]["properties"][
+                    "ephemeral"
+                ]["type"]
+                == "boolean"
+            )
         for remote_control_response_def in [
             "RemoteControlEnableResponse",
             "RemoteControlDisableResponse",
@@ -56145,12 +56237,17 @@ def run_typescript_generation_smoke(binary: Path) -> None:
             "params: ExperimentalFeatureEnablementSetParams;"
             in client_request
         )
-        for method in [
-            "remoteControl/enable",
-            "remoteControl/disable",
-            "remoteControl/status/read",
+        for method, params_type in [
+            ("remoteControl/enable", "RemoteControlEnableParams"),
+            ("remoteControl/disable", "RemoteControlDisableParams"),
         ]:
+            assert (
+                f'import type {{ {params_type} }} from "./v2/{params_type}";'
+                in client_request
+            )
             assert f'method: "{method}";' in client_request
+            assert f"params?: {params_type} | null;" in client_request
+        assert 'method: "remoteControl/status/read";' in client_request
         for method, params_type in [
             ("remoteControl/pairing/start", "RemoteControlPairingStartParams"),
             ("remoteControl/pairing/status", "RemoteControlPairingStatusParams"),
@@ -57905,6 +58002,15 @@ def run_typescript_generation_smoke(binary: Path) -> None:
         )
         assert "status: RemoteControlConnectionStatus;" in remote_status_changed
         assert "environmentId: string | null;" in remote_status_changed
+        for params_name in [
+            "RemoteControlEnableParams",
+            "RemoteControlDisableParams",
+        ]:
+            params_ts = (out_dir / "v2" / f"{params_name}.ts").read_text(
+                encoding="utf-8"
+            )
+            assert f"export interface {params_name}" in params_ts
+            assert "ephemeral?: boolean;" in params_ts
         for response_name in [
             "RemoteControlEnableResponse",
             "RemoteControlDisableResponse",
@@ -60364,6 +60470,8 @@ def run_typescript_generation_smoke(binary: Path) -> None:
             "EnvironmentStatusParams",
             "EnvironmentStatusResponse",
             "RemoteControlConnectionStatus",
+            "RemoteControlDisableParams",
+            "RemoteControlEnableParams",
             "RemoteControlStatusChangedNotification",
         ]:
             assert (
