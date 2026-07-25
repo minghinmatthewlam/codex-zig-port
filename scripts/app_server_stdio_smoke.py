@@ -176,6 +176,11 @@ def experimental_api_field_cases(thread_id: str):
         ),
         (
             "thread/resume",
+            {"threadId": thread_id, "initialTurnsPage": {"limit": 1}},
+            "thread/resume.initialTurnsPage",
+        ),
+        (
+            "thread/resume",
             {"threadId": thread_id, "persistExtendedHistory": True},
             "thread/resume.persistFullHistory",
         ),
@@ -316,7 +321,7 @@ def payload_requires_experimental_api(payload: dict) -> bool:
             return "granular" in params["approvalPolicy"]
         return any(
             value_is_set(params, field)
-            for field in ("history", "path", "permissions")
+            for field in ("history", "path", "permissions", "initialTurnsPage")
         ) or params.get("excludeTurns") is True or params.get(
             "persistExtendedHistory"
         ) is True
@@ -4793,6 +4798,28 @@ def exercise_json_rpc(write_line, read_line) -> None:
     assert (
         "limit must be a non-negative integer or null"
         in thread_turns_list_invalid_limit["error"]["message"]
+    )
+
+    write_line(
+        {
+            "jsonrpc": "2.0",
+            "id": "thread-turns-list-invalid-items-view",
+            "method": "thread/turns/list",
+            "params": {
+                "threadId": "00000000-0000-0000-0000-000000000013",
+                "itemsView": "compact",
+            },
+        }
+    )
+    thread_turns_list_invalid_items_view = read_line()
+    assert (
+        thread_turns_list_invalid_items_view["id"]
+        == "thread-turns-list-invalid-items-view"
+    )
+    assert thread_turns_list_invalid_items_view["error"]["code"] == -32602
+    assert (
+        "itemsView must be notLoaded, summary, full, or null"
+        in thread_turns_list_invalid_items_view["error"]["message"]
     )
 
     write_line(
@@ -20800,6 +20827,11 @@ def run_thread_resume_rpc_smoke(binary: Path) -> None:
                         "approvalPolicy": "never",
                         "approvalsReviewer": "user",
                         "sandbox": "danger-full-access",
+                        "initialTurnsPage": {
+                            "limit": 1,
+                            "sortDirection": "desc",
+                            "itemsView": "full",
+                        },
                     },
                 },
             )
@@ -20825,6 +20857,19 @@ def run_thread_resume_rpc_smoke(binary: Path) -> None:
             assert resume_result["modelProvider"] == "mock_provider"
             assert resume_result["approvalPolicy"] == "never"
             assert resume_result["sandbox"] == {"type": "dangerFullAccess"}
+            initial_turns_page = resume_result["initialTurnsPage"]
+            assert initial_turns_page["data"][0]["id"] == "turn-1"
+            assert initial_turns_page["data"][0]["itemsView"] == "full"
+            assert initial_turns_page["data"][0]["items"][0]["type"] == "agentMessage"
+            assert initial_turns_page["data"][0]["items"][0]["text"] == "saved hi"
+            assert json.loads(initial_turns_page["nextCursor"]) == {
+                "turnId": "turn-1",
+                "includeAnchor": False,
+            }
+            assert json.loads(initial_turns_page["backwardsCursor"]) == {
+                "turnId": "turn-1",
+                "includeAnchor": True,
+            }
 
             write_json_line(
                 proc,
@@ -51795,10 +51840,26 @@ def run_json_schema_smoke(binary: Path) -> None:
             "pragmatic",
             None,
         ]
+        initial_turns_page_schema = thread_resume_params_schema["properties"][
+            "initialTurnsPage"
+        ]["anyOf"][0]["$ref"]
+        assert initial_turns_page_schema == "#/$defs/ThreadResumeInitialTurnsPageParams"
+        assert (
+            thread_resume_params_schema["$defs"][
+                "ThreadResumeInitialTurnsPageParams"
+            ]["properties"]["itemsView"]["anyOf"][0]["$ref"]
+            == "#/$defs/TurnItemsView"
+        )
         thread_resume_response_schema = json.loads(
             (out_dir / "ThreadResumeResponse.json").read_text(encoding="utf-8")
         )
         assert thread_resume_response_schema["required"][0] == "thread"
+        assert (
+            thread_resume_response_schema["properties"]["initialTurnsPage"]["anyOf"][
+                0
+            ]["$ref"]
+            == "#/$defs/ThreadTurnsListResponse"
+        )
         thread_fork_params_schema = json.loads(
             (out_dir / "ThreadForkParams.json").read_text(encoding="utf-8")
         )
@@ -52140,6 +52201,10 @@ def run_json_schema_smoke(binary: Path) -> None:
         assert thread_turns_list["required"] == ["threadId"]
         assert thread_turns_list["properties"]["limit"]["maximum"] == 4294967295
         assert "sortDirection" in thread_turns_list["properties"]
+        assert (
+            thread_turns_list["properties"]["itemsView"]["anyOf"][0]["$ref"]
+            == "#/$defs/TurnItemsView"
+        )
         thread_turns_list_response = json.loads(
             (out_dir / "ThreadTurnsListResponse.json").read_text(encoding="utf-8")
         )
@@ -53361,7 +53426,19 @@ def run_json_schema_smoke(binary: Path) -> None:
             "array",
             "null",
         ]
+        assert (
+            bundle["$defs"]["ThreadResumeParams"]["properties"]["initialTurnsPage"][
+                "anyOf"
+            ][0]["$ref"]
+            == "#/$defs/ThreadResumeInitialTurnsPageParams"
+        )
         assert "ThreadResumeResponse" in bundle["$defs"]
+        assert (
+            bundle["$defs"]["ThreadResumeResponse"]["properties"]["initialTurnsPage"][
+                "anyOf"
+            ][0]["$ref"]
+            == "#/$defs/ThreadTurnsListResponse"
+        )
         assert "ThreadForkParams" in bundle["$defs"]
         assert bundle["$defs"]["ThreadForkParams"]["properties"]["path"]["type"] == [
             "string",
@@ -56823,16 +56900,26 @@ def run_typescript_generation_smoke(binary: Path) -> None:
         )
         assert "export interface ThreadResumeParams" in thread_resume_params
         assert 'import type { Personality } from "../Personality";' in thread_resume_params
+        assert 'import type { SortDirection } from "./SortDirection";' in thread_resume_params
+        assert 'import type { TurnItemsView } from "./TurnItemsView";' in thread_resume_params
+        assert "export interface ThreadResumeInitialTurnsPageParams" in thread_resume_params
         assert "threadId: string;" in thread_resume_params
         assert "history?: unknown[] | null;" in thread_resume_params
         assert "path?: string | null;" in thread_resume_params
         assert "personality?: Personality | null;" in thread_resume_params
         assert "excludeTurns?: boolean;" in thread_resume_params
+        assert "initialTurnsPage?: ThreadResumeInitialTurnsPageParams | null;" in thread_resume_params
+        assert "itemsView?: TurnItemsView | null;" in thread_resume_params
         thread_resume_response = (
             out_dir / "v2" / "ThreadResumeResponse.ts"
         ).read_text(encoding="utf-8")
         assert "export interface ThreadResumeResponse" in thread_resume_response
+        assert (
+            'import type { ThreadTurnsListResponse } from "./ThreadTurnsListResponse";'
+            in thread_resume_response
+        )
         assert "thread: unknown;" in thread_resume_response
+        assert "initialTurnsPage?: ThreadTurnsListResponse | null;" in thread_resume_response
         thread_fork_params = (out_dir / "v2" / "ThreadForkParams.ts").read_text(
             encoding="utf-8"
         )
@@ -57099,6 +57186,8 @@ def run_typescript_generation_smoke(binary: Path) -> None:
         assert "cursor?: string | null;" in thread_turns_list
         assert "limit?: number | null;" in thread_turns_list
         assert "sortDirection?: SortDirection | null;" in thread_turns_list
+        assert 'import type { TurnItemsView } from "./TurnItemsView";' in thread_turns_list
+        assert "itemsView?: TurnItemsView | null;" in thread_turns_list
         thread_turns_list_response = (
             out_dir / "v2" / "ThreadTurnsListResponse.ts"
         ).read_text(encoding="utf-8")

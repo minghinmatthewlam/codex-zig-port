@@ -10197,6 +10197,14 @@ const CONTEXT_COMPACTED_NOTIFICATION_TS =
 const THREAD_RESUME_PARAMS_TS =
     GENERATED_TS_HEADER ++
     \\import type { Personality } from "../Personality";
+    \\import type { SortDirection } from "./SortDirection";
+    \\import type { TurnItemsView } from "./TurnItemsView";
+    \\
+    \\export interface ThreadResumeInitialTurnsPageParams {
+    \\  limit?: number | null;
+    \\  sortDirection?: SortDirection | null;
+    \\  itemsView?: TurnItemsView | null;
+    \\}
     \\
     \\export interface ThreadResumeParams {
     \\  threadId: string;
@@ -10215,12 +10223,15 @@ const THREAD_RESUME_PARAMS_TS =
     \\  personality?: Personality | null;
     \\  excludeTurns?: boolean;
     \\  persistExtendedHistory?: boolean;
+    \\  initialTurnsPage?: ThreadResumeInitialTurnsPageParams | null;
     \\}
     \\
     ;
 
 const THREAD_RESUME_RESPONSE_TS =
     GENERATED_TS_HEADER ++
+    \\import type { ThreadTurnsListResponse } from "./ThreadTurnsListResponse";
+    \\
     \\export interface ThreadResumeResponse {
     \\  thread: unknown;
     \\  model: string;
@@ -10232,6 +10243,7 @@ const THREAD_RESUME_RESPONSE_TS =
     \\  approvalsReviewer: "user" | "auto_review" | "guardian_subagent";
     \\  sandbox: unknown;
     \\  reasoningEffort: string | null;
+    \\  initialTurnsPage?: ThreadTurnsListResponse | null;
     \\}
     \\
     ;
@@ -10792,12 +10804,14 @@ const THREAD_READ_RESPONSE_TS =
 const THREAD_TURNS_LIST_PARAMS_TS =
     GENERATED_TS_HEADER ++
     \\import type { SortDirection } from "./SortDirection";
+    \\import type { TurnItemsView } from "./TurnItemsView";
     \\
     \\export interface ThreadTurnsListParams {
     \\  threadId: string;
     \\  cursor?: string | null;
     \\  limit?: number | null;
     \\  sortDirection?: SortDirection | null;
+    \\  itemsView?: TurnItemsView | null;
     \\}
     \\
     ;
@@ -21959,7 +21973,42 @@ const THREAD_RESUME_PARAMS_JSON_SCHEMA =
     \\    "developerInstructions": { "type": ["string", "null"] },
     \\    "personality": { "enum": ["none", "friendly", "pragmatic", null] },
     \\    "excludeTurns": { "type": "boolean" },
-    \\    "persistExtendedHistory": { "type": "boolean" }
+    \\    "persistExtendedHistory": { "type": "boolean" },
+    \\    "initialTurnsPage": {
+    \\      "anyOf": [
+    \\        { "$ref": "#/$defs/ThreadResumeInitialTurnsPageParams" },
+    \\        { "type": "null" }
+    \\      ]
+    \\    }
+    \\  },
+    \\  "$defs": {
+    \\    "SortDirection": {
+    \\      "type": "string",
+    \\      "enum": ["asc", "desc"]
+    \\    },
+    \\    "TurnItemsView": {
+    \\      "type": "string",
+    \\      "enum": ["notLoaded", "summary", "full"]
+    \\    },
+    \\    "ThreadResumeInitialTurnsPageParams": {
+    \\      "type": "object",
+    \\      "properties": {
+    \\        "limit": { "type": ["integer", "null"], "minimum": 0, "maximum": 4294967295 },
+    \\        "sortDirection": {
+    \\          "anyOf": [
+    \\            { "$ref": "#/$defs/SortDirection" },
+    \\            { "type": "null" }
+    \\          ]
+    \\        },
+    \\        "itemsView": {
+    \\          "anyOf": [
+    \\            { "$ref": "#/$defs/TurnItemsView" },
+    \\            { "type": "null" }
+    \\          ]
+    \\        }
+    \\      },
+    \\      "additionalProperties": true
+    \\    }
     \\  },
     \\  "additionalProperties": true
     \\}
@@ -21982,7 +22031,25 @@ const THREAD_RESUME_RESPONSE_JSON_SCHEMA =
     \\    "approvalPolicy": { "enum": ["untrusted", "on-failure", "on-request", "never"] },
     \\    "approvalsReviewer": { "enum": ["user", "auto_review", "guardian_subagent"] },
     \\    "sandbox": true,
-    \\    "reasoningEffort": { "type": ["string", "null"] }
+    \\    "reasoningEffort": { "type": ["string", "null"] },
+    \\    "initialTurnsPage": {
+    \\      "anyOf": [
+    \\        { "$ref": "#/$defs/ThreadTurnsListResponse" },
+    \\        { "type": "null" }
+    \\      ]
+    \\    }
+    \\  },
+    \\  "$defs": {
+    \\    "ThreadTurnsListResponse": {
+    \\      "type": "object",
+    \\      "required": ["data", "nextCursor", "backwardsCursor"],
+    \\      "properties": {
+    \\        "data": { "type": "array", "items": true },
+    \\        "nextCursor": { "type": ["string", "null"] },
+    \\        "backwardsCursor": { "type": ["string", "null"] }
+    \\      },
+    \\      "additionalProperties": false
+    \\    }
     \\  },
     \\  "additionalProperties": true
     \\}
@@ -23070,12 +23137,22 @@ const THREAD_TURNS_LIST_PARAMS_JSON_SCHEMA =
     \\        { "$ref": "#/$defs/SortDirection" },
     \\        { "type": "null" }
     \\      ]
+    \\    },
+    \\    "itemsView": {
+    \\      "anyOf": [
+    \\        { "$ref": "#/$defs/TurnItemsView" },
+    \\        { "type": "null" }
+    \\      ]
     \\    }
     \\  },
     \\  "$defs": {
     \\    "SortDirection": {
     \\      "type": "string",
     \\      "enum": ["asc", "desc"]
+    \\    },
+    \\    "TurnItemsView": {
+    \\      "type": "string",
+    \\      "enum": ["notLoaded", "summary", "full"]
     \\    }
     \\  },
     \\  "additionalProperties": true
@@ -27103,7 +27180,32 @@ const APP_SERVER_PROTOCOL_SCHEMA_BUNDLE =
     \\        "developerInstructions": { "type": ["string", "null"] },
     \\        "personality": { "enum": ["none", "friendly", "pragmatic", null] },
     \\        "excludeTurns": { "type": "boolean" },
-    \\        "persistExtendedHistory": { "type": "boolean" }
+    \\        "persistExtendedHistory": { "type": "boolean" },
+    \\        "initialTurnsPage": {
+    \\          "anyOf": [
+    \\            { "$ref": "#/$defs/ThreadResumeInitialTurnsPageParams" },
+    \\            { "type": "null" }
+    \\          ]
+    \\        }
+    \\      },
+    \\      "additionalProperties": true
+    \\    },
+    \\    "ThreadResumeInitialTurnsPageParams": {
+    \\      "type": "object",
+    \\      "properties": {
+    \\        "limit": { "type": ["integer", "null"], "minimum": 0, "maximum": 4294967295 },
+    \\        "sortDirection": {
+    \\          "anyOf": [
+    \\            { "$ref": "#/$defs/SortDirection" },
+    \\            { "type": "null" }
+    \\          ]
+    \\        },
+    \\        "itemsView": {
+    \\          "anyOf": [
+    \\            { "$ref": "#/$defs/TurnItemsView" },
+    \\            { "type": "null" }
+    \\          ]
+    \\        }
     \\      },
     \\      "additionalProperties": true
     \\    },
@@ -27120,7 +27222,13 @@ const APP_SERVER_PROTOCOL_SCHEMA_BUNDLE =
     \\        "approvalPolicy": { "enum": ["untrusted", "on-failure", "on-request", "never"] },
     \\        "approvalsReviewer": { "enum": ["user", "auto_review", "guardian_subagent"] },
     \\        "sandbox": true,
-    \\        "reasoningEffort": { "type": ["string", "null"] }
+    \\        "reasoningEffort": { "type": ["string", "null"] },
+    \\        "initialTurnsPage": {
+    \\          "anyOf": [
+    \\            { "$ref": "#/$defs/ThreadTurnsListResponse" },
+    \\            { "type": "null" }
+    \\          ]
+    \\        }
     \\      },
     \\      "additionalProperties": true
     \\    },
@@ -27614,6 +27722,12 @@ const APP_SERVER_PROTOCOL_SCHEMA_BUNDLE =
     \\        "sortDirection": {
     \\          "anyOf": [
     \\            { "$ref": "#/$defs/SortDirection" },
+    \\            { "type": "null" }
+    \\          ]
+    \\        },
+    \\        "itemsView": {
+    \\          "anyOf": [
+    \\            { "$ref": "#/$defs/TurnItemsView" },
     \\            { "type": "null" }
     \\          ]
     \\        }
@@ -41746,7 +41860,7 @@ fn handleThreadResume(
             }
 
             const include_turns = !(optionalBoolParam(object, "excludeTurns") orelse false);
-            const result = try renderThreadLifecycleResponse(allocator, &thread, include_turns, state.experimental_api_enabled);
+            const result = try renderThreadResumeResponse(allocator, &thread, include_turns, state.experimental_api_enabled, object);
             defer allocator.free(result);
 
             const subscription_added = try ensureThreadSubscribed(allocator, state, thread.id);
@@ -41807,7 +41921,7 @@ fn handleThreadResume(
     }
 
     const include_turns = !(optionalBoolParam(object, "excludeTurns") orelse false);
-    const result = try renderThreadLifecycleResponse(allocator, &thread, include_turns, state.experimental_api_enabled);
+    const result = try renderThreadResumeResponse(allocator, &thread, include_turns, state.experimental_api_enabled, object);
     defer allocator.free(result);
 
     const subscription_added = try ensureThreadSubscribed(allocator, state, thread.id);
@@ -43662,6 +43776,13 @@ fn optionalJsonParam(params: std.json.ObjectMap, name: []const u8) ?std.json.Val
     return value;
 }
 
+fn threadResumeInitialTurnsPageParams(params: std.json.ObjectMap) ?std.json.ObjectMap {
+    const value = params.get("initialTurnsPage") orelse return null;
+    if (value == .null) return null;
+    if (value != .object) return null;
+    return value.object;
+}
+
 fn replaceOwnedString(allocator: std.mem.Allocator, slot: *[]const u8, value: []const u8) !void {
     const copy = try allocator.dupe(u8, value);
     allocator.free(slot.*);
@@ -45025,29 +45146,63 @@ fn renderThreadLifecycleResponse(
     var result = std.ArrayList(u8).empty;
     errdefer result.deinit(allocator);
 
+    try appendThreadLifecycleResponseFields(allocator, &result, thread, include_turns, experimental_api_enabled);
+    try result.appendSlice(allocator, "}");
+
+    return result.toOwnedSlice(allocator);
+}
+
+fn appendThreadLifecycleResponseFields(
+    allocator: std.mem.Allocator,
+    result: *std.ArrayList(u8),
+    thread: *const LoadedThread,
+    include_turns: bool,
+    experimental_api_enabled: bool,
+) !void {
     try result.appendSlice(allocator, "{\"thread\":");
-    try appendLoadedThreadJson(allocator, &result, thread, include_turns, thread.status);
+    try appendLoadedThreadJson(allocator, result, thread, include_turns, thread.status);
     try result.appendSlice(allocator, ",\"model\":");
-    try appendJsonString(allocator, &result, thread.model);
+    try appendJsonString(allocator, result, thread.model);
     try result.appendSlice(allocator, ",\"modelProvider\":");
-    try appendJsonString(allocator, &result, thread.model_provider);
+    try appendJsonString(allocator, result, thread.model_provider);
     try result.appendSlice(allocator, ",\"serviceTier\":");
-    try appendOptionalJsonString(allocator, &result, thread.service_tier);
+    try appendOptionalJsonString(allocator, result, thread.service_tier);
     try result.appendSlice(allocator, ",\"cwd\":");
-    try appendJsonString(allocator, &result, thread.cwd);
+    try appendJsonString(allocator, result, thread.cwd);
     try result.appendSlice(allocator, ",\"instructionSources\":[],\"approvalPolicy\":");
-    try appendJsonString(allocator, &result, thread.approval_policy);
+    try appendJsonString(allocator, result, thread.approval_policy);
     try result.appendSlice(allocator, ",\"approvalsReviewer\":");
-    try appendJsonString(allocator, &result, thread.approvals_reviewer);
+    try appendJsonString(allocator, result, thread.approvals_reviewer);
     try result.appendSlice(allocator, ",\"sandbox\":");
-    try appendThreadSandboxPolicyJson(allocator, &result, thread);
+    try appendThreadSandboxPolicyJson(allocator, result, thread);
     if (experimental_api_enabled) {
         try result.appendSlice(allocator, ",\"permissionProfile\":");
-        try appendThreadPermissionProfileJson(allocator, &result, thread);
+        try appendThreadPermissionProfileJson(allocator, result, thread);
         try result.appendSlice(allocator, ",\"activePermissionProfile\":null");
     }
     try result.appendSlice(allocator, ",\"reasoningEffort\":");
-    try appendOptionalJsonString(allocator, &result, thread.reasoning_effort);
+    try appendOptionalJsonString(allocator, result, thread.reasoning_effort);
+}
+
+fn renderThreadResumeResponse(
+    allocator: std.mem.Allocator,
+    thread: *const LoadedThread,
+    include_turns: bool,
+    experimental_api_enabled: bool,
+    params: std.json.ObjectMap,
+) ![]const u8 {
+    var result = std.ArrayList(u8).empty;
+    errdefer result.deinit(allocator);
+
+    try appendThreadLifecycleResponseFields(allocator, &result, thread, include_turns, experimental_api_enabled);
+    if (experimental_api_enabled) {
+        if (threadResumeInitialTurnsPageParams(params)) |page_params| {
+            const page = try renderThreadTurnsListResponseWithDefaultItemsView(allocator, thread, page_params, .summary);
+            defer allocator.free(page);
+            try result.appendSlice(allocator, ",\"initialTurnsPage\":");
+            try result.appendSlice(allocator, page);
+        }
+    }
     try result.appendSlice(allocator, "}");
 
     return result.toOwnedSlice(allocator);
@@ -46376,7 +46531,22 @@ const ThreadTurnsCursor = struct {
     include_anchor: bool,
 };
 
+const ThreadTurnItemsView = enum {
+    not_loaded,
+    summary,
+    full,
+};
+
 fn renderThreadTurnsListResponse(allocator: std.mem.Allocator, thread: *const LoadedThread, params: std.json.ObjectMap) ![]const u8 {
+    return renderThreadTurnsListResponseWithDefaultItemsView(allocator, thread, params, .full);
+}
+
+fn renderThreadTurnsListResponseWithDefaultItemsView(
+    allocator: std.mem.Allocator,
+    thread: *const LoadedThread,
+    params: std.json.ObjectMap,
+    default_items_view: ThreadTurnItemsView,
+) ![]const u8 {
     var parsed_turns = try std.json.parseFromSlice(std.json.Value, allocator, thread.turns_json, .{});
     defer parsed_turns.deinit();
     if (parsed_turns.value != .array) return error.InvalidThreadTurnsData;
@@ -46423,12 +46593,15 @@ fn renderThreadTurnsListResponse(allocator: std.mem.Allocator, thread: *const Lo
     const page_size = @min(@max(requested_limit, 1), THREAD_TURNS_MAX_LIMIT);
     const page_len = @min(indices.items.len, page_size);
     const more_turns_available = indices.items.len > page_size;
+    const items_view = threadTurnsItemsView(params) orelse default_items_view;
+    const json_arena_allocator = parsed_turns.arena.allocator();
 
     var result = std.ArrayList(u8).empty;
     errdefer result.deinit(allocator);
     try result.appendSlice(allocator, "{\"data\":[");
     for (indices.items[0..page_len], 0..) |turn_index, out_index| {
         if (out_index > 0) try result.append(allocator, ',');
+        try applyThreadTurnItemsView(json_arena_allocator, &turns[turn_index], items_view);
         const turn_json = try std.json.Stringify.valueAlloc(allocator, turns[turn_index], .{});
         defer allocator.free(turn_json);
         try result.appendSlice(allocator, turn_json);
@@ -46453,6 +46626,63 @@ fn renderThreadTurnsListResponse(allocator: std.mem.Allocator, thread: *const Lo
     }
     try result.append(allocator, '}');
     return result.toOwnedSlice(allocator);
+}
+
+fn threadTurnsItemsView(params: std.json.ObjectMap) ?ThreadTurnItemsView {
+    const value = optionalStringParam(params, "itemsView") orelse return null;
+    if (std.mem.eql(u8, value, "notLoaded")) return .not_loaded;
+    if (std.mem.eql(u8, value, "summary")) return .summary;
+    if (std.mem.eql(u8, value, "full")) return .full;
+    return null;
+}
+
+fn applyThreadTurnItemsView(allocator: std.mem.Allocator, turn: *std.json.Value, items_view: ThreadTurnItemsView) !void {
+    if (turn.* != .object) return error.InvalidThreadTurnsData;
+    const items_value = turn.object.getPtr("items") orelse return error.InvalidThreadTurnsData;
+    if (items_value.* != .array) return error.InvalidThreadTurnsData;
+
+    switch (items_view) {
+        .not_loaded => {
+            items_value.* = .{ .array = std.json.Array.init(allocator) };
+            try turn.object.put(allocator, "itemsView", .{ .string = "notLoaded" });
+        },
+        .summary => {
+            var summary_items = std.json.Array.init(allocator);
+            if (firstThreadItemWithType(items_value.array.items, "userMessage")) |user_message| {
+                try summary_items.append(user_message);
+            }
+            if (lastThreadItemWithType(items_value.array.items, "agentMessage")) |agent_message| {
+                try summary_items.append(agent_message);
+            }
+            items_value.* = .{ .array = summary_items };
+            try turn.object.put(allocator, "itemsView", .{ .string = "summary" });
+        },
+        .full => {
+            try turn.object.put(allocator, "itemsView", .{ .string = "full" });
+        },
+    }
+}
+
+fn firstThreadItemWithType(items: []const std.json.Value, item_type: []const u8) ?std.json.Value {
+    for (items) |item| {
+        if (threadItemTypeEquals(item, item_type)) return item;
+    }
+    return null;
+}
+
+fn lastThreadItemWithType(items: []const std.json.Value, item_type: []const u8) ?std.json.Value {
+    var index = items.len;
+    while (index > 0) {
+        index -= 1;
+        if (threadItemTypeEquals(items[index], item_type)) return items[index];
+    }
+    return null;
+}
+
+fn threadItemTypeEquals(item: std.json.Value, item_type: []const u8) bool {
+    if (item != .object) return false;
+    const value = item.object.get("type") orelse return false;
+    return value == .string and std.mem.eql(u8, value.string, item_type);
 }
 
 fn threadTurnsCursorFromValue(value: std.json.Value) ?ThreadTurnsCursor {
@@ -46900,6 +47130,7 @@ fn experimentalReasonForThreadResumeFields(object: std.json.ObjectMap) ?[]const 
     inline for (&.{
         .{ .field = "history", .reason = "thread/resume.history" },
         .{ .field = "path", .reason = "thread/resume.path" },
+        .{ .field = "initialTurnsPage", .reason = "thread/resume.initialTurnsPage" },
     }) |gate| {
         if (optionalExperimentalFieldIsSet(object, gate.field)) return gate.reason;
     }
@@ -47391,8 +47622,14 @@ fn threadTurnsListLimit(object: std.json.ObjectMap) ?usize {
 }
 
 fn validateThreadTurnsListParams(object: std.json.ObjectMap) ?[]const u8 {
-    if (object.get("cursor")) |value| {
-        if (value != .null and value != .string) return "cursor must be a string or null";
+    return validateThreadTurnsPageParams(object, true);
+}
+
+fn validateThreadTurnsPageParams(object: std.json.ObjectMap, allow_cursor: bool) ?[]const u8 {
+    if (allow_cursor) {
+        if (object.get("cursor")) |value| {
+            if (value != .null and value != .string) return "cursor must be a string or null";
+        }
     }
     if (object.get("limit")) |value| {
         switch (value) {
@@ -47403,6 +47640,9 @@ fn validateThreadTurnsListParams(object: std.json.ObjectMap) ?[]const u8 {
     }
     if (object.get("sortDirection")) |value| {
         if (!optionalEnumStringIsValid(value, &.{ "asc", "desc" })) return "sortDirection must be asc or desc";
+    }
+    if (object.get("itemsView")) |value| {
+        if (!optionalEnumStringIsValid(value, &.{ "notLoaded", "summary", "full" })) return "itemsView must be notLoaded, summary, full, or null";
     }
     return null;
 }
@@ -47669,6 +47909,12 @@ fn validateThreadResumeParams(params_value: ?std.json.Value) ?[]const u8 {
     }
     if (object.get("history")) |value| {
         if (value != .null and value != .array) return "history must be an array or null";
+    }
+    if (object.get("initialTurnsPage")) |value| {
+        if (value != .null and value != .object) return "initialTurnsPage must be an object or null";
+        if (value == .object) {
+            if (validateThreadTurnsPageParams(value.object, false)) |message| return message;
+        }
     }
     if (object.get("approvalPolicy")) |value| {
         if (!optionalEnumStringIsValid(value, &.{ "untrusted", "on-failure", "on-request", "never" })) {

@@ -32,6 +32,11 @@ App-server background terminal control parity was checked against Rust
 `protocol/v2/thread.rs`, Rust `thread_processor.rs`, Zig loaded-thread
 background PTY runtime state, generated TypeScript/JSON Schema artifacts, and
 the Zig stdio app-server smoke.
+App-server resume initial-turns-page parity was checked against Rust
+`ThreadResumeParams.initial_turns_page`,
+`ThreadResumeResponse.initial_turns_page`, Rust `build_thread_resume_initial_turns_page`,
+Zig `thread/resume` / `thread/turns/list` handling, generated TypeScript/JSON
+Schema artifacts, and the Zig stdio app-server smoke.
 
 ## Priority Rules
 
@@ -374,6 +379,11 @@ the Zig stdio app-server smoke.
   server-request dispatch, remaining lifecycle notification depth, and full
   Rust command/process lifecycle depth beyond current buffered-deferred,
   streamed/stdin/PTY socket transport coverage.
+- Close remaining app-server thread history depth: `thread/resume` now supports
+  the experimental `initialTurnsPage` bootstrap field and explicit page
+  `itemsView` handling, while standalone `thread/turns/list` still needs Rust's
+  default summary view behavior, remote thread-store pagination, and live
+  active-turn merging.
 
 ### Plugin CLI and TUI User Flows
 
