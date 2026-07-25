@@ -50864,12 +50864,20 @@ fn handleCommandExec(allocator: std.mem.Allocator, state: *AppServerState, id_va
     const effective_output_cap: ?usize = if (disable_output_cap) null else output_bytes_cap orelse COMMAND_EXEC_DEFAULT_OUTPUT_BYTES_CAP;
     const env_map = if (child_env) |*map| map else null;
 
-    if (commandExecCanDeferForTransport(state) and (tty or stream_stdin or stream_output)) {
+    if (commandExecCanDeferForTransport(state)) {
+        var generated_process_id: ?[]const u8 = null;
+        defer if (generated_process_id) |value| allocator.free(value);
+        const deferred_process_id = process_id orelse blk: {
+            const uuid = try uuid_mod.generateV4String(allocator);
+            defer allocator.free(uuid);
+            generated_process_id = try std.fmt.allocPrint(allocator, "__codex-zig-command-exec-{s}", .{uuid});
+            break :blk generated_process_id.?;
+        };
         return try startDeferredCommandExecProcess(
             allocator,
             state,
             id_value,
-            process_id.?,
+            deferred_process_id,
             effective_argv,
             run_cwd,
             env_map,

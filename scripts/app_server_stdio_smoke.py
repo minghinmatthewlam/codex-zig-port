@@ -2382,6 +2382,13 @@ def has_response(messages: list[dict], request_id: str) -> bool:
     return find_response_or_none(messages, request_id) is not None
 
 
+def response_index(messages: list[dict], request_id: str) -> int:
+    for index, message in enumerate(messages):
+        if message.get("id") == request_id:
+            return index
+    raise AssertionError(f"missing response for {request_id}: {messages!r}")
+
+
 def find_process_exited(messages: list[dict], process_handle: str) -> dict:
     for message in messages:
         if message.get("method") == "process/exited" and message["params"]["processHandle"] == process_handle:
@@ -2394,6 +2401,48 @@ def exercise_non_stdio_command_exec_session(
     write_json: Callable[[dict], None],
     read_json: Callable[[], dict],
 ) -> None:
+    deferred_id = f"{label}-command-exec-buffered-deferred"
+    deferred_probe_id = f"{label}-command-exec-buffered-probe"
+    deferred_output = f"{label}-deferred-buffered"
+    write_json(
+        {
+            "jsonrpc": "2.0",
+            "id": deferred_id,
+            "method": "command/exec",
+            "params": {
+                "command": [
+                    sys.executable,
+                    "-c",
+                    f"import sys,time; time.sleep(0.3); sys.stdout.write({deferred_output!r})",
+                ],
+            },
+        }
+    )
+    write_json(
+        {
+            "jsonrpc": "2.0",
+            "id": deferred_probe_id,
+            "method": "thread/loaded/list",
+        }
+    )
+    deferred_messages = read_rpc_messages_until(
+        deferred_id,
+        read_json,
+        5,
+        lambda messages: has_response(messages, deferred_id)
+        and has_response(messages, deferred_probe_id),
+    )
+    assert response_index(deferred_messages, deferred_probe_id) < response_index(
+        deferred_messages,
+        deferred_id,
+    )
+    deferred_response = find_response(deferred_messages, deferred_id)
+    assert deferred_response["result"] == {
+        "exitCode": 0,
+        "stdout": deferred_output,
+        "stderr": "",
+    }
+
     command_id = f"{label}-command-exec-streaming"
     process_id = f"{label}-command-proc"
     command_text = f"{label}-command"

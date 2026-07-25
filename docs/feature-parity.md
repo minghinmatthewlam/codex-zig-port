@@ -369,7 +369,7 @@ the Zig stdio app-server smoke.
 - Close app-server active-turn feature gaps needed by desktop clients:
   real async turns, durable active-turn tracking, interruption, steering,
   server-request dispatch, remaining lifecycle notification depth, and full
-  Rust deferred command/process lifecycle depth beyond current
+  Rust command/process lifecycle depth beyond current buffered-deferred,
   streamed/stdin/PTY socket transport coverage.
 
 ### Plugin CLI and TUI User Flows
