@@ -85,6 +85,7 @@ EXPERIMENTAL_API_METHODS = [
     "thread/goal/clear",
     "thread/memoryMode/set",
     "thread/turns/list",
+    "thread/items/list",
     "thread/realtime/start",
     "thread/realtime/appendAudio",
     "thread/realtime/appendText",
@@ -20467,6 +20468,27 @@ def run_thread_resume_rpc_smoke(binary: Path) -> None:
                 "turnId": "turn-0",
                 "includeAnchor": True,
             }
+
+            write_json_line(
+                proc,
+                {
+                    "jsonrpc": "2.0",
+                    "id": "thread-items-list-unsupported-saved-zig",
+                    "method": "thread/items/list",
+                    "params": {
+                        "threadId": resume_thread_id,
+                        "limit": 1,
+                        "sortDirection": "desc",
+                    },
+                },
+            )
+            saved_items_list = read_json_line(proc, 5)
+            assert saved_items_list["id"] == "thread-items-list-unsupported-saved-zig"
+            assert saved_items_list["error"]["code"] == -32601
+            assert (
+                saved_items_list["error"]["message"]
+                == "thread/items/list is not supported yet"
+            )
 
             write_json_line(
                 proc,
@@ -52399,6 +52421,37 @@ def run_json_schema_smoke(binary: Path) -> None:
             "backwardsCursor",
         ]
         assert thread_turns_list_response["additionalProperties"] is False
+        thread_item_entry = json.loads(
+            (out_dir / "ThreadItemEntry.json").read_text(encoding="utf-8")
+        )
+        assert thread_item_entry["required"] == ["turnId", "item"]
+        assert thread_item_entry["properties"]["item"] is True
+        thread_items_list = json.loads(
+            (out_dir / "ThreadItemsListParams.json").read_text(encoding="utf-8")
+        )
+        assert thread_items_list["required"] == ["threadId"]
+        assert thread_items_list["properties"]["turnId"]["type"] == [
+            "string",
+            "null",
+        ]
+        assert thread_items_list["properties"]["limit"]["maximum"] == 4294967295
+        assert (
+            thread_items_list["properties"]["sortDirection"]["anyOf"][0]["$ref"]
+            == "#/$defs/SortDirection"
+        )
+        thread_items_list_response = json.loads(
+            (out_dir / "ThreadItemsListResponse.json").read_text(encoding="utf-8")
+        )
+        assert thread_items_list_response["required"] == [
+            "data",
+            "nextCursor",
+            "backwardsCursor",
+        ]
+        assert (
+            thread_items_list_response["properties"]["data"]["items"]["$ref"]
+            == "#/$defs/ThreadItemEntry"
+        )
+        assert thread_items_list_response["additionalProperties"] is False
         thread_realtime_list_voices = json.loads(
             (out_dir / "ThreadRealtimeListVoicesParams.json").read_text(
                 encoding="utf-8"
@@ -52737,6 +52790,9 @@ def run_json_schema_smoke(binary: Path) -> None:
         assert "ThreadMetadataUpdateResponse" in bundle["$defs"]
         assert "ThreadReadResponse" in bundle["$defs"]
         assert "ThreadTurnsListResponse" in bundle["$defs"]
+        assert "ThreadItemEntry" in bundle["$defs"]
+        assert "ThreadItemsListParams" in bundle["$defs"]
+        assert "ThreadItemsListResponse" in bundle["$defs"]
         assert "RealtimeVoice" in bundle["$defs"]
         assert "RealtimeOutputModality" in bundle["$defs"]
         assert "RealtimeVoicesList" in bundle["$defs"]
@@ -54091,6 +54147,8 @@ def run_typescript_generation_smoke(binary: Path) -> None:
         assert "params: ThreadReadParams;" in client_request
         assert 'method: "thread/turns/list";' in client_request
         assert "params: ThreadTurnsListParams;" in client_request
+        assert 'method: "thread/items/list";' in client_request
+        assert "params: ThreadItemsListParams;" in client_request
         assert 'method: "thread/realtime/listVoices";' in client_request
         assert "params: ThreadRealtimeListVoicesParams;" in client_request
         assert 'method: "thread/realtime/start";' in client_request
@@ -55357,6 +55415,8 @@ def run_typescript_generation_smoke(binary: Path) -> None:
         assert "result: ThreadReadResponse;" in client_response
         assert 'method: "thread/turns/list";' in client_response
         assert "result: ThreadTurnsListResponse;" in client_response
+        assert 'method: "thread/items/list";' in client_response
+        assert "result: ThreadItemsListResponse;" in client_response
         assert 'method: "thread/realtime/listVoices";' in client_response
         assert "result: ThreadRealtimeListVoicesResponse;" in client_response
         assert 'method: "thread/realtime/start";' in client_response
@@ -57404,6 +57464,30 @@ def run_typescript_generation_smoke(binary: Path) -> None:
         assert "data: unknown[];" in thread_turns_list_response
         assert "nextCursor: string | null;" in thread_turns_list_response
         assert "backwardsCursor: string | null;" in thread_turns_list_response
+        thread_item_entry = (
+            out_dir / "v2" / "ThreadItemEntry.ts"
+        ).read_text(encoding="utf-8")
+        assert 'import type { ThreadItem } from "./ThreadItem";' in thread_item_entry
+        assert "turnId: string;" in thread_item_entry
+        assert "item: ThreadItem;" in thread_item_entry
+        thread_items_list = (
+            out_dir / "v2" / "ThreadItemsListParams.ts"
+        ).read_text(encoding="utf-8")
+        assert 'import type { SortDirection } from "./SortDirection";' in thread_items_list
+        assert "threadId: string;" in thread_items_list
+        assert "turnId?: string | null;" in thread_items_list
+        assert "cursor?: string | null;" in thread_items_list
+        assert "limit?: number | null;" in thread_items_list
+        assert "sortDirection?: SortDirection | null;" in thread_items_list
+        thread_items_list_response = (
+            out_dir / "v2" / "ThreadItemsListResponse.ts"
+        ).read_text(encoding="utf-8")
+        assert 'import type { ThreadItemEntry } from "./ThreadItemEntry";' in (
+            thread_items_list_response
+        )
+        assert "data: ThreadItemEntry[];" in thread_items_list_response
+        assert "nextCursor: string | null;" in thread_items_list_response
+        assert "backwardsCursor: string | null;" in thread_items_list_response
         realtime_voice = (out_dir / "RealtimeVoice.ts").read_text(encoding="utf-8")
         assert 'export type RealtimeVoice = "alloy"' in realtime_voice
         assert '"verse"' in realtime_voice
@@ -58237,6 +58321,7 @@ def run_typescript_generation_smoke(binary: Path) -> None:
             "Thread",
             "ThreadActiveFlag",
             "ThreadItem",
+            "ThreadItemEntry",
             "ThreadSource",
             "ThreadStartSource",
             "TokenUsageBreakdown",
@@ -58472,6 +58557,8 @@ def run_typescript_generation_smoke(binary: Path) -> None:
         assert 'export type { ThreadReadResponse } from "./ThreadReadResponse";' in v2_index
         assert 'export type { ThreadTurnsListParams } from "./ThreadTurnsListParams";' in v2_index
         assert 'export type { ThreadTurnsListResponse } from "./ThreadTurnsListResponse";' in v2_index
+        assert 'export type { ThreadItemsListParams } from "./ThreadItemsListParams";' in v2_index
+        assert 'export type { ThreadItemsListResponse } from "./ThreadItemsListResponse";' in v2_index
         assert (
             'export type { ThreadRealtimeListVoicesParams } from "./ThreadRealtimeListVoicesParams";'
             in v2_index

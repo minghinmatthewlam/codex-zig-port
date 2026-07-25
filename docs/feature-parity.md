@@ -45,6 +45,11 @@ request handling, generated `ThreadDelete*` / `ThreadDeletedNotification`
 protocol artifacts, local active/archived rollout deletion behavior, spawned
 descendant notification order, state-DB cleanup, and the Zig stdio app-server
 smoke.
+App-server `thread/items/list` parity was checked against Rust's current
+local thread-store behavior, generated `ThreadItemEntry` / `ThreadItemsList*`
+protocol artifacts, experimental API gating, params validation, and the Zig
+stdio app-server smoke. It currently returns Rust's local unsupported
+`-32601` response; full item pagination remains planned.
 
 ## Priority Rules
 

@@ -10848,6 +10848,43 @@ const THREAD_TURNS_LIST_RESPONSE_TS =
     \\
     ;
 
+const THREAD_ITEM_ENTRY_TS =
+    GENERATED_TS_HEADER ++
+    \\import type { ThreadItem } from "./ThreadItem";
+    \\
+    \\export interface ThreadItemEntry {
+    \\  turnId: string;
+    \\  item: ThreadItem;
+    \\}
+    \\
+    ;
+
+const THREAD_ITEMS_LIST_PARAMS_TS =
+    GENERATED_TS_HEADER ++
+    \\import type { SortDirection } from "./SortDirection";
+    \\
+    \\export interface ThreadItemsListParams {
+    \\  threadId: string;
+    \\  turnId?: string | null;
+    \\  cursor?: string | null;
+    \\  limit?: number | null;
+    \\  sortDirection?: SortDirection | null;
+    \\}
+    \\
+    ;
+
+const THREAD_ITEMS_LIST_RESPONSE_TS =
+    GENERATED_TS_HEADER ++
+    \\import type { ThreadItemEntry } from "./ThreadItemEntry";
+    \\
+    \\export interface ThreadItemsListResponse {
+    \\  data: ThreadItemEntry[];
+    \\  nextCursor: string | null;
+    \\  backwardsCursor: string | null;
+    \\}
+    \\
+    ;
+
 const THREAD_REALTIME_LIST_VOICES_PARAMS_TS =
     GENERATED_TS_HEADER ++
     \\export interface ThreadRealtimeListVoicesParams {}
@@ -11139,6 +11176,7 @@ const CLIENT_REQUEST_TS =
     \\import type { ThreadForkParams } from "./v2/ThreadForkParams";
     \\import type { ThreadInjectItemsParams } from "./v2/ThreadInjectItemsParams";
     \\import type { ThreadIncrementElicitationParams } from "./v2/ThreadIncrementElicitationParams";
+    \\import type { ThreadItemsListParams } from "./v2/ThreadItemsListParams";
     \\import type { ThreadListParams } from "./v2/ThreadListParams";
     \\import type { ThreadLoadedListParams } from "./v2/ThreadLoadedListParams";
     \\import type { ThreadMemoryModeSetParams } from "./v2/ThreadMemoryModeSetParams";
@@ -11558,6 +11596,10 @@ const CLIENT_REQUEST_TS =
     \\      params: ThreadTurnsListParams;
     \\    }
     \\  | {
+    \\      method: "thread/items/list";
+    \\      params: ThreadItemsListParams;
+    \\    }
+    \\  | {
     \\      method: "thread/realtime/listVoices";
     \\      params: ThreadRealtimeListVoicesParams;
     \\    }
@@ -11677,6 +11719,7 @@ const CLIENT_RESPONSE_TS =
     \\import type { ThreadForkResponse } from "./v2/ThreadForkResponse";
     \\import type { ThreadInjectItemsResponse } from "./v2/ThreadInjectItemsResponse";
     \\import type { ThreadIncrementElicitationResponse } from "./v2/ThreadIncrementElicitationResponse";
+    \\import type { ThreadItemsListResponse } from "./v2/ThreadItemsListResponse";
     \\import type { ThreadListResponse } from "./v2/ThreadListResponse";
     \\import type { ThreadLoadedListResponse } from "./v2/ThreadLoadedListResponse";
     \\import type { ThreadMemoryModeSetResponse } from "./v2/ThreadMemoryModeSetResponse";
@@ -12198,6 +12241,11 @@ const CLIENT_RESPONSE_TS =
     \\      id: RequestId;
     \\      method: "thread/turns/list";
     \\      result: ThreadTurnsListResponse;
+    \\    }
+    \\  | {
+    \\      id: RequestId;
+    \\      method: "thread/items/list";
+    \\      result: ThreadItemsListResponse;
     \\    }
     \\  | {
     \\      id: RequestId;
@@ -13141,6 +13189,7 @@ const V2_INDEX_TS =
     \\export type { Thread } from "./Thread";
     \\export type { ThreadActiveFlag } from "./ThreadActiveFlag";
     \\export type { ThreadItem } from "./ThreadItem";
+    \\export type { ThreadItemEntry } from "./ThreadItemEntry";
     \\export type { ThreadSource } from "./ThreadSource";
     \\export type { ThreadStartSource } from "./ThreadStartSource";
     \\export type { ThreadTokenUsage } from "./ThreadTokenUsage";
@@ -13156,6 +13205,8 @@ const V2_INDEX_TS =
     \\export type { ThreadInjectItemsResponse } from "./ThreadInjectItemsResponse";
     \\export type { ThreadIncrementElicitationParams } from "./ThreadIncrementElicitationParams";
     \\export type { ThreadIncrementElicitationResponse } from "./ThreadIncrementElicitationResponse";
+    \\export type { ThreadItemsListParams } from "./ThreadItemsListParams";
+    \\export type { ThreadItemsListResponse } from "./ThreadItemsListResponse";
     \\export type { ThreadListParams } from "./ThreadListParams";
     \\export type { ThreadListResponse } from "./ThreadListResponse";
     \\export type { ThreadLoadedListParams } from "./ThreadLoadedListParams";
@@ -23255,6 +23306,77 @@ const THREAD_TURNS_LIST_RESPONSE_JSON_SCHEMA =
     \\
 ;
 
+const THREAD_ITEM_ENTRY_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "ThreadItemEntry",
+    \\  "type": "object",
+    \\  "required": ["turnId", "item"],
+    \\  "properties": {
+    \\    "turnId": { "type": "string" },
+    \\    "item": true
+    \\  },
+    \\  "additionalProperties": false
+    \\}
+    \\
+;
+
+const THREAD_ITEMS_LIST_PARAMS_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "ThreadItemsListParams",
+    \\  "type": "object",
+    \\  "required": ["threadId"],
+    \\  "properties": {
+    \\    "threadId": { "type": "string" },
+    \\    "turnId": { "type": ["string", "null"] },
+    \\    "cursor": { "type": ["string", "null"] },
+    \\    "limit": { "type": ["integer", "null"], "minimum": 0, "maximum": 4294967295 },
+    \\    "sortDirection": {
+    \\      "anyOf": [
+    \\        { "$ref": "#/$defs/SortDirection" },
+    \\        { "type": "null" }
+    \\      ]
+    \\    }
+    \\  },
+    \\  "$defs": {
+    \\    "SortDirection": {
+    \\      "type": "string",
+    \\      "enum": ["asc", "desc"]
+    \\    }
+    \\  },
+    \\  "additionalProperties": true
+    \\}
+    \\
+;
+
+const THREAD_ITEMS_LIST_RESPONSE_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "ThreadItemsListResponse",
+    \\  "type": "object",
+    \\  "required": ["data", "nextCursor", "backwardsCursor"],
+    \\  "properties": {
+    \\    "data": { "type": "array", "items": { "$ref": "#/$defs/ThreadItemEntry" } },
+    \\    "nextCursor": { "type": ["string", "null"] },
+    \\    "backwardsCursor": { "type": ["string", "null"] }
+    \\  },
+    \\  "$defs": {
+    \\    "ThreadItemEntry": {
+    \\      "type": "object",
+    \\      "required": ["turnId", "item"],
+    \\      "properties": {
+    \\        "turnId": { "type": "string" },
+    \\        "item": true
+    \\      },
+    \\      "additionalProperties": false
+    \\    }
+    \\  },
+    \\  "additionalProperties": false
+    \\}
+    \\
+;
+
 const THREAD_REALTIME_LIST_VOICES_PARAMS_JSON_SCHEMA =
     \\{
     \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -27843,6 +27965,42 @@ const APP_SERVER_PROTOCOL_SCHEMA_BUNDLE =
     \\      },
     \\      "additionalProperties": false
     \\    },
+    \\    "ThreadItemEntry": {
+    \\      "type": "object",
+    \\      "required": ["turnId", "item"],
+    \\      "properties": {
+    \\        "turnId": { "type": "string" },
+    \\        "item": true
+    \\      },
+    \\      "additionalProperties": false
+    \\    },
+    \\    "ThreadItemsListParams": {
+    \\      "type": "object",
+    \\      "required": ["threadId"],
+    \\      "properties": {
+    \\        "threadId": { "type": "string" },
+    \\        "turnId": { "type": ["string", "null"] },
+    \\        "cursor": { "type": ["string", "null"] },
+    \\        "limit": { "type": ["integer", "null"], "minimum": 0, "maximum": 4294967295 },
+    \\        "sortDirection": {
+    \\          "anyOf": [
+    \\            { "$ref": "#/$defs/SortDirection" },
+    \\            { "type": "null" }
+    \\          ]
+    \\        }
+    \\      },
+    \\      "additionalProperties": true
+    \\    },
+    \\    "ThreadItemsListResponse": {
+    \\      "type": "object",
+    \\      "required": ["data", "nextCursor", "backwardsCursor"],
+    \\      "properties": {
+    \\        "data": { "type": "array", "items": { "$ref": "#/$defs/ThreadItemEntry" } },
+    \\        "nextCursor": { "type": ["string", "null"] },
+    \\        "backwardsCursor": { "type": ["string", "null"] }
+    \\      },
+    \\      "additionalProperties": false
+    \\    },
     \\    "RealtimeVoice": {
     \\      "type": "string",
     \\      "enum": ["alloy", "arbor", "ash", "ballad", "breeze", "cedar", "coral", "cove", "echo", "ember", "juniper", "maple", "marin", "sage", "shimmer", "sol", "spruce", "vale", "verse"]
@@ -28478,6 +28636,9 @@ const APP_SERVER_JSON_SCHEMA_FILES = [_]SchemaFile{
     .{ .name = "ThreadReadResponse.json", .contents = THREAD_READ_RESPONSE_JSON_SCHEMA },
     .{ .name = "ThreadTurnsListParams.json", .contents = THREAD_TURNS_LIST_PARAMS_JSON_SCHEMA },
     .{ .name = "ThreadTurnsListResponse.json", .contents = THREAD_TURNS_LIST_RESPONSE_JSON_SCHEMA },
+    .{ .name = "ThreadItemEntry.json", .contents = THREAD_ITEM_ENTRY_JSON_SCHEMA },
+    .{ .name = "ThreadItemsListParams.json", .contents = THREAD_ITEMS_LIST_PARAMS_JSON_SCHEMA },
+    .{ .name = "ThreadItemsListResponse.json", .contents = THREAD_ITEMS_LIST_RESPONSE_JSON_SCHEMA },
     .{ .name = "ThreadRealtimeListVoicesParams.json", .contents = THREAD_REALTIME_LIST_VOICES_PARAMS_JSON_SCHEMA },
     .{ .name = "ThreadRealtimeListVoicesResponse.json", .contents = THREAD_REALTIME_LIST_VOICES_RESPONSE_JSON_SCHEMA },
     .{ .name = "ThreadRealtimeStartTransport.json", .contents = THREAD_REALTIME_START_TRANSPORT_JSON_SCHEMA },
@@ -29279,6 +29440,9 @@ const APP_SERVER_TS_FILES = [_]SchemaFile{
     .{ .name = "v2/ThreadReadResponse.ts", .contents = THREAD_READ_RESPONSE_TS },
     .{ .name = "v2/ThreadTurnsListParams.ts", .contents = THREAD_TURNS_LIST_PARAMS_TS },
     .{ .name = "v2/ThreadTurnsListResponse.ts", .contents = THREAD_TURNS_LIST_RESPONSE_TS },
+    .{ .name = "v2/ThreadItemEntry.ts", .contents = THREAD_ITEM_ENTRY_TS },
+    .{ .name = "v2/ThreadItemsListParams.ts", .contents = THREAD_ITEMS_LIST_PARAMS_TS },
+    .{ .name = "v2/ThreadItemsListResponse.ts", .contents = THREAD_ITEMS_LIST_RESPONSE_TS },
     .{ .name = "v2/ThreadRealtimeListVoicesParams.ts", .contents = THREAD_REALTIME_LIST_VOICES_PARAMS_TS },
     .{ .name = "v2/ThreadRealtimeListVoicesResponse.ts", .contents = THREAD_REALTIME_LIST_VOICES_RESPONSE_TS },
     .{ .name = "v2/ThreadRealtimeStartTransport.ts", .contents = THREAD_REALTIME_START_TRANSPORT_TS },
@@ -40210,6 +40374,7 @@ fn isThreadMethod(method: []const u8) bool {
         std.mem.eql(u8, method, "thread/metadata/update") or
         std.mem.eql(u8, method, "thread/read") or
         std.mem.eql(u8, method, "thread/turns/list") or
+        std.mem.eql(u8, method, "thread/items/list") or
         std.mem.eql(u8, method, "thread/realtime/start") or
         std.mem.eql(u8, method, "thread/realtime/appendAudio") or
         std.mem.eql(u8, method, "thread/realtime/appendText") or
@@ -41055,6 +41220,21 @@ fn handleThreadMethod(
         };
         defer allocator.free(result);
         return renderJsonRpcResult(allocator, id_value, result);
+    }
+    if (std.mem.eql(u8, method, "thread/items/list")) {
+        const object = parseThreadObjectParams(params_value) catch |err| switch (err) {
+            error.InvalidThreadParams => return renderThreadObjectParamsError(allocator, id_value, method),
+        };
+        const thread_id = requiredThreadIdParam(object) catch |err| switch (err) {
+            error.MissingThreadId => return renderJsonRpcError(allocator, id_value, -32602, "threadId must be a string"),
+        };
+        if (validateThreadItemsListParams(object)) |message| {
+            return renderJsonRpcError(allocator, id_value, -32602, message);
+        }
+        if (!isUuidString(thread_id)) {
+            return renderInvalidThreadId(allocator, id_value, thread_id);
+        }
+        return renderJsonRpcError(allocator, id_value, -32601, "thread/items/list is not supported yet");
     }
     if (std.mem.eql(u8, method, "thread/realtime/listVoices")) {
         _ = parseThreadObjectParams(params_value) catch |err| switch (err) {
@@ -47264,6 +47444,7 @@ fn experimentalReasonForRequestMethod(method: []const u8) ?[]const u8 {
         "thread/goal/clear",
         "thread/memoryMode/set",
         "thread/turns/list",
+        "thread/items/list",
         "thread/realtime/start",
         "thread/realtime/appendAudio",
         "thread/realtime/appendText",
@@ -47836,6 +48017,26 @@ fn threadTurnsListLimit(object: std.json.ObjectMap) ?usize {
 
 fn validateThreadTurnsListParams(object: std.json.ObjectMap) ?[]const u8 {
     return validateThreadTurnsPageParams(object, true);
+}
+
+fn validateThreadItemsListParams(object: std.json.ObjectMap) ?[]const u8 {
+    if (object.get("turnId")) |value| {
+        if (value != .null and value != .string) return "turnId must be a string or null";
+    }
+    if (object.get("cursor")) |value| {
+        if (value != .null and value != .string) return "cursor must be a string or null";
+    }
+    if (object.get("limit")) |value| {
+        switch (value) {
+            .null => {},
+            .integer => |integer| if (integer < 0 or integer > std.math.maxInt(u32)) return "limit must be a non-negative integer or null",
+            else => return "limit must be a non-negative integer or null",
+        }
+    }
+    if (object.get("sortDirection")) |value| {
+        if (!optionalEnumStringIsValid(value, &.{ "asc", "desc" })) return "sortDirection must be asc or desc";
+    }
+    return null;
 }
 
 fn validateThreadTurnsPageParams(object: std.json.ObjectMap, allow_cursor: bool) ?[]const u8 {
