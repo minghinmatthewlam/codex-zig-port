@@ -76,6 +76,8 @@ EXPERIMENTAL_API_METHODS = [
     "process/kill",
     "process/resizePty",
     "thread/backgroundTerminals/clean",
+    "thread/backgroundTerminals/list",
+    "thread/backgroundTerminals/terminate",
     "thread/increment_elicitation",
     "thread/decrement_elicitation",
     "thread/goal/set",
@@ -2636,6 +2638,36 @@ def exercise_json_rpc(write_line, read_line) -> None:
         assert background_clean_loaded["id"] == "thread-background-clean-loaded"
         assert background_clean_loaded["result"] == {}
 
+        write_line(
+            {
+                "jsonrpc": "2.0",
+                "id": "thread-background-list-loaded-empty",
+                "method": "thread/backgroundTerminals/list",
+                "params": {"threadId": thread_id},
+            }
+        )
+        background_list_loaded_empty = read_line()
+        assert background_list_loaded_empty["id"] == "thread-background-list-loaded-empty"
+        assert background_list_loaded_empty["result"] == {
+            "data": [],
+            "nextCursor": None,
+        }
+
+        write_line(
+            {
+                "jsonrpc": "2.0",
+                "id": "thread-background-terminate-loaded-missing",
+                "method": "thread/backgroundTerminals/terminate",
+                "params": {"threadId": thread_id, "processId": "1000"},
+            }
+        )
+        background_terminate_loaded_missing = read_line()
+        assert (
+            background_terminate_loaded_missing["id"]
+            == "thread-background-terminate-loaded-missing"
+        )
+        assert background_terminate_loaded_missing["result"] == {"terminated": False}
+
         realtime_disabled_message = (
             f"thread {thread_id} does not support realtime conversation"
         )
@@ -3556,6 +3588,101 @@ def exercise_json_rpc(write_line, read_line) -> None:
     assert (
         "thread not found: 00000000-0000-0000-0000-000000000004"
         in thread_background_clean_missing["error"]["message"]
+    )
+
+    write_line(
+        {
+            "jsonrpc": "2.0",
+            "id": "thread-background-list-invalid",
+            "method": "thread/backgroundTerminals/list",
+            "params": {"threadId": "not-a-uuid"},
+        }
+    )
+    thread_background_list_invalid = read_line()
+    assert thread_background_list_invalid["id"] == "thread-background-list-invalid"
+    assert thread_background_list_invalid["error"]["code"] == -32600
+    assert (
+        "invalid thread id: not-a-uuid"
+        in thread_background_list_invalid["error"]["message"]
+    )
+
+    write_line(
+        {
+            "jsonrpc": "2.0",
+            "id": "thread-background-list-missing",
+            "method": "thread/backgroundTerminals/list",
+            "params": {"threadId": "00000000-0000-0000-0000-000000000004"},
+        }
+    )
+    thread_background_list_missing = read_line()
+    assert thread_background_list_missing["id"] == "thread-background-list-missing"
+    assert thread_background_list_missing["error"]["code"] == -32600
+    assert (
+        "thread not found: 00000000-0000-0000-0000-000000000004"
+        in thread_background_list_missing["error"]["message"]
+    )
+
+    write_line(
+        {
+            "jsonrpc": "2.0",
+            "id": "thread-background-terminate-invalid-thread",
+            "method": "thread/backgroundTerminals/terminate",
+            "params": {"threadId": "not-a-uuid", "processId": "1000"},
+        }
+    )
+    thread_background_terminate_invalid_thread = read_line()
+    assert (
+        thread_background_terminate_invalid_thread["id"]
+        == "thread-background-terminate-invalid-thread"
+    )
+    assert thread_background_terminate_invalid_thread["error"]["code"] == -32600
+    assert (
+        "invalid thread id: not-a-uuid"
+        in thread_background_terminate_invalid_thread["error"]["message"]
+    )
+
+    write_line(
+        {
+            "jsonrpc": "2.0",
+            "id": "thread-background-terminate-missing-thread",
+            "method": "thread/backgroundTerminals/terminate",
+            "params": {
+                "threadId": "00000000-0000-0000-0000-000000000004",
+                "processId": "1000",
+            },
+        }
+    )
+    thread_background_terminate_missing_thread = read_line()
+    assert (
+        thread_background_terminate_missing_thread["id"]
+        == "thread-background-terminate-missing-thread"
+    )
+    assert thread_background_terminate_missing_thread["error"]["code"] == -32600
+    assert (
+        "thread not found: 00000000-0000-0000-0000-000000000004"
+        in thread_background_terminate_missing_thread["error"]["message"]
+    )
+
+    write_line(
+        {
+            "jsonrpc": "2.0",
+            "id": "thread-background-terminate-invalid-process",
+            "method": "thread/backgroundTerminals/terminate",
+            "params": {
+                "threadId": thread_id,
+                "processId": "not-a-process-id",
+            },
+        }
+    )
+    thread_background_terminate_invalid_process = read_line()
+    assert (
+        thread_background_terminate_invalid_process["id"]
+        == "thread-background-terminate-invalid-process"
+    )
+    assert thread_background_terminate_invalid_process["error"]["code"] == -32600
+    assert (
+        "invalid background terminal process id"
+        in thread_background_terminate_invalid_process["error"]["message"]
     )
 
     write_line(
@@ -7342,6 +7469,75 @@ def run_turn_start_rpc_smoke(binary: Path) -> None:
                 assert_thread_status_notification(
                     read_json_line(proc, 5), thread_id, "idle"
                 )
+
+                write_json_line(
+                    proc,
+                    {
+                        "jsonrpc": "2.0",
+                        "id": "thread-background-list-after-pty",
+                        "method": "thread/backgroundTerminals/list",
+                        "params": {"threadId": thread_id, "limit": 1},
+                    },
+                )
+                background_list = read_json_line(proc, 5)
+                assert background_list["id"] == "thread-background-list-after-pty"
+                background_terminals = background_list["result"]["data"]
+                assert len(background_terminals) == 1
+                background_terminal = background_terminals[0]
+                assert background_terminal["itemId"] == "background-tty-start"
+                assert background_terminal["processId"] == "1000"
+                assert background_terminal["command"] == "read line; printf '%s\\n' \"$line\""
+                assert background_terminal["cwd"] == thread["cwd"]
+                assert isinstance(background_terminal["osPid"], int)
+                assert background_terminal["cpuPercent"] is None
+                assert background_terminal["rssKb"] is None
+                assert background_list["result"]["nextCursor"] is None
+
+                write_json_line(
+                    proc,
+                    {
+                        "jsonrpc": "2.0",
+                        "id": "thread-background-list-invalid-cursor",
+                        "method": "thread/backgroundTerminals/list",
+                        "params": {"threadId": thread_id, "cursor": "not-a-cursor"},
+                    },
+                )
+                background_list_invalid_cursor = read_json_line(proc, 5)
+                assert (
+                    background_list_invalid_cursor["id"]
+                    == "thread-background-list-invalid-cursor"
+                )
+                assert background_list_invalid_cursor["error"]["code"] == -32600
+                assert (
+                    "invalid cursor: invalid digit found in string"
+                    in background_list_invalid_cursor["error"]["message"]
+                )
+
+                write_json_line(
+                    proc,
+                    {
+                        "jsonrpc": "2.0",
+                        "id": "thread-background-terminate-active",
+                        "method": "thread/backgroundTerminals/terminate",
+                        "params": {"threadId": thread_id, "processId": "1000"},
+                    },
+                )
+                background_terminate = read_json_line(proc, 5)
+                assert background_terminate["id"] == "thread-background-terminate-active"
+                assert background_terminate["result"] == {"terminated": True}
+
+                write_json_line(
+                    proc,
+                    {
+                        "jsonrpc": "2.0",
+                        "id": "thread-background-terminate-again",
+                        "method": "thread/backgroundTerminals/terminate",
+                        "params": {"threadId": thread_id, "processId": "1000"},
+                    },
+                )
+                background_terminate_again = read_json_line(proc, 5)
+                assert background_terminate_again["id"] == "thread-background-terminate-again"
+                assert background_terminate_again["result"] == {"terminated": False}
 
                 write_json_line(
                     proc,
@@ -51220,6 +51416,49 @@ def run_json_schema_smoke(binary: Path) -> None:
             )
         )
         assert thread_background_clean_response["additionalProperties"] is False
+        thread_background_list = json.loads(
+            (out_dir / "ThreadBackgroundTerminalsListParams.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        assert thread_background_list["required"] == ["threadId"]
+        assert thread_background_list["properties"]["cursor"]["type"] == [
+            "string",
+            "null",
+        ]
+        thread_background_terminal = json.loads(
+            (out_dir / "ThreadBackgroundTerminal.json").read_text(encoding="utf-8")
+        )
+        assert thread_background_terminal["required"] == [
+            "itemId",
+            "processId",
+            "command",
+            "cwd",
+            "osPid",
+            "cpuPercent",
+            "rssKb",
+        ]
+        thread_background_list_response = json.loads(
+            (out_dir / "ThreadBackgroundTerminalsListResponse.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        assert thread_background_list_response["required"] == [
+            "data",
+            "nextCursor",
+        ]
+        thread_background_terminate = json.loads(
+            (
+                out_dir / "ThreadBackgroundTerminalsTerminateParams.json"
+            ).read_text(encoding="utf-8")
+        )
+        assert thread_background_terminate["required"] == ["threadId", "processId"]
+        thread_background_terminate_response = json.loads(
+            (
+                out_dir / "ThreadBackgroundTerminalsTerminateResponse.json"
+            ).read_text(encoding="utf-8")
+        )
+        assert thread_background_terminate_response["required"] == ["terminated"]
         thread_increment_elicitation = json.loads(
             (out_dir / "ThreadIncrementElicitationParams.json").read_text(
                 encoding="utf-8"
@@ -51753,6 +51992,9 @@ def run_json_schema_smoke(binary: Path) -> None:
         assert "ThreadShellCommandResponse" in bundle["$defs"]
         assert "ThreadApproveGuardianDeniedActionResponse" in bundle["$defs"]
         assert "ThreadBackgroundTerminalsCleanResponse" in bundle["$defs"]
+        assert "ThreadBackgroundTerminal" in bundle["$defs"]
+        assert "ThreadBackgroundTerminalsListResponse" in bundle["$defs"]
+        assert "ThreadBackgroundTerminalsTerminateResponse" in bundle["$defs"]
         assert "ThreadIncrementElicitationResponse" in bundle["$defs"]
         assert "ThreadDecrementElicitationResponse" in bundle["$defs"]
         assert "ThreadRollbackResponse" in bundle["$defs"]
@@ -53075,6 +53317,12 @@ def run_typescript_generation_smoke(binary: Path) -> None:
         )
         assert 'method: "thread/backgroundTerminals/clean";' in client_request
         assert "params: ThreadBackgroundTerminalsCleanParams;" in client_request
+        assert 'method: "thread/backgroundTerminals/list";' in client_request
+        assert "params: ThreadBackgroundTerminalsListParams;" in client_request
+        assert 'method: "thread/backgroundTerminals/terminate";' in client_request
+        assert (
+            "params: ThreadBackgroundTerminalsTerminateParams;" in client_request
+        )
         assert 'method: "thread/increment_elicitation";' in client_request
         assert "params: ThreadIncrementElicitationParams;" in client_request
         assert 'method: "thread/decrement_elicitation";' in client_request
@@ -54327,6 +54575,12 @@ def run_typescript_generation_smoke(binary: Path) -> None:
         )
         assert 'method: "thread/backgroundTerminals/clean";' in client_response
         assert "result: ThreadBackgroundTerminalsCleanResponse;" in client_response
+        assert 'method: "thread/backgroundTerminals/list";' in client_response
+        assert "result: ThreadBackgroundTerminalsListResponse;" in client_response
+        assert 'method: "thread/backgroundTerminals/terminate";' in client_response
+        assert (
+            "result: ThreadBackgroundTerminalsTerminateResponse;" in client_response
+        )
         assert 'method: "thread/increment_elicitation";' in client_response
         assert "result: ThreadIncrementElicitationResponse;" in client_response
         assert 'method: "thread/decrement_elicitation";' in client_response
@@ -56186,6 +56440,26 @@ def run_typescript_generation_smoke(binary: Path) -> None:
             "export interface ThreadBackgroundTerminalsCleanResponse {}"
             in thread_background_clean_response
         )
+        thread_background_list = (
+            out_dir / "v2" / "ThreadBackgroundTerminalsListParams.ts"
+        ).read_text(encoding="utf-8")
+        assert "cursor?: string | null;" in thread_background_list
+        assert "limit?: number | null;" in thread_background_list
+        thread_background_terminal = (
+            out_dir / "v2" / "ThreadBackgroundTerminal.ts"
+        ).read_text(encoding="utf-8")
+        assert 'from "../AbsolutePathBuf"' in thread_background_terminal
+        assert "itemId: string;" in thread_background_terminal
+        assert "osPid: number | null;" in thread_background_terminal
+        thread_background_list_response = (
+            out_dir / "v2" / "ThreadBackgroundTerminalsListResponse.ts"
+        ).read_text(encoding="utf-8")
+        assert "data: ThreadBackgroundTerminal[];" in thread_background_list_response
+        assert "nextCursor: string | null;" in thread_background_list_response
+        thread_background_terminate = (
+            out_dir / "v2" / "ThreadBackgroundTerminalsTerminateResponse.ts"
+        ).read_text(encoding="utf-8")
+        assert "terminated: boolean;" in thread_background_terminate
         thread_increment_elicitation = (
             out_dir / "v2" / "ThreadIncrementElicitationResponse.ts"
         ).read_text(encoding="utf-8")
@@ -57353,6 +57627,18 @@ def run_typescript_generation_smoke(binary: Path) -> None:
         )
         assert (
             'export type { ThreadBackgroundTerminalsCleanResponse } from "./ThreadBackgroundTerminalsCleanResponse";'
+            in v2_index
+        )
+        assert (
+            'export type { ThreadBackgroundTerminal } from "./ThreadBackgroundTerminal";'
+            in v2_index
+        )
+        assert (
+            'export type { ThreadBackgroundTerminalsListResponse } from "./ThreadBackgroundTerminalsListResponse";'
+            in v2_index
+        )
+        assert (
+            'export type { ThreadBackgroundTerminalsTerminateResponse } from "./ThreadBackgroundTerminalsTerminateResponse";'
             in v2_index
         )
         assert (

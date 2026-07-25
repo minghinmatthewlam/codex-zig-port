@@ -62,6 +62,9 @@ const ShellArgs = struct {
 const ExecSession = struct {
     id: u64,
     kind: ExecSessionKind,
+    item_id: []const u8,
+    command: []const u8,
+    cwd: []const u8,
     owner: ?[]const u8,
     io_instance: std.Io.Threaded,
     child: std.process.Child,
@@ -84,6 +87,9 @@ const ExecSession = struct {
             self.closeOpenFiles();
         }
         if (self.owner) |owner| session_allocator.free(owner);
+        session_allocator.free(self.item_id);
+        session_allocator.free(self.command);
+        session_allocator.free(self.cwd);
         self.io_instance.deinit();
     }
 
@@ -113,6 +119,14 @@ pub const ExecSessionSummary = struct {
     id: u64,
     pty: bool,
     age_ms: u64,
+};
+
+pub const BackgroundTerminalSummary = struct {
+    item_id: []const u8,
+    process_id: u64,
+    command: []const u8,
+    cwd: []const u8,
+    os_pid: ?u32,
 };
 
 const SessionRead = struct {
@@ -388,6 +402,8 @@ fn runExecCommand(
             .network_enabled = policy.network_enabled,
             .workdir = args.workdir orelse policy.workdir,
             .owner = policy.background_terminal_owner,
+            .item_id = call_id,
+            .display_command = args.cmd,
             .yield_time_ms = clampYieldTime(args.yield_time_ms orelse DEFAULT_EXEC_YIELD_TIME_MS),
             .max_output_tokens = args.max_output_tokens,
             .pty = true,
@@ -415,6 +431,8 @@ const ExecSessionOptions = struct {
     network_enabled: bool = true,
     workdir: ?[]const u8 = null,
     owner: ?[]const u8 = null,
+    item_id: []const u8,
+    display_command: ?[]const u8 = null,
     yield_time_ms: u64 = 1000,
     max_output_tokens: ?usize = null,
     pty: bool = false,
@@ -570,11 +588,20 @@ fn startExecSession(argv: []const []const u8, options: ExecSessionOptions) !usiz
     const id = next_exec_session_id;
     next_exec_session_id += 1;
     const kind: ExecSessionKind = if (pty_master != null) .pty else .pipes;
+    const item_id = try session_allocator.dupe(u8, options.item_id);
+    errdefer session_allocator.free(item_id);
+    const command = try session_allocator.dupe(u8, options.display_command orelse argv[0]);
+    errdefer session_allocator.free(command);
+    const cwd_display = try resolveExecSessionCwd(options.workdir);
+    errdefer session_allocator.free(cwd_display);
     const owner = if (options.owner) |value| try session_allocator.dupe(u8, value) else null;
     errdefer if (owner) |value| session_allocator.free(value);
     var session = ExecSession{
         .id = id,
         .kind = kind,
+        .item_id = item_id,
+        .command = command,
+        .cwd = cwd_display,
         .owner = owner,
         .io_instance = io_instance,
         .child = child,
@@ -591,6 +618,11 @@ fn startExecSession(argv: []const []const u8, options: ExecSessionOptions) !usiz
     try exec_sessions.append(session_allocator, session);
     moved = true;
     return exec_sessions.items.len - 1;
+}
+
+fn resolveExecSessionCwd(workdir: ?[]const u8) ![]const u8 {
+    const raw = workdir orelse ".";
+    return std.Io.Dir.cwd().realPathFileAlloc(std.Io.Threaded.global_single_threaded.io(), raw, session_allocator);
 }
 
 const PtyPair = struct {
@@ -1163,6 +1195,38 @@ pub fn listExecSessions(allocator: std.mem.Allocator) ![]ExecSessionSummary {
     return summaries;
 }
 
+pub fn listBackgroundTerminalsForOwner(allocator: std.mem.Allocator, owner: []const u8) ![]BackgroundTerminalSummary {
+    var count: usize = 0;
+    for (exec_sessions.items) |*session| {
+        const session_owner = session.owner orelse continue;
+        if (std.mem.eql(u8, session_owner, owner)) count += 1;
+    }
+
+    const summaries = try allocator.alloc(BackgroundTerminalSummary, count);
+    errdefer allocator.free(summaries);
+    var index: usize = 0;
+    for (exec_sessions.items) |*session| {
+        const session_owner = session.owner orelse continue;
+        if (!std.mem.eql(u8, session_owner, owner)) continue;
+        summaries[index] = .{
+            .item_id = session.item_id,
+            .process_id = session.id,
+            .command = session.command,
+            .cwd = session.cwd,
+            .os_pid = execSessionOsPid(session),
+        };
+        index += 1;
+    }
+    return summaries;
+}
+
+fn execSessionOsPid(session: *const ExecSession) ?u32 {
+    const pid = session.child.id orelse return null;
+    if (pid < 0) return null;
+    if (@as(u64, @intCast(pid)) > std.math.maxInt(u32)) return null;
+    return @intCast(pid);
+}
+
 pub fn activeExecSessionCount() usize {
     return exec_sessions.items.len;
 }
@@ -1191,6 +1255,24 @@ pub fn stopExecSessionsForOwner(owner: []const u8) usize {
         count += 1;
     }
     return count;
+}
+
+pub fn stopExecSessionForOwnerProcessId(owner: []const u8, process_id: u64) bool {
+    var index: usize = 0;
+    while (index < exec_sessions.items.len) {
+        const session = &exec_sessions.items[index];
+        const session_owner = session.owner orelse {
+            index += 1;
+            continue;
+        };
+        if (!std.mem.eql(u8, session_owner, owner) or session.id != process_id) {
+            index += 1;
+            continue;
+        }
+        removeExecSession(index);
+        return true;
+    }
+    return false;
 }
 
 fn removeExecSession(index: usize) void {
@@ -2140,12 +2222,21 @@ test "exec sessions can be stopped by owner" {
     const second_session_id = try std.fmt.parseInt(u64, second_result.summary["session ".len..], 10);
 
     try std.testing.expectEqual(@as(usize, 2), activeExecSessionCount());
+    const thread_a_terminals = try listBackgroundTerminalsForOwner(allocator, "thread-a");
+    defer allocator.free(thread_a_terminals);
+    try std.testing.expectEqual(@as(usize, 1), thread_a_terminals.len);
+    try std.testing.expectEqualStrings("exec-owned-a", thread_a_terminals[0].item_id);
+    try std.testing.expectEqual(first_session_id, thread_a_terminals[0].process_id);
+    try std.testing.expectEqualStrings("printf A; sleep 30", thread_a_terminals[0].command);
+    try std.testing.expect(thread_a_terminals[0].cwd.len > 0);
+    try std.testing.expect(thread_a_terminals[0].os_pid != null);
     try std.testing.expectEqual(@as(usize, 1), stopExecSessionsForOwner("thread-a"));
     try std.testing.expect(findExecSessionIndex(first_session_id) == null);
     try std.testing.expect(findExecSessionIndex(second_session_id) != null);
     try std.testing.expectEqual(@as(usize, 1), activeExecSessionCount());
     try std.testing.expectEqual(@as(usize, 0), stopExecSessionsForOwner("missing-thread"));
-    try std.testing.expectEqual(@as(usize, 1), stopExecSessionsForOwner("thread-b"));
+    try std.testing.expect(stopExecSessionForOwnerProcessId("thread-b", second_session_id));
+    try std.testing.expect(!stopExecSessionForOwnerProcessId("thread-b", second_session_id));
     try std.testing.expectEqual(@as(usize, 0), activeExecSessionCount());
 }
 

@@ -10429,6 +10429,60 @@ const THREAD_BACKGROUND_TERMINALS_CLEAN_RESPONSE_TS =
     \\
     ;
 
+const THREAD_BACKGROUND_TERMINALS_LIST_PARAMS_TS =
+    GENERATED_TS_HEADER ++
+    \\export interface ThreadBackgroundTerminalsListParams {
+    \\  threadId: string;
+    \\  cursor?: string | null;
+    \\  limit?: number | null;
+    \\}
+    \\
+    ;
+
+const THREAD_BACKGROUND_TERMINAL_TS =
+    GENERATED_TS_HEADER ++
+    \\import type { AbsolutePathBuf } from "../AbsolutePathBuf";
+    \\
+    \\export interface ThreadBackgroundTerminal {
+    \\  itemId: string;
+    \\  processId: string;
+    \\  command: string;
+    \\  cwd: AbsolutePathBuf;
+    \\  osPid: number | null;
+    \\  cpuPercent: number | null;
+    \\  rssKb: number | null;
+    \\}
+    \\
+    ;
+
+const THREAD_BACKGROUND_TERMINALS_LIST_RESPONSE_TS =
+    GENERATED_TS_HEADER ++
+    \\import type { ThreadBackgroundTerminal } from "./ThreadBackgroundTerminal";
+    \\
+    \\export interface ThreadBackgroundTerminalsListResponse {
+    \\  data: ThreadBackgroundTerminal[];
+    \\  nextCursor: string | null;
+    \\}
+    \\
+    ;
+
+const THREAD_BACKGROUND_TERMINALS_TERMINATE_PARAMS_TS =
+    GENERATED_TS_HEADER ++
+    \\export interface ThreadBackgroundTerminalsTerminateParams {
+    \\  threadId: string;
+    \\  processId: string;
+    \\}
+    \\
+    ;
+
+const THREAD_BACKGROUND_TERMINALS_TERMINATE_RESPONSE_TS =
+    GENERATED_TS_HEADER ++
+    \\export interface ThreadBackgroundTerminalsTerminateResponse {
+    \\  terminated: boolean;
+    \\}
+    \\
+    ;
+
 const THREAD_INCREMENT_ELICITATION_PARAMS_TS =
     GENERATED_TS_HEADER ++
     \\export interface ThreadIncrementElicitationParams {
@@ -11036,6 +11090,8 @@ const CLIENT_REQUEST_TS =
     \\import type { ThreadApproveGuardianDeniedActionParams } from "./v2/ThreadApproveGuardianDeniedActionParams";
     \\import type { ThreadArchiveParams } from "./v2/ThreadArchiveParams";
     \\import type { ThreadBackgroundTerminalsCleanParams } from "./v2/ThreadBackgroundTerminalsCleanParams";
+    \\import type { ThreadBackgroundTerminalsListParams } from "./v2/ThreadBackgroundTerminalsListParams";
+    \\import type { ThreadBackgroundTerminalsTerminateParams } from "./v2/ThreadBackgroundTerminalsTerminateParams";
     \\import type { ThreadCompactStartParams } from "./v2/ThreadCompactStartParams";
     \\import type { ThreadDecrementElicitationParams } from "./v2/ThreadDecrementElicitationParams";
     \\import type { ThreadGoalClearParams } from "./v2/ThreadGoalClearParams";
@@ -11399,6 +11455,14 @@ const CLIENT_REQUEST_TS =
     \\      params: ThreadBackgroundTerminalsCleanParams;
     \\    }
     \\  | {
+    \\      method: "thread/backgroundTerminals/list";
+    \\      params: ThreadBackgroundTerminalsListParams;
+    \\    }
+    \\  | {
+    \\      method: "thread/backgroundTerminals/terminate";
+    \\      params: ThreadBackgroundTerminalsTerminateParams;
+    \\    }
+    \\  | {
     \\      method: "thread/increment_elicitation";
     \\      params: ThreadIncrementElicitationParams;
     \\    }
@@ -11559,6 +11623,8 @@ const CLIENT_RESPONSE_TS =
     \\import type { ThreadApproveGuardianDeniedActionResponse } from "./v2/ThreadApproveGuardianDeniedActionResponse";
     \\import type { ThreadArchiveResponse } from "./v2/ThreadArchiveResponse";
     \\import type { ThreadBackgroundTerminalsCleanResponse } from "./v2/ThreadBackgroundTerminalsCleanResponse";
+    \\import type { ThreadBackgroundTerminalsListResponse } from "./v2/ThreadBackgroundTerminalsListResponse";
+    \\import type { ThreadBackgroundTerminalsTerminateResponse } from "./v2/ThreadBackgroundTerminalsTerminateResponse";
     \\import type { ThreadCompactStartResponse } from "./v2/ThreadCompactStartResponse";
     \\import type { ThreadDecrementElicitationResponse } from "./v2/ThreadDecrementElicitationResponse";
     \\import type { ThreadGoalClearResponse } from "./v2/ThreadGoalClearResponse";
@@ -12008,6 +12074,16 @@ const CLIENT_RESPONSE_TS =
     \\      id: RequestId;
     \\      method: "thread/backgroundTerminals/clean";
     \\      result: ThreadBackgroundTerminalsCleanResponse;
+    \\    }
+    \\  | {
+    \\      id: RequestId;
+    \\      method: "thread/backgroundTerminals/list";
+    \\      result: ThreadBackgroundTerminalsListResponse;
+    \\    }
+    \\  | {
+    \\      id: RequestId;
+    \\      method: "thread/backgroundTerminals/terminate";
+    \\      result: ThreadBackgroundTerminalsTerminateResponse;
     \\    }
     \\  | {
     \\      id: RequestId;
@@ -12983,8 +13059,13 @@ const V2_INDEX_TS =
     \\export type { ThreadApproveGuardianDeniedActionResponse } from "./ThreadApproveGuardianDeniedActionResponse";
     \\export type { ThreadArchiveParams } from "./ThreadArchiveParams";
     \\export type { ThreadArchiveResponse } from "./ThreadArchiveResponse";
+    \\export type { ThreadBackgroundTerminal } from "./ThreadBackgroundTerminal";
     \\export type { ThreadBackgroundTerminalsCleanParams } from "./ThreadBackgroundTerminalsCleanParams";
     \\export type { ThreadBackgroundTerminalsCleanResponse } from "./ThreadBackgroundTerminalsCleanResponse";
+    \\export type { ThreadBackgroundTerminalsListParams } from "./ThreadBackgroundTerminalsListParams";
+    \\export type { ThreadBackgroundTerminalsListResponse } from "./ThreadBackgroundTerminalsListResponse";
+    \\export type { ThreadBackgroundTerminalsTerminateParams } from "./ThreadBackgroundTerminalsTerminateParams";
+    \\export type { ThreadBackgroundTerminalsTerminateResponse } from "./ThreadBackgroundTerminalsTerminateResponse";
     \\export type { ThreadCompactStartParams } from "./ThreadCompactStartParams";
     \\export type { ThreadCompactStartResponse } from "./ThreadCompactStartResponse";
     \\export type { ThreadDecrementElicitationParams } from "./ThreadDecrementElicitationParams";
@@ -22176,6 +22257,89 @@ const THREAD_BACKGROUND_TERMINALS_CLEAN_RESPONSE_JSON_SCHEMA =
     \\
 ;
 
+const THREAD_BACKGROUND_TERMINALS_LIST_PARAMS_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "ThreadBackgroundTerminalsListParams",
+    \\  "type": "object",
+    \\  "required": ["threadId"],
+    \\  "properties": {
+    \\    "threadId": { "type": "string" },
+    \\    "cursor": { "type": ["string", "null"] },
+    \\    "limit": { "type": ["integer", "null"], "minimum": 0 }
+    \\  },
+    \\  "additionalProperties": true
+    \\}
+    \\
+;
+
+const THREAD_BACKGROUND_TERMINAL_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "ThreadBackgroundTerminal",
+    \\  "type": "object",
+    \\  "required": ["itemId", "processId", "command", "cwd", "osPid", "cpuPercent", "rssKb"],
+    \\  "properties": {
+    \\    "itemId": { "type": "string" },
+    \\    "processId": { "type": "string" },
+    \\    "command": { "type": "string" },
+    \\    "cwd": { "$ref": "AbsolutePathBuf.json" },
+    \\    "osPid": { "type": ["integer", "null"], "minimum": 0 },
+    \\    "cpuPercent": { "type": ["number", "null"] },
+    \\    "rssKb": { "type": ["integer", "null"], "minimum": 0 }
+    \\  },
+    \\  "additionalProperties": false
+    \\}
+    \\
+;
+
+const THREAD_BACKGROUND_TERMINALS_LIST_RESPONSE_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "ThreadBackgroundTerminalsListResponse",
+    \\  "type": "object",
+    \\  "required": ["data", "nextCursor"],
+    \\  "properties": {
+    \\    "data": {
+    \\      "type": "array",
+    \\      "items": { "$ref": "ThreadBackgroundTerminal.json" }
+    \\    },
+    \\    "nextCursor": { "type": ["string", "null"] }
+    \\  },
+    \\  "additionalProperties": false
+    \\}
+    \\
+;
+
+const THREAD_BACKGROUND_TERMINALS_TERMINATE_PARAMS_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "ThreadBackgroundTerminalsTerminateParams",
+    \\  "type": "object",
+    \\  "required": ["threadId", "processId"],
+    \\  "properties": {
+    \\    "threadId": { "type": "string" },
+    \\    "processId": { "type": "string" }
+    \\  },
+    \\  "additionalProperties": true
+    \\}
+    \\
+;
+
+const THREAD_BACKGROUND_TERMINALS_TERMINATE_RESPONSE_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "ThreadBackgroundTerminalsTerminateResponse",
+    \\  "type": "object",
+    \\  "required": ["terminated"],
+    \\  "properties": {
+    \\    "terminated": { "type": "boolean" }
+    \\  },
+    \\  "additionalProperties": false
+    \\}
+    \\
+;
+
 const THREAD_INCREMENT_ELICITATION_PARAMS_JSON_SCHEMA =
     \\{
     \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -27112,6 +27276,56 @@ const APP_SERVER_PROTOCOL_SCHEMA_BUNDLE =
     \\      "type": "object",
     \\      "additionalProperties": false
     \\    },
+    \\    "ThreadBackgroundTerminalsListParams": {
+    \\      "type": "object",
+    \\      "required": ["threadId"],
+    \\      "properties": {
+    \\        "threadId": { "type": "string" },
+    \\        "cursor": { "type": ["string", "null"] },
+    \\        "limit": { "type": ["integer", "null"], "minimum": 0 }
+    \\      },
+    \\      "additionalProperties": true
+    \\    },
+    \\    "ThreadBackgroundTerminal": {
+    \\      "type": "object",
+    \\      "required": ["itemId", "processId", "command", "cwd", "osPid", "cpuPercent", "rssKb"],
+    \\      "properties": {
+    \\        "itemId": { "type": "string" },
+    \\        "processId": { "type": "string" },
+    \\        "command": { "type": "string" },
+    \\        "cwd": { "$ref": "#/$defs/AbsolutePathBuf" },
+    \\        "osPid": { "type": ["integer", "null"], "minimum": 0 },
+    \\        "cpuPercent": { "type": ["number", "null"] },
+    \\        "rssKb": { "type": ["integer", "null"], "minimum": 0 }
+    \\      },
+    \\      "additionalProperties": false
+    \\    },
+    \\    "ThreadBackgroundTerminalsListResponse": {
+    \\      "type": "object",
+    \\      "required": ["data", "nextCursor"],
+    \\      "properties": {
+    \\        "data": { "type": "array", "items": { "$ref": "#/$defs/ThreadBackgroundTerminal" } },
+    \\        "nextCursor": { "type": ["string", "null"] }
+    \\      },
+    \\      "additionalProperties": false
+    \\    },
+    \\    "ThreadBackgroundTerminalsTerminateParams": {
+    \\      "type": "object",
+    \\      "required": ["threadId", "processId"],
+    \\      "properties": {
+    \\        "threadId": { "type": "string" },
+    \\        "processId": { "type": "string" }
+    \\      },
+    \\      "additionalProperties": true
+    \\    },
+    \\    "ThreadBackgroundTerminalsTerminateResponse": {
+    \\      "type": "object",
+    \\      "required": ["terminated"],
+    \\      "properties": {
+    \\        "terminated": { "type": "boolean" }
+    \\      },
+    \\      "additionalProperties": false
+    \\    },
     \\    "ThreadIncrementElicitationParams": {
     \\      "type": "object",
     \\      "required": ["threadId"],
@@ -28005,6 +28219,11 @@ const APP_SERVER_JSON_SCHEMA_FILES = [_]SchemaFile{
     .{ .name = "v2/ReviewStartResponse.json", .contents = REVIEW_START_RESPONSE_JSON_SCHEMA },
     .{ .name = "ThreadBackgroundTerminalsCleanParams.json", .contents = THREAD_BACKGROUND_TERMINALS_CLEAN_PARAMS_JSON_SCHEMA },
     .{ .name = "ThreadBackgroundTerminalsCleanResponse.json", .contents = THREAD_BACKGROUND_TERMINALS_CLEAN_RESPONSE_JSON_SCHEMA },
+    .{ .name = "ThreadBackgroundTerminalsListParams.json", .contents = THREAD_BACKGROUND_TERMINALS_LIST_PARAMS_JSON_SCHEMA },
+    .{ .name = "ThreadBackgroundTerminal.json", .contents = THREAD_BACKGROUND_TERMINAL_JSON_SCHEMA },
+    .{ .name = "ThreadBackgroundTerminalsListResponse.json", .contents = THREAD_BACKGROUND_TERMINALS_LIST_RESPONSE_JSON_SCHEMA },
+    .{ .name = "ThreadBackgroundTerminalsTerminateParams.json", .contents = THREAD_BACKGROUND_TERMINALS_TERMINATE_PARAMS_JSON_SCHEMA },
+    .{ .name = "ThreadBackgroundTerminalsTerminateResponse.json", .contents = THREAD_BACKGROUND_TERMINALS_TERMINATE_RESPONSE_JSON_SCHEMA },
     .{ .name = "ThreadIncrementElicitationParams.json", .contents = THREAD_INCREMENT_ELICITATION_PARAMS_JSON_SCHEMA },
     .{ .name = "ThreadIncrementElicitationResponse.json", .contents = THREAD_INCREMENT_ELICITATION_RESPONSE_JSON_SCHEMA },
     .{ .name = "ThreadDecrementElicitationParams.json", .contents = THREAD_DECREMENT_ELICITATION_PARAMS_JSON_SCHEMA },
@@ -28799,6 +29018,11 @@ const APP_SERVER_TS_FILES = [_]SchemaFile{
     .{ .name = "v2/ReviewStartResponse.ts", .contents = REVIEW_START_RESPONSE_TS },
     .{ .name = "v2/ThreadBackgroundTerminalsCleanParams.ts", .contents = THREAD_BACKGROUND_TERMINALS_CLEAN_PARAMS_TS },
     .{ .name = "v2/ThreadBackgroundTerminalsCleanResponse.ts", .contents = THREAD_BACKGROUND_TERMINALS_CLEAN_RESPONSE_TS },
+    .{ .name = "v2/ThreadBackgroundTerminalsListParams.ts", .contents = THREAD_BACKGROUND_TERMINALS_LIST_PARAMS_TS },
+    .{ .name = "v2/ThreadBackgroundTerminal.ts", .contents = THREAD_BACKGROUND_TERMINAL_TS },
+    .{ .name = "v2/ThreadBackgroundTerminalsListResponse.ts", .contents = THREAD_BACKGROUND_TERMINALS_LIST_RESPONSE_TS },
+    .{ .name = "v2/ThreadBackgroundTerminalsTerminateParams.ts", .contents = THREAD_BACKGROUND_TERMINALS_TERMINATE_PARAMS_TS },
+    .{ .name = "v2/ThreadBackgroundTerminalsTerminateResponse.ts", .contents = THREAD_BACKGROUND_TERMINALS_TERMINATE_RESPONSE_TS },
     .{ .name = "v2/ThreadIncrementElicitationParams.ts", .contents = THREAD_INCREMENT_ELICITATION_PARAMS_TS },
     .{ .name = "v2/ThreadIncrementElicitationResponse.ts", .contents = THREAD_INCREMENT_ELICITATION_RESPONSE_TS },
     .{ .name = "v2/ThreadDecrementElicitationParams.ts", .contents = THREAD_DECREMENT_ELICITATION_PARAMS_TS },
@@ -39734,6 +39958,8 @@ fn isThreadMethod(method: []const u8) bool {
         std.mem.eql(u8, method, "thread/shellCommand") or
         std.mem.eql(u8, method, "thread/approveGuardianDeniedAction") or
         std.mem.eql(u8, method, "thread/backgroundTerminals/clean") or
+        std.mem.eql(u8, method, "thread/backgroundTerminals/list") or
+        std.mem.eql(u8, method, "thread/backgroundTerminals/terminate") or
         std.mem.eql(u8, method, "thread/increment_elicitation") or
         std.mem.eql(u8, method, "thread/decrement_elicitation") or
         std.mem.eql(u8, method, "thread/rollback") or
@@ -39950,7 +40176,10 @@ fn handleThreadMethod(
         }
         return renderThreadNotFound(allocator, id_value, thread_id);
     }
-    if (std.mem.eql(u8, method, "thread/backgroundTerminals/clean")) {
+    if (std.mem.eql(u8, method, "thread/backgroundTerminals/clean") or
+        std.mem.eql(u8, method, "thread/backgroundTerminals/list") or
+        std.mem.eql(u8, method, "thread/backgroundTerminals/terminate"))
+    {
         const object = parseThreadObjectParams(params_value) catch |err| switch (err) {
             error.InvalidThreadParams => return renderThreadObjectParamsError(allocator, id_value, method),
         };
@@ -39963,8 +40192,51 @@ fn handleThreadMethod(
         if (findLoadedThread(state, thread_id) == null) {
             return renderThreadNotFound(allocator, id_value, thread_id);
         }
-        _ = tool_runner.stopExecSessionsForOwner(thread_id);
-        return renderJsonRpcResult(allocator, id_value, "{}");
+        if (std.mem.eql(u8, method, "thread/backgroundTerminals/clean")) {
+            _ = tool_runner.stopExecSessionsForOwner(thread_id);
+            return renderJsonRpcResult(allocator, id_value, "{}");
+        }
+        if (std.mem.eql(u8, method, "thread/backgroundTerminals/list")) {
+            const cursor = optionalNullableStringParam(object, "cursor") catch |err| switch (err) {
+                error.InvalidNullableStringParam => return renderJsonRpcError(allocator, id_value, -32602, "cursor must be a string or null"),
+            };
+            if (cursor) |value| {
+                _ = std.fmt.parseInt(i32, value, 10) catch |err| {
+                    const message = try std.fmt.allocPrint(allocator, "invalid cursor: {s}", .{parseIntErrorMessage(err)});
+                    defer allocator.free(message);
+                    return renderJsonRpcError(allocator, id_value, -32600, message);
+                };
+            }
+            const limit = optionalNullableU32Param(object, "limit") catch |err| switch (err) {
+                error.InvalidNullableU32Param => return renderJsonRpcError(allocator, id_value, -32602, "limit must be a non-negative integer or null"),
+            };
+            const terminals = tool_runner.listBackgroundTerminalsForOwner(allocator, thread_id) catch |err| {
+                return renderJsonRpcErrorForFailure(allocator, id_value, "thread/backgroundTerminals/list failed", err);
+            };
+            defer allocator.free(terminals);
+            const result = renderThreadBackgroundTerminalsListResponse(allocator, terminals, cursor, limit) catch |err| switch (err) {
+                error.InvalidThreadBackgroundTerminalsCursor => {
+                    const message = try std.fmt.allocPrint(allocator, "invalid cursor: {s}", .{cursor orelse ""});
+                    defer allocator.free(message);
+                    return renderJsonRpcError(allocator, id_value, -32600, message);
+                },
+                else => return err,
+            };
+            defer allocator.free(result);
+            return renderJsonRpcResult(allocator, id_value, result);
+        }
+        const process_id_value = object.get("processId") orelse return renderJsonRpcError(allocator, id_value, -32602, "processId must be a string");
+        if (process_id_value != .string) return renderJsonRpcError(allocator, id_value, -32602, "processId must be a string");
+        const process_id = std.fmt.parseInt(i32, process_id_value.string, 10) catch |err| {
+            const message = try std.fmt.allocPrint(allocator, "invalid background terminal process id: {s}", .{parseIntErrorMessage(err)});
+            defer allocator.free(message);
+            return renderJsonRpcError(allocator, id_value, -32600, message);
+        };
+        const terminated = if (process_id >= 0)
+            tool_runner.stopExecSessionForOwnerProcessId(thread_id, @intCast(process_id))
+        else
+            false;
+        return renderJsonRpcResult(allocator, id_value, if (terminated) "{\"terminated\":true}" else "{\"terminated\":false}");
     }
     if (std.mem.eql(u8, method, "thread/increment_elicitation") or
         std.mem.eql(u8, method, "thread/decrement_elicitation"))
@@ -43303,6 +43575,34 @@ fn optionalBoolParam(params: ?std.json.ObjectMap, name: []const u8) ?bool {
     return value.bool;
 }
 
+fn optionalNullableStringParam(params: std.json.ObjectMap, name: []const u8) !?[]const u8 {
+    const value = params.get(name) orelse return null;
+    if (value == .null) return null;
+    if (value != .string) return error.InvalidNullableStringParam;
+    return value.string;
+}
+
+fn optionalNullableU32Param(params: std.json.ObjectMap, name: []const u8) !?u32 {
+    const value = params.get(name) orelse return null;
+    return switch (value) {
+        .null => null,
+        .integer => |integer| blk: {
+            if (integer < 0 or integer > std.math.maxInt(u32)) return error.InvalidNullableU32Param;
+            break :blk @intCast(integer);
+        },
+        .number_string => |number| std.fmt.parseUnsigned(u32, number, 10) catch return error.InvalidNullableU32Param,
+        else => error.InvalidNullableU32Param,
+    };
+}
+
+fn parseIntErrorMessage(err: anyerror) []const u8 {
+    return switch (err) {
+        error.InvalidCharacter => "invalid digit found in string",
+        error.Overflow => "number too large to fit in target type",
+        else => @errorName(err),
+    };
+}
+
 fn optionalReasoningEffortParam(params: std.json.ObjectMap, name: []const u8) !?config.ReasoningEffort {
     const value = params.get(name) orelse return null;
     if (value == .null) return null;
@@ -45594,6 +45894,74 @@ fn queueThreadStatusChangedNotification(
     try state.pending_notifications.append(allocator, owned);
 }
 
+fn renderThreadBackgroundTerminalsListResponse(
+    allocator: std.mem.Allocator,
+    terminals: []const tool_runner.BackgroundTerminalSummary,
+    cursor: ?[]const u8,
+    limit: ?u32,
+) ![]const u8 {
+    var start: usize = 0;
+    if (cursor) |value| {
+        const cursor_id = std.fmt.parseInt(i32, value, 10) catch return error.InvalidThreadBackgroundTerminalsCursor;
+        while (start < terminals.len) : (start += 1) {
+            if (backgroundTerminalProcessIdAfterCursor(terminals[start].process_id, cursor_id)) break;
+        }
+    }
+
+    const effective_limit: usize = if (limit) |value| @max(@as(usize, value), 1) else @max(terminals.len, 1);
+    const end = @min(start + effective_limit, terminals.len);
+
+    var result = std.ArrayList(u8).empty;
+    errdefer result.deinit(allocator);
+    try result.appendSlice(allocator, "{\"data\":[");
+    for (terminals[start..end], 0..) |terminal, index| {
+        if (index > 0) try result.appendSlice(allocator, ",");
+        try appendThreadBackgroundTerminalJson(allocator, &result, terminal);
+    }
+    try result.appendSlice(allocator, "],\"nextCursor\":");
+    if (end < terminals.len) {
+        var process_id_buffer: [32]u8 = undefined;
+        const process_id_text = try std.fmt.bufPrint(&process_id_buffer, "{d}", .{terminals[end - 1].process_id});
+        try appendJsonString(allocator, &result, process_id_text);
+    } else {
+        try result.appendSlice(allocator, "null");
+    }
+    try result.appendSlice(allocator, "}");
+    return result.toOwnedSlice(allocator);
+}
+
+fn backgroundTerminalProcessIdAfterCursor(process_id: u64, cursor: i32) bool {
+    if (cursor < 0) return true;
+    return process_id > @as(u64, @intCast(cursor));
+}
+
+fn appendThreadBackgroundTerminalJson(
+    allocator: std.mem.Allocator,
+    result: *std.ArrayList(u8),
+    terminal: tool_runner.BackgroundTerminalSummary,
+) !void {
+    var process_id_buffer: [32]u8 = undefined;
+    const process_id_text = try std.fmt.bufPrint(&process_id_buffer, "{d}", .{terminal.process_id});
+
+    try result.appendSlice(allocator, "{\"itemId\":");
+    try appendJsonString(allocator, result, terminal.item_id);
+    try result.appendSlice(allocator, ",\"processId\":");
+    try appendJsonString(allocator, result, process_id_text);
+    try result.appendSlice(allocator, ",\"command\":");
+    try appendJsonString(allocator, result, terminal.command);
+    try result.appendSlice(allocator, ",\"cwd\":");
+    try appendJsonString(allocator, result, terminal.cwd);
+    try result.appendSlice(allocator, ",\"osPid\":");
+    if (terminal.os_pid) |pid| {
+        var os_pid_buffer: [32]u8 = undefined;
+        const os_pid_text = try std.fmt.bufPrint(&os_pid_buffer, "{d}", .{pid});
+        try result.appendSlice(allocator, os_pid_text);
+    } else {
+        try result.appendSlice(allocator, "null");
+    }
+    try result.appendSlice(allocator, ",\"cpuPercent\":null,\"rssKb\":null}");
+}
+
 fn queueThreadTokenUsageNotification(allocator: std.mem.Allocator, state: *AppServerState, thread: *const LoadedThread) !void {
     if (notificationMethodOptedOut(state, "thread/tokenUsage/updated")) return;
     const token_usage = thread.token_usage orelse return;
@@ -46342,6 +46710,8 @@ fn experimentalReasonForRequestMethod(method: []const u8) ?[]const u8 {
         "process/kill",
         "process/resizePty",
         "thread/backgroundTerminals/clean",
+        "thread/backgroundTerminals/list",
+        "thread/backgroundTerminals/terminate",
         "thread/increment_elicitation",
         "thread/decrement_elicitation",
         "thread/goal/set",
