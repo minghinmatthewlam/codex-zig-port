@@ -11,6 +11,7 @@ const mcp_runtime = @import("mcp_runtime.zig");
 const model_catalog = @import("model_catalog.zig");
 const plan_tool = @import("plan_tool.zig");
 const proposed_plan = @import("proposed_plan.zig");
+const sandbox = @import("sandbox.zig");
 const subagent_tools = @import("subagent_tools.zig");
 const tools = @import("tools.zig");
 const uuid_mod = @import("uuid.zig");
@@ -1986,7 +1987,13 @@ fn runSubagentSpawnCall(
 
     var child_options = try subagentChildTurnOptions(allocator, options);
     defer child_options.feature_overrides.deinit(allocator);
-    var prepared_input = try prepareSubagentInput(allocator, input, child_options.workdir);
+    var prepared_input = try prepareSubagentInput(
+        allocator,
+        input,
+        child_options.workdir,
+        child_options.read_denied_roots,
+        child_options.read_denied_globs,
+    );
     defer prepared_input.deinit(allocator);
     child_options.input_images = prepared_input.input_images;
 
@@ -2051,7 +2058,13 @@ fn runSubagentSendInputCall(
 
     var child_options = try subagentChildTurnOptions(allocator, options);
     defer child_options.feature_overrides.deinit(allocator);
-    var prepared_input = try prepareSubagentInput(allocator, input, child_options.workdir);
+    var prepared_input = try prepareSubagentInput(
+        allocator,
+        input,
+        child_options.workdir,
+        child_options.read_denied_roots,
+        child_options.read_denied_globs,
+    );
     defer prepared_input.deinit(allocator);
     child_options.input_images = prepared_input.input_images;
     const child_cfg = agent.model_controls.apply(cfg);
@@ -2315,7 +2328,13 @@ fn ownedSubagentNamedPathList(
     return values.toOwnedSlice(allocator);
 }
 
-fn prepareSubagentInput(allocator: std.mem.Allocator, input: SubagentInput, base_cwd: ?[]const u8) SubagentInputParseError!PreparedSubagentInput {
+fn prepareSubagentInput(
+    allocator: std.mem.Allocator,
+    input: SubagentInput,
+    base_cwd: ?[]const u8,
+    read_denied_roots: []const []const u8,
+    read_denied_globs: []const []const u8,
+) SubagentInputParseError!PreparedSubagentInput {
     var prompt = std.ArrayList(u8).empty;
     errdefer prompt.deinit(allocator);
     if (input.prompt.len > 0) try prompt.appendSlice(allocator, input.prompt);
@@ -2328,7 +2347,13 @@ fn prepareSubagentInput(allocator: std.mem.Allocator, input: SubagentInput, base
     };
 
     for (input.local_image_paths) |path| {
-        const image_url = input_images.loadOneFromBase(allocator, base_cwd, path) catch |err| switch (err) {
+        const image_url = loadSubagentLocalImage(
+            allocator,
+            base_cwd,
+            path,
+            read_denied_roots,
+            read_denied_globs,
+        ) catch |err| switch (err) {
             error.OutOfMemory => return error.OutOfMemory,
             else => {
                 const placeholder = try input_images.renderLoadErrorPlaceholder(allocator, path, err);
@@ -2385,6 +2410,118 @@ fn prepareSubagentInput(allocator: std.mem.Allocator, input: SubagentInput, base
         .owned_local_image_urls = local_image_urls_owned,
         .combined_images_owned = true,
     };
+}
+
+fn loadSubagentLocalImage(
+    allocator: std.mem.Allocator,
+    base_cwd: ?[]const u8,
+    path: []const u8,
+    read_denied_roots: []const []const u8,
+    read_denied_globs: []const []const u8,
+) ![]const u8 {
+    const base = base_cwd orelse return error.SubagentLocalImageRequiresWorkdir;
+    if (std.fs.path.isAbsolute(path)) return error.SubagentLocalImageOutsideWorkdir;
+
+    const base_real = try subagentRealPathAlloc(allocator, base);
+    defer allocator.free(base_real);
+    const resolved = try std.fs.path.resolve(allocator, &.{ base_real, path });
+    defer allocator.free(resolved);
+    const target_real = try subagentRealPathAlloc(allocator, resolved);
+    defer allocator.free(target_real);
+
+    if (!subagentPathAtOrUnder(target_real, base_real)) return error.SubagentLocalImageOutsideWorkdir;
+    try ensureSubagentLocalImageReadable(allocator, base_real, target_real, read_denied_roots, read_denied_globs);
+
+    return input_images.loadOne(allocator, target_real);
+}
+
+fn ensureSubagentLocalImageReadable(
+    allocator: std.mem.Allocator,
+    base_real: []const u8,
+    target_real: []const u8,
+    read_denied_roots: []const []const u8,
+    read_denied_globs: []const []const u8,
+) !void {
+    for (read_denied_roots) |root| {
+        const denied_root = try resolveSubagentPolicyPath(allocator, base_real, root);
+        defer allocator.free(denied_root);
+        if (subagentPathAtOrUnder(target_real, denied_root)) return error.SubagentLocalImageReadDenied;
+    }
+    for (read_denied_globs) |pattern| {
+        const denied_glob = try resolveSubagentPolicyGlob(allocator, base_real, pattern);
+        defer allocator.free(denied_glob);
+        if (sandbox.readDeniedGlobMatchesPath(denied_glob, target_real)) return error.SubagentLocalImageReadDenied;
+    }
+}
+
+fn resolveSubagentPolicyPath(allocator: std.mem.Allocator, base_real: []const u8, path: []const u8) ![]const u8 {
+    const resolved = if (std.fs.path.isAbsolute(path))
+        try std.fs.path.resolve(allocator, &.{path})
+    else
+        try std.fs.path.resolve(allocator, &.{ base_real, path });
+    defer allocator.free(resolved);
+    return subagentRealPathAlloc(allocator, resolved) catch |err| switch (err) {
+        error.FileNotFound, error.NotDir, error.AccessDenied => try subagentCanonicalMissingPath(allocator, resolved),
+        else => return err,
+    };
+}
+
+fn resolveSubagentPolicyGlob(allocator: std.mem.Allocator, base_real: []const u8, pattern: []const u8) ![]const u8 {
+    if (std.fs.path.isAbsolute(pattern)) return allocator.dupe(u8, pattern);
+    return std.fs.path.resolve(allocator, &.{ base_real, pattern });
+}
+
+fn subagentCanonicalMissingPath(allocator: std.mem.Allocator, absolute_path: []const u8) ![]const u8 {
+    var probe_end = absolute_path.len;
+    while (probe_end > 0) {
+        const probe = absolute_path[0..probe_end];
+        const real_parent = subagentRealPathAlloc(allocator, probe) catch |err| switch (err) {
+            error.FileNotFound, error.NotDir, error.AccessDenied => {
+                const parent = std.fs.path.dirname(probe) orelse return allocator.dupe(u8, absolute_path);
+                if (parent.len >= probe.len) return allocator.dupe(u8, absolute_path);
+                probe_end = parent.len;
+                continue;
+            },
+            else => return err,
+        };
+        errdefer allocator.free(real_parent);
+
+        const suffix = if (probe_end < absolute_path.len and absolute_path[probe_end] == std.fs.path.sep)
+            absolute_path[probe_end + 1 ..]
+        else
+            absolute_path[probe_end..];
+        if (suffix.len == 0) return real_parent;
+
+        const joined = try std.fs.path.join(allocator, &.{ real_parent, suffix });
+        allocator.free(real_parent);
+        return joined;
+    }
+    return allocator.dupe(u8, absolute_path);
+}
+
+fn subagentRealPathAlloc(allocator: std.mem.Allocator, path: []const u8) ![]const u8 {
+    const real_path = try std.Io.Dir.cwd().realPathFileAlloc(std.Io.Threaded.global_single_threaded.io(), path, allocator);
+    defer allocator.free(real_path);
+    return allocator.dupe(u8, real_path);
+}
+
+fn subagentPathAtOrUnder(path: []const u8, root: []const u8) bool {
+    if (subagentPathEqual(path, root)) return true;
+    if (std.mem.eql(u8, root, std.fs.path.sep_str)) return std.fs.path.isAbsolute(path);
+    if (path.len <= root.len) return false;
+    return subagentPathStartsWith(path, root) and path[root.len] == std.fs.path.sep;
+}
+
+fn subagentPathEqual(path: []const u8, root: []const u8) bool {
+    if (std.mem.eql(u8, path, root)) return true;
+    if (builtin.os.tag == .macos) return std.ascii.eqlIgnoreCase(path, root);
+    return false;
+}
+
+fn subagentPathStartsWith(path: []const u8, root: []const u8) bool {
+    if (std.mem.startsWith(u8, path, root)) return true;
+    if (builtin.os.tag == .macos and path.len >= root.len) return std.ascii.eqlIgnoreCase(path[0..root.len], root);
+    return false;
 }
 
 fn subagentInputFromArgs(allocator: std.mem.Allocator, object: std.json.ObjectMap) SubagentInputParseError!SubagentInput {
@@ -3557,7 +3694,7 @@ test "subagent input parser passes structured image items to child turns" {
     try std.testing.expectEqualStrings("https://example.test/subagent.png", input.image_urls[0]);
     try std.testing.expectEqual(@as(usize, 0), input.local_image_paths.len);
 
-    var prepared = try prepareSubagentInput(allocator, input, null);
+    var prepared = try prepareSubagentInput(allocator, input, null, &.{}, &.{});
     defer prepared.deinit(allocator);
     try std.testing.expectEqualStrings("check this", prepared.prompt);
     try std.testing.expectEqual(@as(usize, 1), prepared.input_images.len);
@@ -3579,7 +3716,7 @@ test "subagent input parser gives image-only items a model-visible placeholder" 
     try std.testing.expectEqual(@as(usize, 1), input.image_urls.len);
     try std.testing.expectEqualStrings("https://example.test/only.png", input.image_urls[0]);
 
-    var prepared = try prepareSubagentInput(allocator, input, null);
+    var prepared = try prepareSubagentInput(allocator, input, null, &.{}, &.{});
     defer prepared.deinit(allocator);
     try std.testing.expectEqualStrings("[image]", prepared.prompt);
     try std.testing.expectEqual(@as(usize, 1), prepared.input_images.len);
@@ -3601,7 +3738,7 @@ test "subagent input materializer turns unreadable local images into prompt plac
     try std.testing.expect(input.image_urls.len == 0);
     try std.testing.expectEqual(@as(usize, 1), input.local_image_paths.len);
 
-    var prepared = try prepareSubagentInput(allocator, input, null);
+    var prepared = try prepareSubagentInput(allocator, input, null, &.{}, &.{});
     defer prepared.deinit(allocator);
     try std.testing.expect(prepared.input_images.len == 0);
     try std.testing.expect(std.mem.indexOf(u8, prepared.prompt, "Codex could not read the local image at `missing-subagent-image.png`") != null);
@@ -3624,12 +3761,80 @@ test "subagent input materializer resolves local images against turn workdir" {
 
     var input = try subagentInputFromArgs(allocator, parsed.value.object);
     defer input.deinit(allocator);
-    var prepared = try prepareSubagentInput(allocator, input, base);
+    var prepared = try prepareSubagentInput(allocator, input, base, &.{}, &.{});
     defer prepared.deinit(allocator);
 
     try std.testing.expectEqualStrings("inspect image", prepared.prompt);
     try std.testing.expectEqual(@as(usize, 1), prepared.input_images.len);
     try std.testing.expect(std.mem.startsWith(u8, prepared.input_images[0], "data:image/png;base64,"));
+}
+
+test "subagent input materializer rejects local image symlink escapes" {
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
+
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var dir = std.testing.tmpDir(.{});
+    defer dir.cleanup();
+    try dir.dir.createDirPath(io, "workspace");
+    try dir.dir.createDirPath(io, "outside");
+    try dir.dir.writeFile(io, .{
+        .sub_path = "outside/secret.png",
+        .data = "\x89PNG\r\n\x1a\noutside-secret\n",
+    });
+    try dir.dir.symLink(io, "../outside/secret.png", "workspace/link.png", .{});
+
+    const root = try dir.dir.realPathFileAlloc(io, ".", allocator);
+    defer allocator.free(root);
+    const base = try std.fs.path.join(allocator, &.{ root, "workspace" });
+    defer allocator.free(base);
+    var parsed = try std.json.parseFromSlice(std.json.Value, allocator,
+        \\{"items":[{"type":"local_image","path":"link.png"}]}
+    , .{});
+    defer parsed.deinit();
+
+    var input = try subagentInputFromArgs(allocator, parsed.value.object);
+    defer input.deinit(allocator);
+    var prepared = try prepareSubagentInput(allocator, input, base, &.{}, &.{});
+    defer prepared.deinit(allocator);
+
+    try std.testing.expectEqual(@as(usize, 0), prepared.input_images.len);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.prompt, "SubagentLocalImageOutsideWorkdir") != null);
+}
+
+test "subagent input materializer honors read-denied local images" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var dir = std.testing.tmpDir(.{});
+    defer dir.cleanup();
+    try dir.dir.createDirPath(io, "workspace/nested");
+    try dir.dir.writeFile(io, .{
+        .sub_path = "workspace/secret.png",
+        .data = "\x89PNG\r\n\x1a\nroot-denied\n",
+    });
+    try dir.dir.writeFile(io, .{
+        .sub_path = "workspace/nested/token.secret",
+        .data = "\x89PNG\r\n\x1a\nglob-denied\n",
+    });
+
+    const root = try dir.dir.realPathFileAlloc(io, ".", allocator);
+    defer allocator.free(root);
+    const base = try std.fs.path.join(allocator, &.{ root, "workspace" });
+    defer allocator.free(base);
+    var parsed = try std.json.parseFromSlice(std.json.Value, allocator,
+        \\{"items":[{"type":"local_image","path":"secret.png"},{"type":"local_image","path":"nested/token.secret"}]}
+    , .{});
+    defer parsed.deinit();
+
+    var input = try subagentInputFromArgs(allocator, parsed.value.object);
+    defer input.deinit(allocator);
+    var prepared = try prepareSubagentInput(allocator, input, base, &.{"secret.png"}, &.{"**/*.secret"});
+    defer prepared.deinit(allocator);
+
+    try std.testing.expectEqual(@as(usize, 0), prepared.input_images.len);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.prompt, "secret.png") != null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.prompt, "nested/token.secret") != null);
+    try std.testing.expect(std.mem.indexOf(u8, prepared.prompt, "SubagentLocalImageReadDenied") != null);
 }
 
 test "subagent input materializer injects skill items and mention markers" {
@@ -3655,7 +3860,7 @@ test "subagent input materializer injects skill items and mention markers" {
     try std.testing.expectEqual(@as(usize, 1), input.skills.len);
     try std.testing.expectEqual(@as(usize, 1), input.mentions.len);
 
-    var prepared = try prepareSubagentInput(allocator, input, base);
+    var prepared = try prepareSubagentInput(allocator, input, base, &.{}, &.{});
     defer prepared.deinit(allocator);
     try std.testing.expect(std.mem.indexOf(u8, prepared.prompt, "use context\n<skill>\n<name>demo</name>") != null);
     try std.testing.expect(std.mem.indexOf(u8, prepared.prompt, "<path>.codex/skills/demo/SKILL.md</path>") != null);
