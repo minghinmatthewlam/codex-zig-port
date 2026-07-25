@@ -64,6 +64,15 @@ behavior, generated `RemoteControlPairing*`, `RemoteControlClients*`, and
 Zig now validates pairing/client params with Rust-shaped `-32600` errors and
 returns Rust's local disabled, not-enrolled, and ChatGPT-auth-required errors
 until the full websocket/cloud backend is implemented.
+App-server account usage, workspace-message, and rate-limit reset-credit
+parity was checked against installed Rust `codex app-server --stdio` behavior,
+isolated ChatGPT/no-auth/API-key homes, generated TypeScript/JSON Schema
+artifacts, a local backend probe for request paths/headers/bodies, and the Zig
+stdio app-server smoke. Zig now supports `account/usage/read`,
+`account/workspaceMessages/read`, and
+`account/rateLimitResetCredit/consume` with Rust-shaped auth errors,
+validation errors, backend request mapping, response casing, disabled
+workspace-message 404 handling, and reset-credit outcome mapping.
 App-server environment method parity was checked against installed Rust
 `codex app-server --stdio` behavior with and without `experimentalApi`,
 generated `EnvironmentAdd*`, `EnvironmentInfo*`, `EnvironmentShellInfo`,
@@ -545,10 +554,10 @@ runtime override handling, and the Zig stdio app-server smoke.
 - Complete the remaining cloud task flows behind `codex cloud`: task creation,
   status/list, apply, diff, and TUI picker behavior against the current backend
   contract.
-- Close the current generated app-server `ClientRequest` method-set gaps:
-  `account/rateLimitResetCredit/consume`, `account/usage/read`,
-  `account/workspaceMessages/read`,
-  `externalAgentConfig/import/readHistories`, and `mock/experimentalMethod`.
+- Close the current user-facing generated app-server `ClientRequest` method-set
+  gap: `externalAgentConfig/import/readHistories`. The remaining
+  `mock/experimentalMethod` difference is Rust test-only/non-user-facing and
+  is tracked separately from feature parity.
 - Close the remaining generated app-server `ServerNotification` method-set
   gaps: `externalAgentConfig/import/progress`, `rawResponse/completed`,
   `turn/moderationMetadata`, and `model/safetyBuffering/updated`.

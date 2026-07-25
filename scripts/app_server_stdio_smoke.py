@@ -1278,6 +1278,59 @@ class RateLimitBackendHandler(BaseHTTPRequestHandler):
                 "account_id": self.headers.get("ChatGPT-Account-Id"),
             }
         )
+        if self.path == "/api/codex/profiles/me":
+            body = json.dumps(
+                {
+                    "stats": {
+                        "lifetime_tokens": 1234567890123,
+                        "peak_daily_tokens": 999,
+                        "longest_running_turn_sec": 88,
+                        "current_streak_days": 7,
+                        "longest_streak_days": 11,
+                        "daily_usage_buckets": [
+                            {"start_date": "2026-07-20", "tokens": 42},
+                            {"start_date": "2026-07-21", "tokens": 77},
+                        ],
+                    }
+                },
+                separators=(",", ":"),
+            ).encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
+
+        if self.path == "/api/codex/workspace-messages":
+            body = json.dumps(
+                {
+                    "messages": [
+                        {
+                            "message_id": "m1",
+                            "message_type": "headline",
+                            "message_body": "Headline",
+                            "created_at": "2026-07-20T01:02:03Z",
+                            "archived_at": None,
+                        },
+                        {
+                            "message_id": "m2",
+                            "message_type": "future_message_kind",
+                            "message_body": "Other",
+                            "created_at": None,
+                            "archived_at": "2026-07-21T04:05:06Z",
+                        },
+                    ]
+                },
+                separators=(",", ":"),
+            ).encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
+
         if self.path != "/api/codex/usage":
             self.send_response(404)
             self.end_headers()
@@ -1321,6 +1374,35 @@ class RateLimitBackendHandler(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
+
+    def do_POST(self) -> None:
+        content_length = int(self.headers.get("Content-Length", "0"))
+        body = self.rfile.read(content_length).decode("utf-8")
+        RateLimitBackendHandler.requests.append(
+            {
+                "path": self.path,
+                "authorization": self.headers.get("Authorization"),
+                "account_id": self.headers.get("ChatGPT-Account-Id"),
+                "content_type": self.headers.get("Content-Type"),
+                "body": json.loads(body),
+            }
+        )
+        if self.path != "/api/codex/rate-limit-reset-credits/consume":
+            self.send_response(404)
+            self.end_headers()
+            return
+
+        request_body = json.loads(body)
+        response_code = "already_redeemed" if request_body.get("credit_id") else "reset"
+        payload = json.dumps(
+            {"code": response_code, "windows_reset": 1},
+            separators=(",", ":"),
+        ).encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(payload)))
+        self.end_headers()
+        self.wfile.write(payload)
 
     def log_message(self, format: str, *args: object) -> None:
         return
@@ -46642,6 +46724,283 @@ def run_account_rate_limits_rpc_smoke(binary: Path) -> None:
         shutil.rmtree(api_key_home, ignore_errors=True)
 
 
+def run_account_usage_rpc_smoke(binary: Path) -> None:
+    def request(
+        codex_home: Path,
+        request_id: str,
+        method: str,
+        params_marker: object,
+    ) -> dict:
+        env = os.environ.copy()
+        env.pop("OPENAI_API_KEY", None)
+        env.pop("CODEX_ACCESS_TOKEN", None)
+        env["CODEX_HOME"] = str(codex_home)
+        payload = {"jsonrpc": "2.0", "id": request_id, "method": method}
+        if params_marker is not _OMIT:
+            payload["params"] = params_marker
+        return request_stdio_app_server(binary, payload, env, capabilities={})
+
+    def write_chatgpt_home(codex_home: Path, base_url: str) -> str:
+        access_token = encode_unsigned_jwt({"exp": 4_102_444_800})
+        id_token = encode_unsigned_jwt(
+            {
+                "https://api.openai.com/auth": {
+                    "chatgpt_account_id": "acct_123",
+                },
+            }
+        )
+        (codex_home / "config.toml").write_text(
+            f'chatgpt_base_url = "{base_url}"\n',
+            encoding="utf-8",
+        )
+        (codex_home / "auth.json").write_text(
+            json.dumps(
+                {
+                    "auth_mode": "chatgpt",
+                    "tokens": {
+                        "id_token": id_token,
+                        "access_token": access_token,
+                        "refresh_token": "refresh-token",
+                        "account_id": "acct_123",
+                    },
+                }
+            ),
+            encoding="utf-8",
+        )
+        return access_token
+
+    server, base_url = start_rate_limit_backend()
+    chatgpt_home = Path(tempfile.mkdtemp(prefix="codex-zig-app-server-account-usage-chatgpt-", dir="/tmp"))
+    no_auth_home = Path(tempfile.mkdtemp(prefix="codex-zig-app-server-account-usage-none-", dir="/tmp"))
+    api_key_home = Path(tempfile.mkdtemp(prefix="codex-zig-app-server-account-usage-api-", dir="/tmp"))
+    try:
+        write_chatgpt_home(chatgpt_home, base_url)
+        usage = request(chatgpt_home, "usage", "account/usage/read", _OMIT)
+        assert usage["id"] == "usage"
+        assert usage["result"] == {
+            "summary": {
+                "lifetimeTokens": 1234567890123,
+                "peakDailyTokens": 999,
+                "longestRunningTurnSec": 88,
+                "currentStreakDays": 7,
+                "longestStreakDays": 11,
+            },
+            "dailyUsageBuckets": [
+                {"startDate": "2026-07-20", "tokens": 42},
+                {"startDate": "2026-07-21", "tokens": 77},
+            ],
+        }
+        assert RateLimitBackendHandler.requests == [
+            {
+                "path": "/api/codex/profiles/me",
+                "authorization": None,
+                "account_id": "acct_123",
+            }
+        ]
+
+        usage_null_params = request(chatgpt_home, "usage-null", "account/usage/read", None)
+        assert usage_null_params["id"] == "usage-null"
+        assert usage_null_params["result"] == usage["result"]
+        usage_object_params = request(chatgpt_home, "usage-object", "account/usage/read", {})
+        assert usage_object_params["id"] == "usage-object"
+        assert usage_object_params["result"] == usage["result"]
+
+        RateLimitBackendHandler.requests = []
+        workspace = request(chatgpt_home, "workspace", "account/workspaceMessages/read", _OMIT)
+        assert workspace["id"] == "workspace"
+        assert workspace["result"] == {
+            "featureEnabled": True,
+            "messages": [
+                {
+                    "messageId": "m1",
+                    "messageType": "headline",
+                    "messageBody": "Headline",
+                    "createdAt": 1784509323,
+                    "archivedAt": None,
+                },
+                {
+                    "messageId": "m2",
+                    "messageType": "unknown",
+                    "messageBody": "Other",
+                    "createdAt": None,
+                    "archivedAt": 1784606706,
+                },
+            ],
+        }
+        assert RateLimitBackendHandler.requests == [
+            {
+                "path": "/api/codex/workspace-messages",
+                "authorization": None,
+                "account_id": "acct_123",
+            }
+        ]
+
+        workspace_null_params = request(chatgpt_home, "workspace-null", "account/workspaceMessages/read", None)
+        assert workspace_null_params["id"] == "workspace-null"
+        assert workspace_null_params["result"] == workspace["result"]
+        workspace_object_params = request(chatgpt_home, "workspace-object", "account/workspaceMessages/read", {})
+        assert workspace_object_params["id"] == "workspace-object"
+        assert workspace_object_params["result"] == workspace["result"]
+
+        RateLimitBackendHandler.requests = []
+        reset = request(
+            chatgpt_home,
+            "reset",
+            "account/rateLimitResetCredit/consume",
+            {"idempotencyKey": "idem-1"},
+        )
+        assert reset["id"] == "reset"
+        assert reset["result"] == {"outcome": "reset"}
+        reset_with_credit = request(
+            chatgpt_home,
+            "reset-with-credit",
+            "account/rateLimitResetCredit/consume",
+            {"idempotencyKey": "idem-2", "creditId": "credit-1"},
+        )
+        assert reset_with_credit["id"] == "reset-with-credit"
+        assert reset_with_credit["result"] == {"outcome": "alreadyRedeemed"}
+        assert RateLimitBackendHandler.requests == [
+            {
+                "path": "/api/codex/rate-limit-reset-credits/consume",
+                "authorization": None,
+                "account_id": "acct_123",
+                "content_type": "application/json",
+                "body": {"redeem_request_id": "idem-1"},
+            },
+            {
+                "path": "/api/codex/rate-limit-reset-credits/consume",
+                "authorization": None,
+                "account_id": "acct_123",
+                "content_type": "application/json",
+                "body": {
+                    "redeem_request_id": "idem-2",
+                    "credit_id": "credit-1",
+                },
+            },
+        ]
+
+        for request_id, method, message in [
+            (
+                "usage-no-auth",
+                "account/usage/read",
+                "codex account authentication required to read token usage",
+            ),
+            (
+                "workspace-no-auth",
+                "account/workspaceMessages/read",
+                "codex account authentication required to read workspace messages",
+            ),
+            (
+                "reset-no-auth",
+                "account/rateLimitResetCredit/consume",
+                "codex account authentication required for rate limit reset credits",
+            ),
+        ]:
+            params = {"idempotencyKey": "idem"} if request_id.startswith("reset") else _OMIT
+            response = request(no_auth_home, request_id, method, params)
+            assert response["id"] == request_id
+            assert response["error"]["code"] == -32600
+            assert response["error"]["message"] == message
+
+        (api_key_home / "auth.json").write_text(
+            json.dumps({"auth_mode": "apikey", "OPENAI_API_KEY": "test-api-key"}),
+            encoding="utf-8",
+        )
+        for request_id, method, message in [
+            (
+                "usage-api-key",
+                "account/usage/read",
+                "chatgpt authentication required to read token usage",
+            ),
+            (
+                "workspace-api-key",
+                "account/workspaceMessages/read",
+                "chatgpt authentication required to read workspace messages",
+            ),
+            (
+                "reset-api-key",
+                "account/rateLimitResetCredit/consume",
+                "chatgpt authentication required for rate limit reset credits",
+            ),
+        ]:
+            params = {"idempotencyKey": "idem"} if request_id.startswith("reset") else None
+            response = request(api_key_home, request_id, method, params)
+            assert response["id"] == request_id
+            assert response["error"]["code"] == -32600
+            assert response["error"]["message"] == message
+
+        for request_id, method, params, expected_message in [
+            (
+                "usage-string-params",
+                "account/usage/read",
+                "bad",
+                'Invalid request: invalid type: string "bad", expected unit',
+            ),
+            (
+                "usage-array-params",
+                "account/usage/read",
+                [],
+                "Invalid request: invalid type: sequence, expected unit",
+            ),
+            (
+                "workspace-string-params",
+                "account/workspaceMessages/read",
+                "bad",
+                'Invalid request: invalid type: string "bad", expected unit',
+            ),
+            (
+                "workspace-array-params",
+                "account/workspaceMessages/read",
+                [],
+                "Invalid request: invalid type: sequence, expected unit",
+            ),
+        ]:
+            response = request(chatgpt_home, request_id, method, params)
+            assert response["id"] == request_id
+            assert response["error"]["code"] == -32600
+            assert response["error"]["message"] == expected_message
+
+        for request_id, params, expected_message in [
+            ("reset-null", None, "Invalid request: missing field `params`"),
+            ("reset-empty", {}, "Invalid request: missing field `idempotencyKey`"),
+            (
+                "reset-empty-idempotency",
+                {"idempotencyKey": ""},
+                "idempotencyKey must not be empty",
+            ),
+            (
+                "reset-empty-credit",
+                {"idempotencyKey": "idem", "creditId": ""},
+                "creditId must not be empty",
+            ),
+            (
+                "reset-numeric-credit",
+                {"idempotencyKey": "idem", "creditId": 5},
+                "Invalid request: invalid type: integer `5`, expected a string",
+            ),
+            (
+                "reset-string-params",
+                "bad",
+                'Invalid request: invalid type: string "bad", expected struct ConsumeAccountRateLimitResetCreditParams',
+            ),
+        ]:
+            response = request(
+                chatgpt_home,
+                request_id,
+                "account/rateLimitResetCredit/consume",
+                params,
+            )
+            assert response["id"] == request_id
+            assert response["error"]["code"] == -32600
+            assert response["error"]["message"] == expected_message
+    finally:
+        server.shutdown()
+        server.server_close()
+        shutil.rmtree(chatgpt_home, ignore_errors=True)
+        shutil.rmtree(no_auth_home, ignore_errors=True)
+        shutil.rmtree(api_key_home, ignore_errors=True)
+
+
 def run_account_add_credits_nudge_rpc_smoke(binary: Path) -> None:
     def request(codex_home: Path, request_id: str, params_marker: object) -> dict:
         env = os.environ.copy()
@@ -50747,6 +51106,49 @@ def run_json_schema_smoke(binary: Path) -> None:
             ]["$ref"]
             == "RateLimitSnapshot.json"
         )
+        reset_credit_params = json.loads(
+            (
+                out_dir / "ConsumeAccountRateLimitResetCreditParams.json"
+            ).read_text(encoding="utf-8")
+        )
+        assert reset_credit_params["required"] == ["idempotencyKey"]
+        assert reset_credit_params["properties"]["creditId"]["type"] == [
+            "string",
+            "null",
+        ]
+        reset_credit_response = json.loads(
+            (
+                out_dir / "ConsumeAccountRateLimitResetCreditResponse.json"
+            ).read_text(encoding="utf-8")
+        )
+        assert reset_credit_response["required"] == ["outcome"]
+        token_usage_response = json.loads(
+            (out_dir / "GetAccountTokenUsageResponse.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        assert token_usage_response["required"] == ["summary"]
+        assert (
+            token_usage_response["properties"]["dailyUsageBuckets"]["items"]["$ref"]
+            == "AccountTokenUsageDailyBucket.json"
+        )
+        workspace_messages_response = json.loads(
+            (out_dir / "GetWorkspaceMessagesResponse.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        assert workspace_messages_response["required"] == [
+            "featureEnabled",
+            "messages",
+        ]
+        workspace_message = json.loads(
+            (out_dir / "WorkspaceMessage.json").read_text(encoding="utf-8")
+        )
+        assert workspace_message["required"] == [
+            "messageBody",
+            "messageId",
+            "messageType",
+        ]
         rate_limits_updated = json.loads(
             (out_dir / "AccountRateLimitsUpdatedNotification.json").read_text(
                 encoding="utf-8"
@@ -53811,6 +54213,15 @@ def run_json_schema_smoke(binary: Path) -> None:
         assert "CreditsSnapshot" in bundle["$defs"]
         assert "RateLimitSnapshot" in bundle["$defs"]
         assert "GetAccountRateLimitsResponse" in bundle["$defs"]
+        assert "ConsumeAccountRateLimitResetCreditParams" in bundle["$defs"]
+        assert "ConsumeAccountRateLimitResetCreditOutcome" in bundle["$defs"]
+        assert "ConsumeAccountRateLimitResetCreditResponse" in bundle["$defs"]
+        assert "AccountTokenUsageDailyBucket" in bundle["$defs"]
+        assert "AccountTokenUsageSummary" in bundle["$defs"]
+        assert "GetAccountTokenUsageResponse" in bundle["$defs"]
+        assert "WorkspaceMessageType" in bundle["$defs"]
+        assert "WorkspaceMessage" in bundle["$defs"]
+        assert "GetWorkspaceMessagesResponse" in bundle["$defs"]
         assert "AccountRateLimitsUpdatedNotification" in bundle["$defs"]
         assert "AddCreditsNudgeCreditType" in bundle["$defs"]
         assert "SendAddCreditsNudgeEmailParams" in bundle["$defs"]
@@ -54176,6 +54587,35 @@ def run_json_schema_smoke(binary: Path) -> None:
             ]["$ref"]
             == "#/$defs/RateLimitSnapshot"
         )
+        assert bundle["$defs"]["ConsumeAccountRateLimitResetCreditParams"][
+            "required"
+        ] == ["idempotencyKey"]
+        assert (
+            bundle["$defs"]["ConsumeAccountRateLimitResetCreditResponse"][
+                "properties"
+            ]["outcome"]["$ref"]
+            == "#/$defs/ConsumeAccountRateLimitResetCreditOutcome"
+        )
+        assert (
+            bundle["$defs"]["GetAccountTokenUsageResponse"]["properties"]["summary"][
+                "$ref"
+            ]
+            == "#/$defs/AccountTokenUsageSummary"
+        )
+        assert (
+            bundle["$defs"]["GetAccountTokenUsageResponse"]["properties"][
+                "dailyUsageBuckets"
+            ]["items"]["$ref"]
+            == "#/$defs/AccountTokenUsageDailyBucket"
+        )
+        assert (
+            bundle["$defs"]["WorkspaceMessage"]["properties"]["messageType"]["$ref"]
+            == "#/$defs/WorkspaceMessageType"
+        )
+        assert bundle["$defs"]["GetWorkspaceMessagesResponse"]["required"] == [
+            "featureEnabled",
+            "messages",
+        ]
         assert (
             bundle["$defs"]["AccountRateLimitsUpdatedNotification"]["properties"][
                 "rateLimits"
@@ -55247,6 +55687,7 @@ def run_typescript_generation_smoke(binary: Path) -> None:
             "ConfigBatchWriteParams",
             "ConfigReadParams",
             "ConfigValueWriteParams",
+            "ConsumeAccountRateLimitResetCreditParams",
             "MarketplaceAddParams",
             "MarketplaceRemoveParams",
             "MarketplaceUpgradeParams",
@@ -55342,6 +55783,10 @@ def run_typescript_generation_smoke(binary: Path) -> None:
         assert "params: CancelLoginAccountParams;" in client_request
         assert 'method: "account/logout";' in client_request
         assert 'method: "account/rateLimits/read";' in client_request
+        assert 'method: "account/rateLimitResetCredit/consume";' in client_request
+        assert "params: ConsumeAccountRateLimitResetCreditParams;" in client_request
+        assert 'method: "account/usage/read";' in client_request
+        assert 'method: "account/workspaceMessages/read";' in client_request
         assert 'method: "account/sendAddCreditsNudgeEmail";' in client_request
         assert "params: SendAddCreditsNudgeEmailParams;" in client_request
         assert 'method: "app/list";' in client_request
@@ -56580,6 +57025,18 @@ def run_typescript_generation_smoke(binary: Path) -> None:
             in client_response
         )
         assert (
+            'import type { ConsumeAccountRateLimitResetCreditResponse } from "./v2/ConsumeAccountRateLimitResetCreditResponse";'
+            in client_response
+        )
+        assert (
+            'import type { GetAccountTokenUsageResponse } from "./v2/GetAccountTokenUsageResponse";'
+            in client_response
+        )
+        assert (
+            'import type { GetWorkspaceMessagesResponse } from "./v2/GetWorkspaceMessagesResponse";'
+            in client_response
+        )
+        assert (
             'import type { GetConversationSummaryResponse } from "./GetConversationSummaryResponse";'
             in client_response
         )
@@ -56662,6 +57119,12 @@ def run_typescript_generation_smoke(binary: Path) -> None:
         assert "result: LogoutAccountResponse;" in client_response
         assert 'method: "account/rateLimits/read";' in client_response
         assert "result: GetAccountRateLimitsResponse;" in client_response
+        assert 'method: "account/rateLimitResetCredit/consume";' in client_response
+        assert "result: ConsumeAccountRateLimitResetCreditResponse;" in client_response
+        assert 'method: "account/usage/read";' in client_response
+        assert "result: GetAccountTokenUsageResponse;" in client_response
+        assert 'method: "account/workspaceMessages/read";' in client_response
+        assert "result: GetWorkspaceMessagesResponse;" in client_response
         assert 'method: "account/sendAddCreditsNudgeEmail";' in client_response
         assert "result: SendAddCreditsNudgeEmailResponse;" in client_response
         assert 'method: "app/list";' in client_response
@@ -57378,6 +57841,53 @@ def run_typescript_generation_smoke(binary: Path) -> None:
             "rateLimitsByLimitId: Record<string, RateLimitSnapshot> | null;"
             in rate_limits_response
         )
+        reset_credit_params = (
+            out_dir / "v2" / "ConsumeAccountRateLimitResetCreditParams.ts"
+        ).read_text(encoding="utf-8")
+        assert "idempotencyKey: string;" in reset_credit_params
+        assert "creditId?: string | null;" in reset_credit_params
+        reset_credit_outcome = (
+            out_dir / "v2" / "ConsumeAccountRateLimitResetCreditOutcome.ts"
+        ).read_text(encoding="utf-8")
+        assert '"nothingToReset"' in reset_credit_outcome
+        reset_credit_response = (
+            out_dir / "v2" / "ConsumeAccountRateLimitResetCreditResponse.ts"
+        ).read_text(encoding="utf-8")
+        assert (
+            "outcome: ConsumeAccountRateLimitResetCreditOutcome;"
+            in reset_credit_response
+        )
+        token_usage_summary = (
+            out_dir / "v2" / "AccountTokenUsageSummary.ts"
+        ).read_text(encoding="utf-8")
+        assert "lifetimeTokens: bigint | null;" in token_usage_summary
+        token_usage_bucket = (
+            out_dir / "v2" / "AccountTokenUsageDailyBucket.ts"
+        ).read_text(encoding="utf-8")
+        assert "startDate: string;" in token_usage_bucket
+        assert "tokens: bigint;" in token_usage_bucket
+        token_usage_response = (
+            out_dir / "v2" / "GetAccountTokenUsageResponse.ts"
+        ).read_text(encoding="utf-8")
+        assert "summary: AccountTokenUsageSummary;" in token_usage_response
+        assert (
+            "dailyUsageBuckets: AccountTokenUsageDailyBucket[] | null;"
+            in token_usage_response
+        )
+        workspace_message_type = (
+            out_dir / "v2" / "WorkspaceMessageType.ts"
+        ).read_text(encoding="utf-8")
+        assert '"headline" | "announcement" | "unknown"' in workspace_message_type
+        workspace_message = (
+            out_dir / "v2" / "WorkspaceMessage.ts"
+        ).read_text(encoding="utf-8")
+        assert "messageId: string;" in workspace_message
+        assert "createdAt: number | null;" in workspace_message
+        workspace_messages_response = (
+            out_dir / "v2" / "GetWorkspaceMessagesResponse.ts"
+        ).read_text(encoding="utf-8")
+        assert "featureEnabled: boolean;" in workspace_messages_response
+        assert "messages: WorkspaceMessage[];" in workspace_messages_response
         rate_limits_updated = (
             out_dir / "v2" / "AccountRateLimitsUpdatedNotification.ts"
         ).read_text(encoding="utf-8")
@@ -59323,6 +59833,8 @@ def run_typescript_generation_smoke(binary: Path) -> None:
             "Account",
             "AccountLoginCompletedNotification",
             "AccountRateLimitsUpdatedNotification",
+            "AccountTokenUsageDailyBucket",
+            "AccountTokenUsageSummary",
             "AccountUpdatedNotification",
             "AddCreditsNudgeCreditType",
             "AddCreditsNudgeEmailStatus",
@@ -59332,12 +59844,17 @@ def run_typescript_generation_smoke(binary: Path) -> None:
             "ChatgptAuthTokensRefreshParams",
             "ChatgptAuthTokensRefreshReason",
             "ChatgptAuthTokensRefreshResponse",
+            "ConsumeAccountRateLimitResetCreditOutcome",
+            "ConsumeAccountRateLimitResetCreditParams",
+            "ConsumeAccountRateLimitResetCreditResponse",
             "CreditsSnapshot",
             "GetAccountParams",
             "GetAccountRateLimitsResponse",
             "GetAccountResponse",
+            "GetAccountTokenUsageResponse",
             "GetAuthStatusParams",
             "GetAuthStatusResponse",
+            "GetWorkspaceMessagesResponse",
             "LoginAccountParams",
             "LoginAccountResponse",
             "LogoutAccountResponse",
@@ -59346,6 +59863,8 @@ def run_typescript_generation_smoke(binary: Path) -> None:
             "RateLimitWindow",
             "SendAddCreditsNudgeEmailParams",
             "SendAddCreditsNudgeEmailResponse",
+            "WorkspaceMessage",
+            "WorkspaceMessageType",
         ]:
             assert (
                 f'export type {{ {account_export} }} from "./{account_export}";'
@@ -60644,6 +61163,8 @@ def main() -> None:
     print("app-server-account-login-device-code-rpc-e2e: ok")
     run_account_rate_limits_rpc_smoke(binary)
     print("app-server-account-rate-limits-rpc-e2e: ok")
+    run_account_usage_rpc_smoke(binary)
+    print("app-server-account-usage-rpc-e2e: ok")
     run_account_add_credits_nudge_rpc_smoke(binary)
     print("app-server-account-add-credits-nudge-rpc-e2e: ok")
     run_apps_list_rpc_smoke(binary)

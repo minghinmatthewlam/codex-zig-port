@@ -6,6 +6,7 @@ const regex_c = @cImport({
 
 const account_nudge = @import("account_nudge.zig");
 const account_rate_limits = @import("account_rate_limits.zig");
+const account_usage = @import("account_usage.zig");
 const api = @import("api.zig");
 const auth_mod = @import("auth.zig");
 const cli_utils = @import("cli_utils.zig");
@@ -5175,6 +5176,99 @@ const GET_ACCOUNT_RATE_LIMITS_RESPONSE_TS =
     \\export interface GetAccountRateLimitsResponse {
     \\  rateLimits: RateLimitSnapshot;
     \\  rateLimitsByLimitId: Record<string, RateLimitSnapshot> | null;
+    \\}
+    \\
+    ;
+
+const CONSUME_ACCOUNT_RATE_LIMIT_RESET_CREDIT_PARAMS_TS =
+    GENERATED_TS_HEADER ++
+    \\export interface ConsumeAccountRateLimitResetCreditParams {
+    \\  idempotencyKey: string;
+    \\  creditId?: string | null;
+    \\}
+    \\
+    ;
+
+const CONSUME_ACCOUNT_RATE_LIMIT_RESET_CREDIT_OUTCOME_TS =
+    GENERATED_TS_HEADER ++
+    \\export type ConsumeAccountRateLimitResetCreditOutcome =
+    \\  | "reset"
+    \\  | "nothingToReset"
+    \\  | "noCredit"
+    \\  | "alreadyRedeemed";
+    \\
+    ;
+
+const CONSUME_ACCOUNT_RATE_LIMIT_RESET_CREDIT_RESPONSE_TS =
+    GENERATED_TS_HEADER ++
+    \\import type { ConsumeAccountRateLimitResetCreditOutcome } from "./ConsumeAccountRateLimitResetCreditOutcome";
+    \\
+    \\export interface ConsumeAccountRateLimitResetCreditResponse {
+    \\  outcome: ConsumeAccountRateLimitResetCreditOutcome;
+    \\}
+    \\
+    ;
+
+const ACCOUNT_TOKEN_USAGE_DAILY_BUCKET_TS =
+    GENERATED_TS_HEADER ++
+    \\export interface AccountTokenUsageDailyBucket {
+    \\  startDate: string;
+    \\  tokens: bigint;
+    \\}
+    \\
+    ;
+
+const ACCOUNT_TOKEN_USAGE_SUMMARY_TS =
+    GENERATED_TS_HEADER ++
+    \\export interface AccountTokenUsageSummary {
+    \\  lifetimeTokens: bigint | null;
+    \\  peakDailyTokens: bigint | null;
+    \\  longestRunningTurnSec: bigint | null;
+    \\  currentStreakDays: bigint | null;
+    \\  longestStreakDays: bigint | null;
+    \\}
+    \\
+    ;
+
+const GET_ACCOUNT_TOKEN_USAGE_RESPONSE_TS =
+    GENERATED_TS_HEADER ++
+    \\import type { AccountTokenUsageDailyBucket } from "./AccountTokenUsageDailyBucket";
+    \\import type { AccountTokenUsageSummary } from "./AccountTokenUsageSummary";
+    \\
+    \\export interface GetAccountTokenUsageResponse {
+    \\  summary: AccountTokenUsageSummary;
+    \\  dailyUsageBuckets: AccountTokenUsageDailyBucket[] | null;
+    \\}
+    \\
+    ;
+
+const WORKSPACE_MESSAGE_TYPE_TS =
+    GENERATED_TS_HEADER ++
+    \\export type WorkspaceMessageType = "headline" | "announcement" | "unknown";
+    \\
+    ;
+
+const WORKSPACE_MESSAGE_TS =
+    GENERATED_TS_HEADER ++
+    \\import type { WorkspaceMessageType } from "./WorkspaceMessageType";
+    \\
+    \\export interface WorkspaceMessage {
+    \\  messageId: string;
+    \\  messageType: WorkspaceMessageType;
+    \\  messageBody: string;
+    \\  createdAt: number | null;
+    \\  archivedAt: number | null;
+    \\}
+    \\
+    ;
+
+const GET_WORKSPACE_MESSAGES_RESPONSE_TS =
+    GENERATED_TS_HEADER ++
+    \\import type { WorkspaceMessage } from "./WorkspaceMessage";
+    \\
+    \\export interface GetWorkspaceMessagesResponse {
+    \\  featureEnabled: boolean;
+    \\  messages: WorkspaceMessage[];
     \\}
     \\
     ;
@@ -11674,6 +11768,7 @@ const CLIENT_REQUEST_TS =
     \\import type { ConfigMcpServerReloadParams } from "./v2/ConfigMcpServerReloadParams";
     \\import type { ConfigReadParams } from "./v2/ConfigReadParams";
     \\import type { ConfigValueWriteParams } from "./v2/ConfigValueWriteParams";
+    \\import type { ConsumeAccountRateLimitResetCreditParams } from "./v2/ConsumeAccountRateLimitResetCreditParams";
     \\import type { ExperimentalFeatureEnablementSetParams } from "./v2/ExperimentalFeatureEnablementSetParams";
     \\import type { ExperimentalFeatureListParams } from "./v2/ExperimentalFeatureListParams";
     \\import type { ExternalAgentConfigDetectParams } from "./v2/ExternalAgentConfigDetectParams";
@@ -11915,6 +12010,16 @@ const CLIENT_REQUEST_TS =
     \\    }
     \\  | {
     \\      method: "account/rateLimits/read";
+    \\    }
+    \\  | {
+    \\      method: "account/rateLimitResetCredit/consume";
+    \\      params: ConsumeAccountRateLimitResetCreditParams;
+    \\    }
+    \\  | {
+    \\      method: "account/usage/read";
+    \\    }
+    \\  | {
+    \\      method: "account/workspaceMessages/read";
     \\    }
     \\  | {
     \\      method: "account/sendAddCreditsNudgeEmail";
@@ -12282,6 +12387,7 @@ const CLIENT_RESPONSE_TS =
     \\import type { CommandExecWriteResponse } from "./v2/CommandExecWriteResponse";
     \\import type { CollaborationModeListResponse } from "./v2/CollaborationModeListResponse";
     \\import type { ConfigMcpServerReloadResponse } from "./v2/ConfigMcpServerReloadResponse";
+    \\import type { ConsumeAccountRateLimitResetCreditResponse } from "./v2/ConsumeAccountRateLimitResetCreditResponse";
     \\import type { ExperimentalFeatureEnablementSetResponse } from "./v2/ExperimentalFeatureEnablementSetResponse";
     \\import type { ExperimentalFeatureListResponse } from "./v2/ExperimentalFeatureListResponse";
     \\import type { ExternalAgentConfigDetectResponse } from "./v2/ExternalAgentConfigDetectResponse";
@@ -12295,6 +12401,7 @@ const CLIENT_RESPONSE_TS =
     \\import type { FuzzyFileSearchSessionStopResponse } from "./v2/FuzzyFileSearchSessionStopResponse";
     \\import type { FuzzyFileSearchSessionUpdateResponse } from "./v2/FuzzyFileSearchSessionUpdateResponse";
     \\import type { GetAccountResponse } from "./v2/GetAccountResponse";
+    \\import type { GetAccountTokenUsageResponse } from "./v2/GetAccountTokenUsageResponse";
     \\import type { GetAuthStatusResponse } from "./GetAuthStatusResponse";
     \\import type { GetConversationSummaryResponse } from "./GetConversationSummaryResponse";
     \\import type { FsCopyResponse } from "./v2/FsCopyResponse";
@@ -12308,6 +12415,7 @@ const CLIENT_RESPONSE_TS =
     \\import type { FsWriteFileResponse } from "./v2/FsWriteFileResponse";
     \\import type { GitDiffToRemoteResponse } from "./GitDiffToRemoteResponse";
     \\import type { GetAccountRateLimitsResponse } from "./v2/GetAccountRateLimitsResponse";
+    \\import type { GetWorkspaceMessagesResponse } from "./v2/GetWorkspaceMessagesResponse";
     \\import type { HooksListResponse } from "./v2/HooksListResponse";
     \\import type { LoginAccountResponse } from "./v2/LoginAccountResponse";
     \\import type { LogoutAccountResponse } from "./v2/LogoutAccountResponse";
@@ -12568,6 +12676,21 @@ const CLIENT_RESPONSE_TS =
     \\      id: RequestId;
     \\      method: "account/rateLimits/read";
     \\      result: GetAccountRateLimitsResponse;
+    \\    }
+    \\  | {
+    \\      id: RequestId;
+    \\      method: "account/rateLimitResetCredit/consume";
+    \\      result: ConsumeAccountRateLimitResetCreditResponse;
+    \\    }
+    \\  | {
+    \\      id: RequestId;
+    \\      method: "account/usage/read";
+    \\      result: GetAccountTokenUsageResponse;
+    \\    }
+    \\  | {
+    \\      id: RequestId;
+    \\      method: "account/workspaceMessages/read";
+    \\      result: GetWorkspaceMessagesResponse;
     \\    }
     \\  | {
     \\      id: RequestId;
@@ -13517,8 +13640,17 @@ const V2_INDEX_TS =
     \\export type { AppToolsConfig } from "./AppToolsConfig";
     \\export type { AppsConfig } from "./AppsConfig";
     \\export type { AppsDefaultConfig } from "./AppsDefaultConfig";
+    \\export type { AccountTokenUsageDailyBucket } from "./AccountTokenUsageDailyBucket";
+    \\export type { AccountTokenUsageSummary } from "./AccountTokenUsageSummary";
     \\export type { ConnectorMetadata } from "./ConnectorMetadata";
+    \\export type { ConsumeAccountRateLimitResetCreditOutcome } from "./ConsumeAccountRateLimitResetCreditOutcome";
+    \\export type { ConsumeAccountRateLimitResetCreditParams } from "./ConsumeAccountRateLimitResetCreditParams";
+    \\export type { ConsumeAccountRateLimitResetCreditResponse } from "./ConsumeAccountRateLimitResetCreditResponse";
     \\export type { InstalledApp } from "./InstalledApp";
+    \\export type { GetAccountTokenUsageResponse } from "./GetAccountTokenUsageResponse";
+    \\export type { GetWorkspaceMessagesResponse } from "./GetWorkspaceMessagesResponse";
+    \\export type { WorkspaceMessage } from "./WorkspaceMessage";
+    \\export type { WorkspaceMessageType } from "./WorkspaceMessageType";
     \\export type { AnalyticsConfig } from "./AnalyticsConfig";
     \\export type { ApprovalsReviewer } from "./ApprovalsReviewer";
     \\export type { AskForApproval } from "./AskForApproval";
@@ -16074,6 +16206,148 @@ const GET_ACCOUNT_RATE_LIMITS_RESPONSE_JSON_SCHEMA =
     \\    "rateLimitsByLimitId": {
     \\      "type": ["object", "null"],
     \\      "additionalProperties": { "$ref": "RateLimitSnapshot.json" }
+    \\    }
+    \\  },
+    \\  "additionalProperties": false
+    \\}
+    \\
+;
+
+const CONSUME_ACCOUNT_RATE_LIMIT_RESET_CREDIT_PARAMS_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "ConsumeAccountRateLimitResetCreditParams",
+    \\  "type": "object",
+    \\  "required": ["idempotencyKey"],
+    \\  "properties": {
+    \\    "idempotencyKey": { "type": "string" },
+    \\    "creditId": { "type": ["string", "null"] }
+    \\  },
+    \\  "additionalProperties": false
+    \\}
+    \\
+;
+
+const CONSUME_ACCOUNT_RATE_LIMIT_RESET_CREDIT_OUTCOME_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "ConsumeAccountRateLimitResetCreditOutcome",
+    \\  "oneOf": [
+    \\    { "type": "string", "const": "reset" },
+    \\    { "type": "string", "const": "nothingToReset" },
+    \\    { "type": "string", "const": "noCredit" },
+    \\    { "type": "string", "const": "alreadyRedeemed" }
+    \\  ]
+    \\}
+    \\
+;
+
+const CONSUME_ACCOUNT_RATE_LIMIT_RESET_CREDIT_RESPONSE_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "ConsumeAccountRateLimitResetCreditResponse",
+    \\  "type": "object",
+    \\  "required": ["outcome"],
+    \\  "properties": {
+    \\    "outcome": { "$ref": "ConsumeAccountRateLimitResetCreditOutcome.json" }
+    \\  },
+    \\  "additionalProperties": false
+    \\}
+    \\
+;
+
+const ACCOUNT_TOKEN_USAGE_DAILY_BUCKET_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "AccountTokenUsageDailyBucket",
+    \\  "type": "object",
+    \\  "required": ["startDate", "tokens"],
+    \\  "properties": {
+    \\    "startDate": { "type": "string" },
+    \\    "tokens": { "type": "integer", "format": "int64" }
+    \\  },
+    \\  "additionalProperties": false
+    \\}
+    \\
+;
+
+const ACCOUNT_TOKEN_USAGE_SUMMARY_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "AccountTokenUsageSummary",
+    \\  "type": "object",
+    \\  "properties": {
+    \\    "lifetimeTokens": { "type": ["integer", "null"], "format": "int64" },
+    \\    "peakDailyTokens": { "type": ["integer", "null"], "format": "int64" },
+    \\    "longestRunningTurnSec": { "type": ["integer", "null"], "format": "int64" },
+    \\    "currentStreakDays": { "type": ["integer", "null"], "format": "int64" },
+    \\    "longestStreakDays": { "type": ["integer", "null"], "format": "int64" }
+    \\  },
+    \\  "additionalProperties": false
+    \\}
+    \\
+;
+
+const GET_ACCOUNT_TOKEN_USAGE_RESPONSE_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "GetAccountTokenUsageResponse",
+    \\  "type": "object",
+    \\  "required": ["summary"],
+    \\  "properties": {
+    \\    "summary": { "$ref": "AccountTokenUsageSummary.json" },
+    \\    "dailyUsageBuckets": {
+    \\      "type": ["array", "null"],
+    \\      "items": { "$ref": "AccountTokenUsageDailyBucket.json" }
+    \\    }
+    \\  },
+    \\  "additionalProperties": false
+    \\}
+    \\
+;
+
+const WORKSPACE_MESSAGE_TYPE_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "WorkspaceMessageType",
+    \\  "oneOf": [
+    \\    { "type": "string", "const": "headline" },
+    \\    { "type": "string", "const": "announcement" },
+    \\    { "type": "string", "const": "unknown" }
+    \\  ]
+    \\}
+    \\
+;
+
+const WORKSPACE_MESSAGE_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "WorkspaceMessage",
+    \\  "type": "object",
+    \\  "required": ["messageBody", "messageId", "messageType"],
+    \\  "properties": {
+    \\    "messageId": { "type": "string" },
+    \\    "messageType": { "$ref": "WorkspaceMessageType.json" },
+    \\    "messageBody": { "type": "string" },
+    \\    "createdAt": { "type": ["integer", "null"], "format": "int64" },
+    \\    "archivedAt": { "type": ["integer", "null"], "format": "int64" }
+    \\  },
+    \\  "additionalProperties": false
+    \\}
+    \\
+;
+
+const GET_WORKSPACE_MESSAGES_RESPONSE_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "GetWorkspaceMessagesResponse",
+    \\  "type": "object",
+    \\  "required": ["featureEnabled", "messages"],
+    \\  "properties": {
+    \\    "featureEnabled": { "type": "boolean" },
+    \\    "messages": {
+    \\      "type": "array",
+    \\      "items": { "$ref": "WorkspaceMessage.json" }
     \\    }
     \\  },
     \\  "additionalProperties": false
@@ -27253,6 +27527,94 @@ const APP_SERVER_PROTOCOL_SCHEMA_BUNDLE =
     \\      },
     \\      "additionalProperties": false
     \\    },
+    \\    "ConsumeAccountRateLimitResetCreditParams": {
+    \\      "type": "object",
+    \\      "required": ["idempotencyKey"],
+    \\      "properties": {
+    \\        "idempotencyKey": { "type": "string" },
+    \\        "creditId": { "type": ["string", "null"] }
+    \\      },
+    \\      "additionalProperties": false
+    \\    },
+    \\    "ConsumeAccountRateLimitResetCreditOutcome": {
+    \\      "oneOf": [
+    \\        { "type": "string", "enum": ["reset"] },
+    \\        { "type": "string", "enum": ["nothingToReset"] },
+    \\        { "type": "string", "enum": ["noCredit"] },
+    \\        { "type": "string", "enum": ["alreadyRedeemed"] }
+    \\      ]
+    \\    },
+    \\    "ConsumeAccountRateLimitResetCreditResponse": {
+    \\      "type": "object",
+    \\      "required": ["outcome"],
+    \\      "properties": {
+    \\        "outcome": { "$ref": "#/$defs/ConsumeAccountRateLimitResetCreditOutcome" }
+    \\      },
+    \\      "additionalProperties": false
+    \\    },
+    \\    "AccountTokenUsageDailyBucket": {
+    \\      "type": "object",
+    \\      "required": ["startDate", "tokens"],
+    \\      "properties": {
+    \\        "startDate": { "type": "string" },
+    \\        "tokens": { "type": "integer", "format": "int64" }
+    \\      },
+    \\      "additionalProperties": false
+    \\    },
+    \\    "AccountTokenUsageSummary": {
+    \\      "type": "object",
+    \\      "properties": {
+    \\        "lifetimeTokens": { "type": ["integer", "null"], "format": "int64" },
+    \\        "peakDailyTokens": { "type": ["integer", "null"], "format": "int64" },
+    \\        "longestRunningTurnSec": { "type": ["integer", "null"], "format": "int64" },
+    \\        "currentStreakDays": { "type": ["integer", "null"], "format": "int64" },
+    \\        "longestStreakDays": { "type": ["integer", "null"], "format": "int64" }
+    \\      },
+    \\      "additionalProperties": false
+    \\    },
+    \\    "GetAccountTokenUsageResponse": {
+    \\      "type": "object",
+    \\      "required": ["summary"],
+    \\      "properties": {
+    \\        "summary": { "$ref": "#/$defs/AccountTokenUsageSummary" },
+    \\        "dailyUsageBuckets": {
+    \\          "type": ["array", "null"],
+    \\          "items": { "$ref": "#/$defs/AccountTokenUsageDailyBucket" }
+    \\        }
+    \\      },
+    \\      "additionalProperties": false
+    \\    },
+    \\    "WorkspaceMessageType": {
+    \\      "oneOf": [
+    \\        { "type": "string", "enum": ["headline"] },
+    \\        { "type": "string", "enum": ["announcement"] },
+    \\        { "type": "string", "enum": ["unknown"] }
+    \\      ]
+    \\    },
+    \\    "WorkspaceMessage": {
+    \\      "type": "object",
+    \\      "required": ["messageBody", "messageId", "messageType"],
+    \\      "properties": {
+    \\        "messageId": { "type": "string" },
+    \\        "messageType": { "$ref": "#/$defs/WorkspaceMessageType" },
+    \\        "messageBody": { "type": "string" },
+    \\        "createdAt": { "type": ["integer", "null"], "format": "int64" },
+    \\        "archivedAt": { "type": ["integer", "null"], "format": "int64" }
+    \\      },
+    \\      "additionalProperties": false
+    \\    },
+    \\    "GetWorkspaceMessagesResponse": {
+    \\      "type": "object",
+    \\      "required": ["featureEnabled", "messages"],
+    \\      "properties": {
+    \\        "featureEnabled": { "type": "boolean" },
+    \\        "messages": {
+    \\          "type": "array",
+    \\          "items": { "$ref": "#/$defs/WorkspaceMessage" }
+    \\        }
+    \\      },
+    \\      "additionalProperties": false
+    \\    },
     \\    "AccountRateLimitsUpdatedNotification": {
     \\      "type": "object",
     \\      "required": ["rateLimits"],
@@ -30399,6 +30761,15 @@ const APP_SERVER_JSON_SCHEMA_FILES = [_]SchemaFile{
     .{ .name = "CreditsSnapshot.json", .contents = CREDITS_SNAPSHOT_JSON_SCHEMA },
     .{ .name = "RateLimitSnapshot.json", .contents = RATE_LIMIT_SNAPSHOT_JSON_SCHEMA },
     .{ .name = "GetAccountRateLimitsResponse.json", .contents = GET_ACCOUNT_RATE_LIMITS_RESPONSE_JSON_SCHEMA },
+    .{ .name = "ConsumeAccountRateLimitResetCreditParams.json", .contents = CONSUME_ACCOUNT_RATE_LIMIT_RESET_CREDIT_PARAMS_JSON_SCHEMA },
+    .{ .name = "ConsumeAccountRateLimitResetCreditOutcome.json", .contents = CONSUME_ACCOUNT_RATE_LIMIT_RESET_CREDIT_OUTCOME_JSON_SCHEMA },
+    .{ .name = "ConsumeAccountRateLimitResetCreditResponse.json", .contents = CONSUME_ACCOUNT_RATE_LIMIT_RESET_CREDIT_RESPONSE_JSON_SCHEMA },
+    .{ .name = "AccountTokenUsageDailyBucket.json", .contents = ACCOUNT_TOKEN_USAGE_DAILY_BUCKET_JSON_SCHEMA },
+    .{ .name = "AccountTokenUsageSummary.json", .contents = ACCOUNT_TOKEN_USAGE_SUMMARY_JSON_SCHEMA },
+    .{ .name = "GetAccountTokenUsageResponse.json", .contents = GET_ACCOUNT_TOKEN_USAGE_RESPONSE_JSON_SCHEMA },
+    .{ .name = "WorkspaceMessageType.json", .contents = WORKSPACE_MESSAGE_TYPE_JSON_SCHEMA },
+    .{ .name = "WorkspaceMessage.json", .contents = WORKSPACE_MESSAGE_JSON_SCHEMA },
+    .{ .name = "GetWorkspaceMessagesResponse.json", .contents = GET_WORKSPACE_MESSAGES_RESPONSE_JSON_SCHEMA },
     .{ .name = "AccountRateLimitsUpdatedNotification.json", .contents = ACCOUNT_RATE_LIMITS_UPDATED_NOTIFICATION_JSON_SCHEMA },
     .{ .name = "AppsListParams.json", .contents = APPS_LIST_PARAMS_JSON_SCHEMA },
     .{ .name = "AppsListResponse.json", .contents = APPS_LIST_RESPONSE_JSON_SCHEMA },
@@ -30830,6 +31201,8 @@ const APP_SERVER_JSON_SCHEMA_VERSIONED_ALIASES = [_][]const u8{
     "v1/InitializeResponse.json",
     "v2/AccountLoginCompletedNotification.json",
     "v2/AccountRateLimitsUpdatedNotification.json",
+    "v2/AccountTokenUsageDailyBucket.json",
+    "v2/AccountTokenUsageSummary.json",
     "v2/AccountUpdatedNotification.json",
     "v2/AgentMessageDeltaNotification.json",
     "v2/AppListUpdatedNotification.json",
@@ -30853,6 +31226,9 @@ const APP_SERVER_JSON_SCHEMA_VERSIONED_ALIASES = [_][]const u8{
     "v2/CommandExecutionOutputDeltaNotification.json",
     "v2/ConfigWarningNotification.json",
     "v2/ContextCompactedNotification.json",
+    "v2/ConsumeAccountRateLimitResetCreditOutcome.json",
+    "v2/ConsumeAccountRateLimitResetCreditParams.json",
+    "v2/ConsumeAccountRateLimitResetCreditResponse.json",
     "v2/DeprecationNoticeNotification.json",
     "v2/ErrorNotification.json",
     "v2/EnvironmentAddParams.json",
@@ -30899,6 +31275,8 @@ const APP_SERVER_JSON_SCHEMA_VERSIONED_ALIASES = [_][]const u8{
     "v2/GetAccountParams.json",
     "v2/GetAccountRateLimitsResponse.json",
     "v2/GetAccountResponse.json",
+    "v2/GetAccountTokenUsageResponse.json",
+    "v2/GetWorkspaceMessagesResponse.json",
     "v2/GuardianWarningNotification.json",
     "v2/HookCompletedNotification.json",
     "v2/HookStartedNotification.json",
@@ -31042,6 +31420,8 @@ const APP_SERVER_JSON_SCHEMA_VERSIONED_ALIASES = [_][]const u8{
     "v2/WindowsSandboxSetupStartParams.json",
     "v2/WindowsSandboxSetupStartResponse.json",
     "v2/WindowsWorldWritableWarningNotification.json",
+    "v2/WorkspaceMessage.json",
+    "v2/WorkspaceMessageType.json",
 };
 
 const APP_SERVER_TS_FILES = [_]SchemaFile{
@@ -31156,6 +31536,15 @@ const APP_SERVER_TS_FILES = [_]SchemaFile{
     .{ .name = "v2/CreditsSnapshot.ts", .contents = CREDITS_SNAPSHOT_TS },
     .{ .name = "v2/RateLimitSnapshot.ts", .contents = RATE_LIMIT_SNAPSHOT_TS },
     .{ .name = "v2/GetAccountRateLimitsResponse.ts", .contents = GET_ACCOUNT_RATE_LIMITS_RESPONSE_TS },
+    .{ .name = "v2/ConsumeAccountRateLimitResetCreditParams.ts", .contents = CONSUME_ACCOUNT_RATE_LIMIT_RESET_CREDIT_PARAMS_TS },
+    .{ .name = "v2/ConsumeAccountRateLimitResetCreditOutcome.ts", .contents = CONSUME_ACCOUNT_RATE_LIMIT_RESET_CREDIT_OUTCOME_TS },
+    .{ .name = "v2/ConsumeAccountRateLimitResetCreditResponse.ts", .contents = CONSUME_ACCOUNT_RATE_LIMIT_RESET_CREDIT_RESPONSE_TS },
+    .{ .name = "v2/AccountTokenUsageDailyBucket.ts", .contents = ACCOUNT_TOKEN_USAGE_DAILY_BUCKET_TS },
+    .{ .name = "v2/AccountTokenUsageSummary.ts", .contents = ACCOUNT_TOKEN_USAGE_SUMMARY_TS },
+    .{ .name = "v2/GetAccountTokenUsageResponse.ts", .contents = GET_ACCOUNT_TOKEN_USAGE_RESPONSE_TS },
+    .{ .name = "v2/WorkspaceMessageType.ts", .contents = WORKSPACE_MESSAGE_TYPE_TS },
+    .{ .name = "v2/WorkspaceMessage.ts", .contents = WORKSPACE_MESSAGE_TS },
+    .{ .name = "v2/GetWorkspaceMessagesResponse.ts", .contents = GET_WORKSPACE_MESSAGES_RESPONSE_TS },
     .{ .name = "v2/AccountRateLimitsUpdatedNotification.ts", .contents = ACCOUNT_RATE_LIMITS_UPDATED_NOTIFICATION_TS },
     .{ .name = "v2/AppsListParams.ts", .contents = APPS_LIST_PARAMS_TS },
     .{ .name = "v2/AppsReadParams.ts", .contents = APPS_READ_PARAMS_TS },
@@ -69076,6 +69465,9 @@ fn isAccountMethod(method: []const u8) bool {
         std.mem.eql(u8, method, "account/login/cancel") or
         std.mem.eql(u8, method, "account/login/start") or
         std.mem.eql(u8, method, "account/rateLimits/read") or
+        std.mem.eql(u8, method, "account/rateLimitResetCredit/consume") or
+        std.mem.eql(u8, method, "account/usage/read") or
+        std.mem.eql(u8, method, "account/workspaceMessages/read") or
         std.mem.eql(u8, method, "account/sendAddCreditsNudgeEmail") or
         std.mem.eql(u8, method, "account/logout");
 }
@@ -69101,6 +69493,15 @@ fn handleAccountMethod(
     }
     if (std.mem.eql(u8, method, "account/rateLimits/read")) {
         return handleAccountRateLimitsRead(allocator, id_value, params_value);
+    }
+    if (std.mem.eql(u8, method, "account/rateLimitResetCredit/consume")) {
+        return handleConsumeAccountRateLimitResetCredit(allocator, id_value, params_value);
+    }
+    if (std.mem.eql(u8, method, "account/usage/read")) {
+        return handleAccountUsageRead(allocator, id_value, params_value);
+    }
+    if (std.mem.eql(u8, method, "account/workspaceMessages/read")) {
+        return handleAccountWorkspaceMessagesRead(allocator, id_value, params_value);
     }
     if (std.mem.eql(u8, method, "account/sendAddCreditsNudgeEmail")) {
         return handleSendAddCreditsNudgeEmail(allocator, id_value, params_value);
@@ -69870,6 +70271,188 @@ fn handleAccountRateLimitsRead(allocator: std.mem.Allocator, id_value: std.json.
     };
     defer allocator.free(result);
     return renderJsonRpcResult(allocator, id_value, result);
+}
+
+fn handleAccountUsageRead(allocator: std.mem.Allocator, id_value: std.json.Value, params_value: ?std.json.Value) ![]const u8 {
+    if (try validateUnitOrObjectParams(allocator, id_value, params_value)) |response| return response;
+
+    var cfg = config.loadWithOptions(allocator, .{}) catch |err| {
+        return renderJsonRpcErrorForFailure(allocator, id_value, "account/usage/read failed to load config", err);
+    };
+    defer cfg.deinit(allocator);
+
+    var credentials = auth_mod.loadCliAuthForConfig(allocator, &cfg) catch |err| switch (err) {
+        error.NoUsableAuth => return renderJsonRpcError(allocator, id_value, -32600, "codex account authentication required to read token usage"),
+        else => return renderJsonRpcErrorForFailure(allocator, id_value, "account/usage/read failed to load auth", err),
+    };
+    defer credentials.deinit(allocator);
+
+    switch (credentials.mode) {
+        .chatgpt, .chatgpt_auth_tokens, .agent_identity => {},
+        .api_key, .local_oss, .provider_no_auth => return renderJsonRpcError(allocator, id_value, -32600, "chatgpt authentication required to read token usage"),
+    }
+
+    const result = account_usage.fetchTokenUsageJson(allocator, cfg.chatgpt_base_url, credentials) catch |err| {
+        return renderJsonRpcErrorForFailure(allocator, id_value, "failed to fetch token usage profile", err);
+    };
+    defer allocator.free(result);
+    return renderJsonRpcResult(allocator, id_value, result);
+}
+
+fn handleAccountWorkspaceMessagesRead(allocator: std.mem.Allocator, id_value: std.json.Value, params_value: ?std.json.Value) ![]const u8 {
+    if (try validateUnitOrObjectParams(allocator, id_value, params_value)) |response| return response;
+
+    var cfg = config.loadWithOptions(allocator, .{}) catch |err| {
+        return renderJsonRpcErrorForFailure(allocator, id_value, "account/workspaceMessages/read failed to load config", err);
+    };
+    defer cfg.deinit(allocator);
+
+    var credentials = auth_mod.loadCliAuthForConfig(allocator, &cfg) catch |err| switch (err) {
+        error.NoUsableAuth => return renderJsonRpcError(allocator, id_value, -32600, "codex account authentication required to read workspace messages"),
+        else => return renderJsonRpcErrorForFailure(allocator, id_value, "account/workspaceMessages/read failed to load auth", err),
+    };
+    defer credentials.deinit(allocator);
+
+    switch (credentials.mode) {
+        .chatgpt, .chatgpt_auth_tokens, .agent_identity => {},
+        .api_key, .local_oss, .provider_no_auth => return renderJsonRpcError(allocator, id_value, -32600, "chatgpt authentication required to read workspace messages"),
+    }
+
+    const result = account_usage.fetchWorkspaceMessagesJson(allocator, cfg.chatgpt_base_url, credentials) catch |err| {
+        return renderJsonRpcErrorForFailure(allocator, id_value, "failed to fetch workspace messages", err);
+    };
+    defer allocator.free(result);
+    return renderJsonRpcResult(allocator, id_value, result);
+}
+
+fn handleConsumeAccountRateLimitResetCredit(allocator: std.mem.Allocator, id_value: std.json.Value, params_value: ?std.json.Value) ![]const u8 {
+    const parsed_params = try parseConsumeAccountRateLimitResetCreditParams(allocator, id_value, params_value);
+    if (parsed_params.err) |response| return response;
+    const params = parsed_params.value.?;
+
+    var cfg = config.loadWithOptions(allocator, .{}) catch |err| {
+        return renderJsonRpcErrorForFailure(allocator, id_value, "account/rateLimitResetCredit/consume failed to load config", err);
+    };
+    defer cfg.deinit(allocator);
+
+    var credentials = auth_mod.loadCliAuthForConfig(allocator, &cfg) catch |err| switch (err) {
+        error.NoUsableAuth => return renderJsonRpcError(allocator, id_value, -32600, "codex account authentication required for rate limit reset credits"),
+        else => return renderJsonRpcErrorForFailure(allocator, id_value, "account/rateLimitResetCredit/consume failed to load auth", err),
+    };
+    defer credentials.deinit(allocator);
+
+    switch (credentials.mode) {
+        .chatgpt, .chatgpt_auth_tokens, .agent_identity => {},
+        .api_key, .local_oss, .provider_no_auth => return renderJsonRpcError(allocator, id_value, -32600, "chatgpt authentication required for rate limit reset credits"),
+    }
+
+    const result = account_usage.consumeRateLimitResetCreditJson(
+        allocator,
+        cfg.chatgpt_base_url,
+        credentials,
+        params.idempotency_key,
+        params.credit_id,
+    ) catch |err| {
+        return renderJsonRpcErrorForFailure(allocator, id_value, "failed to consume rate limit reset", err);
+    };
+    defer allocator.free(result);
+    return renderJsonRpcResult(allocator, id_value, result);
+}
+
+const ConsumeAccountRateLimitResetCreditParams = struct {
+    idempotency_key: []const u8,
+    credit_id: ?[]const u8,
+};
+
+const ParsedConsumeAccountRateLimitResetCreditParams = struct {
+    value: ?ConsumeAccountRateLimitResetCreditParams = null,
+    err: ?[]const u8 = null,
+};
+
+fn validateUnitOrObjectParams(
+    allocator: std.mem.Allocator,
+    id_value: std.json.Value,
+    params_value: ?std.json.Value,
+) !?[]const u8 {
+    const params = params_value orelse return null;
+    switch (params) {
+        .null, .object => return null,
+        else => {
+            const message = try rustInvalidJsonTypeMessage(allocator, params, "unit");
+            defer allocator.free(message);
+            return try renderJsonRpcError(allocator, id_value, -32600, message);
+        },
+    }
+}
+
+fn parseConsumeAccountRateLimitResetCreditParams(
+    allocator: std.mem.Allocator,
+    id_value: std.json.Value,
+    params_value: ?std.json.Value,
+) !ParsedConsumeAccountRateLimitResetCreditParams {
+    const params = params_value orelse return .{
+        .err = try renderJsonRpcError(allocator, id_value, -32600, "Invalid request: missing field `params`"),
+    };
+    switch (params) {
+        .null => return .{
+            .err = try renderJsonRpcError(allocator, id_value, -32600, "Invalid request: missing field `params`"),
+        },
+        .object => |object| {
+            const idempotency_key_value = object.get("idempotencyKey") orelse return .{
+                .err = try renderJsonRpcError(allocator, id_value, -32600, "Invalid request: missing field `idempotencyKey`"),
+            };
+            if (idempotency_key_value != .string) {
+                const message = try rustInvalidJsonTypeMessage(allocator, idempotency_key_value, "a string");
+                defer allocator.free(message);
+                return .{ .err = try renderJsonRpcError(allocator, id_value, -32600, message) };
+            }
+            const idempotency_key = idempotency_key_value.string;
+            if (idempotency_key.len == 0) return .{
+                .err = try renderJsonRpcError(allocator, id_value, -32600, "idempotencyKey must not be empty"),
+            };
+
+            var credit_id: ?[]const u8 = null;
+            if (object.get("creditId")) |credit_id_value| {
+                switch (credit_id_value) {
+                    .null => {},
+                    .string => |value| {
+                        if (value.len == 0) return .{
+                            .err = try renderJsonRpcError(allocator, id_value, -32600, "creditId must not be empty"),
+                        };
+                        credit_id = value;
+                    },
+                    else => {
+                        const message = try rustInvalidJsonTypeMessage(allocator, credit_id_value, "a string");
+                        defer allocator.free(message);
+                        return .{ .err = try renderJsonRpcError(allocator, id_value, -32600, message) };
+                    },
+                }
+            }
+
+            return .{ .value = .{
+                .idempotency_key = idempotency_key,
+                .credit_id = credit_id,
+            } };
+        },
+        else => {
+            const message = try rustInvalidJsonTypeMessage(allocator, params, "struct ConsumeAccountRateLimitResetCreditParams");
+            defer allocator.free(message);
+            return .{ .err = try renderJsonRpcError(allocator, id_value, -32600, message) };
+        },
+    }
+}
+
+fn rustInvalidJsonTypeMessage(allocator: std.mem.Allocator, value: std.json.Value, expected: []const u8) ![]const u8 {
+    return switch (value) {
+        .string => |text| std.fmt.allocPrint(allocator, "Invalid request: invalid type: string \"{s}\", expected {s}", .{ text, expected }),
+        .integer => |number| std.fmt.allocPrint(allocator, "Invalid request: invalid type: integer `{d}`, expected {s}", .{ number, expected }),
+        .float => |number| std.fmt.allocPrint(allocator, "Invalid request: invalid type: floating point `{d}`, expected {s}", .{ number, expected }),
+        .bool => |boolean| std.fmt.allocPrint(allocator, "Invalid request: invalid type: boolean `{}`, expected {s}", .{ boolean, expected }),
+        .null => std.fmt.allocPrint(allocator, "Invalid request: invalid type: null, expected {s}", .{expected}),
+        .array => std.fmt.allocPrint(allocator, "Invalid request: invalid type: sequence, expected {s}", .{expected}),
+        .object => std.fmt.allocPrint(allocator, "Invalid request: invalid type: map, expected {s}", .{expected}),
+        else => std.fmt.allocPrint(allocator, "Invalid request: invalid type, expected {s}", .{expected}),
+    };
 }
 
 fn handleSendAddCreditsNudgeEmail(allocator: std.mem.Allocator, id_value: std.json.Value, params_value: ?std.json.Value) ![]const u8 {
