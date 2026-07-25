@@ -17,6 +17,9 @@ const CODEX_PATH_DIRNAME = "codex-path";
 const CODEX_RESOURCES_DIRNAME = "codex-resources";
 const STANDALONE_PACKAGES_DIRNAME = "standalone";
 const RELEASES_DIRNAME = "releases";
+const LOCALE_ENV_VARS = [_][]const u8{ "LC_ALL", "LC_CTYPE", "LANG" };
+const EDITOR_ENV_VARS = [_][]const u8{ "VISUAL", "EDITOR" };
+const PAGER_ENV_VARS = [_][]const u8{ "PAGER", "GIT_PAGER", "GH_PAGER", "LESS" };
 
 pub const Options = struct {
     profile: ?[]const u8 = null,
@@ -480,9 +483,11 @@ fn buildReport(allocator: std.mem.Allocator, args: ParsedArgs, codex_version: []
 
     const cfg_load = try loadConfigForDoctor(allocator, args);
 
-    try checks.append(allocator, try installationCheck(allocator, codex_version, !args.summary));
+    try checks.append(allocator, try systemCheck(allocator));
     try checks.append(allocator, try runtimeCheck(allocator, codex_version));
+    try checks.append(allocator, try installationCheck(allocator, codex_version, !args.summary));
     try checks.append(allocator, try searchCheck(allocator));
+    try checks.append(allocator, try gitCheck(allocator, cfg_load.cwd));
     try checks.append(allocator, try configCheck(allocator, cfg_load, args));
     try checks.append(allocator, try authCheck(allocator, cfg_load));
     try checks.append(allocator, try mcpCheck(allocator, cfg_load));
@@ -600,6 +605,121 @@ fn runtimeCheck(allocator: std.mem.Allocator, codex_version: []const u8) !Check 
     } else |_| {
         try check.addDetail(allocator, "current executable", "unknown");
     }
+    return check;
+}
+
+fn systemCheck(allocator: std.mem.Allocator) !Check {
+    const os_version = try detectOsVersion(allocator);
+    defer allocator.free(os_version);
+    const os_type = systemOsType();
+    const os = try systemOsDisplay(allocator, os_type, os_version);
+    defer allocator.free(os);
+    const os_language = try detectOsLanguage(allocator);
+    defer if (os_language) |value| allocator.free(value);
+
+    const summary = if (os_language) |language|
+        try std.fmt.allocPrint(allocator, "OS language {s}", .{language})
+    else
+        try allocator.dupe(u8, "OS language unavailable");
+    var check = Check.init("system.environment", "system", .ok, summary);
+    try check.addDetail(allocator, "os", os);
+    try check.addDetail(allocator, "os type", os_type);
+    try check.addDetail(allocator, "os version", os_version);
+    try check.addDetail(allocator, "os language", os_language orelse "unavailable");
+
+    inline for (LOCALE_ENV_VARS) |name| {
+        if (try env.getOwnedDynamic(allocator, name)) |value| {
+            defer allocator.free(value);
+            try check.addDetail(allocator, name, value);
+        }
+    }
+    inline for (EDITOR_ENV_VARS) |name| {
+        const value = try env.getOwnedDynamic(allocator, name);
+        defer if (value) |owned| allocator.free(owned);
+        try check.addDetail(allocator, name, value orelse "not set");
+    }
+    inline for (PAGER_ENV_VARS) |name| {
+        if (try env.getOwnedDynamic(allocator, name)) |value| {
+            defer allocator.free(value);
+            try check.addDetail(allocator, name, value);
+        }
+    }
+    return check;
+}
+
+fn gitCheck(allocator: std.mem.Allocator, cwd: []const u8) !Check {
+    const selected_git = resolveCommandOnPath(allocator, gitCommand()) catch null;
+    defer if (selected_git) |value| allocator.free(value);
+
+    const git_candidates = try commandPathEntriesUnique(allocator, gitCommand());
+    defer freeStringSlice(allocator, git_candidates);
+
+    const repo_root = try findGitRepoRoot(allocator, cwd);
+    defer if (repo_root) |value| allocator.free(value);
+
+    const git_version = if (selected_git) |git_path| try gitOutputText(allocator, git_path, cwd, &.{"--version"}) else null;
+    defer if (git_version) |value| allocator.free(value);
+    const git_exec_path = if (selected_git) |git_path| try gitOutputText(allocator, git_path, cwd, &.{"--exec-path"}) else null;
+    defer if (git_exec_path) |value| allocator.free(value);
+    const git_build_options = if (selected_git) |git_path| try gitOutputText(allocator, git_path, cwd, &.{ "version", "--build-options" }) else null;
+    defer if (git_build_options) |value| allocator.free(value);
+    const branch_raw = if (selected_git) |git_path| try gitOutputText(allocator, git_path, cwd, &.{ "rev-parse", "--abbrev-ref", "HEAD" }) else null;
+    defer if (branch_raw) |value| allocator.free(value);
+    const fsmonitor = if (selected_git) |git_path| try gitOutputText(allocator, git_path, cwd, &.{ "config", "--get", "core.fsmonitor" }) else null;
+    defer if (fsmonitor) |value| allocator.free(value);
+
+    const summary = if (git_version) |value|
+        try allocator.dupe(u8, value)
+    else if (selected_git != null)
+        try allocator.dupe(u8, "git executable found; version unavailable")
+    else
+        try allocator.dupe(u8, "git executable not found");
+    var check = Check.init("git.environment", "git", .ok, summary);
+
+    try check.addDetail(allocator, "selected git", selected_git orelse "not found");
+    try check.addDetailFmt(allocator, "PATH git entries", "{d}", .{git_candidates.len});
+    for (git_candidates, 0..) |candidate, index| {
+        try check.addDetailFmt(allocator, try std.fmt.allocPrint(allocator, "PATH git #{d}", .{index + 1}), "{s}", .{candidate});
+    }
+    if (git_version) |value| try check.addDetail(allocator, "git version", value);
+    if (git_exec_path) |value| try check.addDetail(allocator, "git exec path", value);
+    if (git_build_options) |value| try check.addDetail(allocator, "git build options", value);
+    if (repo_root) |root| {
+        try check.addDetail(allocator, "repo detected", "true");
+        try check.addDetail(allocator, "repo root", root);
+        const git_entry = try gitEntrySummary(allocator, root);
+        defer allocator.free(git_entry);
+        try check.addDetail(allocator, ".git entry", git_entry);
+    } else {
+        try check.addDetail(allocator, "repo detected", "false");
+    }
+    if (normalizedGitBranch(branch_raw)) |branch| try check.addDetail(allocator, "git branch", branch);
+    if (fsmonitor) |value| {
+        if (value.len > 0) try check.addDetail(allocator, "core.fsmonitor", value);
+    }
+
+    if (selected_git != null and git_version == null) {
+        check.status = .warning;
+        check.summary = "Git executable found but could not be run";
+        try check.addIssue(allocator, .{
+            .severity = .warning,
+            .cause = "Git executable was found on PATH but did not return a version",
+            .expected = "git --version succeeds",
+            .remedy = "Fix the selected Git executable or PATH so Codex can inspect Git metadata.",
+            .fields = &.{ "git version", "selected git" },
+        });
+    } else if (selected_git == null and repo_root != null) {
+        check.status = .warning;
+        check.summary = "Git repository detected but git executable was not found";
+        try check.addIssue(allocator, .{
+            .severity = .warning,
+            .cause = "Git repository detected but git executable was not found",
+            .expected = "git available on PATH",
+            .remedy = "Install Git or fix PATH so Codex can inspect repository metadata.",
+            .fields = &.{"selected git"},
+        });
+    }
+
     return check;
 }
 
@@ -2218,7 +2338,7 @@ fn renderHumanReport(allocator: std.mem.Allocator, report: Report, args: ParsedA
         title: []const u8,
         keys: []const []const u8,
     }{
-        .{ .title = "Environment", .keys = &.{ "runtime", "install", "search", "terminal", "state" } },
+        .{ .title = "Environment", .keys = &.{ "system", "runtime", "install", "search", "git", "terminal", "state" } },
         .{ .title = "Configuration", .keys = &.{ "config", "auth", "mcp", "sandbox" } },
         .{ .title = "Updates", .keys = &.{"updates"} },
         .{ .title = "Connectivity", .keys = &.{ "network", "websocket", "reachability" } },
@@ -2546,14 +2666,27 @@ fn inspectPath(allocator: std.mem.Allocator, path: []const u8) !PathInspection {
 }
 
 fn runCommandProbe(allocator: std.mem.Allocator, argv: []const []const u8) !CommandProbe {
+    return runCommandProbeWithOptions(allocator, argv, null, false);
+}
+
+fn runCommandProbeWithOptions(
+    allocator: std.mem.Allocator,
+    argv: []const []const u8,
+    cwd: ?[]const u8,
+    git_optional_locks: bool,
+) !CommandProbe {
     var io_instance: std.Io.Threaded = .init(allocator, .{});
     defer io_instance.deinit();
 
     var child_env = try currentProcessEnvironment(allocator);
     defer child_env.deinit();
+    if (git_optional_locks) try child_env.put("GIT_OPTIONAL_LOCKS", "0");
+
+    const run_cwd: std.process.Child.Cwd = if (cwd) |path| .{ .path = path } else .inherit;
 
     const result = try std.process.run(allocator, io_instance.io(), .{
         .argv = argv,
+        .cwd = run_cwd,
         .environ_map = &child_env,
         .expand_arg0 = .expand,
         .stdout_limit = .limited(16 * 1024),
@@ -2571,6 +2704,160 @@ fn runCommandProbe(allocator: std.mem.Allocator, argv: []const []const u8) !Comm
         .stderr = result.stderr,
         .term = result.term,
     };
+}
+
+fn detectOsVersion(allocator: std.mem.Allocator) ![]const u8 {
+    if (builtin.os.tag == .macos) {
+        if (try commandOutputFirstLine(allocator, &.{ "/usr/bin/sw_vers", "-productVersion" })) |version| {
+            return version;
+        }
+    }
+    return allocator.dupe(u8, "unknown");
+}
+
+fn systemOsType() []const u8 {
+    return switch (builtin.os.tag) {
+        .macos => "Mac OS",
+        .linux => "Linux",
+        .windows => "Windows",
+        else => @tagName(builtin.os.tag),
+    };
+}
+
+fn systemOsDisplay(allocator: std.mem.Allocator, os_type: []const u8, os_version: []const u8) ![]const u8 {
+    if (std.mem.eql(u8, os_version, "unknown")) return allocator.dupe(u8, os_type);
+    return std.fmt.allocPrint(allocator, "{s} {s} [{d}-bit]", .{ os_type, os_version, @bitSizeOf(usize) });
+}
+
+fn detectOsLanguage(allocator: std.mem.Allocator) !?[]const u8 {
+    if (builtin.os.tag == .macos) {
+        if (try commandOutputFirstLine(allocator, &.{ "/usr/bin/defaults", "read", "-g", "AppleLocale" })) |locale| {
+            defer allocator.free(locale);
+            const normalized = try normalizedLocaleOwned(allocator, locale);
+            return normalized;
+        }
+    }
+
+    inline for (LOCALE_ENV_VARS) |name| {
+        if (try env.getOwnedDynamic(allocator, name)) |locale| {
+            defer allocator.free(locale);
+            const normalized = try normalizedLocaleOwned(allocator, locale);
+            return normalized;
+        }
+    }
+    return null;
+}
+
+fn commandOutputFirstLine(allocator: std.mem.Allocator, argv: []const []const u8) !?[]const u8 {
+    var probe = runCommandProbe(allocator, argv) catch return null;
+    defer probe.deinit(allocator);
+    if (!probe.success()) return null;
+    const line = firstNonEmptyLine(probe.stdout) orelse return null;
+    const owned = try allocator.dupe(u8, line);
+    return owned;
+}
+
+fn normalizedLocaleOwned(allocator: std.mem.Allocator, locale: []const u8) ![]const u8 {
+    const normalized = try allocator.dupe(u8, locale);
+    for (normalized) |*byte| {
+        if (byte.* == '_') byte.* = '-';
+    }
+    return normalized;
+}
+
+fn gitCommand() []const u8 {
+    return if (builtin.os.tag == .windows) "git.exe" else "git";
+}
+
+fn gitOutputText(
+    allocator: std.mem.Allocator,
+    git_path: []const u8,
+    cwd: []const u8,
+    args: []const []const u8,
+) !?[]const u8 {
+    var argv = try std.ArrayList([]const u8).initCapacity(allocator, args.len + 1);
+    defer argv.deinit(allocator);
+    try argv.append(allocator, git_path);
+    try argv.appendSlice(allocator, args);
+
+    var probe = runCommandProbeWithOptions(allocator, argv.items, cwd, true) catch return null;
+    defer probe.deinit(allocator);
+    if (!probe.success()) return null;
+    return commandOutputText(allocator, probe.stdout);
+}
+
+fn commandOutputText(allocator: std.mem.Allocator, bytes: []const u8) !?[]const u8 {
+    var out = std.ArrayList(u8).empty;
+    errdefer out.deinit(allocator);
+
+    var lines = std.mem.splitScalar(u8, bytes, '\n');
+    while (lines.next()) |line_raw| {
+        const line = std.mem.trim(u8, line_raw, " \t\r");
+        if (line.len == 0) continue;
+        if (out.items.len > 0) try out.appendSlice(allocator, "; ");
+        try out.appendSlice(allocator, line);
+    }
+    if (out.items.len == 0) {
+        out.deinit(allocator);
+        return null;
+    }
+    const owned = try out.toOwnedSlice(allocator);
+    return owned;
+}
+
+fn normalizedGitBranch(branch: ?[]const u8) ?[]const u8 {
+    const value = branch orelse return null;
+    if (value.len == 0) return null;
+    if (std.mem.eql(u8, value, "HEAD")) return "detached HEAD";
+    return value;
+}
+
+fn gitEntrySummary(allocator: std.mem.Allocator, repo_root: []const u8) ![]const u8 {
+    const dot_git = try std.fs.path.join(allocator, &.{ repo_root, ".git" });
+    defer allocator.free(dot_git);
+    const io = std.Io.Threaded.global_single_threaded.io();
+    const metadata = std.Io.Dir.cwd().statFile(io, dot_git, .{}) catch |err| switch (err) {
+        error.FileNotFound => return allocator.dupe(u8, "missing"),
+        else => return std.fmt.allocPrint(allocator, "unreadable ({s})", .{@errorName(err)}),
+    };
+    if (metadata.kind == .directory) return allocator.dupe(u8, "directory");
+    if (metadata.kind != .file) return allocator.dupe(u8, "other");
+
+    const contents = std.Io.Dir.cwd().readFileAlloc(io, dot_git, allocator, .limited(4096)) catch return allocator.dupe(u8, "file");
+    defer allocator.free(contents);
+    const trimmed = std.mem.trim(u8, contents, " \t\r\n");
+    if (std.mem.startsWith(u8, trimmed, "gitdir:")) {
+        const target = std.mem.trim(u8, trimmed["gitdir:".len..], " \t\r\n");
+        return std.fmt.allocPrint(allocator, "file -> {s}", .{target});
+    }
+    return allocator.dupe(u8, "file");
+}
+
+fn findGitRepoRoot(allocator: std.mem.Allocator, cwd: []const u8) !?[]const u8 {
+    const io = std.Io.Threaded.global_single_threaded.io();
+    const initial = if (std.fs.path.isAbsolute(cwd))
+        try allocator.dupe(u8, cwd)
+    else
+        try std.Io.Dir.cwd().realPathFileAlloc(io, cwd, allocator);
+    var current = initial;
+    errdefer allocator.free(current);
+
+    while (true) {
+        const dot_git = try std.fs.path.join(allocator, &.{ current, ".git" });
+        defer allocator.free(dot_git);
+        if (std.Io.Dir.cwd().statFile(io, dot_git, .{})) |_| {
+            return current;
+        } else |_| {}
+
+        const parent = std.fs.path.dirname(current) orelse break;
+        if (std.mem.eql(u8, parent, current)) break;
+        const next = try allocator.dupe(u8, parent);
+        allocator.free(current);
+        current = next;
+    }
+
+    allocator.free(current);
+    return null;
 }
 
 fn currentProcessEnvironment(allocator: std.mem.Allocator) !std.process.Environ.Map {
@@ -2884,9 +3171,32 @@ fn commandPathEntries(allocator: std.mem.Allocator, command: []const u8) ![][]co
     return entries.toOwnedSlice(allocator);
 }
 
+fn commandPathEntriesUnique(allocator: std.mem.Allocator, command: []const u8) ![][]const u8 {
+    const entries = try commandPathEntries(allocator, command);
+    defer freeStringSlice(allocator, entries);
+
+    var unique = std.ArrayList([]const u8).empty;
+    errdefer {
+        for (unique.items) |entry| allocator.free(entry);
+        unique.deinit(allocator);
+    }
+    for (entries) |entry| {
+        if (stringSliceContains(unique.items, entry)) continue;
+        try unique.append(allocator, try allocator.dupe(u8, entry));
+    }
+    return unique.toOwnedSlice(allocator);
+}
+
 fn freeStringSlice(allocator: std.mem.Allocator, values: []const []const u8) void {
     for (values) |value| allocator.free(value);
     allocator.free(values);
+}
+
+fn stringSliceContains(values: []const []const u8, needle: []const u8) bool {
+    for (values) |value| {
+        if (std.mem.eql(u8, value, needle)) return true;
+    }
+    return false;
 }
 
 fn firstNonEmptyLine(text: []const u8) ?[]const u8 {
@@ -3049,9 +3359,13 @@ test "doctor JSON report uses Rust-shaped top-level fields and checks map" {
     defer arena.deinit();
     const scratch = arena.allocator();
 
+    var system = Check.init("system.environment", "system", .ok, "OS language en-US");
+    try system.addDetail(scratch, "os language", "en-US");
     var check = Check.init("runtime.provenance", "runtime", .ok, "running Zig port");
     try check.addDetail(scratch, "platform", "macos-aarch64");
-    const checks = try scratch.dupe(Check, &.{check});
+    var git = Check.init("git.environment", "git", .ok, "git version 2.50.1");
+    try git.addDetail(scratch, "git version", "git version 2.50.1");
+    const checks = try scratch.dupe(Check, &.{ system, check, git });
     const report = Report{
         .generated_at = "1s since unix epoch",
         .overall_status = .ok,
@@ -3064,7 +3378,9 @@ test "doctor JSON report uses Rust-shaped top-level fields and checks map" {
     const root = parsed.value.object;
     try std.testing.expectEqual(@as(i64, 1), root.get("schemaVersion").?.integer);
     try std.testing.expectEqualStrings("ok", root.get("overallStatus").?.string);
+    try std.testing.expect(root.get("checks").?.object.get("system.environment") != null);
     try std.testing.expect(root.get("checks").?.object.get("runtime.provenance") != null);
+    try std.testing.expect(root.get("checks").?.object.get("git.environment") != null);
 }
 
 test "doctor human summary hides detail rows" {
@@ -3086,6 +3402,34 @@ test "doctor human summary hides detail rows" {
     const rendered = try renderHumanReport(scratch, report, .{ .summary = true });
     try std.testing.expect(std.mem.indexOf(u8, rendered, "Codex Doctor v0.0.1") != null);
     try std.testing.expect(std.mem.indexOf(u8, rendered, "platform") == null);
+}
+
+test "doctor human summary groups system and git environment rows" {
+    const allocator = std.testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    const scratch = arena.allocator();
+
+    var system = Check.init("system.environment", "system", .ok, "OS language en-US");
+    try system.addDetail(scratch, "os language", "en-US");
+    var runtime = Check.init("runtime.provenance", "runtime", .ok, "running Zig port");
+    try runtime.addDetail(scratch, "platform", "macos-aarch64");
+    var git = Check.init("git.environment", "git", .ok, "git version 2.50.1");
+    try git.addDetail(scratch, "git version", "git version 2.50.1");
+    const checks = try scratch.dupe(Check, &.{ system, runtime, git });
+    const report = Report{
+        .generated_at = "1s since unix epoch",
+        .overall_status = .ok,
+        .codex_version = "0.0.1",
+        .checks = checks,
+    };
+
+    const rendered = try renderHumanReport(scratch, report, .{ .summary = true });
+    try std.testing.expect(std.mem.indexOf(u8, rendered, "Environment") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rendered, "[ok] system") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rendered, "[ok] git") != null);
+    try std.testing.expect(std.mem.indexOf(u8, rendered, "os language") == null);
+    try std.testing.expect(std.mem.indexOf(u8, rendered, "git version") != null);
 }
 
 test "doctor human report renders diagnostic notes" {
@@ -3139,6 +3483,60 @@ test "doctor provider route labels redact probed path" {
     const rendered = try redactedProviderRouteLabel(std.testing.allocator, "https://api.openai.com/v1/");
     defer std.testing.allocator.free(rendered);
     try std.testing.expectEqualStrings("https://api.openai.com/v1/<redacted>", rendered);
+}
+
+test "doctor joins command output lines for compact details" {
+    const allocator = std.testing.allocator;
+    const rendered = (try commandOutputText(allocator, "\n first line \r\n\nsecond line\n")) orelse return error.TestExpectedOutput;
+    defer allocator.free(rendered);
+
+    try std.testing.expectEqualStrings("first line; second line", rendered);
+    try std.testing.expect((try commandOutputText(allocator, "\n \t\r\n")) == null);
+}
+
+test "doctor summarizes git entry directories and worktree files" {
+    const allocator = std.testing.allocator;
+    var dir = std.testing.tmpDir(.{});
+    defer dir.cleanup();
+    const io = std.Io.Threaded.global_single_threaded.io();
+    try dir.dir.createDirPath(io, "repo/.git");
+    try dir.dir.createDirPath(io, "worktree");
+    try dir.dir.writeFile(io, .{ .sub_path = "worktree/.git", .data = "gitdir: ../repo/.git/worktrees/worktree\n" });
+
+    const root = try dir.dir.realPathFileAlloc(io, ".", allocator);
+    defer allocator.free(root);
+    const repo_root = try std.fs.path.join(allocator, &.{ root, "repo" });
+    defer allocator.free(repo_root);
+    const worktree_root = try std.fs.path.join(allocator, &.{ root, "worktree" });
+    defer allocator.free(worktree_root);
+
+    const repo_summary = try gitEntrySummary(allocator, repo_root);
+    defer allocator.free(repo_summary);
+    try std.testing.expectEqualStrings("directory", repo_summary);
+
+    const worktree_summary = try gitEntrySummary(allocator, worktree_root);
+    defer allocator.free(worktree_summary);
+    try std.testing.expectEqualStrings("file -> ../repo/.git/worktrees/worktree", worktree_summary);
+}
+
+test "doctor finds git root from nested working directory" {
+    const allocator = std.testing.allocator;
+    var dir = std.testing.tmpDir(.{});
+    defer dir.cleanup();
+    const io = std.Io.Threaded.global_single_threaded.io();
+    try dir.dir.createDirPath(io, "repo/.git");
+    try dir.dir.createDirPath(io, "repo/a/b");
+
+    const root = try dir.dir.realPathFileAlloc(io, ".", allocator);
+    defer allocator.free(root);
+    const repo_root = try std.fs.path.join(allocator, &.{ root, "repo" });
+    defer allocator.free(repo_root);
+    const nested = try std.fs.path.join(allocator, &.{ repo_root, "a", "b" });
+    defer allocator.free(nested);
+
+    const found = (try findGitRepoRoot(allocator, nested)) orelse return error.TestExpectedGitRoot;
+    defer allocator.free(found);
+    try std.testing.expectEqualStrings(repo_root, found);
 }
 
 test "doctor search command uses package codex-path rg" {

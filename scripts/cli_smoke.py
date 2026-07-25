@@ -7679,6 +7679,61 @@ def run_profile_overlay_smoke(binary: Path) -> None:
         shutil.rmtree(temp_root, ignore_errors=True)
 
 
+def run_doctor_environment_smoke(binary: Path) -> None:
+    temp_root = Path(tempfile.mkdtemp(prefix="codex-zig-cli-doctor-env-", dir="/tmp"))
+    try:
+        env = os.environ.copy()
+        env["CODEX_HOME"] = str(temp_root / "codex-home")
+        env.pop("OPENAI_API_KEY", None)
+        env.pop("CODEX_ACCESS_TOKEN", None)
+
+        summary = subprocess.run(
+            [
+                str(binary.resolve()),
+                "doctor",
+                "--summary",
+                "--ascii",
+                "--no-color",
+            ],
+            cwd=temp_root,
+            env=env,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=20,
+            check=False,
+        )
+        assert "Environment" in summary.stdout
+        assert " system" in summary.stdout
+        assert " git" in summary.stdout
+
+        json_report = subprocess.run(
+            [
+                str(binary.resolve()),
+                "doctor",
+                "--summary",
+                "--json",
+                "--no-color",
+            ],
+            cwd=temp_root,
+            env=env,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=20,
+            check=False,
+        )
+        report = json.loads(json_report.stdout)
+        checks = report["checks"]
+        assert checks["system.environment"]["category"] == "system"
+        assert checks["git.environment"]["category"] == "git"
+        assert "os" in checks["system.environment"]["details"]
+        assert "selected git" in checks["git.environment"]["details"]
+        assert "PATH git entries" in checks["git.environment"]["details"]
+    finally:
+        shutil.rmtree(temp_root, ignore_errors=True)
+
+
 def run_session_archive_commands_smoke(binary: Path) -> None:
     temp_root = Path(tempfile.mkdtemp(prefix="codex-zig-cli-session-archive-", dir="/tmp"))
     server, base_url = start_exec_responses_server()
@@ -14598,6 +14653,7 @@ def main() -> None:
     run_review_stdin_smoke(binary)
     run_exec_equals_options_smoke(binary)
     run_profile_overlay_smoke(binary)
+    run_doctor_environment_smoke(binary)
     run_session_archive_commands_smoke(binary)
     run_strict_config_smoke(binary)
     run_app_server_daemon_smoke(binary)
@@ -14644,6 +14700,7 @@ def main() -> None:
     print("cli-review-stdin-e2e: ok")
     print("cli-exec-options-e2e: ok")
     print("cli-profile-overlay-e2e: ok")
+    print("cli-doctor-environment-e2e: ok")
     print("cli-session-archive-commands-e2e: ok")
     print("cli-strict-config-e2e: ok")
     print("cli-app-server-daemon-e2e: ok")
