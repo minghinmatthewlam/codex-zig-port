@@ -64,6 +64,17 @@ behavior, generated `RemoteControlPairing*`, `RemoteControlClients*`, and
 Zig now validates pairing/client params with Rust-shaped `-32600` errors and
 returns Rust's local disabled, not-enrolled, and ChatGPT-auth-required errors
 until the full websocket/cloud backend is implemented.
+App-server environment method parity was checked against installed Rust
+`codex app-server --stdio` behavior with and without `experimentalApi`,
+generated `EnvironmentAdd*`, `EnvironmentInfo*`, `EnvironmentShellInfo`,
+`EnvironmentStatus*`, `EnvironmentConnectionNotification`, and `PathUri`
+protocol artifacts, and the Zig stdio app-server smoke. Zig now validates
+malformed params before experimental capability gating like Rust, supports
+process-local `environment/add`,
+`environment/status` unknown/disconnected/pending responses, and returns
+Rust-shaped `environment/info` errors when no live exec-server shell info is
+available. Full live exec-server attachment, connected/disconnected notification
+emission, ready status, shell info, and cwd resolution remain planned.
 App-server `app/read` and `app/installed` parity was checked against Rust's
 isolated local/offline behavior, generated `AppsRead*`, `ConnectorMetadata`,
 `AppsInstalled*`, and `InstalledApp` protocol artifacts, params validation, and
@@ -536,9 +547,11 @@ runtime override handling, and the Zig stdio app-server smoke.
   contract.
 - Close the current generated app-server `ClientRequest` method-set gaps:
   `account/rateLimitResetCredit/consume`, `account/usage/read`,
-  `account/workspaceMessages/read`, `environment/add`, `environment/info`,
-  `environment/status`, `externalAgentConfig/import/readHistories`,
-  and `mock/experimentalMethod`.
+  `account/workspaceMessages/read`,
+  `externalAgentConfig/import/readHistories`, and `mock/experimentalMethod`.
+- Close the remaining generated app-server `ServerNotification` method-set
+  gaps: `externalAgentConfig/import/progress`, `rawResponse/completed`,
+  `turn/moderationMetadata`, and `model/safetyBuffering/updated`.
 - Finish desktop app and remote-control user flows beyond launching/opening:
   phone fork/share flow, durable daemon control, and local browser controller
   parity.

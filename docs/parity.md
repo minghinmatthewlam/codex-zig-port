@@ -448,6 +448,23 @@ Dispatching the remaining dynamic tool-call, account refresh, and legacy
 approval surfaces remains planned, as does full connected/connecting/errored
 remote-control transport status parity.
 
+Additional app-server environment method coverage: `environment/add`,
+`environment/info`, and `environment/status` are registered as experimental
+JSON-RPC request methods with generated TypeScript and JSON Schema artifacts for
+`EnvironmentAddParams`, `EnvironmentAddResponse`, `EnvironmentInfoParams`,
+`EnvironmentInfoResponse`, `EnvironmentShellInfo`,
+`EnvironmentConnectionNotification`, `EnvironmentStatusKind`,
+`EnvironmentStatusParams`, `EnvironmentStatusResponse`, and root `PathUri`.
+Runtime validation matches Rust's observed ordering by rejecting malformed
+params before experimental capability gating. `environment/add` maintains a
+process-local registry and returns the Rust-shaped empty response,
+`environment/status` returns Rust-shaped `unknown`, `disconnected`, or
+`pending` responses for missing, non-websocket, and websocket URLs, and
+`environment/info` returns Rust-shaped unknown/disconnected JSON-RPC errors
+until shell/cwd info can be read from a live exec-server connection. Full live
+exec-server attachment, connected/disconnected notification emission,
+ready-state recovery, shell info, and cwd resolution remain planned.
+
 Additional app-server server-request generation coverage: generated TypeScript
 artifacts now include the top-level `ServerRequest` union for
 `"item/commandExecution/requestApproval"`,
@@ -1195,6 +1212,7 @@ remains planned.
 
 Additional app-server ClientRequest TypeScript union coverage: generated
 TypeScript now includes the Rust-side `ClientRequest` methods for
+`environment/add`, `environment/info`, `environment/status`,
 `marketplace/add`, `marketplace/remove`, `marketplace/upgrade`, `plugin/list`,
 `plugin/installed`, `plugin/read`, `plugin/skill/read`, `plugin/share/save`,
 `plugin/share/updateTargets`, `plugin/share/list`, `plugin/share/checkout`,
@@ -1205,6 +1223,14 @@ their current param helper artifacts and `serde_json/JsonValue`. Standalone JSON
 Schema files now cover the newly typed marketplace, plugin, config, and review
 request params where the protocol carries params; full Rust schema parity
 remains planned.
+
+Additional app-server ServerNotification TypeScript union coverage: generated
+TypeScript now includes Rust-side `thread/environment/connected` and
+`thread/environment/disconnected` notification methods with
+`EnvironmentConnectionNotification` payload artifacts. The remaining generated
+`ServerNotification` method-set gaps are
+`externalAgentConfig/import/progress`, `rawResponse/completed`,
+`turn/moderationMetadata`, and `model/safetyBuffering/updated`.
 
 Additional app-server review/start coverage: `review/start` now validates
 loaded `threadId`, Rust-shaped review targets, empty `branch` / `sha` /

@@ -97,7 +97,21 @@ EXPERIMENTAL_API_METHODS = [
     "remoteControl/pairing/status",
     "remoteControl/client/list",
     "remoteControl/client/revoke",
+    "environment/add",
+    "environment/info",
+    "environment/status",
 ]
+
+
+def experimental_api_gate_params(method: str) -> dict:
+    if method == "environment/add":
+        return {
+            "environmentId": "gate-env",
+            "execServerUrl": "ws://127.0.0.1:1",
+        }
+    if method in ("environment/info", "environment/status"):
+        return {"environmentId": "gate-env"}
+    return {}
 
 GRANULAR_APPROVAL_POLICY = {
     "granular": {
@@ -18341,7 +18355,7 @@ def run_app_server_experimental_api_gate_smoke(binary: Path) -> None:
                         "jsonrpc": "2.0",
                         "id": request_id,
                         "method": method,
-                        "params": {},
+                        "params": experimental_api_gate_params(method),
                     },
                 )
                 gated = read_json_line(proc, 5)
@@ -47632,6 +47646,131 @@ def run_remote_control_status_notification_smoke(binary: Path) -> None:
         assert (codex_home / "installation_id").read_text(encoding="utf-8") == installation_id
         assert status["params"]["environmentId"] is None
 
+        def rpc(request_id: str, method: str, params=_OMIT) -> dict:
+            payload = {"jsonrpc": "2.0", "id": request_id, "method": method}
+            if params is not _OMIT:
+                payload["params"] = params
+            write_json_line(proc, payload)
+            response = read_json_line(proc, 5)
+            assert response["id"] == request_id
+            return response
+
+        env_status_array = rpc(
+            "environment-status-array",
+            "environment/status",
+            [],
+        )
+        assert env_status_array["error"]["code"] == -32600
+        assert (
+            env_status_array["error"]["message"]
+            == "Invalid request: invalid length 0, expected struct EnvironmentStatusParams with 1 elements"
+        )
+
+        env_status_missing = rpc(
+            "environment-status-missing",
+            "environment/status",
+            {},
+        )
+        assert env_status_missing["error"]["code"] == -32600
+        assert (
+            env_status_missing["error"]["message"]
+            == "Invalid request: missing field `environmentId`"
+        )
+
+        env_add_missing_url = rpc(
+            "environment-add-missing-url",
+            "environment/add",
+            {"environmentId": "env-missing-url"},
+        )
+        assert env_add_missing_url["error"]["code"] == -32600
+        assert (
+            env_add_missing_url["error"]["message"]
+            == "Invalid request: missing field `execServerUrl`"
+        )
+
+        env_add_bad_timeout = rpc(
+            "environment-add-bad-timeout",
+            "environment/add",
+            {
+                "environmentId": "env-bad-timeout",
+                "execServerUrl": "ws://127.0.0.1:1",
+                "connectTimeoutMs": "fast",
+            },
+        )
+        assert env_add_bad_timeout["error"]["code"] == -32600
+        assert (
+            env_add_bad_timeout["error"]["message"]
+            == 'Invalid request: invalid type: string "fast", expected u64'
+        )
+
+        env_unknown_status = rpc(
+            "environment-status-unknown",
+            "environment/status",
+            {"environmentId": "env-missing"},
+        )
+        assert env_unknown_status["result"] == {
+            "status": "unknown",
+            "error": "unknown environment id `env-missing`",
+        }
+
+        env_unknown_info = rpc(
+            "environment-info-unknown",
+            "environment/info",
+            {"environmentId": "env-missing"},
+        )
+        assert env_unknown_info["error"]["code"] == -32600
+        assert (
+            env_unknown_info["error"]["message"]
+            == "unknown environment id `env-missing`"
+        )
+
+        env_add_bad_url = rpc(
+            "environment-add-bad-url",
+            "environment/add",
+            {"environmentId": "env-bad-url", "execServerUrl": "http://127.0.0.1:1"},
+        )
+        assert env_add_bad_url["result"] == {}
+
+        env_bad_url_status = rpc(
+            "environment-status-bad-url",
+            "environment/status",
+            {"environmentId": "env-bad-url"},
+        )
+        assert env_bad_url_status["result"]["status"] == "disconnected"
+        assert (
+            env_bad_url_status["result"]["error"]
+            == "exec-server connection attempt failed: failed to connect to exec-server websocket `http://127.0.0.1:1`: URL error: URL scheme not supported"
+        )
+
+        env_bad_url_info = rpc(
+            "environment-info-bad-url",
+            "environment/info",
+            {"environmentId": "env-bad-url"},
+        )
+        assert env_bad_url_info["error"]["code"] == -32603
+        assert (
+            env_bad_url_info["error"]["message"]
+            == "failed to get info for environment `env-bad-url`: exec-server connection attempt failed: failed to connect to exec-server websocket `http://127.0.0.1:1`: URL error: URL scheme not supported"
+        )
+
+        env_add_ws = rpc(
+            "environment-add-ws",
+            "environment/add",
+            {
+                "environmentId": "env-ws",
+                "execServerUrl": "ws://127.0.0.1:1",
+                "connectTimeoutMs": 50,
+            },
+        )
+        assert env_add_ws["result"] == {}
+
+        env_ws_status = rpc(
+            "environment-status-ws",
+            "environment/status",
+            {"environmentId": "env-ws"},
+        )
+        assert env_ws_status["result"] == {"status": "pending"}
+
         write_json_line(
             proc,
             {
@@ -50342,6 +50481,16 @@ def run_json_schema_smoke(binary: Path) -> None:
             "remoteControl/client/list",
             "remoteControl/client/revoke",
         }
+        environment_methods = {
+            item["properties"]["method"]["const"]: item["properties"]["params"]["$ref"]
+            for item in client_request["oneOf"]
+            if item["properties"]["method"].get("const", "").startswith("environment/")
+        }
+        assert environment_methods == {
+            "environment/add": "v2/EnvironmentAddParams.json",
+            "environment/info": "v2/EnvironmentInfoParams.json",
+            "environment/status": "v2/EnvironmentStatusParams.json",
+        }
         server_request = json.loads(
             (out_dir / "ServerRequest.json").read_text(encoding="utf-8")
         )
@@ -50362,6 +50511,17 @@ def run_json_schema_smoke(binary: Path) -> None:
         assert server_notification["oneOf"][1]["properties"]["params"]["$ref"] == (
             "v2/ThreadStartedNotification.json"
         )
+        notification_schema_methods = {
+            item["properties"]["method"]["const"]: item["properties"]["params"]["$ref"]
+            for item in server_notification["oneOf"]
+            if "const" in item["properties"]["method"]
+        }
+        assert notification_schema_methods[
+            "thread/environment/connected"
+        ] == "v2/EnvironmentConnectionNotification.json"
+        assert notification_schema_methods[
+            "thread/environment/disconnected"
+        ] == "v2/EnvironmentConnectionNotification.json"
         dynamic_tool_call_response = json.loads(
             (out_dir / "DynamicToolCallResponse.json").read_text(encoding="utf-8")
         )
@@ -51054,6 +51214,75 @@ def run_json_schema_smoke(binary: Path) -> None:
             "RemoteControlClientsListResponse",
             "RemoteControlClientsRevokeParams",
             "RemoteControlClientsRevokeResponse",
+        ]:
+            assert (out_dir / "v2" / f"{schema_name}.json").is_file()
+        path_uri = json.loads(
+            (out_dir / "PathUri.json").read_text(encoding="utf-8")
+        )
+        assert path_uri["title"] == "PathUri"
+        assert path_uri["type"] == "string"
+        environment_add_params = json.loads(
+            (out_dir / "EnvironmentAddParams.json").read_text(encoding="utf-8")
+        )
+        assert environment_add_params["required"] == [
+            "environmentId",
+            "execServerUrl",
+        ]
+        assert environment_add_params["properties"]["connectTimeoutMs"]["type"] == [
+            "integer",
+            "null",
+        ]
+        environment_info_response = json.loads(
+            (out_dir / "EnvironmentInfoResponse.json").read_text(encoding="utf-8")
+        )
+        assert environment_info_response["required"] == ["shell"]
+        assert (
+            environment_info_response["properties"]["shell"]["$ref"]
+            == "#/$defs/EnvironmentShellInfo"
+        )
+        assert environment_info_response["properties"]["cwd"]["anyOf"][0]["$ref"] == (
+            "#/$defs/PathUri"
+        )
+        environment_status_kind = json.loads(
+            (out_dir / "EnvironmentStatusKind.json").read_text(encoding="utf-8")
+        )
+        assert environment_status_kind["enum"] == [
+            "ready",
+            "pending",
+            "disconnected",
+            "unknown",
+        ]
+        environment_status_response = json.loads(
+            (out_dir / "EnvironmentStatusResponse.json").read_text(encoding="utf-8")
+        )
+        assert environment_status_response["required"] == ["status"]
+        assert (
+            environment_status_response["properties"]["status"]["$ref"]
+            == "#/$defs/EnvironmentStatusKind"
+        )
+        assert environment_status_response["properties"]["error"]["type"] == [
+            "string",
+            "null",
+        ]
+        environment_connection_notification = json.loads(
+            (out_dir / "EnvironmentConnectionNotification.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        assert environment_connection_notification["required"] == [
+            "environmentId",
+            "threadId",
+        ]
+        for schema_name in [
+            "EnvironmentAddParams",
+            "EnvironmentAddResponse",
+            "EnvironmentConnectionNotification",
+            "EnvironmentInfoParams",
+            "EnvironmentInfoResponse",
+            "EnvironmentShellInfo",
+            "EnvironmentStatusKind",
+            "EnvironmentStatusParams",
+            "EnvironmentStatusResponse",
         ]:
             assert (out_dir / "v2" / f"{schema_name}.json").is_file()
         memory_reset_response = json.loads(
@@ -53618,6 +53847,19 @@ def run_json_schema_smoke(binary: Path) -> None:
         assert "RemoteControlClientsListResponse" in bundle["$defs"]
         assert "RemoteControlClientsRevokeParams" in bundle["$defs"]
         assert "RemoteControlClientsRevokeResponse" in bundle["$defs"]
+        for environment_def in [
+            "PathUri",
+            "EnvironmentAddParams",
+            "EnvironmentAddResponse",
+            "EnvironmentConnectionNotification",
+            "EnvironmentInfoParams",
+            "EnvironmentInfoResponse",
+            "EnvironmentShellInfo",
+            "EnvironmentStatusKind",
+            "EnvironmentStatusParams",
+            "EnvironmentStatusResponse",
+        ]:
+            assert environment_def in bundle["$defs"]
         assert "MemoryResetResponse" in bundle["$defs"]
         assert "GitDiffToRemoteParams" in bundle["$defs"]
         assert "GitDiffToRemoteResponse" in bundle["$defs"]
@@ -54042,6 +54284,50 @@ def run_json_schema_smoke(binary: Path) -> None:
             "asc",
             "desc",
         ]
+        assert bundle["$defs"]["PathUri"]["type"] == "string"
+        assert bundle["$defs"]["EnvironmentAddParams"]["required"] == [
+            "environmentId",
+            "execServerUrl",
+        ]
+        assert (
+            bundle["$defs"]["EnvironmentAddParams"]["properties"][
+                "connectTimeoutMs"
+            ]["type"]
+            == ["integer", "null"]
+        )
+        assert (
+            bundle["$defs"]["EnvironmentInfoResponse"]["properties"]["shell"]["$ref"]
+            == "#/$defs/EnvironmentShellInfo"
+        )
+        assert bundle["$defs"]["EnvironmentInfoResponse"]["required"] == ["shell"]
+        assert (
+            bundle["$defs"]["EnvironmentInfoResponse"]["properties"]["cwd"]["anyOf"][
+                0
+            ]["$ref"]
+            == "#/$defs/PathUri"
+        )
+        assert bundle["$defs"]["EnvironmentStatusKind"]["enum"] == [
+            "ready",
+            "pending",
+            "disconnected",
+            "unknown",
+        ]
+        assert bundle["$defs"]["EnvironmentConnectionNotification"]["required"] == [
+            "environmentId",
+            "threadId",
+        ]
+        assert (
+            bundle["$defs"]["EnvironmentStatusResponse"]["properties"]["status"][
+                "$ref"
+            ]
+            == "#/$defs/EnvironmentStatusKind"
+        )
+        assert (
+            bundle["$defs"]["EnvironmentStatusResponse"]["properties"]["error"][
+                "type"
+            ]
+            == ["string", "null"]
+        )
         assert bundle["$defs"]["SandboxPolicy"]["oneOf"][2]["properties"]["type"]["const"] == "externalSandbox"
         assert (
             bundle["$defs"]["SandboxPolicy"]["oneOf"][3]["properties"]["writableRoots"]["items"]["$ref"]
@@ -54949,6 +55235,15 @@ def run_typescript_generation_smoke(binary: Path) -> None:
             in client_request
         )
         for import_name in [
+            "EnvironmentAddParams",
+            "EnvironmentInfoParams",
+            "EnvironmentStatusParams",
+        ]:
+            assert (
+                f'import type {{ {import_name} }} from "./v2/{import_name}";'
+                in client_request
+            )
+        for import_name in [
             "ConfigBatchWriteParams",
             "ConfigReadParams",
             "ConfigValueWriteParams",
@@ -55116,6 +55411,13 @@ def run_typescript_generation_smoke(binary: Path) -> None:
                 f'import type {{ {params_type} }} from "./v2/{params_type}";'
                 in client_request
             )
+            assert f'method: "{method}";' in client_request
+            assert f"params: {params_type};" in client_request
+        for method, params_type in [
+            ("environment/add", "EnvironmentAddParams"),
+            ("environment/info", "EnvironmentInfoParams"),
+            ("environment/status", "EnvironmentStatusParams"),
+        ]:
             assert f'method: "{method}";' in client_request
             assert f"params: {params_type};" in client_request
         assert 'method: "command/exec";' in client_request
@@ -56006,6 +56308,7 @@ def run_typescript_generation_smoke(binary: Path) -> None:
                 in server_notification
             )
         for control_status_import in [
+            "EnvironmentConnectionNotification",
             "McpServerStatusUpdatedNotification",
             "McpToolCallProgressNotification",
             "RemoteControlStatusChangedNotification",
@@ -56133,6 +56436,12 @@ def run_typescript_generation_smoke(binary: Path) -> None:
         assert "params: ThreadGoalUpdatedNotification;" in server_notification
         assert 'method: "thread/goal/cleared";' in server_notification
         assert "params: ThreadGoalClearedNotification;" in server_notification
+        for method in [
+            "thread/environment/connected",
+            "thread/environment/disconnected",
+        ]:
+            assert f'method: "{method}";' in server_notification
+            assert "params: EnvironmentConnectionNotification;" in server_notification
         assert 'method: "thread/tokenUsage/updated";' in server_notification
         assert "params: ThreadTokenUsageUpdatedNotification;" in server_notification
         for method, params_type in [
@@ -56286,6 +56595,15 @@ def run_typescript_generation_smoke(binary: Path) -> None:
             'import type { ExternalAgentConfigImportResponse } from "./v2/ExternalAgentConfigImportResponse";'
             in client_response
         )
+        for import_name in [
+            "EnvironmentAddResponse",
+            "EnvironmentInfoResponse",
+            "EnvironmentStatusResponse",
+        ]:
+            assert (
+                f'import type {{ {import_name} }} from "./v2/{import_name}";'
+                in client_response
+            )
         assert (
             'import type { FeedbackUploadResponse } from "./v2/FeedbackUploadResponse";'
             in client_response
@@ -56431,6 +56749,13 @@ def run_typescript_generation_smoke(binary: Path) -> None:
                 f'import type {{ {response_type} }} from "./v2/{response_type}";'
                 in client_response
             )
+            assert f'method: "{method}";' in client_response
+            assert f"result: {response_type};" in client_response
+        for method, response_type in [
+            ("environment/add", "EnvironmentAddResponse"),
+            ("environment/info", "EnvironmentInfoResponse"),
+            ("environment/status", "EnvironmentStatusResponse"),
+        ]:
             assert f'method: "{method}";' in client_response
             assert f"result: {response_type};" in client_response
         assert 'method: "thread/start";' in client_response
@@ -56840,6 +57165,54 @@ def run_typescript_generation_smoke(binary: Path) -> None:
             out_dir / "v2" / "RemoteControlClientsRevokeResponse.ts"
         ).read_text(encoding="utf-8")
         assert "export interface RemoteControlClientsRevokeResponse {}" in remote_clients_revoke_response
+        path_uri = (out_dir / "PathUri.ts").read_text(encoding="utf-8")
+        assert "export type PathUri = string;" in path_uri
+        environment_add_params = (
+            out_dir / "v2" / "EnvironmentAddParams.ts"
+        ).read_text(encoding="utf-8")
+        assert "environmentId: string;" in environment_add_params
+        assert "execServerUrl: string;" in environment_add_params
+        assert "connectTimeoutMs?: number | null;" in environment_add_params
+        environment_add_response = (
+            out_dir / "v2" / "EnvironmentAddResponse.ts"
+        ).read_text(encoding="utf-8")
+        assert "export interface EnvironmentAddResponse {}" in environment_add_response
+        environment_connection = (
+            out_dir / "v2" / "EnvironmentConnectionNotification.ts"
+        ).read_text(encoding="utf-8")
+        assert "threadId: string;" in environment_connection
+        assert "environmentId: string;" in environment_connection
+        environment_info_response = (
+            out_dir / "v2" / "EnvironmentInfoResponse.ts"
+        ).read_text(encoding="utf-8")
+        assert 'import type { PathUri } from "../PathUri";' in environment_info_response
+        assert (
+            'import type { EnvironmentShellInfo } from "./EnvironmentShellInfo";'
+            in environment_info_response
+        )
+        assert "shell: EnvironmentShellInfo;" in environment_info_response
+        assert "cwd: PathUri | null;" in environment_info_response
+        environment_shell = (
+            out_dir / "v2" / "EnvironmentShellInfo.ts"
+        ).read_text(encoding="utf-8")
+        assert "name: string;" in environment_shell
+        assert "path: string;" in environment_shell
+        environment_status_kind = (
+            out_dir / "v2" / "EnvironmentStatusKind.ts"
+        ).read_text(encoding="utf-8")
+        assert '"ready"' in environment_status_kind
+        assert '"pending"' in environment_status_kind
+        assert '"disconnected"' in environment_status_kind
+        assert '"unknown"' in environment_status_kind
+        environment_status_response = (
+            out_dir / "v2" / "EnvironmentStatusResponse.ts"
+        ).read_text(encoding="utf-8")
+        assert (
+            'import type { EnvironmentStatusKind } from "./EnvironmentStatusKind";'
+            in environment_status_response
+        )
+        assert "status: EnvironmentStatusKind;" in environment_status_response
+        assert "error?: string;" in environment_status_response
         memory_reset_response = (
             out_dir / "v2" / "MemoryResetResponse.ts"
         ).read_text(encoding="utf-8")
@@ -58857,6 +59230,7 @@ def run_typescript_generation_smoke(binary: Path) -> None:
 
         index = (out_dir / "index.ts").read_text(encoding="utf-8")
         assert 'export type { AbsolutePathBuf } from "./AbsolutePathBuf";' in index
+        assert 'export type { PathUri } from "./PathUri";' in index
         assert 'export type { AgentPath } from "./AgentPath";' in index
         assert 'export type { AuthMode } from "./AuthMode";' in index
         assert 'export type { ClientInfo } from "./ClientInfo";' in index
@@ -59058,6 +59432,15 @@ def run_typescript_generation_smoke(binary: Path) -> None:
                 in v2_index
             )
         for remote_control_export in [
+            "EnvironmentAddParams",
+            "EnvironmentAddResponse",
+            "EnvironmentConnectionNotification",
+            "EnvironmentInfoParams",
+            "EnvironmentInfoResponse",
+            "EnvironmentShellInfo",
+            "EnvironmentStatusKind",
+            "EnvironmentStatusParams",
+            "EnvironmentStatusResponse",
             "RemoteControlConnectionStatus",
             "RemoteControlStatusChangedNotification",
         ]:

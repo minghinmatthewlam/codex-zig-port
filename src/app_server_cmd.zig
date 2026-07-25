@@ -523,6 +523,18 @@ const PendingThreadUnload = struct {
     }
 };
 
+const EnvironmentEntry = struct {
+    environment_id: []const u8,
+    exec_server_url: []const u8,
+    disconnected_error: ?[]const u8,
+
+    fn deinit(self: *EnvironmentEntry, allocator: std.mem.Allocator) void {
+        allocator.free(self.environment_id);
+        allocator.free(self.exec_server_url);
+        if (self.disconnected_error) |error_message| allocator.free(error_message);
+    }
+};
+
 const AppServerState = struct {
     deferred_command_exec_stdio: bool = false,
     experimental_api_enabled: bool = false,
@@ -535,6 +547,7 @@ const AppServerState = struct {
     cli_feature_overrides: features_cmd.FeatureOverrides = .{},
     runtime_feature_enablement: features_cmd.FeatureOverrides = .{},
     loaded_threads: std.ArrayList(LoadedThread) = .empty,
+    environments: std.ArrayList(EnvironmentEntry) = .empty,
     pending_thread_unloads: std.ArrayList(PendingThreadUnload) = .empty,
     fs_watches: std.ArrayList(FsWatchEntry) = .empty,
     fuzzy_search_sessions: std.ArrayList(FuzzySearchSessionEntry) = .empty,
@@ -559,6 +572,8 @@ const AppServerState = struct {
         self.runtime_feature_enablement.deinit(allocator);
         for (self.loaded_threads.items) |*thread| thread.deinit(allocator);
         self.loaded_threads.deinit(allocator);
+        for (self.environments.items) |*environment| environment.deinit(allocator);
+        self.environments.deinit(allocator);
         for (self.pending_thread_unloads.items) |*unload| unload.deinit(allocator);
         self.pending_thread_unloads.deinit(allocator);
         self.fs_watches.deinit(allocator);
@@ -6068,6 +6083,122 @@ const REMOTE_CONTROL_CLIENTS_REVOKE_RESPONSE_TS =
     \\
     ;
 
+const ENVIRONMENT_ADD_PARAMS_TS =
+    GENERATED_TS_HEADER ++
+    \\export interface EnvironmentAddParams {
+    \\  environmentId: string;
+    \\  execServerUrl: string;
+    \\  /**
+    \\   * Optional WebSocket connection timeout. The server default applies when omitted.
+    \\   */
+    \\  connectTimeoutMs?: number | null;
+    \\}
+    \\
+    ;
+
+const ENVIRONMENT_ADD_RESPONSE_TS =
+    GENERATED_TS_HEADER ++
+    \\export interface EnvironmentAddResponse {}
+    \\
+    ;
+
+const ENVIRONMENT_INFO_PARAMS_TS =
+    GENERATED_TS_HEADER ++
+    \\export interface EnvironmentInfoParams {
+    \\  environmentId: string;
+    \\}
+    \\
+    ;
+
+const ENVIRONMENT_SHELL_INFO_TS =
+    GENERATED_TS_HEADER ++
+    \\export interface EnvironmentShellInfo {
+    \\  /**
+    \\   * Stable shell name, for example `zsh`, `bash`, `powershell`, `sh`, or `cmd`.
+    \\   */
+    \\  name: string;
+    \\  /**
+    \\   * Target-native shell executable path or command name.
+    \\   */
+    \\  path: string;
+    \\}
+    \\
+    ;
+
+const ENVIRONMENT_INFO_RESPONSE_TS =
+    GENERATED_TS_HEADER ++
+    \\import type { PathUri } from "../PathUri";
+    \\import type { EnvironmentShellInfo } from "./EnvironmentShellInfo";
+    \\
+    \\export interface EnvironmentInfoResponse {
+    \\  shell: EnvironmentShellInfo;
+    \\  /**
+    \\   * Default working directory reported by the environment, as a canonical file URI.
+    \\   */
+    \\  cwd: PathUri | null;
+    \\}
+    \\
+    ;
+
+const ENVIRONMENT_CONNECTION_NOTIFICATION_TS =
+    GENERATED_TS_HEADER ++
+    \\export interface EnvironmentConnectionNotification {
+    \\  threadId: string;
+    \\  environmentId: string;
+    \\}
+    \\
+    ;
+
+const ENVIRONMENT_STATUS_KIND_TS =
+    GENERATED_TS_HEADER ++
+    \\/**
+    \\ * Current status observed by app-server without starting or recovering an environment.
+    \\ *
+    \\ * For a currently ready remote environment, app-server asks the existing
+    \\ * exec-server connection for `environment/status` without allowing recovery.
+    \\ */
+    \\export type EnvironmentStatusKind =
+    \\  | "ready"
+    \\  | "pending"
+    \\  | "disconnected"
+    \\  | "unknown";
+    \\
+    ;
+
+const ENVIRONMENT_STATUS_PARAMS_TS =
+    GENERATED_TS_HEADER ++
+    \\/**
+    \\ * Parameters for reading the current status of one configured environment.
+    \\ */
+    \\export interface EnvironmentStatusParams {
+    \\  /**
+    \\   * Environment id to inspect.
+    \\   */
+    \\  environmentId: string;
+    \\}
+    \\
+    ;
+
+const ENVIRONMENT_STATUS_RESPONSE_TS =
+    GENERATED_TS_HEADER ++
+    \\import type { EnvironmentStatusKind } from "./EnvironmentStatusKind";
+    \\
+    \\/**
+    \\ * Current status for the requested environment.
+    \\ */
+    \\export interface EnvironmentStatusResponse {
+    \\  /**
+    \\   * Current status observed without starting or recovering the environment.
+    \\   */
+    \\  status: EnvironmentStatusKind;
+    \\  /**
+    \\   * Human-readable detail for `disconnected` and `unknown`; omitted for other statuses.
+    \\   */
+    \\  error?: string;
+    \\}
+    \\
+    ;
+
 const ADD_CREDITS_NUDGE_CREDIT_TYPE_TS =
     GENERATED_TS_HEADER ++
     \\export type AddCreditsNudgeCreditType = "credits" | "usage_limit";
@@ -8043,6 +8174,12 @@ const NETWORK_ACCESS_TS =
 const ABSOLUTE_PATH_BUF_TS =
     GENERATED_TS_HEADER ++
     \\export type AbsolutePathBuf = string;
+    \\
+    ;
+
+const PATH_URI_TS =
+    GENERATED_TS_HEADER ++
+    \\export type PathUri = string;
     \\
     ;
 
@@ -11541,6 +11678,9 @@ const CLIENT_REQUEST_TS =
     \\import type { ExperimentalFeatureListParams } from "./v2/ExperimentalFeatureListParams";
     \\import type { ExternalAgentConfigDetectParams } from "./v2/ExternalAgentConfigDetectParams";
     \\import type { ExternalAgentConfigImportParams } from "./v2/ExternalAgentConfigImportParams";
+    \\import type { EnvironmentAddParams } from "./v2/EnvironmentAddParams";
+    \\import type { EnvironmentInfoParams } from "./v2/EnvironmentInfoParams";
+    \\import type { EnvironmentStatusParams } from "./v2/EnvironmentStatusParams";
     \\import type { FeedbackUploadParams } from "./v2/FeedbackUploadParams";
     \\import type { FuzzyFileSearchParams } from "./FuzzyFileSearchParams";
     \\import type { FuzzyFileSearchSessionStartParams } from "./v2/FuzzyFileSearchSessionStartParams";
@@ -11894,6 +12034,18 @@ const CLIENT_REQUEST_TS =
     \\      params: RemoteControlClientsRevokeParams;
     \\    }
     \\  | {
+    \\      method: "environment/add";
+    \\      params: EnvironmentAddParams;
+    \\    }
+    \\  | {
+    \\      method: "environment/info";
+    \\      params: EnvironmentInfoParams;
+    \\    }
+    \\  | {
+    \\      method: "environment/status";
+    \\      params: EnvironmentStatusParams;
+    \\    }
+    \\  | {
     \\      method: "command/exec";
     \\      params: CommandExecParams;
     \\    }
@@ -12134,6 +12286,9 @@ const CLIENT_RESPONSE_TS =
     \\import type { ExperimentalFeatureListResponse } from "./v2/ExperimentalFeatureListResponse";
     \\import type { ExternalAgentConfigDetectResponse } from "./v2/ExternalAgentConfigDetectResponse";
     \\import type { ExternalAgentConfigImportResponse } from "./v2/ExternalAgentConfigImportResponse";
+    \\import type { EnvironmentAddResponse } from "./v2/EnvironmentAddResponse";
+    \\import type { EnvironmentInfoResponse } from "./v2/EnvironmentInfoResponse";
+    \\import type { EnvironmentStatusResponse } from "./v2/EnvironmentStatusResponse";
     \\import type { FeedbackUploadResponse } from "./v2/FeedbackUploadResponse";
     \\import type { FuzzyFileSearchResponse } from "./FuzzyFileSearchResponse";
     \\import type { FuzzyFileSearchSessionStartResponse } from "./v2/FuzzyFileSearchSessionStartResponse";
@@ -12566,6 +12721,21 @@ const CLIENT_RESPONSE_TS =
     \\    }
     \\  | {
     \\      id: RequestId;
+    \\      method: "environment/add";
+    \\      result: EnvironmentAddResponse;
+    \\    }
+    \\  | {
+    \\      id: RequestId;
+    \\      method: "environment/info";
+    \\      result: EnvironmentInfoResponse;
+    \\    }
+    \\  | {
+    \\      id: RequestId;
+    \\      method: "environment/status";
+    \\      result: EnvironmentStatusResponse;
+    \\    }
+    \\  | {
+    \\      id: RequestId;
     \\      method: "command/exec";
     \\      result: CommandExecResponse;
     \\    }
@@ -12896,6 +13066,7 @@ const SERVER_NOTIFICATION_TS =
     \\import type { ConfigWarningNotification } from "./v2/ConfigWarningNotification";
     \\import type { ContextCompactedNotification } from "./v2/ContextCompactedNotification";
     \\import type { DeprecationNoticeNotification } from "./v2/DeprecationNoticeNotification";
+    \\import type { EnvironmentConnectionNotification } from "./v2/EnvironmentConnectionNotification";
     \\import type { ErrorNotification } from "./v2/ErrorNotification";
     \\import type { ExternalAgentConfigImportCompletedNotification } from "./v2/ExternalAgentConfigImportCompletedNotification";
     \\import type { FileChangeOutputDeltaNotification } from "./v2/FileChangeOutputDeltaNotification";
@@ -13053,6 +13224,14 @@ const SERVER_NOTIFICATION_TS =
     \\  | {
     \\      method: "thread/goal/cleared";
     \\      params: ThreadGoalClearedNotification;
+    \\    }
+    \\  | {
+    \\      method: "thread/environment/connected";
+    \\      params: EnvironmentConnectionNotification;
+    \\    }
+    \\  | {
+    \\      method: "thread/environment/disconnected";
+    \\      params: EnvironmentConnectionNotification;
     \\    }
     \\  | {
     \\      method: "thread/settings/updated";
@@ -13239,6 +13418,7 @@ const INDEX_TS =
     \\export type { JSONRPCRequest } from "./JSONRPCRequest";
     \\export type { JSONRPCResponse } from "./JSONRPCResponse";
     \\export type { AbsolutePathBuf } from "./AbsolutePathBuf";
+    \\export type { PathUri } from "./PathUri";
     \\export type { AgentPath } from "./AgentPath";
     \\export type { ApplyPatchApprovalParams } from "./ApplyPatchApprovalParams";
     \\export type { ApplyPatchApprovalResponse } from "./ApplyPatchApprovalResponse";
@@ -13342,6 +13522,15 @@ const V2_INDEX_TS =
     \\export type { AnalyticsConfig } from "./AnalyticsConfig";
     \\export type { ApprovalsReviewer } from "./ApprovalsReviewer";
     \\export type { AskForApproval } from "./AskForApproval";
+    \\export type { EnvironmentAddParams } from "./EnvironmentAddParams";
+    \\export type { EnvironmentAddResponse } from "./EnvironmentAddResponse";
+    \\export type { EnvironmentConnectionNotification } from "./EnvironmentConnectionNotification";
+    \\export type { EnvironmentInfoParams } from "./EnvironmentInfoParams";
+    \\export type { EnvironmentInfoResponse } from "./EnvironmentInfoResponse";
+    \\export type { EnvironmentShellInfo } from "./EnvironmentShellInfo";
+    \\export type { EnvironmentStatusKind } from "./EnvironmentStatusKind";
+    \\export type { EnvironmentStatusParams } from "./EnvironmentStatusParams";
+    \\export type { EnvironmentStatusResponse } from "./EnvironmentStatusResponse";
     \\export type { RemoteControlClient } from "./RemoteControlClient";
     \\export type { RemoteControlClientsListOrder } from "./RemoteControlClientsListOrder";
     \\export type { RemoteControlClientsListParams } from "./RemoteControlClientsListParams";
@@ -14073,6 +14262,33 @@ const CLIENT_REQUEST_JSON_SCHEMA =
     \\    },
     \\    {
     \\      "type": "object",
+    \\      "required": ["method", "params"],
+    \\      "properties": {
+    \\        "method": { "const": "environment/add" },
+    \\        "params": { "$ref": "v2/EnvironmentAddParams.json" }
+    \\      },
+    \\      "additionalProperties": true
+    \\    },
+    \\    {
+    \\      "type": "object",
+    \\      "required": ["method", "params"],
+    \\      "properties": {
+    \\        "method": { "const": "environment/info" },
+    \\        "params": { "$ref": "v2/EnvironmentInfoParams.json" }
+    \\      },
+    \\      "additionalProperties": true
+    \\    },
+    \\    {
+    \\      "type": "object",
+    \\      "required": ["method", "params"],
+    \\      "properties": {
+    \\        "method": { "const": "environment/status" },
+    \\        "params": { "$ref": "v2/EnvironmentStatusParams.json" }
+    \\      },
+    \\      "additionalProperties": true
+    \\    },
+    \\    {
+    \\      "type": "object",
     \\      "required": ["method"],
     \\      "properties": {
     \\        "method": { "type": "string" },
@@ -14210,6 +14426,24 @@ const SERVER_NOTIFICATION_JSON_SCHEMA =
     \\      "properties": {
     \\        "method": { "const": "thread/settings/updated" },
     \\        "params": { "$ref": "v2/ThreadSettingsUpdatedNotification.json" }
+    \\      },
+    \\      "additionalProperties": true
+    \\    },
+    \\    {
+    \\      "type": "object",
+    \\      "required": ["method", "params"],
+    \\      "properties": {
+    \\        "method": { "const": "thread/environment/connected" },
+    \\        "params": { "$ref": "v2/EnvironmentConnectionNotification.json" }
+    \\      },
+    \\      "additionalProperties": true
+    \\    },
+    \\    {
+    \\      "type": "object",
+    \\      "required": ["method", "params"],
+    \\      "properties": {
+    \\        "method": { "const": "thread/environment/disconnected" },
+    \\        "params": { "$ref": "v2/EnvironmentConnectionNotification.json" }
     \\      },
     \\      "additionalProperties": true
     \\    },
@@ -17161,6 +17395,153 @@ const REMOTE_CONTROL_CLIENTS_REVOKE_RESPONSE_JSON_SCHEMA =
     \\  "title": "RemoteControlClientsRevokeResponse",
     \\  "type": "object",
     \\  "additionalProperties": false
+    \\}
+    \\
+;
+
+const ENVIRONMENT_ADD_PARAMS_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "EnvironmentAddParams",
+    \\  "type": "object",
+    \\  "required": ["environmentId", "execServerUrl"],
+    \\  "properties": {
+    \\    "environmentId": { "type": "string" },
+    \\    "execServerUrl": { "type": "string" },
+    \\    "connectTimeoutMs": { "type": ["integer", "null"], "minimum": 0 }
+    \\  },
+    \\  "additionalProperties": true
+    \\}
+    \\
+;
+
+const ENVIRONMENT_ADD_RESPONSE_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "EnvironmentAddResponse",
+    \\  "type": "object",
+    \\  "additionalProperties": false
+    \\}
+    \\
+;
+
+const ENVIRONMENT_INFO_PARAMS_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "EnvironmentInfoParams",
+    \\  "type": "object",
+    \\  "required": ["environmentId"],
+    \\  "properties": {
+    \\    "environmentId": { "type": "string" }
+    \\  },
+    \\  "additionalProperties": true
+    \\}
+    \\
+;
+
+const ENVIRONMENT_SHELL_INFO_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "EnvironmentShellInfo",
+    \\  "type": "object",
+    \\  "required": ["name", "path"],
+    \\  "properties": {
+    \\    "name": { "type": "string" },
+    \\    "path": { "type": "string" }
+    \\  },
+    \\  "additionalProperties": false
+    \\}
+    \\
+;
+
+const ENVIRONMENT_INFO_RESPONSE_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "EnvironmentInfoResponse",
+    \\  "type": "object",
+    \\  "required": ["shell"],
+    \\  "properties": {
+    \\    "shell": { "$ref": "#/$defs/EnvironmentShellInfo" },
+    \\    "cwd": {
+    \\      "anyOf": [
+    \\        { "$ref": "#/$defs/PathUri" },
+    \\        { "type": "null" }
+    \\      ]
+    \\    }
+    \\  },
+    \\  "$defs": {
+    \\    "PathUri": { "type": "string" },
+    \\    "EnvironmentShellInfo": {
+    \\      "type": "object",
+    \\      "required": ["name", "path"],
+    \\      "properties": {
+    \\        "name": { "type": "string" },
+    \\        "path": { "type": "string" }
+    \\      },
+    \\      "additionalProperties": true
+    \\    }
+    \\  },
+    \\  "additionalProperties": true
+    \\}
+    \\
+;
+
+const ENVIRONMENT_CONNECTION_NOTIFICATION_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "EnvironmentConnectionNotification",
+    \\  "type": "object",
+    \\  "required": ["environmentId", "threadId"],
+    \\  "properties": {
+    \\    "environmentId": { "type": "string" },
+    \\    "threadId": { "type": "string" }
+    \\  },
+    \\  "additionalProperties": true
+    \\}
+    \\
+;
+
+const ENVIRONMENT_STATUS_KIND_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "EnvironmentStatusKind",
+    \\  "type": "string",
+    \\  "enum": ["ready", "pending", "disconnected", "unknown"]
+    \\}
+    \\
+;
+
+const ENVIRONMENT_STATUS_PARAMS_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "EnvironmentStatusParams",
+    \\  "type": "object",
+    \\  "required": ["environmentId"],
+    \\  "properties": {
+    \\    "environmentId": { "type": "string" }
+    \\  },
+    \\  "additionalProperties": true
+    \\}
+    \\
+;
+
+const ENVIRONMENT_STATUS_RESPONSE_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "EnvironmentStatusResponse",
+    \\  "type": "object",
+    \\  "required": ["status"],
+    \\  "properties": {
+    \\    "status": { "$ref": "#/$defs/EnvironmentStatusKind" },
+    \\    "error": { "type": ["string", "null"] }
+    \\  },
+    \\  "$defs": {
+    \\    "EnvironmentStatusKind": {
+    \\      "type": "string",
+    \\      "enum": ["ready", "pending", "disconnected", "unknown"]
+    \\    }
+    \\  },
+    \\  "additionalProperties": true
     \\}
     \\
 ;
@@ -20378,6 +20759,16 @@ const ABSOLUTE_PATH_BUF_JSON_SCHEMA =
     \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
     \\  "title": "AbsolutePathBuf",
     \\  "description": "A path that is guaranteed to be absolute and normalized. When deserializing an AbsolutePathBuf, a base path must be set unless the path is already absolute.",
+    \\  "type": "string"
+    \\}
+    \\
+;
+
+const PATH_URI_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "PathUri",
+    \\  "description": "An immutable, cross-platform representation of a file: URI.",
     \\  "type": "string"
     \\}
     \\
@@ -26522,6 +26913,9 @@ const APP_SERVER_PROTOCOL_SCHEMA_BUNDLE =
     \\    "AbsolutePathBuf": {
     \\      "type": "string"
     \\    },
+    \\    "PathUri": {
+    \\      "type": "string"
+    \\    },
     \\    "AuthMode": {
     \\      "enum": ["apikey", "chatgpt", "chatgptAuthTokens", "agentIdentity"],
     \\      "type": "string"
@@ -27183,6 +27577,81 @@ const APP_SERVER_PROTOCOL_SCHEMA_BUNDLE =
     \\    "RemoteControlClientsRevokeResponse": {
     \\      "type": "object",
     \\      "additionalProperties": false
+    \\    },
+    \\    "EnvironmentAddParams": {
+    \\      "type": "object",
+    \\      "required": ["environmentId", "execServerUrl"],
+    \\      "properties": {
+    \\        "environmentId": { "type": "string" },
+    \\        "execServerUrl": { "type": "string" },
+    \\        "connectTimeoutMs": { "type": ["integer", "null"], "minimum": 0 }
+    \\      },
+    \\      "additionalProperties": true
+    \\    },
+    \\    "EnvironmentAddResponse": {
+    \\      "type": "object",
+    \\      "additionalProperties": false
+    \\    },
+    \\    "EnvironmentInfoParams": {
+    \\      "type": "object",
+    \\      "required": ["environmentId"],
+    \\      "properties": {
+    \\        "environmentId": { "type": "string" }
+    \\      },
+    \\      "additionalProperties": true
+    \\    },
+    \\    "EnvironmentShellInfo": {
+    \\      "type": "object",
+    \\      "required": ["name", "path"],
+    \\      "properties": {
+    \\        "name": { "type": "string" },
+    \\        "path": { "type": "string" }
+    \\      },
+    \\      "additionalProperties": true
+    \\    },
+    \\    "EnvironmentInfoResponse": {
+    \\      "type": "object",
+    \\      "required": ["shell"],
+    \\      "properties": {
+    \\        "shell": { "$ref": "#/$defs/EnvironmentShellInfo" },
+    \\        "cwd": {
+    \\          "anyOf": [
+    \\            { "$ref": "#/$defs/PathUri" },
+    \\            { "type": "null" }
+    \\          ]
+    \\        }
+    \\      },
+    \\      "additionalProperties": true
+    \\    },
+    \\    "EnvironmentConnectionNotification": {
+    \\      "type": "object",
+    \\      "required": ["environmentId", "threadId"],
+    \\      "properties": {
+    \\        "environmentId": { "type": "string" },
+    \\        "threadId": { "type": "string" }
+    \\      },
+    \\      "additionalProperties": true
+    \\    },
+    \\    "EnvironmentStatusKind": {
+    \\      "type": "string",
+    \\      "enum": ["ready", "pending", "disconnected", "unknown"]
+    \\    },
+    \\    "EnvironmentStatusParams": {
+    \\      "type": "object",
+    \\      "required": ["environmentId"],
+    \\      "properties": {
+    \\        "environmentId": { "type": "string" }
+    \\      },
+    \\      "additionalProperties": true
+    \\    },
+    \\    "EnvironmentStatusResponse": {
+    \\      "type": "object",
+    \\      "required": ["status"],
+    \\      "properties": {
+    \\        "status": { "$ref": "#/$defs/EnvironmentStatusKind" },
+    \\        "error": { "type": ["string", "null"] }
+    \\      },
+    \\      "additionalProperties": true
     \\    },
     \\    "AddCreditsNudgeCreditType": {
     \\      "enum": ["credits", "usage_limit"],
@@ -29981,6 +30450,15 @@ const APP_SERVER_JSON_SCHEMA_FILES = [_]SchemaFile{
     .{ .name = "RemoteControlClientsListResponse.json", .contents = REMOTE_CONTROL_CLIENTS_LIST_RESPONSE_JSON_SCHEMA },
     .{ .name = "RemoteControlClientsRevokeParams.json", .contents = REMOTE_CONTROL_CLIENTS_REVOKE_PARAMS_JSON_SCHEMA },
     .{ .name = "RemoteControlClientsRevokeResponse.json", .contents = REMOTE_CONTROL_CLIENTS_REVOKE_RESPONSE_JSON_SCHEMA },
+    .{ .name = "EnvironmentAddParams.json", .contents = ENVIRONMENT_ADD_PARAMS_JSON_SCHEMA },
+    .{ .name = "EnvironmentAddResponse.json", .contents = ENVIRONMENT_ADD_RESPONSE_JSON_SCHEMA },
+    .{ .name = "EnvironmentConnectionNotification.json", .contents = ENVIRONMENT_CONNECTION_NOTIFICATION_JSON_SCHEMA },
+    .{ .name = "EnvironmentInfoParams.json", .contents = ENVIRONMENT_INFO_PARAMS_JSON_SCHEMA },
+    .{ .name = "EnvironmentInfoResponse.json", .contents = ENVIRONMENT_INFO_RESPONSE_JSON_SCHEMA },
+    .{ .name = "EnvironmentShellInfo.json", .contents = ENVIRONMENT_SHELL_INFO_JSON_SCHEMA },
+    .{ .name = "EnvironmentStatusKind.json", .contents = ENVIRONMENT_STATUS_KIND_JSON_SCHEMA },
+    .{ .name = "EnvironmentStatusParams.json", .contents = ENVIRONMENT_STATUS_PARAMS_JSON_SCHEMA },
+    .{ .name = "EnvironmentStatusResponse.json", .contents = ENVIRONMENT_STATUS_RESPONSE_JSON_SCHEMA },
     .{ .name = "v2/RemoteControlPairingStartParams.json", .contents = REMOTE_CONTROL_PAIRING_START_PARAMS_JSON_SCHEMA },
     .{ .name = "v2/RemoteControlPairingStartResponse.json", .contents = REMOTE_CONTROL_PAIRING_START_RESPONSE_JSON_SCHEMA },
     .{ .name = "v2/RemoteControlPairingStatusParams.json", .contents = REMOTE_CONTROL_PAIRING_STATUS_PARAMS_JSON_SCHEMA },
@@ -29991,6 +30469,15 @@ const APP_SERVER_JSON_SCHEMA_FILES = [_]SchemaFile{
     .{ .name = "v2/RemoteControlClientsListResponse.json", .contents = REMOTE_CONTROL_CLIENTS_LIST_RESPONSE_JSON_SCHEMA },
     .{ .name = "v2/RemoteControlClientsRevokeParams.json", .contents = REMOTE_CONTROL_CLIENTS_REVOKE_PARAMS_JSON_SCHEMA },
     .{ .name = "v2/RemoteControlClientsRevokeResponse.json", .contents = REMOTE_CONTROL_CLIENTS_REVOKE_RESPONSE_JSON_SCHEMA },
+    .{ .name = "v2/EnvironmentAddParams.json", .contents = ENVIRONMENT_ADD_PARAMS_JSON_SCHEMA },
+    .{ .name = "v2/EnvironmentAddResponse.json", .contents = ENVIRONMENT_ADD_RESPONSE_JSON_SCHEMA },
+    .{ .name = "v2/EnvironmentConnectionNotification.json", .contents = ENVIRONMENT_CONNECTION_NOTIFICATION_JSON_SCHEMA },
+    .{ .name = "v2/EnvironmentInfoParams.json", .contents = ENVIRONMENT_INFO_PARAMS_JSON_SCHEMA },
+    .{ .name = "v2/EnvironmentInfoResponse.json", .contents = ENVIRONMENT_INFO_RESPONSE_JSON_SCHEMA },
+    .{ .name = "v2/EnvironmentShellInfo.json", .contents = ENVIRONMENT_SHELL_INFO_JSON_SCHEMA },
+    .{ .name = "v2/EnvironmentStatusKind.json", .contents = ENVIRONMENT_STATUS_KIND_JSON_SCHEMA },
+    .{ .name = "v2/EnvironmentStatusParams.json", .contents = ENVIRONMENT_STATUS_PARAMS_JSON_SCHEMA },
+    .{ .name = "v2/EnvironmentStatusResponse.json", .contents = ENVIRONMENT_STATUS_RESPONSE_JSON_SCHEMA },
     .{ .name = "AddCreditsNudgeCreditType.json", .contents = ADD_CREDITS_NUDGE_CREDIT_TYPE_JSON_SCHEMA },
     .{ .name = "SendAddCreditsNudgeEmailParams.json", .contents = SEND_ADD_CREDITS_NUDGE_EMAIL_PARAMS_JSON_SCHEMA },
     .{ .name = "AddCreditsNudgeEmailStatus.json", .contents = ADD_CREDITS_NUDGE_EMAIL_STATUS_JSON_SCHEMA },
@@ -30110,6 +30597,7 @@ const APP_SERVER_JSON_SCHEMA_FILES = [_]SchemaFile{
     .{ .name = "ExperimentalFeatureEnablementSetResponse.json", .contents = EXPERIMENTAL_FEATURE_ENABLEMENT_SET_RESPONSE_JSON_SCHEMA },
     .{ .name = "CommandExecTerminalSize.json", .contents = COMMAND_EXEC_TERMINAL_SIZE_JSON_SCHEMA },
     .{ .name = "AbsolutePathBuf.json", .contents = ABSOLUTE_PATH_BUF_JSON_SCHEMA },
+    .{ .name = "PathUri.json", .contents = PATH_URI_JSON_SCHEMA },
     .{ .name = "FsReadFileParams.json", .contents = FS_READ_FILE_PARAMS_JSON_SCHEMA },
     .{ .name = "FsReadFileResponse.json", .contents = FS_READ_FILE_RESPONSE_JSON_SCHEMA },
     .{ .name = "FsWriteFileParams.json", .contents = FS_WRITE_FILE_PARAMS_JSON_SCHEMA },
@@ -30367,6 +30855,15 @@ const APP_SERVER_JSON_SCHEMA_VERSIONED_ALIASES = [_][]const u8{
     "v2/ContextCompactedNotification.json",
     "v2/DeprecationNoticeNotification.json",
     "v2/ErrorNotification.json",
+    "v2/EnvironmentAddParams.json",
+    "v2/EnvironmentAddResponse.json",
+    "v2/EnvironmentConnectionNotification.json",
+    "v2/EnvironmentInfoParams.json",
+    "v2/EnvironmentInfoResponse.json",
+    "v2/EnvironmentShellInfo.json",
+    "v2/EnvironmentStatusKind.json",
+    "v2/EnvironmentStatusParams.json",
+    "v2/EnvironmentStatusResponse.json",
     "v2/ExperimentalFeatureEnablementSetParams.json",
     "v2/ExperimentalFeatureEnablementSetResponse.json",
     "v2/ExperimentalFeatureListParams.json",
@@ -30575,6 +31072,7 @@ const APP_SERVER_TS_FILES = [_]SchemaFile{
     .{ .name = "ServerNotification.ts", .contents = SERVER_NOTIFICATION_TS },
     .{ .name = "index.ts", .contents = INDEX_TS },
     .{ .name = "AbsolutePathBuf.ts", .contents = ABSOLUTE_PATH_BUF_TS },
+    .{ .name = "PathUri.ts", .contents = PATH_URI_TS },
     .{ .name = "AgentPath.ts", .contents = AGENT_PATH_TS },
     .{ .name = "ApplyPatchApprovalParams.ts", .contents = APPLY_PATCH_APPROVAL_PARAMS_TS },
     .{ .name = "ApplyPatchApprovalResponse.ts", .contents = APPLY_PATCH_APPROVAL_RESPONSE_TS },
@@ -30738,6 +31236,15 @@ const APP_SERVER_TS_FILES = [_]SchemaFile{
     .{ .name = "v2/RemoteControlClientsListResponse.ts", .contents = REMOTE_CONTROL_CLIENTS_LIST_RESPONSE_TS },
     .{ .name = "v2/RemoteControlClientsRevokeParams.ts", .contents = REMOTE_CONTROL_CLIENTS_REVOKE_PARAMS_TS },
     .{ .name = "v2/RemoteControlClientsRevokeResponse.ts", .contents = REMOTE_CONTROL_CLIENTS_REVOKE_RESPONSE_TS },
+    .{ .name = "v2/EnvironmentAddParams.ts", .contents = ENVIRONMENT_ADD_PARAMS_TS },
+    .{ .name = "v2/EnvironmentAddResponse.ts", .contents = ENVIRONMENT_ADD_RESPONSE_TS },
+    .{ .name = "v2/EnvironmentConnectionNotification.ts", .contents = ENVIRONMENT_CONNECTION_NOTIFICATION_TS },
+    .{ .name = "v2/EnvironmentInfoParams.ts", .contents = ENVIRONMENT_INFO_PARAMS_TS },
+    .{ .name = "v2/EnvironmentInfoResponse.ts", .contents = ENVIRONMENT_INFO_RESPONSE_TS },
+    .{ .name = "v2/EnvironmentShellInfo.ts", .contents = ENVIRONMENT_SHELL_INFO_TS },
+    .{ .name = "v2/EnvironmentStatusKind.ts", .contents = ENVIRONMENT_STATUS_KIND_TS },
+    .{ .name = "v2/EnvironmentStatusParams.ts", .contents = ENVIRONMENT_STATUS_PARAMS_TS },
+    .{ .name = "v2/EnvironmentStatusResponse.ts", .contents = ENVIRONMENT_STATUS_RESPONSE_TS },
     .{ .name = "v2/AddCreditsNudgeCreditType.ts", .contents = ADD_CREDITS_NUDGE_CREDIT_TYPE_TS },
     .{ .name = "v2/SendAddCreditsNudgeEmailParams.ts", .contents = SEND_ADD_CREDITS_NUDGE_EMAIL_PARAMS_TS },
     .{ .name = "v2/AddCreditsNudgeEmailStatus.ts", .contents = ADD_CREDITS_NUDGE_EMAIL_STATUS_TS },
@@ -32330,6 +32837,12 @@ fn handleJsonRpcLine(allocator: std.mem.Allocator, state: *AppServerState, line:
         defer allocator.free(result);
         return try renderJsonRpcResult(allocator, id_value.?, result);
     }
+    if (isEnvironmentMethod(method)) {
+        if (try validateEnvironmentRequestParams(allocator, method, object.get("params"))) |message| {
+            defer allocator.free(message);
+            return try renderJsonRpcError(allocator, id_value, -32600, message);
+        }
+    }
     if (experimentalReasonForRequestMethod(method)) |reason| {
         if (!state.experimental_api_enabled) {
             return try renderExperimentalApiRequiredError(allocator, id_value, reason);
@@ -32342,6 +32855,9 @@ fn handleJsonRpcLine(allocator: std.mem.Allocator, state: *AppServerState, line:
     }
     if (isRemoteControlMethod(method)) {
         return try handleRemoteControlMethod(allocator, state, id_value.?, method, object.get("params"));
+    }
+    if (isEnvironmentMethod(method)) {
+        return try handleEnvironmentMethod(allocator, state, id_value.?, method, object.get("params"));
     }
     if (std.mem.eql(u8, method, "memory/reset")) {
         return try handleMemoryReset(allocator, state, id_value.?);
@@ -42032,6 +42548,171 @@ fn remoteControlInvalidValueMessage(allocator: std.mem.Allocator, value: std.jso
     };
 }
 
+fn isEnvironmentMethod(method: []const u8) bool {
+    return std.mem.eql(u8, method, "environment/add") or
+        std.mem.eql(u8, method, "environment/info") or
+        std.mem.eql(u8, method, "environment/status");
+}
+
+fn validateEnvironmentRequestParams(allocator: std.mem.Allocator, method: []const u8, params_value: ?std.json.Value) !?[]const u8 {
+    const params = params_value orelse return try remoteControlMissingParamsMessage(allocator);
+    if (params == .null) return try remoteControlMissingParamsMessage(allocator);
+    if (params == .array) {
+        const struct_name, const expected_len = environmentParamsStructShape(method);
+        return try std.fmt.allocPrint(
+            allocator,
+            "Invalid request: invalid length {d}, expected struct {s} with {d} elements",
+            .{ params.array.items.len, struct_name, expected_len },
+        );
+    }
+    if (params != .object) {
+        const struct_name, _ = environmentParamsStructShape(method);
+        return try std.fmt.allocPrint(allocator, "Invalid request: expected struct {s}", .{struct_name});
+    }
+
+    const object = params.object;
+    if (try validateRemoteControlRequiredStringField(allocator, object, "environmentId")) |message| return message;
+    if (std.mem.eql(u8, method, "environment/add")) {
+        if (try validateRemoteControlRequiredStringField(allocator, object, "execServerUrl")) |message| return message;
+        if (object.get("connectTimeoutMs")) |value| {
+            if (try validateEnvironmentOptionalU64Field(allocator, value)) |message| return message;
+        }
+    }
+    return null;
+}
+
+fn environmentParamsStructShape(method: []const u8) struct { []const u8, usize } {
+    if (std.mem.eql(u8, method, "environment/add")) return .{ "EnvironmentAddParams", 3 };
+    if (std.mem.eql(u8, method, "environment/info")) return .{ "EnvironmentInfoParams", 1 };
+    return .{ "EnvironmentStatusParams", 1 };
+}
+
+fn validateEnvironmentOptionalU64Field(allocator: std.mem.Allocator, value: std.json.Value) !?[]const u8 {
+    if (value == .null) return null;
+    switch (value) {
+        .integer => |integer| {
+            if (integer < 0) return try remoteControlInvalidValueMessage(allocator, value, "u64");
+            return null;
+        },
+        .number_string => |number| {
+            _ = std.fmt.parseUnsigned(u64, number, 10) catch return try remoteControlInvalidValueMessage(allocator, value, "u64");
+            return null;
+        },
+        else => return try remoteControlInvalidTypeMessage(allocator, value, "u64"),
+    }
+}
+
+fn handleEnvironmentMethod(
+    allocator: std.mem.Allocator,
+    state: *AppServerState,
+    id_value: std.json.Value,
+    method: []const u8,
+    params_value: ?std.json.Value,
+) ![]const u8 {
+    const params = params_value.?.object;
+    const environment_id = params.get("environmentId").?.string;
+
+    if (std.mem.eql(u8, method, "environment/add")) {
+        const exec_server_url = params.get("execServerUrl").?.string;
+        try upsertEnvironmentEntry(allocator, state, environment_id, exec_server_url);
+        return renderJsonRpcResult(allocator, id_value, "{}");
+    }
+
+    const index = findEnvironmentEntryIndex(state, environment_id) orelse {
+        const message = try std.fmt.allocPrint(allocator, "unknown environment id `{s}`", .{environment_id});
+        defer allocator.free(message);
+        if (std.mem.eql(u8, method, "environment/status")) {
+            const result = try renderEnvironmentStatusResult(allocator, "unknown", message);
+            defer allocator.free(result);
+            return renderJsonRpcResult(allocator, id_value, result);
+        }
+        return renderJsonRpcError(allocator, id_value, -32600, message);
+    };
+
+    const entry = &state.environments.items[index];
+    if (std.mem.eql(u8, method, "environment/status")) {
+        const status: []const u8 = if (entry.disconnected_error != null) "disconnected" else "pending";
+        const result = try renderEnvironmentStatusResult(allocator, status, entry.disconnected_error);
+        defer allocator.free(result);
+        return renderJsonRpcResult(allocator, id_value, result);
+    }
+
+    const connection_error = if (entry.disconnected_error) |message|
+        try allocator.dupe(u8, message)
+    else
+        try std.fmt.allocPrint(
+            allocator,
+            "exec-server connection attempt failed: failed to connect to exec-server websocket `{s}`: live exec-server connections are not supported yet",
+            .{entry.exec_server_url},
+        );
+    defer allocator.free(connection_error);
+
+    const message = try std.fmt.allocPrint(
+        allocator,
+        "failed to get info for environment `{s}`: {s}",
+        .{ environment_id, connection_error },
+    );
+    defer allocator.free(message);
+    return renderJsonRpcError(allocator, id_value, -32603, message);
+}
+
+fn findEnvironmentEntryIndex(state: *const AppServerState, environment_id: []const u8) ?usize {
+    for (state.environments.items, 0..) |entry, index| {
+        if (std.mem.eql(u8, entry.environment_id, environment_id)) return index;
+    }
+    return null;
+}
+
+fn upsertEnvironmentEntry(
+    allocator: std.mem.Allocator,
+    state: *AppServerState,
+    environment_id: []const u8,
+    exec_server_url: []const u8,
+) !void {
+    var entry = EnvironmentEntry{
+        .environment_id = try allocator.dupe(u8, environment_id),
+        .exec_server_url = try allocator.dupe(u8, exec_server_url),
+        .disconnected_error = try environmentInitialDisconnectedError(allocator, exec_server_url),
+    };
+    errdefer entry.deinit(allocator);
+
+    if (findEnvironmentEntryIndex(state, environment_id)) |index| {
+        state.environments.items[index].deinit(allocator);
+        state.environments.items[index] = entry;
+        return;
+    }
+
+    try state.environments.append(allocator, entry);
+}
+
+fn environmentInitialDisconnectedError(allocator: std.mem.Allocator, exec_server_url: []const u8) !?[]const u8 {
+    if (std.mem.startsWith(u8, exec_server_url, "ws://") or std.mem.startsWith(u8, exec_server_url, "wss://")) {
+        return null;
+    }
+    return try std.fmt.allocPrint(
+        allocator,
+        "exec-server connection attempt failed: failed to connect to exec-server websocket `{s}`: URL error: URL scheme not supported",
+        .{exec_server_url},
+    );
+}
+
+fn renderEnvironmentStatusResult(
+    allocator: std.mem.Allocator,
+    status: []const u8,
+    error_message: ?[]const u8,
+) ![]const u8 {
+    var result: std.ArrayList(u8) = .empty;
+    errdefer result.deinit(allocator);
+    try result.appendSlice(allocator, "{\"status\":");
+    try appendJsonString(allocator, &result, status);
+    if (error_message) |message| {
+        try result.appendSlice(allocator, ",\"error\":");
+        try appendJsonString(allocator, &result, message);
+    }
+    try result.append(allocator, '}');
+    return try result.toOwnedSlice(allocator);
+}
+
 fn handleRemoteControlStatusMutation(
     allocator: std.mem.Allocator,
     state: *AppServerState,
@@ -49833,6 +50514,9 @@ fn experimentalReasonForRequestMethod(method: []const u8) ?[]const u8 {
         "remoteControl/pairing/status",
         "remoteControl/client/list",
         "remoteControl/client/revoke",
+        "environment/add",
+        "environment/info",
+        "environment/status",
     }) |experimental_method| {
         if (std.mem.eql(u8, method, experimental_method)) return experimental_method;
     }
