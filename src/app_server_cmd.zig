@@ -46538,7 +46538,7 @@ const ThreadTurnItemsView = enum {
 };
 
 fn renderThreadTurnsListResponse(allocator: std.mem.Allocator, thread: *const LoadedThread, params: std.json.ObjectMap) ![]const u8 {
-    return renderThreadTurnsListResponseWithDefaultItemsView(allocator, thread, params, .full);
+    return renderThreadTurnsListResponseWithDefaultItemsView(allocator, thread, params, .summary);
 }
 
 fn renderThreadTurnsListResponseWithDefaultItemsView(

@@ -20038,6 +20038,10 @@ def run_thread_resume_rpc_smoke(binary: Path) -> None:
             assert state_db_only_turns["id"] == "thread-turns-list-state-db-only-rollout"
             state_db_turn_page = state_db_only_turns["result"]["data"]
             assert [turn["id"] for turn in state_db_turn_page] == ["turn-1", "turn-0"]
+            assert [turn["itemsView"] for turn in state_db_turn_page] == [
+                "summary",
+                "summary",
+            ]
             assert state_db_turn_page[0]["items"][0]["text"] == "state db only hi"
             assert (
                 state_db_turn_page[1]["items"][0]["content"][0]["text"]
@@ -20400,6 +20404,7 @@ def run_thread_resume_rpc_smoke(binary: Path) -> None:
             assert saved_turns_page_one["id"] == "thread-turns-list-saved-zig-page-one"
             saved_page_one = saved_turns_page_one["result"]
             assert saved_page_one["data"][0]["id"] == "turn-1"
+            assert saved_page_one["data"][0]["itemsView"] == "summary"
             assert saved_page_one["data"][0]["items"][0]["type"] == "agentMessage"
             assert saved_page_one["data"][0]["items"][0]["text"] == "saved hi"
             assert json.loads(saved_page_one["nextCursor"]) == {
@@ -20410,6 +20415,30 @@ def run_thread_resume_rpc_smoke(binary: Path) -> None:
                 "turnId": "turn-1",
                 "includeAnchor": True,
             }
+
+            write_json_line(
+                proc,
+                {
+                    "jsonrpc": "2.0",
+                    "id": "thread-turns-list-saved-zig-full-view",
+                    "method": "thread/turns/list",
+                    "params": {
+                        "threadId": resume_thread_id,
+                        "limit": 1,
+                        "itemsView": "full",
+                    },
+                },
+            )
+            saved_turns_full_view = read_json_line(proc, 5)
+            assert (
+                saved_turns_full_view["id"]
+                == "thread-turns-list-saved-zig-full-view"
+            )
+            saved_full_view_page = saved_turns_full_view["result"]
+            assert saved_full_view_page["data"][0]["id"] == "turn-1"
+            assert saved_full_view_page["data"][0]["itemsView"] == "full"
+            assert saved_full_view_page["data"][0]["items"][0]["type"] == "agentMessage"
+            assert saved_full_view_page["data"][0]["items"][0]["text"] == "saved hi"
 
             write_json_line(
                 proc,
@@ -20428,6 +20457,7 @@ def run_thread_resume_rpc_smoke(binary: Path) -> None:
             assert saved_turns_page_two["id"] == "thread-turns-list-saved-zig-page-two"
             saved_page_two = saved_turns_page_two["result"]
             assert saved_page_two["data"][0]["id"] == "turn-0"
+            assert saved_page_two["data"][0]["itemsView"] == "summary"
             assert (
                 saved_page_two["data"][0]["items"][0]["content"][0]["text"]
                 == "saved hello"
@@ -20509,6 +20539,9 @@ def run_thread_resume_rpc_smoke(binary: Path) -> None:
                 "turn-1",
                 "turn-0",
             ]
+            assert [
+                turn["itemsView"] for turn in archived_zig_turns["result"]["data"]
+            ] == ["summary", "summary"]
             assert archived_zig_turns["result"]["nextCursor"] is None
 
             write_json_line(
@@ -42826,12 +42859,32 @@ def run_external_agent_config_rpc_smoke(binary: Path) -> None:
         assert imported_thread_turns["id"] == "external-agent-turns-list-imported-session"
         imported_turn_page = imported_thread_turns["result"]["data"]
         assert len(imported_turn_page) == 1
+        assert imported_turn_page[0]["itemsView"] == "summary"
         assert [item["type"] for item in imported_turn_page[0]["items"]] == [
+            "userMessage",
+            "agentMessage",
+        ]
+        assert imported_turn_page[0]["items"][1]["text"] == "<EXTERNAL SESSION IMPORTED>"
+        assert imported_thread_turns["result"]["nextCursor"] is None
+
+        imported_thread_turns_full = rpc(
+            "external-agent-turns-list-imported-session-full",
+            "thread/turns/list",
+            {"threadId": imported_thread_id, "itemsView": "full"},
+        )
+        assert (
+            imported_thread_turns_full["id"]
+            == "external-agent-turns-list-imported-session-full"
+        )
+        imported_turn_full_page = imported_thread_turns_full["result"]["data"]
+        assert len(imported_turn_full_page) == 1
+        assert imported_turn_full_page[0]["itemsView"] == "full"
+        assert [item["type"] for item in imported_turn_full_page[0]["items"]] == [
             "userMessage",
             "agentMessage",
             "agentMessage",
         ]
-        assert imported_thread_turns["result"]["nextCursor"] is None
+        assert imported_thread_turns_full["result"]["nextCursor"] is None
 
         detect_after_session_import = rpc(
             "external-agent-detect-after-session-import",
