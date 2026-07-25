@@ -2479,6 +2479,90 @@ def exercise_non_stdio_command_exec_session(
         "stderr": "",
     }
 
+    tty_id = f"{label}-command-exec-tty"
+    tty_resize_id = f"{label}-command-exec-tty-resize"
+    tty_write_id = f"{label}-command-exec-tty-write"
+    tty_process_id = f"{label}-command-tty-proc"
+    tty_script = (
+        "import os,sys; "
+        "size=os.get_terminal_size(0); "
+        "print(f'{size.lines} {size.columns}', flush=True); "
+        "line=sys.stdin.readline().strip(); "
+        "size=os.get_terminal_size(0); "
+        "print(f'{size.lines} {size.columns}', flush=True); "
+        "print('GOT:' + line, flush=True)"
+    )
+    write_json(
+        {
+            "jsonrpc": "2.0",
+            "id": tty_id,
+            "method": "command/exec",
+            "params": {
+                "command": [sys.executable, "-c", tty_script],
+                "processId": tty_process_id,
+                "tty": True,
+                "size": {"rows": 24, "cols": 80},
+                "timeoutMs": 5000,
+            },
+        }
+    )
+    tty_initial_messages = read_rpc_messages_until(
+        tty_id,
+        read_json,
+        5,
+        lambda messages: b"24 80"
+        in decoded_command_exec_output(messages, tty_process_id),
+    )
+    write_json(
+        {
+            "jsonrpc": "2.0",
+            "id": tty_resize_id,
+            "method": "command/exec/resize",
+            "params": {
+                "processId": tty_process_id,
+                "size": {"rows": 40, "cols": 100},
+            },
+        }
+    )
+    tty_resize_messages = read_rpc_messages_until(
+        tty_resize_id,
+        read_json,
+        5,
+        lambda messages: has_response(messages, tty_resize_id),
+    )
+    tty_resize_response = find_response(tty_resize_messages, tty_resize_id)
+    assert tty_resize_response["result"] == {}
+    write_json(
+        {
+            "jsonrpc": "2.0",
+            "id": tty_write_id,
+            "method": "command/exec/write",
+            "params": {
+                "processId": tty_process_id,
+                "deltaBase64": base64.b64encode(b"hello\n").decode("ascii"),
+            },
+        }
+    )
+    tty_finish_messages = read_rpc_messages_until(
+        tty_id,
+        read_json,
+        5,
+        lambda messages: has_response(messages, tty_id)
+        and has_response(messages, tty_write_id)
+        and b"40 100"
+        in decoded_command_exec_output(tty_initial_messages + messages, tty_process_id)
+        and b"GOT:hello"
+        in decoded_command_exec_output(tty_initial_messages + messages, tty_process_id),
+    )
+    tty_write_response = find_response(tty_finish_messages, tty_write_id)
+    tty_response = find_response(tty_finish_messages, tty_id)
+    assert tty_write_response["result"] == {}
+    assert tty_response["result"] == {
+        "exitCode": 0,
+        "stdout": "",
+        "stderr": "",
+    }
+
 
 def exercise_non_stdio_process_session(
     label: str,
@@ -2586,6 +2670,97 @@ def exercise_non_stdio_process_session(
     assert stdin_exited["params"]["exitCode"] == 0
     assert stdin_exited["params"]["stdout"] == ""
     assert stdin_exited["params"]["stderr"] == ""
+
+    pty_id = f"{label}-process-spawn-pty"
+    pty_resize_id = f"{label}-process-resize-pty"
+    pty_write_id = f"{label}-process-write-pty"
+    pty_handle = f"{label}-proc-pty"
+    pty_script = "\n".join(
+        [
+            "import fcntl, struct, sys, termios",
+            "def size():",
+            "    rows, cols, _, _ = struct.unpack('HHHH', fcntl.ioctl(0, termios.TIOCGWINSZ, struct.pack('HHHH', 0, 0, 0, 0)))",
+            "    return f'{rows} {cols}'",
+            "print('SIZE:' + size(), flush=True)",
+            "line = sys.stdin.readline().strip()",
+            "print('AFTER:' + size(), flush=True)",
+            "print('LINE:' + line, flush=True)",
+        ]
+    )
+    write_json(
+        {
+            "jsonrpc": "2.0",
+            "id": pty_id,
+            "method": "process/spawn",
+            "params": {
+                "command": [sys.executable, "-c", pty_script],
+                "processHandle": pty_handle,
+                "cwd": tempfile.gettempdir(),
+                "tty": True,
+                "size": {"rows": 24, "cols": 80},
+            },
+        }
+    )
+    pty_initial_messages = read_rpc_messages_until(
+        pty_id,
+        read_json,
+        5,
+        lambda messages: has_response(messages, pty_id)
+        and b"SIZE:24 80" in decoded_process_output(messages, pty_handle),
+    )
+    pty_spawn = find_response(pty_initial_messages, pty_id)
+    assert pty_spawn["result"] == {}
+    write_json(
+        {
+            "jsonrpc": "2.0",
+            "id": pty_resize_id,
+            "method": "process/resizePty",
+            "params": {
+                "processHandle": pty_handle,
+                "size": {"rows": 40, "cols": 100},
+            },
+        }
+    )
+    pty_resize_messages = read_rpc_messages_until(
+        pty_resize_id,
+        read_json,
+        5,
+        lambda messages: has_response(messages, pty_resize_id),
+    )
+    pty_resize = find_response(pty_resize_messages, pty_resize_id)
+    assert pty_resize["result"] == {}
+    write_json(
+        {
+            "jsonrpc": "2.0",
+            "id": pty_write_id,
+            "method": "process/writeStdin",
+            "params": {
+                "processHandle": pty_handle,
+                "deltaBase64": base64.b64encode(b"hello\n").decode("ascii"),
+            },
+        }
+    )
+    pty_finish_messages = read_rpc_messages_until(
+        pty_id,
+        read_json,
+        5,
+        lambda messages: has_response(messages, pty_write_id)
+        and any(
+            message.get("method") == "process/exited"
+            and message["params"]["processHandle"] == pty_handle
+            for message in messages
+        )
+        and b"AFTER:40 100"
+        in decoded_process_output(pty_initial_messages + messages, pty_handle)
+        and b"LINE:hello"
+        in decoded_process_output(pty_initial_messages + messages, pty_handle),
+    )
+    pty_write = find_response(pty_finish_messages, pty_write_id)
+    pty_exited = find_process_exited(pty_finish_messages, pty_handle)
+    assert pty_write["result"] == {}
+    assert pty_exited["params"]["exitCode"] == 0
+    assert pty_exited["params"]["stdout"] == ""
+    assert pty_exited["params"]["stderr"] == ""
 
 
 def write_json_line(proc: subprocess.Popen[str], payload: dict) -> None:
