@@ -1,4 +1,5 @@
 const std = @import("std");
+const builtin = @import("builtin");
 
 const auth = @import("auth.zig");
 const env = @import("env.zig");
@@ -1720,13 +1721,13 @@ fn checkoutPluginPath(
     local_paths: PluginShareLocalPaths,
 ) ![]const u8 {
     if (local_paths.get(remote_plugin_id)) |existing_path| {
-        try ensurePersonalMarketplacePath(home, existing_path);
+        try ensurePersonalMarketplacePath(allocator, home, existing_path);
         return allocator.dupe(u8, existing_path);
     }
 
     const path = try std.fs.path.join(allocator, &.{ home, "plugins", plugin_name });
     errdefer allocator.free(path);
-    try ensurePersonalMarketplacePath(home, path);
+    try ensurePersonalMarketplacePath(allocator, home, path);
     if (try pathExists(path)) return error.RemotePluginInvalidPluginPath;
     return path;
 }
@@ -1739,8 +1740,9 @@ fn pathExists(path: []const u8) !bool {
     return true;
 }
 
-fn ensurePersonalMarketplacePath(home: []const u8, path: []const u8) !void {
+fn ensurePersonalMarketplacePath(allocator: std.mem.Allocator, home: []const u8, path: []const u8) !void {
     _ = try personalMarketplaceRelativePath(home, path);
+    try ensurePersonalMarketplacePathCanonical(allocator, home, path);
 }
 
 fn personalMarketplaceRelativePath(home: []const u8, path: []const u8) ![]const u8 {
@@ -1759,6 +1761,78 @@ fn personalMarketplaceRelativePath(home: []const u8, path: []const u8) ![]const 
         }
     }
     return relative;
+}
+
+fn ensurePersonalMarketplacePathCanonical(allocator: std.mem.Allocator, home: []const u8, path: []const u8) !void {
+    const canonical_home = try realCheckoutPathAlloc(allocator, home);
+    defer allocator.free(canonical_home);
+
+    if (realCheckoutPathAlloc(allocator, path)) |canonical_path| {
+        defer allocator.free(canonical_path);
+        if (!checkoutPathAtOrUnder(canonical_path, canonical_home)) return error.RemotePluginInvalidPluginPath;
+        return;
+    } else |err| switch (err) {
+        error.FileNotFound, error.NotDir, error.AccessDenied => {},
+        else => return err,
+    }
+
+    const parent = std.fs.path.dirname(path) orelse return error.RemotePluginInvalidPluginPath;
+    const canonical_parent = try checkoutCanonicalMissingPath(allocator, parent);
+    defer allocator.free(canonical_parent);
+    if (!checkoutPathAtOrUnder(canonical_parent, canonical_home)) return error.RemotePluginInvalidPluginPath;
+}
+
+fn checkoutCanonicalMissingPath(allocator: std.mem.Allocator, absolute_path: []const u8) ![]const u8 {
+    var probe_end = absolute_path.len;
+    while (probe_end > 0) {
+        const probe = absolute_path[0..probe_end];
+        const real_parent = realCheckoutPathAlloc(allocator, probe) catch |err| switch (err) {
+            error.FileNotFound, error.NotDir, error.AccessDenied => {
+                const parent = std.fs.path.dirname(probe) orelse return allocator.dupe(u8, absolute_path);
+                if (parent.len >= probe.len) return allocator.dupe(u8, absolute_path);
+                probe_end = parent.len;
+                continue;
+            },
+            else => return err,
+        };
+        errdefer allocator.free(real_parent);
+
+        const suffix = if (probe_end < absolute_path.len and absolute_path[probe_end] == std.fs.path.sep)
+            absolute_path[probe_end + 1 ..]
+        else
+            absolute_path[probe_end..];
+        if (suffix.len == 0) return real_parent;
+
+        const joined = try std.fs.path.join(allocator, &.{ real_parent, suffix });
+        allocator.free(real_parent);
+        return joined;
+    }
+    return allocator.dupe(u8, absolute_path);
+}
+
+fn realCheckoutPathAlloc(allocator: std.mem.Allocator, path: []const u8) ![]const u8 {
+    const real_path = try std.Io.Dir.cwd().realPathFileAlloc(std.Io.Threaded.global_single_threaded.io(), path, allocator);
+    defer allocator.free(real_path);
+    return allocator.dupe(u8, real_path);
+}
+
+fn checkoutPathAtOrUnder(path: []const u8, root: []const u8) bool {
+    if (checkoutPathEqual(path, root)) return true;
+    if (std.mem.eql(u8, root, std.fs.path.sep_str)) return std.fs.path.isAbsolute(path);
+    if (path.len <= root.len) return false;
+    return checkoutPathStartsWith(path, root) and path[root.len] == std.fs.path.sep;
+}
+
+fn checkoutPathEqual(path: []const u8, root: []const u8) bool {
+    if (std.mem.eql(u8, path, root)) return true;
+    if (builtin.os.tag == .macos) return std.ascii.eqlIgnoreCase(path, root);
+    return false;
+}
+
+fn checkoutPathStartsWith(path: []const u8, root: []const u8) bool {
+    if (std.mem.startsWith(u8, path, root)) return true;
+    if (builtin.os.tag == .macos and path.len >= root.len) return std.ascii.eqlIgnoreCase(path[0..root.len], root);
+    return false;
 }
 
 fn recordPluginShareLocalPath(allocator: std.mem.Allocator, codex_home: []const u8, remote_plugin_id: []const u8, plugin_path: []const u8) !void {
@@ -2922,6 +2996,50 @@ test "remote share archive rejects symlink entries" {
     const plugin_path = try dir.dir.realPathFileAlloc(io, "shared", allocator);
     defer allocator.free(plugin_path);
     try std.testing.expectError(error.RemotePluginUnsupportedArchiveEntry, archivePluginForUpload(allocator, plugin_path));
+}
+
+test "remote checkout rejects symlinked plugin parent outside home" {
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
+
+    const allocator = std.testing.allocator;
+    var dir = std.testing.tmpDir(.{});
+    defer dir.cleanup();
+    const io = std.Io.Threaded.global_single_threaded.io();
+
+    try dir.dir.createDirPath(io, "home");
+    try dir.dir.createDirPath(io, "outside");
+    try dir.dir.symLink(io, "../outside", "home/plugins", .{ .is_directory = true });
+
+    const home = try dir.dir.realPathFileAlloc(io, "home", allocator);
+    defer allocator.free(home);
+    const local_paths = PluginShareLocalPaths{};
+    try std.testing.expectError(
+        error.RemotePluginInvalidPluginPath,
+        checkoutPluginPath(allocator, home, "demo", "plugins~Plugin_demo", local_paths),
+    );
+}
+
+test "remote checkout rejects stored symlink plugin path outside home" {
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
+
+    const allocator = std.testing.allocator;
+    var dir = std.testing.tmpDir(.{});
+    defer dir.cleanup();
+    const io = std.Io.Threaded.global_single_threaded.io();
+
+    try dir.dir.createDirPath(io, "home/plugins");
+    try dir.dir.createDirPath(io, "outside/demo");
+    try dir.dir.symLink(io, "../../outside/demo", "home/plugins/demo", .{ .is_directory = true });
+
+    const home = try dir.dir.realPathFileAlloc(io, "home", allocator);
+    defer allocator.free(home);
+    const plugin_path = try std.fs.path.join(allocator, &.{ home, "plugins", "demo" });
+    defer allocator.free(plugin_path);
+
+    try std.testing.expectError(
+        error.RemotePluginInvalidPluginPath,
+        ensurePersonalMarketplacePath(allocator, home, plugin_path),
+    );
 }
 
 test "remote install bundle writes versioned cache from root archive" {
