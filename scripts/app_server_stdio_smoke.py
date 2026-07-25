@@ -48630,6 +48630,91 @@ def run_remote_control_status_notification_smoke(binary: Path) -> None:
             raise AssertionError(f"app-server exited {proc.returncode}: {proc.stderr.read()}")
         shutil.rmtree(codex_home, ignore_errors=True)
 
+    persisted_home = Path(
+        tempfile.mkdtemp(prefix="codex-zig-remote-persisted-", dir="/tmp")
+    )
+    persisted_base_url = "http://localhost:8080/backend-api"
+    persisted_websocket_url = (
+        "ws://localhost:8080/backend-api/wham/remote/control/server"
+    )
+    persisted_account_id = "account_id"
+    persisted_client_name = "persisted-app-server-smoke"
+    (persisted_home / "config.toml").write_text(
+        f'chatgpt_base_url = "{persisted_base_url}"\n',
+        encoding="utf-8",
+    )
+    (persisted_home / "auth.json").write_text(
+        json.dumps(
+            {
+                "tokens": {
+                    "access_token": "remote-control-token",
+                    "account_id": persisted_account_id,
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    seed_remote_control_state_db(
+        persisted_home,
+        persisted_websocket_url,
+        persisted_account_id,
+        persisted_client_name,
+        True,
+    )
+    env = os.environ.copy()
+    env["CODEX_HOME"] = str(persisted_home)
+    proc = subprocess.Popen(
+        [str(binary), "app-server"],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        env=env,
+    )
+    try:
+        write_json_line(
+            proc,
+            {
+                "jsonrpc": "2.0",
+                "id": "initialize-remote-control-persisted",
+                "method": "initialize",
+                "params": {
+                    "clientInfo": {"name": persisted_client_name, "version": "0"},
+                    "capabilities": {"experimentalApi": True},
+                },
+            },
+        )
+        initialized = read_json_line(proc, 5, include_remote_control_status=True)
+        assert initialized["id"] == "initialize-remote-control-persisted"
+        persisted_status = read_json_line(
+            proc, 5, include_remote_control_status=True
+        )
+        assert persisted_status["method"] == "remoteControl/status/changed"
+        assert persisted_status["params"]["status"] == "connecting"
+
+        write_json_line(
+            proc,
+            {
+                "jsonrpc": "2.0",
+                "id": "remote-status-persisted-read",
+                "method": "remoteControl/status/read",
+            },
+        )
+        status_read = read_json_line(proc, 5)
+        assert status_read["id"] == "remote-status-persisted-read"
+        assert status_read["result"]["status"] == "connecting"
+    finally:
+        if proc.stdin is not None:
+            proc.stdin.close()
+        try:
+            proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.wait(timeout=5)
+        if proc.returncode != 0:
+            raise AssertionError(f"app-server exited {proc.returncode}: {proc.stderr.read()}")
+        shutil.rmtree(persisted_home, ignore_errors=True)
+
     unwritable_home = Path(tempfile.mkdtemp(prefix="codex-zig-remote-status-unwritable-", dir="/tmp"))
     unwritable_home.chmod(0o500)
     env = os.environ.copy()

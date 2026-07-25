@@ -33807,6 +33807,7 @@ fn handleJsonRpcLine(allocator: std.mem.Allocator, state: *AppServerState, line:
     const method = method_value.string;
     if (std.mem.eql(u8, method, "initialize")) {
         try updateInitializeCapabilities(allocator, state, object.get("params"));
+        try resolvePersistedRemoteControlPreferenceBestEffort(allocator, state);
         try queueInitializeConfigWarningNotifications(allocator, state);
         try queueInitialRemoteControlStatusNotification(allocator, state);
         const result = try renderInitializeResult(allocator);
@@ -43482,6 +43483,35 @@ fn persistRemoteControlPreferenceBestEffort(allocator: std.mem.Allocator, state:
     };
 }
 
+fn resolvePersistedRemoteControlPreferenceBestEffort(allocator: std.mem.Allocator, state: *AppServerState) !void {
+    if (state.remote_control_enabled) return;
+
+    var cfg = loadAppServerConfigWithOptions(allocator, state, .{}) catch |err| switch (err) {
+        error.OutOfMemory => return err,
+        else => return,
+    };
+    defer cfg.deinit(allocator);
+
+    var credentials = auth_mod.loadCliAuthNoRefreshForConfig(allocator, &cfg) catch |err| switch (err) {
+        error.OutOfMemory => return err,
+        else => return,
+    };
+    defer credentials.deinit(allocator);
+
+    const account_id = credentials.account_id orelse return;
+    const websocket_url = remoteControlWebsocketUrl(allocator, cfg.chatgpt_base_url) catch |err| switch (err) {
+        error.OutOfMemory => return err,
+        else => return,
+    };
+    defer allocator.free(websocket_url);
+
+    const preference = readRemoteControlPreference(allocator, configSqliteHome(cfg), websocket_url, account_id, state.app_server_client_name) catch |err| switch (err) {
+        error.OutOfMemory => return err,
+        else => return,
+    };
+    if (preference orelse false) state.remote_control_enabled = true;
+}
+
 fn remoteControlWebsocketUrl(allocator: std.mem.Allocator, base_url: []const u8) ![]const u8 {
     const trimmed = std.mem.trimEnd(u8, base_url, "/");
     if (std.mem.startsWith(u8, trimmed, "https://")) {
@@ -43526,6 +43556,41 @@ fn updateRemoteControlPreference(
 
     return switch (sqlite.step(statement)) {
         sqlite.SQLITE_DONE => sqlite.changes(db) > 0,
+        else => error.RemoteControlPreferenceStepFailed,
+    };
+}
+
+fn readRemoteControlPreference(
+    allocator: std.mem.Allocator,
+    sqlite_home: []const u8,
+    websocket_url: []const u8,
+    account_id: []const u8,
+    app_server_client_name: ?[]const u8,
+) !?bool {
+    const state_path = try memory_reset.resolveStateDbPathForSqliteHome(allocator, sqlite_home);
+    defer allocator.free(state_path);
+    if (!try memory_reset.stateDbExists(allocator, state_path)) return null;
+
+    const db = try sqlite.openReadOnly(allocator, state_path);
+    defer sqlite.close(db);
+
+    const statement = sqlite.prepare(allocator, db,
+        \\SELECT remote_control_enabled
+        \\FROM remote_control_enrollments
+        \\WHERE websocket_url = ? AND account_id = ? AND app_server_client_name = ?
+    ) catch |err| switch (err) {
+        error.SqlitePrepareFailed => return null,
+        else => return err,
+    };
+    defer sqlite.finalize(statement);
+
+    try sqlite.bindText(statement, 1, websocket_url);
+    try sqlite.bindText(statement, 2, account_id);
+    try sqlite.bindText(statement, 3, app_server_client_name orelse "");
+
+    return switch (sqlite.step(statement)) {
+        sqlite.SQLITE_ROW => if (sqlite.columnNullableInt64(statement, 0)) |value| value != 0 else null,
+        sqlite.SQLITE_DONE => null,
         else => error.RemoteControlPreferenceStepFailed,
     };
 }
