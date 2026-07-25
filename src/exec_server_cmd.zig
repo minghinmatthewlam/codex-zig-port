@@ -747,6 +747,9 @@ const StdioServer = struct {
         if (std.mem.eql(u8, method, "process/terminate")) {
             return try self.handleProcessTerminate(id_value.?, object.get("params"));
         }
+        if (std.mem.eql(u8, method, "environment/info")) {
+            return try self.handleEnvironmentInfo(id_value.?);
+        }
         if (std.mem.eql(u8, method, "http/request")) {
             return try self.handleHttpRequest(id_value.?, object.get("params"));
         }
@@ -797,6 +800,13 @@ const StdioServer = struct {
             return true;
         }
         return false;
+    }
+
+    fn handleEnvironmentInfo(self: *StdioServer, id_value: std.json.Value) ![]const u8 {
+        if (!self.initialized) return try renderJsonRpcError(self.allocator, id_value, -32600, "initialized notification must be sent before environment info requests");
+        const result = try renderEnvironmentInfoResult(self.allocator);
+        defer self.allocator.free(result);
+        return try renderJsonRpcResult(self.allocator, id_value, result);
     }
 
     fn handleProcessStart(self: *StdioServer, id_value: std.json.Value, params_value: ?std.json.Value) ![]const u8 {
@@ -4353,6 +4363,62 @@ fn renderInitializeResult(allocator: std.mem.Allocator, session_id: []const u8) 
     const session_id_json = try std.json.Stringify.valueAlloc(allocator, session_id, .{});
     defer allocator.free(session_id_json);
     return std.fmt.allocPrint(allocator, "{{\"sessionId\":{s}}}", .{session_id_json});
+}
+
+fn renderEnvironmentInfoResult(allocator: std.mem.Allocator) ![]const u8 {
+    const shell_path = defaultUserShellPath();
+    const shell_name = shellNameForPath(shell_path);
+    const cwd = try std.Io.Dir.cwd().realPathFileAlloc(std.Io.Threaded.global_single_threaded.io(), ".", allocator);
+    defer allocator.free(cwd);
+
+    var cwd_uri = std.ArrayList(u8).empty;
+    defer cwd_uri.deinit(allocator);
+    try appendFilePathUri(allocator, &cwd_uri, cwd);
+
+    var out = std.ArrayList(u8).empty;
+    errdefer out.deinit(allocator);
+    try out.appendSlice(allocator, "{\"shell\":{\"name\":");
+    try appendJsonString(allocator, &out, shell_name);
+    try out.appendSlice(allocator, ",\"path\":");
+    try appendJsonString(allocator, &out, shell_path);
+    try out.appendSlice(allocator, "},\"cwd\":");
+    try appendJsonString(allocator, &out, cwd_uri.items);
+    try out.append(allocator, '}');
+    return out.toOwnedSlice(allocator);
+}
+
+fn defaultUserShellPath() []const u8 {
+    const raw = std.c.getenv("SHELL") orelse return "/bin/sh";
+    const shell = std.mem.span(raw);
+    if (shell.len == 0) return "/bin/sh";
+    return shell;
+}
+
+fn shellNameForPath(path: []const u8) []const u8 {
+    const basename = std.fs.path.basename(path);
+    if (basename.len == 0) return path;
+    return basename;
+}
+
+fn appendFilePathUri(allocator: std.mem.Allocator, out: *std.ArrayList(u8), path: []const u8) !void {
+    try out.appendSlice(allocator, "file://");
+    for (path) |byte| {
+        if (filePathUriByteIsUnescaped(byte)) {
+            try out.append(allocator, byte);
+        } else {
+            const hex = "0123456789ABCDEF";
+            try out.append(allocator, '%');
+            try out.append(allocator, hex[byte >> 4]);
+            try out.append(allocator, hex[byte & 0x0f]);
+        }
+    }
+}
+
+fn filePathUriByteIsUnescaped(byte: u8) bool {
+    return std.ascii.isAlphanumeric(byte) or switch (byte) {
+        '/', '-', '.', '_', '~' => true,
+        else => false,
+    };
 }
 
 fn renderProcessStartResult(allocator: std.mem.Allocator, process_id: []const u8) ![]const u8 {
