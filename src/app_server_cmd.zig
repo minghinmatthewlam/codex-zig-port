@@ -5972,6 +5972,102 @@ const REMOTE_CONTROL_STATUS_READ_RESPONSE_TS =
     \\
     ;
 
+const REMOTE_CONTROL_PAIRING_START_PARAMS_TS =
+    GENERATED_TS_HEADER ++
+    \\export interface RemoteControlPairingStartParams {
+    \\  manualCode?: boolean;
+    \\}
+    \\
+    ;
+
+const REMOTE_CONTROL_PAIRING_START_RESPONSE_TS =
+    GENERATED_TS_HEADER ++
+    \\export interface RemoteControlPairingStartResponse {
+    \\  pairingCode: string;
+    \\  manualPairingCode: string | null;
+    \\  environmentId: string;
+    \\  expiresAt: bigint;
+    \\}
+    \\
+    ;
+
+const REMOTE_CONTROL_PAIRING_STATUS_PARAMS_TS =
+    GENERATED_TS_HEADER ++
+    \\export interface RemoteControlPairingStatusParams {
+    \\  pairingCode?: string | null;
+    \\  manualPairingCode?: string | null;
+    \\}
+    \\
+    ;
+
+const REMOTE_CONTROL_PAIRING_STATUS_RESPONSE_TS =
+    GENERATED_TS_HEADER ++
+    \\export interface RemoteControlPairingStatusResponse {
+    \\  claimed: boolean;
+    \\}
+    \\
+    ;
+
+const REMOTE_CONTROL_CLIENTS_LIST_ORDER_TS =
+    GENERATED_TS_HEADER ++
+    \\export type RemoteControlClientsListOrder = "asc" | "desc";
+    \\
+    ;
+
+const REMOTE_CONTROL_CLIENT_TS =
+    GENERATED_TS_HEADER ++
+    \\export interface RemoteControlClient {
+    \\  clientId: string;
+    \\  displayName: string | null;
+    \\  deviceType: string | null;
+    \\  platform: string | null;
+    \\  osVersion: string | null;
+    \\  deviceModel: string | null;
+    \\  appVersion: string | null;
+    \\  lastSeenAt: bigint | null;
+    \\}
+    \\
+    ;
+
+const REMOTE_CONTROL_CLIENTS_LIST_PARAMS_TS =
+    GENERATED_TS_HEADER ++
+    \\import type { RemoteControlClientsListOrder } from "./RemoteControlClientsListOrder";
+    \\
+    \\export interface RemoteControlClientsListParams {
+    \\  environmentId: string;
+    \\  cursor?: string | null;
+    \\  limit?: number | null;
+    \\  order?: RemoteControlClientsListOrder | null;
+    \\}
+    \\
+    ;
+
+const REMOTE_CONTROL_CLIENTS_LIST_RESPONSE_TS =
+    GENERATED_TS_HEADER ++
+    \\import type { RemoteControlClient } from "./RemoteControlClient";
+    \\
+    \\export interface RemoteControlClientsListResponse {
+    \\  data: RemoteControlClient[];
+    \\  nextCursor: string | null;
+    \\}
+    \\
+    ;
+
+const REMOTE_CONTROL_CLIENTS_REVOKE_PARAMS_TS =
+    GENERATED_TS_HEADER ++
+    \\export interface RemoteControlClientsRevokeParams {
+    \\  environmentId: string;
+    \\  clientId: string;
+    \\}
+    \\
+    ;
+
+const REMOTE_CONTROL_CLIENTS_REVOKE_RESPONSE_TS =
+    GENERATED_TS_HEADER ++
+    \\export interface RemoteControlClientsRevokeResponse {}
+    \\
+    ;
+
 const ADD_CREDITS_NUDGE_CREDIT_TYPE_TS =
     GENERATED_TS_HEADER ++
     \\export type AddCreditsNudgeCreditType = "credits" | "usage_limit";
@@ -11469,6 +11565,10 @@ const CLIENT_REQUEST_TS =
     \\import type { ProcessResizePtyParams } from "./v2/ProcessResizePtyParams";
     \\import type { ProcessSpawnParams } from "./v2/ProcessSpawnParams";
     \\import type { ProcessWriteStdinParams } from "./v2/ProcessWriteStdinParams";
+    \\import type { RemoteControlClientsListParams } from "./v2/RemoteControlClientsListParams";
+    \\import type { RemoteControlClientsRevokeParams } from "./v2/RemoteControlClientsRevokeParams";
+    \\import type { RemoteControlPairingStartParams } from "./v2/RemoteControlPairingStartParams";
+    \\import type { RemoteControlPairingStatusParams } from "./v2/RemoteControlPairingStatusParams";
     \\import type { ReviewStartParams } from "./v2/ReviewStartParams";
     \\import type { SendAddCreditsNudgeEmailParams } from "./v2/SendAddCreditsNudgeEmailParams";
     \\import type { SkillsConfigWriteParams } from "./v2/SkillsConfigWriteParams";
@@ -11756,6 +11856,22 @@ const CLIENT_REQUEST_TS =
     \\      method: "remoteControl/status/read";
     \\    }
     \\  | {
+    \\      method: "remoteControl/pairing/start";
+    \\      params: RemoteControlPairingStartParams;
+    \\    }
+    \\  | {
+    \\      method: "remoteControl/pairing/status";
+    \\      params: RemoteControlPairingStatusParams;
+    \\    }
+    \\  | {
+    \\      method: "remoteControl/client/list";
+    \\      params: RemoteControlClientsListParams;
+    \\    }
+    \\  | {
+    \\      method: "remoteControl/client/revoke";
+    \\      params: RemoteControlClientsRevokeParams;
+    \\    }
+    \\  | {
     \\      method: "command/exec";
     \\      params: CommandExecParams;
     \\    }
@@ -12040,8 +12156,12 @@ const CLIENT_RESPONSE_TS =
     \\import type { PluginShareUpdateTargetsResponse } from "./v2/PluginShareUpdateTargetsResponse";
     \\import type { PluginSkillReadResponse } from "./v2/PluginSkillReadResponse";
     \\import type { PluginUninstallResponse } from "./v2/PluginUninstallResponse";
+    \\import type { RemoteControlClientsListResponse } from "./v2/RemoteControlClientsListResponse";
+    \\import type { RemoteControlClientsRevokeResponse } from "./v2/RemoteControlClientsRevokeResponse";
     \\import type { RemoteControlDisableResponse } from "./v2/RemoteControlDisableResponse";
     \\import type { RemoteControlEnableResponse } from "./v2/RemoteControlEnableResponse";
+    \\import type { RemoteControlPairingStartResponse } from "./v2/RemoteControlPairingStartResponse";
+    \\import type { RemoteControlPairingStatusResponse } from "./v2/RemoteControlPairingStatusResponse";
     \\import type { RemoteControlStatusReadResponse } from "./v2/RemoteControlStatusReadResponse";
     \\import type { SendAddCreditsNudgeEmailResponse } from "./v2/SendAddCreditsNudgeEmailResponse";
     \\import type { SkillsConfigWriteResponse } from "./v2/SkillsConfigWriteResponse";
@@ -12396,6 +12516,26 @@ const CLIENT_RESPONSE_TS =
     \\      id: RequestId;
     \\      method: "remoteControl/status/read";
     \\      result: RemoteControlStatusReadResponse;
+    \\    }
+    \\  | {
+    \\      id: RequestId;
+    \\      method: "remoteControl/pairing/start";
+    \\      result: RemoteControlPairingStartResponse;
+    \\    }
+    \\  | {
+    \\      id: RequestId;
+    \\      method: "remoteControl/pairing/status";
+    \\      result: RemoteControlPairingStatusResponse;
+    \\    }
+    \\  | {
+    \\      id: RequestId;
+    \\      method: "remoteControl/client/list";
+    \\      result: RemoteControlClientsListResponse;
+    \\    }
+    \\  | {
+    \\      id: RequestId;
+    \\      method: "remoteControl/client/revoke";
+    \\      result: RemoteControlClientsRevokeResponse;
     \\    }
     \\  | {
     \\      id: RequestId;
@@ -13170,9 +13310,19 @@ const V2_INDEX_TS =
     \\export type { AnalyticsConfig } from "./AnalyticsConfig";
     \\export type { ApprovalsReviewer } from "./ApprovalsReviewer";
     \\export type { AskForApproval } from "./AskForApproval";
+    \\export type { RemoteControlClient } from "./RemoteControlClient";
+    \\export type { RemoteControlClientsListOrder } from "./RemoteControlClientsListOrder";
+    \\export type { RemoteControlClientsListParams } from "./RemoteControlClientsListParams";
+    \\export type { RemoteControlClientsListResponse } from "./RemoteControlClientsListResponse";
+    \\export type { RemoteControlClientsRevokeParams } from "./RemoteControlClientsRevokeParams";
+    \\export type { RemoteControlClientsRevokeResponse } from "./RemoteControlClientsRevokeResponse";
     \\export type { RemoteControlConnectionStatus } from "./RemoteControlConnectionStatus";
     \\export type { RemoteControlDisableResponse } from "./RemoteControlDisableResponse";
     \\export type { RemoteControlEnableResponse } from "./RemoteControlEnableResponse";
+    \\export type { RemoteControlPairingStartParams } from "./RemoteControlPairingStartParams";
+    \\export type { RemoteControlPairingStartResponse } from "./RemoteControlPairingStartResponse";
+    \\export type { RemoteControlPairingStatusParams } from "./RemoteControlPairingStatusParams";
+    \\export type { RemoteControlPairingStatusResponse } from "./RemoteControlPairingStatusResponse";
     \\export type { RemoteControlStatusReadResponse } from "./RemoteControlStatusReadResponse";
     \\export type { RemoteControlStatusChangedNotification } from "./RemoteControlStatusChangedNotification";
     \\export type { ByteRange } from "./ByteRange";
@@ -13770,6 +13920,42 @@ const CLIENT_REQUEST_JSON_SCHEMA =
     \\      "properties": {
     \\        "method": { "const": "initialize" },
     \\        "params": { "$ref": "v1/InitializeParams.json" }
+    \\      },
+    \\      "additionalProperties": true
+    \\    },
+    \\    {
+    \\      "type": "object",
+    \\      "required": ["method", "params"],
+    \\      "properties": {
+    \\        "method": { "const": "remoteControl/pairing/start" },
+    \\        "params": { "$ref": "v2/RemoteControlPairingStartParams.json" }
+    \\      },
+    \\      "additionalProperties": true
+    \\    },
+    \\    {
+    \\      "type": "object",
+    \\      "required": ["method", "params"],
+    \\      "properties": {
+    \\        "method": { "const": "remoteControl/pairing/status" },
+    \\        "params": { "$ref": "v2/RemoteControlPairingStatusParams.json" }
+    \\      },
+    \\      "additionalProperties": true
+    \\    },
+    \\    {
+    \\      "type": "object",
+    \\      "required": ["method", "params"],
+    \\      "properties": {
+    \\        "method": { "const": "remoteControl/client/list" },
+    \\        "params": { "$ref": "v2/RemoteControlClientsListParams.json" }
+    \\      },
+    \\      "additionalProperties": true
+    \\    },
+    \\    {
+    \\      "type": "object",
+    \\      "required": ["method", "params"],
+    \\      "properties": {
+    \\        "method": { "const": "remoteControl/client/revoke" },
+    \\        "params": { "$ref": "v2/RemoteControlClientsRevokeParams.json" }
     \\      },
     \\      "additionalProperties": true
     \\    },
@@ -16795,6 +16981,152 @@ const REMOTE_CONTROL_STATUS_READ_RESPONSE_JSON_SCHEMA =
     \\    }
     \\  },
     \\  "additionalProperties": true
+    \\}
+    \\
+;
+
+const REMOTE_CONTROL_PAIRING_START_PARAMS_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "RemoteControlPairingStartParams",
+    \\  "type": "object",
+    \\  "properties": {
+    \\    "manualCode": { "type": "boolean" }
+    \\  },
+    \\  "additionalProperties": true
+    \\}
+    \\
+;
+
+const REMOTE_CONTROL_PAIRING_START_RESPONSE_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "RemoteControlPairingStartResponse",
+    \\  "type": "object",
+    \\  "required": ["pairingCode", "manualPairingCode", "environmentId", "expiresAt"],
+    \\  "properties": {
+    \\    "pairingCode": { "type": "string" },
+    \\    "manualPairingCode": { "type": ["string", "null"] },
+    \\    "environmentId": { "type": "string" },
+    \\    "expiresAt": { "type": "integer" }
+    \\  },
+    \\  "additionalProperties": true
+    \\}
+    \\
+;
+
+const REMOTE_CONTROL_PAIRING_STATUS_PARAMS_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "RemoteControlPairingStatusParams",
+    \\  "type": "object",
+    \\  "properties": {
+    \\    "pairingCode": { "type": ["string", "null"] },
+    \\    "manualPairingCode": { "type": ["string", "null"] }
+    \\  },
+    \\  "additionalProperties": true
+    \\}
+    \\
+;
+
+const REMOTE_CONTROL_PAIRING_STATUS_RESPONSE_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "RemoteControlPairingStatusResponse",
+    \\  "type": "object",
+    \\  "required": ["claimed"],
+    \\  "properties": {
+    \\    "claimed": { "type": "boolean" }
+    \\  },
+    \\  "additionalProperties": true
+    \\}
+    \\
+;
+
+const REMOTE_CONTROL_CLIENTS_LIST_ORDER_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "RemoteControlClientsListOrder",
+    \\  "type": "string",
+    \\  "enum": ["asc", "desc"]
+    \\}
+    \\
+;
+
+const REMOTE_CONTROL_CLIENT_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "RemoteControlClient",
+    \\  "type": "object",
+    \\  "required": ["clientId", "displayName", "deviceType", "platform", "osVersion", "deviceModel", "appVersion", "lastSeenAt"],
+    \\  "properties": {
+    \\    "clientId": { "type": "string" },
+    \\    "displayName": { "type": ["string", "null"] },
+    \\    "deviceType": { "type": ["string", "null"] },
+    \\    "platform": { "type": ["string", "null"] },
+    \\    "osVersion": { "type": ["string", "null"] },
+    \\    "deviceModel": { "type": ["string", "null"] },
+    \\    "appVersion": { "type": ["string", "null"] },
+    \\    "lastSeenAt": { "type": ["integer", "null"] }
+    \\  },
+    \\  "additionalProperties": true
+    \\}
+    \\
+;
+
+const REMOTE_CONTROL_CLIENTS_LIST_PARAMS_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "RemoteControlClientsListParams",
+    \\  "type": "object",
+    \\  "required": ["environmentId"],
+    \\  "properties": {
+    \\    "environmentId": { "type": "string" },
+    \\    "cursor": { "type": ["string", "null"] },
+    \\    "limit": { "type": ["integer", "null"], "minimum": 0, "maximum": 4294967295 },
+    \\    "order": { "anyOf": [{ "$ref": "RemoteControlClientsListOrder.json" }, { "type": "null" }] }
+    \\  },
+    \\  "additionalProperties": true
+    \\}
+    \\
+;
+
+const REMOTE_CONTROL_CLIENTS_LIST_RESPONSE_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "RemoteControlClientsListResponse",
+    \\  "type": "object",
+    \\  "required": ["data", "nextCursor"],
+    \\  "properties": {
+    \\    "data": { "type": "array", "items": { "$ref": "RemoteControlClient.json" } },
+    \\    "nextCursor": { "type": ["string", "null"] }
+    \\  },
+    \\  "additionalProperties": true
+    \\}
+    \\
+;
+
+const REMOTE_CONTROL_CLIENTS_REVOKE_PARAMS_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "RemoteControlClientsRevokeParams",
+    \\  "type": "object",
+    \\  "required": ["environmentId", "clientId"],
+    \\  "properties": {
+    \\    "environmentId": { "type": "string" },
+    \\    "clientId": { "type": "string" }
+    \\  },
+    \\  "additionalProperties": true
+    \\}
+    \\
+;
+
+const REMOTE_CONTROL_CLIENTS_REVOKE_RESPONSE_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "RemoteControlClientsRevokeResponse",
+    \\  "type": "object",
+    \\  "additionalProperties": false
     \\}
     \\
 ;
@@ -26705,6 +27037,92 @@ const APP_SERVER_PROTOCOL_SCHEMA_BUNDLE =
     \\      },
     \\      "additionalProperties": true
     \\    },
+    \\    "RemoteControlPairingStartParams": {
+    \\      "type": "object",
+    \\      "properties": {
+    \\        "manualCode": { "type": "boolean" }
+    \\      },
+    \\      "additionalProperties": true
+    \\    },
+    \\    "RemoteControlPairingStartResponse": {
+    \\      "type": "object",
+    \\      "required": ["pairingCode", "manualPairingCode", "environmentId", "expiresAt"],
+    \\      "properties": {
+    \\        "pairingCode": { "type": "string" },
+    \\        "manualPairingCode": { "type": ["string", "null"] },
+    \\        "environmentId": { "type": "string" },
+    \\        "expiresAt": { "type": "integer" }
+    \\      },
+    \\      "additionalProperties": true
+    \\    },
+    \\    "RemoteControlPairingStatusParams": {
+    \\      "type": "object",
+    \\      "properties": {
+    \\        "pairingCode": { "type": ["string", "null"] },
+    \\        "manualPairingCode": { "type": ["string", "null"] }
+    \\      },
+    \\      "additionalProperties": true
+    \\    },
+    \\    "RemoteControlPairingStatusResponse": {
+    \\      "type": "object",
+    \\      "required": ["claimed"],
+    \\      "properties": {
+    \\        "claimed": { "type": "boolean" }
+    \\      },
+    \\      "additionalProperties": true
+    \\    },
+    \\    "RemoteControlClientsListOrder": {
+    \\      "type": "string",
+    \\      "enum": ["asc", "desc"]
+    \\    },
+    \\    "RemoteControlClient": {
+    \\      "type": "object",
+    \\      "required": ["clientId", "displayName", "deviceType", "platform", "osVersion", "deviceModel", "appVersion", "lastSeenAt"],
+    \\      "properties": {
+    \\        "clientId": { "type": "string" },
+    \\        "displayName": { "type": ["string", "null"] },
+    \\        "deviceType": { "type": ["string", "null"] },
+    \\        "platform": { "type": ["string", "null"] },
+    \\        "osVersion": { "type": ["string", "null"] },
+    \\        "deviceModel": { "type": ["string", "null"] },
+    \\        "appVersion": { "type": ["string", "null"] },
+    \\        "lastSeenAt": { "type": ["integer", "null"] }
+    \\      },
+    \\      "additionalProperties": true
+    \\    },
+    \\    "RemoteControlClientsListParams": {
+    \\      "type": "object",
+    \\      "required": ["environmentId"],
+    \\      "properties": {
+    \\        "environmentId": { "type": "string" },
+    \\        "cursor": { "type": ["string", "null"] },
+    \\        "limit": { "type": ["integer", "null"], "minimum": 0, "maximum": 4294967295 },
+    \\        "order": { "anyOf": [{ "$ref": "#/$defs/RemoteControlClientsListOrder" }, { "type": "null" }] }
+    \\      },
+    \\      "additionalProperties": true
+    \\    },
+    \\    "RemoteControlClientsListResponse": {
+    \\      "type": "object",
+    \\      "required": ["data", "nextCursor"],
+    \\      "properties": {
+    \\        "data": { "type": "array", "items": { "$ref": "#/$defs/RemoteControlClient" } },
+    \\        "nextCursor": { "type": ["string", "null"] }
+    \\      },
+    \\      "additionalProperties": true
+    \\    },
+    \\    "RemoteControlClientsRevokeParams": {
+    \\      "type": "object",
+    \\      "required": ["environmentId", "clientId"],
+    \\      "properties": {
+    \\        "environmentId": { "type": "string" },
+    \\        "clientId": { "type": "string" }
+    \\      },
+    \\      "additionalProperties": true
+    \\    },
+    \\    "RemoteControlClientsRevokeResponse": {
+    \\      "type": "object",
+    \\      "additionalProperties": false
+    \\    },
     \\    "AddCreditsNudgeCreditType": {
     \\      "enum": ["credits", "usage_limit"],
     \\      "type": "string"
@@ -29479,6 +29897,26 @@ const APP_SERVER_JSON_SCHEMA_FILES = [_]SchemaFile{
     .{ .name = "RemoteControlEnableResponse.json", .contents = REMOTE_CONTROL_ENABLE_RESPONSE_JSON_SCHEMA },
     .{ .name = "RemoteControlDisableResponse.json", .contents = REMOTE_CONTROL_DISABLE_RESPONSE_JSON_SCHEMA },
     .{ .name = "RemoteControlStatusReadResponse.json", .contents = REMOTE_CONTROL_STATUS_READ_RESPONSE_JSON_SCHEMA },
+    .{ .name = "RemoteControlPairingStartParams.json", .contents = REMOTE_CONTROL_PAIRING_START_PARAMS_JSON_SCHEMA },
+    .{ .name = "RemoteControlPairingStartResponse.json", .contents = REMOTE_CONTROL_PAIRING_START_RESPONSE_JSON_SCHEMA },
+    .{ .name = "RemoteControlPairingStatusParams.json", .contents = REMOTE_CONTROL_PAIRING_STATUS_PARAMS_JSON_SCHEMA },
+    .{ .name = "RemoteControlPairingStatusResponse.json", .contents = REMOTE_CONTROL_PAIRING_STATUS_RESPONSE_JSON_SCHEMA },
+    .{ .name = "RemoteControlClientsListOrder.json", .contents = REMOTE_CONTROL_CLIENTS_LIST_ORDER_JSON_SCHEMA },
+    .{ .name = "RemoteControlClient.json", .contents = REMOTE_CONTROL_CLIENT_JSON_SCHEMA },
+    .{ .name = "RemoteControlClientsListParams.json", .contents = REMOTE_CONTROL_CLIENTS_LIST_PARAMS_JSON_SCHEMA },
+    .{ .name = "RemoteControlClientsListResponse.json", .contents = REMOTE_CONTROL_CLIENTS_LIST_RESPONSE_JSON_SCHEMA },
+    .{ .name = "RemoteControlClientsRevokeParams.json", .contents = REMOTE_CONTROL_CLIENTS_REVOKE_PARAMS_JSON_SCHEMA },
+    .{ .name = "RemoteControlClientsRevokeResponse.json", .contents = REMOTE_CONTROL_CLIENTS_REVOKE_RESPONSE_JSON_SCHEMA },
+    .{ .name = "v2/RemoteControlPairingStartParams.json", .contents = REMOTE_CONTROL_PAIRING_START_PARAMS_JSON_SCHEMA },
+    .{ .name = "v2/RemoteControlPairingStartResponse.json", .contents = REMOTE_CONTROL_PAIRING_START_RESPONSE_JSON_SCHEMA },
+    .{ .name = "v2/RemoteControlPairingStatusParams.json", .contents = REMOTE_CONTROL_PAIRING_STATUS_PARAMS_JSON_SCHEMA },
+    .{ .name = "v2/RemoteControlPairingStatusResponse.json", .contents = REMOTE_CONTROL_PAIRING_STATUS_RESPONSE_JSON_SCHEMA },
+    .{ .name = "v2/RemoteControlClientsListOrder.json", .contents = REMOTE_CONTROL_CLIENTS_LIST_ORDER_JSON_SCHEMA },
+    .{ .name = "v2/RemoteControlClient.json", .contents = REMOTE_CONTROL_CLIENT_JSON_SCHEMA },
+    .{ .name = "v2/RemoteControlClientsListParams.json", .contents = REMOTE_CONTROL_CLIENTS_LIST_PARAMS_JSON_SCHEMA },
+    .{ .name = "v2/RemoteControlClientsListResponse.json", .contents = REMOTE_CONTROL_CLIENTS_LIST_RESPONSE_JSON_SCHEMA },
+    .{ .name = "v2/RemoteControlClientsRevokeParams.json", .contents = REMOTE_CONTROL_CLIENTS_REVOKE_PARAMS_JSON_SCHEMA },
+    .{ .name = "v2/RemoteControlClientsRevokeResponse.json", .contents = REMOTE_CONTROL_CLIENTS_REVOKE_RESPONSE_JSON_SCHEMA },
     .{ .name = "AddCreditsNudgeCreditType.json", .contents = ADD_CREDITS_NUDGE_CREDIT_TYPE_JSON_SCHEMA },
     .{ .name = "SendAddCreditsNudgeEmailParams.json", .contents = SEND_ADD_CREDITS_NUDGE_EMAIL_PARAMS_JSON_SCHEMA },
     .{ .name = "AddCreditsNudgeEmailStatus.json", .contents = ADD_CREDITS_NUDGE_EMAIL_STATUS_JSON_SCHEMA },
@@ -29929,6 +30367,16 @@ const APP_SERVER_JSON_SCHEMA_VERSIONED_ALIASES = [_][]const u8{
     "v2/ReasoningTextDeltaNotification.json",
     "v2/RemoteControlDisableResponse.json",
     "v2/RemoteControlEnableResponse.json",
+    "v2/RemoteControlPairingStartParams.json",
+    "v2/RemoteControlPairingStartResponse.json",
+    "v2/RemoteControlPairingStatusParams.json",
+    "v2/RemoteControlPairingStatusResponse.json",
+    "v2/RemoteControlClientsListOrder.json",
+    "v2/RemoteControlClient.json",
+    "v2/RemoteControlClientsListParams.json",
+    "v2/RemoteControlClientsListResponse.json",
+    "v2/RemoteControlClientsRevokeParams.json",
+    "v2/RemoteControlClientsRevokeResponse.json",
     "v2/RemoteControlStatusReadResponse.json",
     "v2/RemoteControlStatusChangedNotification.json",
     "v2/SendAddCreditsNudgeEmailParams.json",
@@ -30204,6 +30652,16 @@ const APP_SERVER_TS_FILES = [_]SchemaFile{
     .{ .name = "v2/RemoteControlEnableResponse.ts", .contents = REMOTE_CONTROL_ENABLE_RESPONSE_TS },
     .{ .name = "v2/RemoteControlDisableResponse.ts", .contents = REMOTE_CONTROL_DISABLE_RESPONSE_TS },
     .{ .name = "v2/RemoteControlStatusReadResponse.ts", .contents = REMOTE_CONTROL_STATUS_READ_RESPONSE_TS },
+    .{ .name = "v2/RemoteControlPairingStartParams.ts", .contents = REMOTE_CONTROL_PAIRING_START_PARAMS_TS },
+    .{ .name = "v2/RemoteControlPairingStartResponse.ts", .contents = REMOTE_CONTROL_PAIRING_START_RESPONSE_TS },
+    .{ .name = "v2/RemoteControlPairingStatusParams.ts", .contents = REMOTE_CONTROL_PAIRING_STATUS_PARAMS_TS },
+    .{ .name = "v2/RemoteControlPairingStatusResponse.ts", .contents = REMOTE_CONTROL_PAIRING_STATUS_RESPONSE_TS },
+    .{ .name = "v2/RemoteControlClientsListOrder.ts", .contents = REMOTE_CONTROL_CLIENTS_LIST_ORDER_TS },
+    .{ .name = "v2/RemoteControlClient.ts", .contents = REMOTE_CONTROL_CLIENT_TS },
+    .{ .name = "v2/RemoteControlClientsListParams.ts", .contents = REMOTE_CONTROL_CLIENTS_LIST_PARAMS_TS },
+    .{ .name = "v2/RemoteControlClientsListResponse.ts", .contents = REMOTE_CONTROL_CLIENTS_LIST_RESPONSE_TS },
+    .{ .name = "v2/RemoteControlClientsRevokeParams.ts", .contents = REMOTE_CONTROL_CLIENTS_REVOKE_PARAMS_TS },
+    .{ .name = "v2/RemoteControlClientsRevokeResponse.ts", .contents = REMOTE_CONTROL_CLIENTS_REVOKE_RESPONSE_TS },
     .{ .name = "v2/AddCreditsNudgeCreditType.ts", .contents = ADD_CREDITS_NUDGE_CREDIT_TYPE_TS },
     .{ .name = "v2/SendAddCreditsNudgeEmailParams.ts", .contents = SEND_ADD_CREDITS_NUDGE_EMAIL_PARAMS_TS },
     .{ .name = "v2/AddCreditsNudgeEmailStatus.ts", .contents = ADD_CREDITS_NUDGE_EMAIL_STATUS_TS },
@@ -41316,7 +41774,11 @@ fn renderRemoteControlStatusChangedNotification(
 fn isRemoteControlMethod(method: []const u8) bool {
     return std.mem.eql(u8, method, "remoteControl/enable") or
         std.mem.eql(u8, method, "remoteControl/disable") or
-        std.mem.eql(u8, method, "remoteControl/status/read");
+        std.mem.eql(u8, method, "remoteControl/status/read") or
+        std.mem.eql(u8, method, "remoteControl/pairing/start") or
+        std.mem.eql(u8, method, "remoteControl/pairing/status") or
+        std.mem.eql(u8, method, "remoteControl/client/list") or
+        std.mem.eql(u8, method, "remoteControl/client/revoke");
 }
 
 fn handleRemoteControlMethod(
@@ -41326,27 +41788,170 @@ fn handleRemoteControlMethod(
     method: []const u8,
     params_value: ?std.json.Value,
 ) ![]const u8 {
-    if (params_value) |params| {
-        if (params != .null) {
-            const message = try std.fmt.allocPrint(allocator, "{s} params must be null or omitted", .{method});
+    if (std.mem.eql(u8, method, "remoteControl/enable") or
+        std.mem.eql(u8, method, "remoteControl/disable") or
+        std.mem.eql(u8, method, "remoteControl/status/read"))
+    {
+        if (params_value) |params| {
+            if (params != .null) {
+                const message = try std.fmt.allocPrint(allocator, "{s} params must be null or omitted", .{method});
+                defer allocator.free(message);
+                return renderJsonRpcError(allocator, id_value, -32602, message);
+            }
+        }
+
+        if (std.mem.eql(u8, method, "remoteControl/enable")) {
+            const changed = !state.remote_control_enabled;
+            state.remote_control_enabled = true;
+            return handleRemoteControlStatusMutation(allocator, state, id_value, "connecting", changed);
+        }
+        if (std.mem.eql(u8, method, "remoteControl/disable")) {
+            const changed = state.remote_control_enabled;
+            state.remote_control_enabled = false;
+            return handleRemoteControlStatusMutation(allocator, state, id_value, "disabled", changed);
+        }
+        const status = if (state.remote_control_enabled) "connecting" else "disabled";
+        const result = try renderRemoteControlStatusObject(allocator, status, null);
+        defer allocator.free(result);
+        return try renderJsonRpcResult(allocator, id_value, result);
+    }
+
+    if (std.mem.eql(u8, method, "remoteControl/pairing/start")) {
+        if (try validateRemoteControlPairingStartParams(allocator, params_value)) |message| {
             defer allocator.free(message);
-            return renderJsonRpcError(allocator, id_value, -32602, message);
+            return renderJsonRpcError(allocator, id_value, -32600, message);
+        }
+        return renderJsonRpcError(allocator, id_value, -32600, remoteControlPairingUnavailableMessage(state));
+    }
+    if (std.mem.eql(u8, method, "remoteControl/pairing/status")) {
+        if (try validateRemoteControlPairingStatusParams(allocator, params_value)) |message| {
+            defer allocator.free(message);
+            return renderJsonRpcError(allocator, id_value, -32600, message);
+        }
+        return renderJsonRpcError(allocator, id_value, -32600, remoteControlPairingUnavailableMessage(state));
+    }
+    if (std.mem.eql(u8, method, "remoteControl/client/list")) {
+        if (try validateRemoteControlClientsListParams(allocator, params_value)) |message| {
+            defer allocator.free(message);
+            return renderJsonRpcError(allocator, id_value, -32600, message);
+        }
+        return renderJsonRpcError(allocator, id_value, -32600, "remote control requires ChatGPT authentication");
+    }
+    if (std.mem.eql(u8, method, "remoteControl/client/revoke")) {
+        if (try validateRemoteControlClientsRevokeParams(allocator, params_value)) |message| {
+            defer allocator.free(message);
+            return renderJsonRpcError(allocator, id_value, -32600, message);
+        }
+        return renderJsonRpcError(allocator, id_value, -32600, "remote control requires ChatGPT authentication");
+    }
+
+    return renderJsonRpcError(allocator, id_value, -32601, "method not found");
+}
+
+fn remoteControlPairingUnavailableMessage(state: *const AppServerState) []const u8 {
+    if (!state.remote_control_enabled) return "remote control pairing requires remote control to be enabled";
+    return "remote control pairing is unavailable until enrollment completes";
+}
+
+fn validateRemoteControlPairingStartParams(allocator: std.mem.Allocator, params_value: ?std.json.Value) !?[]const u8 {
+    const params = params_value orelse return try remoteControlMissingParamsMessage(allocator);
+    if (params == .null) return try remoteControlMissingParamsMessage(allocator);
+    if (params != .object) return try allocator.dupe(u8, "Invalid request: expected struct RemoteControlPairingStartParams");
+    const object = params.object;
+    if (object.get("manualCode")) |value| {
+        if (value != .bool) return try remoteControlInvalidTypeMessage(allocator, value, "a boolean");
+    }
+    return null;
+}
+
+fn validateRemoteControlPairingStatusParams(allocator: std.mem.Allocator, params_value: ?std.json.Value) !?[]const u8 {
+    const params = params_value orelse return try remoteControlMissingParamsMessage(allocator);
+    if (params == .null) return try remoteControlMissingParamsMessage(allocator);
+    if (params != .object) return try allocator.dupe(u8, "Invalid request: expected struct RemoteControlPairingStatusParams");
+    const object = params.object;
+    var has_code = false;
+    if (object.get("pairingCode")) |value| {
+        if (value != .null) {
+            if (value != .string) return try remoteControlInvalidTypeMessage(allocator, value, "a string");
+            has_code = true;
         }
     }
-    if (std.mem.eql(u8, method, "remoteControl/enable")) {
-        const changed = !state.remote_control_enabled;
-        state.remote_control_enabled = true;
-        return handleRemoteControlStatusMutation(allocator, state, id_value, "connecting", changed);
+    if (object.get("manualPairingCode")) |value| {
+        if (value != .null) {
+            if (value != .string) return try remoteControlInvalidTypeMessage(allocator, value, "a string");
+            has_code = true;
+        }
     }
-    if (std.mem.eql(u8, method, "remoteControl/disable")) {
-        const changed = state.remote_control_enabled;
-        state.remote_control_enabled = false;
-        return handleRemoteControlStatusMutation(allocator, state, id_value, "disabled", changed);
+    if (!has_code) return try allocator.dupe(u8, "remoteControl/pairing/status requires pairingCode or manualPairingCode");
+    return null;
+}
+
+fn validateRemoteControlClientsListParams(allocator: std.mem.Allocator, params_value: ?std.json.Value) !?[]const u8 {
+    const params = params_value orelse return try remoteControlMissingParamsMessage(allocator);
+    if (params == .null) return try remoteControlMissingParamsMessage(allocator);
+    if (params != .object) return try allocator.dupe(u8, "Invalid request: expected struct RemoteControlClientsListParams");
+    const object = params.object;
+    if (try validateRemoteControlRequiredStringField(allocator, object, "environmentId")) |message| return message;
+    if (try validateRemoteControlOptionalStringField(allocator, object, "cursor")) |message| return message;
+    if (object.get("limit")) |value| {
+        if (value != .null) {
+            if (value != .integer) return try remoteControlInvalidTypeMessage(allocator, value, "u32");
+            if (value.integer < 0 or value.integer > std.math.maxInt(u32)) return try remoteControlInvalidValueMessage(allocator, value, "u32");
+        }
     }
-    const status = if (state.remote_control_enabled) "connecting" else "disabled";
-    const result = try renderRemoteControlStatusObject(allocator, status, null);
-    defer allocator.free(result);
-    return try renderJsonRpcResult(allocator, id_value, result);
+    if (object.get("order")) |value| {
+        if (value != .null) {
+            if (value != .string) return try remoteControlInvalidTypeMessage(allocator, value, "`asc` or `desc`");
+            if (!std.mem.eql(u8, value.string, "asc") and !std.mem.eql(u8, value.string, "desc")) {
+                return try std.fmt.allocPrint(allocator, "Invalid request: unknown variant `{s}`, expected `asc` or `desc`", .{value.string});
+            }
+        }
+    }
+    return null;
+}
+
+fn validateRemoteControlClientsRevokeParams(allocator: std.mem.Allocator, params_value: ?std.json.Value) !?[]const u8 {
+    const params = params_value orelse return try remoteControlMissingParamsMessage(allocator);
+    if (params == .null) return try remoteControlMissingParamsMessage(allocator);
+    if (params != .object) return try allocator.dupe(u8, "Invalid request: expected struct RemoteControlClientsRevokeParams");
+    const object = params.object;
+    if (try validateRemoteControlRequiredStringField(allocator, object, "environmentId")) |message| return message;
+    if (try validateRemoteControlRequiredStringField(allocator, object, "clientId")) |message| return message;
+    return null;
+}
+
+fn remoteControlMissingParamsMessage(allocator: std.mem.Allocator) ![]const u8 {
+    return allocator.dupe(u8, "Invalid request: missing field `params`");
+}
+
+fn validateRemoteControlRequiredStringField(allocator: std.mem.Allocator, object: std.json.ObjectMap, field: []const u8) !?[]const u8 {
+    const value = object.get(field) orelse return try std.fmt.allocPrint(allocator, "Invalid request: missing field `{s}`", .{field});
+    if (value != .string) return try remoteControlInvalidTypeMessage(allocator, value, "a string");
+    return null;
+}
+
+fn validateRemoteControlOptionalStringField(allocator: std.mem.Allocator, object: std.json.ObjectMap, field: []const u8) !?[]const u8 {
+    const value = object.get(field) orelse return null;
+    if (value == .null) return null;
+    if (value != .string) return try remoteControlInvalidTypeMessage(allocator, value, "a string");
+    return null;
+}
+
+fn remoteControlInvalidTypeMessage(allocator: std.mem.Allocator, value: std.json.Value, expected: []const u8) ![]const u8 {
+    return switch (value) {
+        .string => |text| std.fmt.allocPrint(allocator, "Invalid request: invalid type: string \"{s}\", expected {s}", .{ text, expected }),
+        .integer => |integer| std.fmt.allocPrint(allocator, "Invalid request: invalid type: integer `{d}`, expected {s}", .{ integer, expected }),
+        .bool => |boolean| std.fmt.allocPrint(allocator, "Invalid request: invalid type: boolean `{}`, expected {s}", .{ boolean, expected }),
+        .null => std.fmt.allocPrint(allocator, "Invalid request: invalid type: null, expected {s}", .{expected}),
+        else => std.fmt.allocPrint(allocator, "Invalid request: expected {s}", .{expected}),
+    };
+}
+
+fn remoteControlInvalidValueMessage(allocator: std.mem.Allocator, value: std.json.Value, expected: []const u8) ![]const u8 {
+    return switch (value) {
+        .integer => |integer| std.fmt.allocPrint(allocator, "Invalid request: invalid value: integer `{d}`, expected {s}", .{ integer, expected }),
+        else => remoteControlInvalidTypeMessage(allocator, value, expected),
+    };
 }
 
 fn handleRemoteControlStatusMutation(
@@ -49160,6 +49765,10 @@ fn experimentalReasonForRequestMethod(method: []const u8) ?[]const u8 {
         "remoteControl/enable",
         "remoteControl/disable",
         "remoteControl/status/read",
+        "remoteControl/pairing/start",
+        "remoteControl/pairing/status",
+        "remoteControl/client/list",
+        "remoteControl/client/revoke",
     }) |experimental_method| {
         if (std.mem.eql(u8, method, experimental_method)) return experimental_method;
     }

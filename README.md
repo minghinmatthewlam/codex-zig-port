@@ -282,6 +282,9 @@ The first demo slice targets macOS and focuses on the interactive CLI surface:
   the client enables `experimentalApi`
 - emit app-server `remoteControl/status/changed` after `initialize` with the
   current disabled remote-control status, honoring notification opt-out
+- validate app-server remote-control pairing/client management RPCs, generating
+  `RemoteControlPairing*`, `RemoteControlClients*`, and `RemoteControlClient`
+  artifacts and returning Rust-shaped local disabled/auth-required errors
 - emit app-server `app/list/updated` after `experimentalFeature/enablement/set`
   enables `apps`, using the current local plugin app catalog and honoring
   notification opt-out

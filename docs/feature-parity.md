@@ -57,6 +57,13 @@ case-insensitive local transcript matching, and the Zig stdio app-server smoke.
 `thread/searchOccurrences` is registered and returns Rust's current local
 unsupported `-32601` response after params validation; full occurrence
 pagination remains planned if Rust enables it.
+App-server remote-control pairing/client method parity was checked against
+installed Rust `codex app-server --stdio` local disabled and enabled-without-auth
+behavior, generated `RemoteControlPairing*`, `RemoteControlClients*`, and
+`RemoteControlClient` protocol artifacts, and the Zig stdio app-server smoke.
+Zig now validates pairing/client params with Rust-shaped `-32600` errors and
+returns Rust's local disabled, not-enrolled, and ChatGPT-auth-required errors
+until the full websocket/cloud backend is implemented.
 App-server `app/read` and `app/installed` parity was checked against Rust's
 isolated local/offline behavior, generated `AppsRead*`, `ConnectorMetadata`,
 `AppsInstalled*`, and `InstalledApp` protocol artifacts, params validation, and
@@ -390,7 +397,11 @@ runtime override handling, and the Zig stdio app-server smoke.
   Rust-shaped JSON or human text. `app-server --remote-control` now reports
   `connecting`, includes remote-control identity fields backed by the persisted
   `CODEX_HOME/installation_id` UUID in status notifications, handles
-  `remoteControl/enable|disable|status/read`, and
+  `remoteControl/enable|disable|status/read`, validates
+  `remoteControl/pairing/start`, `remoteControl/pairing/status`,
+  `remoteControl/client/list`, and `remoteControl/client/revoke` with generated
+  TypeScript/JSON Schema artifacts and Rust-shaped local disabled,
+  not-enrolled, or ChatGPT-auth-required errors, and
   exposes `remote_control` as enabled through app-server feature APIs.
   Normal config loading also creates/reuses the same persisted installation UUID
   instead of falling back to the old Zig placeholder.
@@ -527,9 +538,7 @@ runtime override handling, and the Zig stdio app-server smoke.
   `account/rateLimitResetCredit/consume`, `account/usage/read`,
   `account/workspaceMessages/read`, `environment/add`, `environment/info`,
   `environment/status`, `externalAgentConfig/import/readHistories`,
-  `mock/experimentalMethod`, `remoteControl/client/list`,
-  `remoteControl/client/revoke`, `remoteControl/pairing/start`,
-  `remoteControl/pairing/status`, and `thread/realtime/appendSpeech`.
+  `mock/experimentalMethod`, and `thread/realtime/appendSpeech`.
 - Finish desktop app and remote-control user flows beyond launching/opening:
   phone fork/share flow, durable daemon control, and local browser controller
   parity.

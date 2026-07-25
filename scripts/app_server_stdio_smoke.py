@@ -92,6 +92,10 @@ EXPERIMENTAL_API_METHODS = [
     "thread/realtime/appendText",
     "thread/realtime/stop",
     "thread/realtime/listVoices",
+    "remoteControl/pairing/start",
+    "remoteControl/pairing/status",
+    "remoteControl/client/list",
+    "remoteControl/client/revoke",
 ]
 
 GRANULAR_APPROVAL_POLICY = {
@@ -47516,7 +47520,7 @@ def run_remote_control_status_notification_smoke(binary: Path) -> None:
                 "method": "initialize",
                 "params": {
                     "clientInfo": {"name": "app-server-smoke", "version": "0"},
-                    "capabilities": {},
+                    "capabilities": {"experimentalApi": True},
                 },
             },
         )
@@ -47531,6 +47535,175 @@ def run_remote_control_status_notification_smoke(binary: Path) -> None:
         assert str(uuid.UUID(installation_id)) == installation_id
         assert (codex_home / "installation_id").read_text(encoding="utf-8") == installation_id
         assert status["params"]["environmentId"] is None
+
+        write_json_line(
+            proc,
+            {
+                "jsonrpc": "2.0",
+                "id": "remote-pair-start-disabled",
+                "method": "remoteControl/pairing/start",
+                "params": {},
+            },
+        )
+        pair_start_disabled = read_json_line(proc, 5)
+        assert pair_start_disabled["id"] == "remote-pair-start-disabled"
+        assert pair_start_disabled["error"]["code"] == -32600
+        assert (
+            pair_start_disabled["error"]["message"]
+            == "remote control pairing requires remote control to be enabled"
+        )
+
+        write_json_line(
+            proc,
+            {
+                "jsonrpc": "2.0",
+                "id": "remote-pair-start-invalid",
+                "method": "remoteControl/pairing/start",
+                "params": {"manualCode": "yes"},
+            },
+        )
+        pair_start_invalid = read_json_line(proc, 5)
+        assert pair_start_invalid["id"] == "remote-pair-start-invalid"
+        assert pair_start_invalid["error"]["code"] == -32600
+        assert (
+            pair_start_invalid["error"]["message"]
+            == 'Invalid request: invalid type: string "yes", expected a boolean'
+        )
+
+        write_json_line(
+            proc,
+            {
+                "jsonrpc": "2.0",
+                "id": "remote-pair-status-empty",
+                "method": "remoteControl/pairing/status",
+                "params": {},
+            },
+        )
+        pair_status_empty = read_json_line(proc, 5)
+        assert pair_status_empty["id"] == "remote-pair-status-empty"
+        assert pair_status_empty["error"]["code"] == -32600
+        assert (
+            pair_status_empty["error"]["message"]
+            == "remoteControl/pairing/status requires pairingCode or manualPairingCode"
+        )
+
+        write_json_line(
+            proc,
+            {
+                "jsonrpc": "2.0",
+                "id": "remote-client-list-missing",
+                "method": "remoteControl/client/list",
+                "params": {},
+            },
+        )
+        client_list_missing = read_json_line(proc, 5)
+        assert client_list_missing["id"] == "remote-client-list-missing"
+        assert client_list_missing["error"]["code"] == -32600
+        assert (
+            client_list_missing["error"]["message"]
+            == "Invalid request: missing field `environmentId`"
+        )
+
+        write_json_line(
+            proc,
+            {
+                "jsonrpc": "2.0",
+                "id": "remote-client-list-unauthenticated",
+                "method": "remoteControl/client/list",
+                "params": {"environmentId": "env", "order": "desc", "limit": 5},
+            },
+        )
+        client_list_unauthenticated = read_json_line(proc, 5)
+        assert client_list_unauthenticated["id"] == "remote-client-list-unauthenticated"
+        assert client_list_unauthenticated["error"]["code"] == -32600
+        assert (
+            client_list_unauthenticated["error"]["message"]
+            == "remote control requires ChatGPT authentication"
+        )
+
+        write_json_line(
+            proc,
+            {
+                "jsonrpc": "2.0",
+                "id": "remote-client-list-invalid-order",
+                "method": "remoteControl/client/list",
+                "params": {"environmentId": "env", "order": "newest"},
+            },
+        )
+        client_list_invalid_order = read_json_line(proc, 5)
+        assert client_list_invalid_order["id"] == "remote-client-list-invalid-order"
+        assert client_list_invalid_order["error"]["code"] == -32600
+        assert (
+            client_list_invalid_order["error"]["message"]
+            == "Invalid request: unknown variant `newest`, expected `asc` or `desc`"
+        )
+
+        write_json_line(
+            proc,
+            {
+                "jsonrpc": "2.0",
+                "id": "remote-client-revoke-missing",
+                "method": "remoteControl/client/revoke",
+                "params": {"environmentId": "env"},
+            },
+        )
+        client_revoke_missing = read_json_line(proc, 5)
+        assert client_revoke_missing["id"] == "remote-client-revoke-missing"
+        assert client_revoke_missing["error"]["code"] == -32600
+        assert (
+            client_revoke_missing["error"]["message"]
+            == "Invalid request: missing field `clientId`"
+        )
+
+        write_json_line(
+            proc,
+            {
+                "jsonrpc": "2.0",
+                "id": "remote-client-revoke-unauthenticated",
+                "method": "remoteControl/client/revoke",
+                "params": {"environmentId": "env", "clientId": "client"},
+            },
+        )
+        client_revoke_unauthenticated = read_json_line(proc, 5)
+        assert client_revoke_unauthenticated["id"] == "remote-client-revoke-unauthenticated"
+        assert client_revoke_unauthenticated["error"]["code"] == -32600
+        assert (
+            client_revoke_unauthenticated["error"]["message"]
+            == "remote control requires ChatGPT authentication"
+        )
+
+        write_json_line(
+            proc,
+            {
+                "jsonrpc": "2.0",
+                "id": "remote-enable-before-pair",
+                "method": "remoteControl/enable",
+                "params": None,
+            },
+        )
+        enabled = read_json_line(proc, 5)
+        assert enabled["id"] == "remote-enable-before-pair"
+        assert enabled["result"]["status"] == "connecting"
+        enabled_status = read_json_line(proc, 5, include_remote_control_status=True)
+        assert enabled_status["method"] == "remoteControl/status/changed"
+        assert enabled_status["params"]["status"] == "connecting"
+
+        write_json_line(
+            proc,
+            {
+                "jsonrpc": "2.0",
+                "id": "remote-pair-start-enabled",
+                "method": "remoteControl/pairing/start",
+                "params": {"manualCode": True},
+            },
+        )
+        pair_start_enabled = read_json_line(proc, 5)
+        assert pair_start_enabled["id"] == "remote-pair-start-enabled"
+        assert pair_start_enabled["error"]["code"] == -32600
+        assert (
+            pair_start_enabled["error"]["message"]
+            == "remote control pairing is unavailable until enrollment completes"
+        )
     finally:
         if proc.stdin is not None:
             proc.stdin.close()
@@ -50050,8 +50223,14 @@ def run_json_schema_smoke(binary: Path) -> None:
         assert client_request["oneOf"][0]["properties"]["params"]["$ref"] == (
             "v1/InitializeParams.json"
         )
-        assert client_request["oneOf"][2]["properties"]["method"]["const"] == (
-            "thread/start"
+        thread_start_schema = next(
+            item
+            for item in client_request["oneOf"]
+            if item["properties"]["method"].get("const") == "thread/start"
+        )
+        assert (
+            thread_start_schema["properties"]["params"]["$ref"]
+            == "v2/ThreadStartParams.json"
         )
         remote_control_methods = {
             item["properties"]["method"]["const"]
@@ -50062,6 +50241,10 @@ def run_json_schema_smoke(binary: Path) -> None:
             "remoteControl/enable",
             "remoteControl/disable",
             "remoteControl/status/read",
+            "remoteControl/pairing/start",
+            "remoteControl/pairing/status",
+            "remoteControl/client/list",
+            "remoteControl/client/revoke",
         }
         server_request = json.loads(
             (out_dir / "ServerRequest.json").read_text(encoding="utf-8")
@@ -50702,6 +50885,81 @@ def run_json_schema_smoke(binary: Path) -> None:
             assert (
                 out_dir / "v2" / f"{response_name}.json"
             ).is_file()
+        remote_pair_start_params = json.loads(
+            (out_dir / "RemoteControlPairingStartParams.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        assert remote_pair_start_params["properties"]["manualCode"]["type"] == "boolean"
+        remote_pair_start_response = json.loads(
+            (out_dir / "RemoteControlPairingStartResponse.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        assert remote_pair_start_response["required"] == [
+            "pairingCode",
+            "manualPairingCode",
+            "environmentId",
+            "expiresAt",
+        ]
+        remote_pair_status_params = json.loads(
+            (out_dir / "RemoteControlPairingStatusParams.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        assert remote_pair_status_params["properties"]["pairingCode"]["type"] == [
+            "string",
+            "null",
+        ]
+        remote_client = json.loads(
+            (out_dir / "RemoteControlClient.json").read_text(encoding="utf-8")
+        )
+        assert remote_client["required"] == [
+            "clientId",
+            "displayName",
+            "deviceType",
+            "platform",
+            "osVersion",
+            "deviceModel",
+            "appVersion",
+            "lastSeenAt",
+        ]
+        remote_clients_list_params = json.loads(
+            (out_dir / "RemoteControlClientsListParams.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        assert remote_clients_list_params["required"] == ["environmentId"]
+        assert remote_clients_list_params["properties"]["limit"]["maximum"] == 4294967295
+        remote_clients_list_response = json.loads(
+            (out_dir / "RemoteControlClientsListResponse.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        assert remote_clients_list_response["required"] == ["data", "nextCursor"]
+        assert (
+            remote_clients_list_response["properties"]["data"]["items"]["$ref"]
+            == "RemoteControlClient.json"
+        )
+        remote_clients_revoke = json.loads(
+            (out_dir / "RemoteControlClientsRevokeParams.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        assert remote_clients_revoke["required"] == ["environmentId", "clientId"]
+        for schema_name in [
+            "RemoteControlPairingStartParams",
+            "RemoteControlPairingStartResponse",
+            "RemoteControlPairingStatusParams",
+            "RemoteControlPairingStatusResponse",
+            "RemoteControlClientsListOrder",
+            "RemoteControlClient",
+            "RemoteControlClientsListParams",
+            "RemoteControlClientsListResponse",
+            "RemoteControlClientsRevokeParams",
+            "RemoteControlClientsRevokeResponse",
+        ]:
+            assert (out_dir / "v2" / f"{schema_name}.json").is_file()
         memory_reset_response = json.loads(
             (out_dir / "MemoryResetResponse.json").read_text(encoding="utf-8")
         )
@@ -53237,6 +53495,16 @@ def run_json_schema_smoke(binary: Path) -> None:
         assert "RemoteControlEnableResponse" in bundle["$defs"]
         assert "RemoteControlDisableResponse" in bundle["$defs"]
         assert "RemoteControlStatusReadResponse" in bundle["$defs"]
+        assert "RemoteControlPairingStartParams" in bundle["$defs"]
+        assert "RemoteControlPairingStartResponse" in bundle["$defs"]
+        assert "RemoteControlPairingStatusParams" in bundle["$defs"]
+        assert "RemoteControlPairingStatusResponse" in bundle["$defs"]
+        assert "RemoteControlClientsListOrder" in bundle["$defs"]
+        assert "RemoteControlClient" in bundle["$defs"]
+        assert "RemoteControlClientsListParams" in bundle["$defs"]
+        assert "RemoteControlClientsListResponse" in bundle["$defs"]
+        assert "RemoteControlClientsRevokeParams" in bundle["$defs"]
+        assert "RemoteControlClientsRevokeResponse" in bundle["$defs"]
         assert "MemoryResetResponse" in bundle["$defs"]
         assert "GitDiffToRemoteParams" in bundle["$defs"]
         assert "GitDiffToRemoteResponse" in bundle["$defs"]
@@ -53649,6 +53917,16 @@ def run_json_schema_smoke(binary: Path) -> None:
                 remote_control_response["properties"]["status"]["$ref"]
                 == "#/$defs/RemoteControlConnectionStatus"
             )
+        assert (
+            bundle["$defs"]["RemoteControlClientsListResponse"]["properties"]["data"][
+                "items"
+            ]["$ref"]
+            == "#/$defs/RemoteControlClient"
+        )
+        assert bundle["$defs"]["RemoteControlClientsListOrder"]["enum"] == [
+            "asc",
+            "desc",
+        ]
         assert bundle["$defs"]["SandboxPolicy"]["oneOf"][2]["properties"]["type"]["const"] == "externalSandbox"
         assert (
             bundle["$defs"]["SandboxPolicy"]["oneOf"][3]["properties"]["writableRoots"]["items"]["$ref"]
@@ -54713,6 +54991,18 @@ def run_typescript_generation_smoke(binary: Path) -> None:
             "remoteControl/status/read",
         ]:
             assert f'method: "{method}";' in client_request
+        for method, params_type in [
+            ("remoteControl/pairing/start", "RemoteControlPairingStartParams"),
+            ("remoteControl/pairing/status", "RemoteControlPairingStatusParams"),
+            ("remoteControl/client/list", "RemoteControlClientsListParams"),
+            ("remoteControl/client/revoke", "RemoteControlClientsRevokeParams"),
+        ]:
+            assert (
+                f'import type {{ {params_type} }} from "./v2/{params_type}";'
+                in client_request
+            )
+            assert f'method: "{method}";' in client_request
+            assert f"params: {params_type};" in client_request
         assert 'method: "command/exec";' in client_request
         assert "params: CommandExecParams;" in client_request
         assert 'method: "command/exec/write";' in client_request
@@ -56015,6 +56305,10 @@ def run_typescript_generation_smoke(binary: Path) -> None:
             ("remoteControl/enable", "RemoteControlEnableResponse"),
             ("remoteControl/disable", "RemoteControlDisableResponse"),
             ("remoteControl/status/read", "RemoteControlStatusReadResponse"),
+            ("remoteControl/pairing/start", "RemoteControlPairingStartResponse"),
+            ("remoteControl/pairing/status", "RemoteControlPairingStatusResponse"),
+            ("remoteControl/client/list", "RemoteControlClientsListResponse"),
+            ("remoteControl/client/revoke", "RemoteControlClientsRevokeResponse"),
         ]:
             assert (
                 f'import type {{ {response_type} }} from "./v2/{response_type}";'
@@ -56380,6 +56674,53 @@ def run_typescript_generation_smoke(binary: Path) -> None:
             assert "serverName: string;" in response_ts
             assert "installationId: string;" in response_ts
             assert "environmentId: string | null;" in response_ts
+        remote_pair_start = (
+            out_dir / "v2" / "RemoteControlPairingStartParams.ts"
+        ).read_text(encoding="utf-8")
+        assert "manualCode?: boolean;" in remote_pair_start
+        remote_pair_start_response = (
+            out_dir / "v2" / "RemoteControlPairingStartResponse.ts"
+        ).read_text(encoding="utf-8")
+        assert "pairingCode: string;" in remote_pair_start_response
+        assert "manualPairingCode: string | null;" in remote_pair_start_response
+        assert "expiresAt: bigint;" in remote_pair_start_response
+        remote_pair_status = (
+            out_dir / "v2" / "RemoteControlPairingStatusParams.ts"
+        ).read_text(encoding="utf-8")
+        assert "pairingCode?: string | null;" in remote_pair_status
+        assert "manualPairingCode?: string | null;" in remote_pair_status
+        remote_clients_order = (
+            out_dir / "v2" / "RemoteControlClientsListOrder.ts"
+        ).read_text(encoding="utf-8")
+        assert '"asc" | "desc"' in remote_clients_order
+        remote_client = (out_dir / "v2" / "RemoteControlClient.ts").read_text(
+            encoding="utf-8"
+        )
+        assert "clientId: string;" in remote_client
+        assert "lastSeenAt: bigint | null;" in remote_client
+        remote_clients_list = (
+            out_dir / "v2" / "RemoteControlClientsListParams.ts"
+        ).read_text(encoding="utf-8")
+        assert (
+            'import type { RemoteControlClientsListOrder } from "./RemoteControlClientsListOrder";'
+            in remote_clients_list
+        )
+        assert "environmentId: string;" in remote_clients_list
+        assert "order?: RemoteControlClientsListOrder | null;" in remote_clients_list
+        remote_clients_response = (
+            out_dir / "v2" / "RemoteControlClientsListResponse.ts"
+        ).read_text(encoding="utf-8")
+        assert 'import type { RemoteControlClient } from "./RemoteControlClient";' in remote_clients_response
+        assert "data: RemoteControlClient[];" in remote_clients_response
+        remote_clients_revoke = (
+            out_dir / "v2" / "RemoteControlClientsRevokeParams.ts"
+        ).read_text(encoding="utf-8")
+        assert "environmentId: string;" in remote_clients_revoke
+        assert "clientId: string;" in remote_clients_revoke
+        remote_clients_revoke_response = (
+            out_dir / "v2" / "RemoteControlClientsRevokeResponse.ts"
+        ).read_text(encoding="utf-8")
+        assert "export interface RemoteControlClientsRevokeResponse {}" in remote_clients_revoke_response
         memory_reset_response = (
             out_dir / "v2" / "MemoryResetResponse.ts"
         ).read_text(encoding="utf-8")
