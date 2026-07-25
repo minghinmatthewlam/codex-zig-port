@@ -8793,6 +8793,14 @@ const THREAD_ARCHIVED_NOTIFICATION_TS =
     \\
     ;
 
+const THREAD_DELETED_NOTIFICATION_TS =
+    GENERATED_TS_HEADER ++
+    \\export interface ThreadDeletedNotification {
+    \\  threadId: string;
+    \\}
+    \\
+    ;
+
 const THREAD_UNARCHIVED_NOTIFICATION_TS =
     GENERATED_TS_HEADER ++
     \\export interface ThreadUnarchivedNotification {
@@ -10328,6 +10336,20 @@ const THREAD_ARCHIVE_RESPONSE_TS =
     \\
     ;
 
+const THREAD_DELETE_PARAMS_TS =
+    GENERATED_TS_HEADER ++
+    \\export interface ThreadDeleteParams {
+    \\  threadId: string;
+    \\}
+    \\
+    ;
+
+const THREAD_DELETE_RESPONSE_TS =
+    GENERATED_TS_HEADER ++
+    \\export interface ThreadDeleteResponse {}
+    \\
+    ;
+
 const THREAD_UNARCHIVE_PARAMS_TS =
     GENERATED_TS_HEADER ++
     \\export interface ThreadUnarchiveParams {
@@ -11110,6 +11132,7 @@ const CLIENT_REQUEST_TS =
     \\import type { ThreadBackgroundTerminalsTerminateParams } from "./v2/ThreadBackgroundTerminalsTerminateParams";
     \\import type { ThreadCompactStartParams } from "./v2/ThreadCompactStartParams";
     \\import type { ThreadDecrementElicitationParams } from "./v2/ThreadDecrementElicitationParams";
+    \\import type { ThreadDeleteParams } from "./v2/ThreadDeleteParams";
     \\import type { ThreadGoalClearParams } from "./v2/ThreadGoalClearParams";
     \\import type { ThreadGoalGetParams } from "./v2/ThreadGoalGetParams";
     \\import type { ThreadGoalSetParams } from "./v2/ThreadGoalSetParams";
@@ -11451,6 +11474,10 @@ const CLIENT_REQUEST_TS =
     \\      params: ThreadArchiveParams;
     \\    }
     \\  | {
+    \\      method: "thread/delete";
+    \\      params: ThreadDeleteParams;
+    \\    }
+    \\  | {
     \\      method: "thread/unarchive";
     \\      params: ThreadUnarchiveParams;
     \\    }
@@ -11643,6 +11670,7 @@ const CLIENT_RESPONSE_TS =
     \\import type { ThreadBackgroundTerminalsTerminateResponse } from "./v2/ThreadBackgroundTerminalsTerminateResponse";
     \\import type { ThreadCompactStartResponse } from "./v2/ThreadCompactStartResponse";
     \\import type { ThreadDecrementElicitationResponse } from "./v2/ThreadDecrementElicitationResponse";
+    \\import type { ThreadDeleteResponse } from "./v2/ThreadDeleteResponse";
     \\import type { ThreadGoalClearResponse } from "./v2/ThreadGoalClearResponse";
     \\import type { ThreadGoalGetResponse } from "./v2/ThreadGoalGetResponse";
     \\import type { ThreadGoalSetResponse } from "./v2/ThreadGoalSetResponse";
@@ -12068,6 +12096,11 @@ const CLIENT_RESPONSE_TS =
     \\    }
     \\  | {
     \\      id: RequestId;
+    \\      method: "thread/delete";
+    \\      result: ThreadDeleteResponse;
+    \\    }
+    \\  | {
+    \\      id: RequestId;
     \\      method: "thread/unarchive";
     \\      result: ThreadUnarchiveResponse;
     \\    }
@@ -12300,6 +12333,7 @@ const SERVER_NOTIFICATION_TS =
     \\import type { TerminalInteractionNotification } from "./v2/TerminalInteractionNotification";
     \\import type { ThreadArchivedNotification } from "./v2/ThreadArchivedNotification";
     \\import type { ThreadClosedNotification } from "./v2/ThreadClosedNotification";
+    \\import type { ThreadDeletedNotification } from "./v2/ThreadDeletedNotification";
     \\import type { ThreadGoalClearedNotification } from "./v2/ThreadGoalClearedNotification";
     \\import type { ThreadGoalUpdatedNotification } from "./v2/ThreadGoalUpdatedNotification";
     \\import type { ThreadNameUpdatedNotification } from "./v2/ThreadNameUpdatedNotification";
@@ -12399,6 +12433,10 @@ const SERVER_NOTIFICATION_TS =
     \\  | {
     \\      method: "thread/archived";
     \\      params: ThreadArchivedNotification;
+    \\    }
+    \\  | {
+    \\      method: "thread/deleted";
+    \\      params: ThreadDeletedNotification;
     \\    }
     \\  | {
     \\      method: "thread/unarchived";
@@ -13086,6 +13124,8 @@ const V2_INDEX_TS =
     \\export type { ThreadCompactStartResponse } from "./ThreadCompactStartResponse";
     \\export type { ThreadDecrementElicitationParams } from "./ThreadDecrementElicitationParams";
     \\export type { ThreadDecrementElicitationResponse } from "./ThreadDecrementElicitationResponse";
+    \\export type { ThreadDeleteParams } from "./ThreadDeleteParams";
+    \\export type { ThreadDeleteResponse } from "./ThreadDeleteResponse";
     \\export type { ThreadForkParams } from "./ThreadForkParams";
     \\export type { ThreadForkResponse } from "./ThreadForkResponse";
     \\export type { ThreadGoal } from "./ThreadGoal";
@@ -13127,6 +13167,7 @@ const V2_INDEX_TS =
     \\export type { ThreadMetadataUpdateResponse } from "./ThreadMetadataUpdateResponse";
     \\export type { ThreadArchivedNotification } from "./ThreadArchivedNotification";
     \\export type { ThreadClosedNotification } from "./ThreadClosedNotification";
+    \\export type { ThreadDeletedNotification } from "./ThreadDeletedNotification";
     \\export type { ThreadNameUpdatedNotification } from "./ThreadNameUpdatedNotification";
     \\export type { ThreadReadParams } from "./ThreadReadParams";
     \\export type { ThreadReadResponse } from "./ThreadReadResponse";
@@ -20785,6 +20826,20 @@ const THREAD_ARCHIVED_NOTIFICATION_JSON_SCHEMA =
     \\
 ;
 
+const THREAD_DELETED_NOTIFICATION_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "ThreadDeletedNotification",
+    \\  "type": "object",
+    \\  "required": ["threadId"],
+    \\  "properties": {
+    \\    "threadId": { "type": "string" }
+    \\  },
+    \\  "additionalProperties": true
+    \\}
+    \\
+;
+
 const THREAD_UNARCHIVED_NOTIFICATION_JSON_SCHEMA =
     \\{
     \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -22192,6 +22247,30 @@ const THREAD_ARCHIVE_RESPONSE_JSON_SCHEMA =
     \\{
     \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
     \\  "title": "ThreadArchiveResponse",
+    \\  "type": "object",
+    \\  "additionalProperties": false
+    \\}
+    \\
+;
+
+const THREAD_DELETE_PARAMS_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "ThreadDeleteParams",
+    \\  "type": "object",
+    \\  "required": ["threadId"],
+    \\  "properties": {
+    \\    "threadId": { "type": "string" }
+    \\  },
+    \\  "additionalProperties": true
+    \\}
+    \\
+;
+
+const THREAD_DELETE_RESPONSE_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "ThreadDeleteResponse",
     \\  "type": "object",
     \\  "additionalProperties": false
     \\}
@@ -26377,6 +26456,14 @@ const APP_SERVER_PROTOCOL_SCHEMA_BUNDLE =
     \\      },
     \\      "additionalProperties": true
     \\    },
+    \\    "ThreadDeletedNotification": {
+    \\      "type": "object",
+    \\      "required": ["threadId"],
+    \\      "properties": {
+    \\        "threadId": { "type": "string" }
+    \\      },
+    \\      "additionalProperties": true
+    \\    },
     \\    "ThreadUnarchivedNotification": {
     \\      "type": "object",
     \\      "required": ["threadId"],
@@ -27315,6 +27402,18 @@ const APP_SERVER_PROTOCOL_SCHEMA_BUNDLE =
     \\      "additionalProperties": true
     \\    },
     \\    "ThreadArchiveResponse": {
+    \\      "type": "object",
+    \\      "additionalProperties": false
+    \\    },
+    \\    "ThreadDeleteParams": {
+    \\      "type": "object",
+    \\      "required": ["threadId"],
+    \\      "properties": {
+    \\        "threadId": { "type": "string" }
+    \\      },
+    \\      "additionalProperties": true
+    \\    },
+    \\    "ThreadDeleteResponse": {
     \\      "type": "object",
     \\      "additionalProperties": false
     \\    },
@@ -28261,6 +28360,7 @@ const APP_SERVER_JSON_SCHEMA_FILES = [_]SchemaFile{
     .{ .name = "ThreadStatus.json", .contents = THREAD_STATUS_JSON_SCHEMA },
     .{ .name = "ThreadStatusChangedNotification.json", .contents = THREAD_STATUS_CHANGED_NOTIFICATION_JSON_SCHEMA },
     .{ .name = "ThreadArchivedNotification.json", .contents = THREAD_ARCHIVED_NOTIFICATION_JSON_SCHEMA },
+    .{ .name = "ThreadDeletedNotification.json", .contents = THREAD_DELETED_NOTIFICATION_JSON_SCHEMA },
     .{ .name = "ThreadUnarchivedNotification.json", .contents = THREAD_UNARCHIVED_NOTIFICATION_JSON_SCHEMA },
     .{ .name = "ThreadClosedNotification.json", .contents = THREAD_CLOSED_NOTIFICATION_JSON_SCHEMA },
     .{ .name = "ThreadNameUpdatedNotification.json", .contents = THREAD_NAME_UPDATED_NOTIFICATION_JSON_SCHEMA },
@@ -28323,6 +28423,8 @@ const APP_SERVER_JSON_SCHEMA_FILES = [_]SchemaFile{
     .{ .name = "ThreadUnsubscribeResponse.json", .contents = THREAD_UNSUBSCRIBE_RESPONSE_JSON_SCHEMA },
     .{ .name = "ThreadArchiveParams.json", .contents = THREAD_ARCHIVE_PARAMS_JSON_SCHEMA },
     .{ .name = "ThreadArchiveResponse.json", .contents = THREAD_ARCHIVE_RESPONSE_JSON_SCHEMA },
+    .{ .name = "ThreadDeleteParams.json", .contents = THREAD_DELETE_PARAMS_JSON_SCHEMA },
+    .{ .name = "ThreadDeleteResponse.json", .contents = THREAD_DELETE_RESPONSE_JSON_SCHEMA },
     .{ .name = "ThreadUnarchiveParams.json", .contents = THREAD_UNARCHIVE_PARAMS_JSON_SCHEMA },
     .{ .name = "ThreadUnarchiveResponse.json", .contents = THREAD_UNARCHIVE_RESPONSE_JSON_SCHEMA },
     .{ .name = "ThreadCompactStartParams.json", .contents = THREAD_COMPACT_START_PARAMS_JSON_SCHEMA },
@@ -28521,6 +28623,9 @@ const APP_SERVER_JSON_SCHEMA_VERSIONED_ALIASES = [_][]const u8{
     "v2/ThreadClosedNotification.json",
     "v2/ThreadCompactStartParams.json",
     "v2/ThreadCompactStartResponse.json",
+    "v2/ThreadDeleteParams.json",
+    "v2/ThreadDeleteResponse.json",
+    "v2/ThreadDeletedNotification.json",
     "v2/ThreadForkParams.json",
     "v2/ThreadForkResponse.json",
     "v2/ThreadGoalClearedNotification.json",
@@ -28986,6 +29091,7 @@ const APP_SERVER_TS_FILES = [_]SchemaFile{
     .{ .name = "v2/ThreadStatus.ts", .contents = THREAD_STATUS_TS },
     .{ .name = "v2/ThreadStatusChangedNotification.ts", .contents = THREAD_STATUS_CHANGED_NOTIFICATION_TS },
     .{ .name = "v2/ThreadArchivedNotification.ts", .contents = THREAD_ARCHIVED_NOTIFICATION_TS },
+    .{ .name = "v2/ThreadDeletedNotification.ts", .contents = THREAD_DELETED_NOTIFICATION_TS },
     .{ .name = "v2/ThreadUnarchivedNotification.ts", .contents = THREAD_UNARCHIVED_NOTIFICATION_TS },
     .{ .name = "v2/ThreadClosedNotification.ts", .contents = THREAD_CLOSED_NOTIFICATION_TS },
     .{ .name = "v2/ThreadNameUpdatedNotification.ts", .contents = THREAD_NAME_UPDATED_NOTIFICATION_TS },
@@ -29120,6 +29226,8 @@ const APP_SERVER_TS_FILES = [_]SchemaFile{
     .{ .name = "v2/ThreadUnsubscribeResponse.ts", .contents = THREAD_UNSUBSCRIBE_RESPONSE_TS },
     .{ .name = "v2/ThreadArchiveParams.ts", .contents = THREAD_ARCHIVE_PARAMS_TS },
     .{ .name = "v2/ThreadArchiveResponse.ts", .contents = THREAD_ARCHIVE_RESPONSE_TS },
+    .{ .name = "v2/ThreadDeleteParams.ts", .contents = THREAD_DELETE_PARAMS_TS },
+    .{ .name = "v2/ThreadDeleteResponse.ts", .contents = THREAD_DELETE_RESPONSE_TS },
     .{ .name = "v2/ThreadUnarchiveParams.ts", .contents = THREAD_UNARCHIVE_PARAMS_TS },
     .{ .name = "v2/ThreadUnarchiveResponse.ts", .contents = THREAD_UNARCHIVE_RESPONSE_TS },
     .{ .name = "v2/ThreadCompactStartParams.ts", .contents = THREAD_COMPACT_START_PARAMS_TS },
@@ -40081,6 +40189,7 @@ fn isThreadMethod(method: []const u8) bool {
         std.mem.eql(u8, method, "thread/loaded/list") or
         std.mem.eql(u8, method, "thread/unsubscribe") or
         std.mem.eql(u8, method, "thread/archive") or
+        std.mem.eql(u8, method, "thread/delete") or
         std.mem.eql(u8, method, "thread/unarchive") or
         std.mem.eql(u8, method, "thread/compact/start") or
         std.mem.eql(u8, method, "thread/shellCommand") or
@@ -40212,6 +40321,68 @@ fn handleThreadMethod(
             }
             _ = removeThreadSubscription(allocator, state, descendant_id);
             try queueThreadIdNotification(allocator, state, "thread/archived", descendant_id);
+        }
+        return renderJsonRpcResult(allocator, id_value, "{}");
+    }
+    if (std.mem.eql(u8, method, "thread/delete")) {
+        const object = parseThreadObjectParams(params_value) catch |err| switch (err) {
+            error.InvalidThreadParams => return renderThreadObjectParamsError(allocator, id_value, method),
+        };
+        const thread_id = requiredThreadIdParam(object) catch |err| switch (err) {
+            error.MissingThreadId => return renderJsonRpcError(allocator, id_value, -32602, "threadId must be a string"),
+        };
+        if (!isUuidString(thread_id)) {
+            return renderInvalidThreadId(allocator, id_value, thread_id);
+        }
+        if (findLoadedThread(state, thread_id)) |thread| {
+            if (thread.ephemeral) {
+                return renderThreadDeleteNotPersisted(allocator, id_value, thread_id);
+            }
+        }
+        var cfg = loadAppServerConfig(allocator, state) catch |err| {
+            return renderJsonRpcErrorForFailure(allocator, id_value, "thread/delete failed to load config", err);
+        };
+        defer cfg.deinit(allocator);
+
+        var delete_thread_ids = std.ArrayList([]const u8).empty;
+        defer delete_thread_ids.deinit(allocator);
+        try delete_thread_ids.append(allocator, thread_id);
+        var owned_delete_thread_ids = std.ArrayList([]const u8).empty;
+        defer {
+            for (owned_delete_thread_ids.items) |owned_id| allocator.free(owned_id);
+            owned_delete_thread_ids.deinit(allocator);
+        }
+        feedback_state.appendSpawnDescendantThreadIds(allocator, configSqliteHome(cfg), thread_id, &delete_thread_ids, &owned_delete_thread_ids) catch |err| switch (err) {
+            error.SqlitePrepareFailed => {},
+            else => return renderJsonRpcErrorForFailure(allocator, id_value, "thread/delete failed to list spawned descendants", err),
+        };
+
+        var delete_order = std.ArrayList([]const u8).empty;
+        defer delete_order.deinit(allocator);
+        var delete_index = delete_thread_ids.items.len;
+        while (delete_index > 0) {
+            delete_index -= 1;
+            try delete_order.append(allocator, delete_thread_ids.items[delete_index]);
+        }
+
+        var root_known = delete_thread_ids.items.len > 1;
+        for (delete_order.items) |delete_id| {
+            const rollout_known = deleteThreadRolloutFiles(allocator, state, cfg, delete_id) catch |err| switch (err) {
+                else => return renderJsonRpcErrorForFailure(allocator, id_value, "thread/delete failed", err),
+            };
+            const state_changed = thread_state.deleteThreadState(allocator, configSqliteHome(cfg), delete_id) catch |err| switch (err) {
+                else => return renderJsonRpcErrorForFailure(allocator, id_value, "thread/delete failed to delete app-server state", err),
+            };
+            const loaded_known = removeLoadedThread(allocator, state, delete_id);
+            if (std.mem.eql(u8, delete_id, thread_id) and (rollout_known or state_changed or loaded_known)) {
+                root_known = true;
+            }
+        }
+        if (!root_known) {
+            return renderThreadNotFound(allocator, id_value, thread_id);
+        }
+        for (delete_order.items) |delete_id| {
+            try queueThreadIdNotification(allocator, state, "thread/deleted", delete_id);
         }
         return renderJsonRpcResult(allocator, id_value, "{}");
     }
@@ -43832,6 +44003,48 @@ fn removeLoadedThread(allocator: std.mem.Allocator, state: *AppServerState, thre
     var removed = state.loaded_threads.orderedRemove(index);
     removed.deinit(allocator);
     return true;
+}
+
+fn deleteThreadRolloutFiles(
+    allocator: std.mem.Allocator,
+    state: *const AppServerState,
+    cfg: config.Config,
+    thread_id: []const u8,
+) !bool {
+    var known = false;
+    if (findLoadedThread(state, thread_id)) |thread| {
+        known = !thread.ephemeral;
+        if (thread.path) |path| {
+            try deleteRolloutPathIfPresent(path, thread_id);
+        }
+    }
+
+    const deleted_path = session_store.deleteRollout(allocator, cfg.codex_home, thread_id) catch |err| switch (err) {
+        error.FileNotFound => null,
+        else => return err,
+    };
+    if (deleted_path) |path| {
+        allocator.free(path);
+        return true;
+    }
+
+    const state_path = try thread_state.findRolloutPathByThreadId(allocator, cfg.codex_home, configSqliteHome(cfg), thread_id);
+    if (state_path) |path| {
+        defer allocator.free(path);
+        try deleteRolloutPathIfPresent(path, thread_id);
+        return true;
+    }
+
+    return known;
+}
+
+fn deleteRolloutPathIfPresent(path: []const u8, thread_id: []const u8) !void {
+    const basename = std.fs.path.basename(path);
+    if (std.mem.indexOf(u8, basename, thread_id) == null) return error.InvalidSessionPath;
+    std.Io.Dir.cwd().deleteFile(std.Io.Threaded.global_single_threaded.io(), path) catch |err| switch (err) {
+        error.FileNotFound => {},
+        else => return err,
+    };
 }
 
 fn upsertLoadedThread(allocator: std.mem.Allocator, state: *AppServerState, thread: LoadedThread) !void {
@@ -47789,6 +48002,12 @@ fn renderInvalidThreadId(allocator: std.mem.Allocator, id_value: std.json.Value,
 
 fn renderThreadNotFound(allocator: std.mem.Allocator, id_value: std.json.Value, thread_id: []const u8) ![]const u8 {
     const message = try std.fmt.allocPrint(allocator, "thread not found: {s}", .{thread_id});
+    defer allocator.free(message);
+    return renderJsonRpcError(allocator, id_value, -32600, message);
+}
+
+fn renderThreadDeleteNotPersisted(allocator: std.mem.Allocator, id_value: std.json.Value, thread_id: []const u8) ![]const u8 {
+    const message = try std.fmt.allocPrint(allocator, "thread is not persisted and cannot be deleted: {s}", .{thread_id});
     defer allocator.free(message);
     return renderJsonRpcError(allocator, id_value, -32600, message);
 }

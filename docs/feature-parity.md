@@ -40,6 +40,11 @@ Schema artifacts, and the Zig stdio app-server smoke.
 App-server thread-turn page view parity was checked against Rust
 `ThreadTurnsListParams.items_view` generated protocol docs, Zig
 `thread/turns/list` handling, and the Zig stdio app-server smoke.
+App-server thread delete parity was checked against Rust `thread/delete`
+request handling, generated `ThreadDelete*` / `ThreadDeletedNotification`
+protocol artifacts, local active/archived rollout deletion behavior, spawned
+descendant notification order, state-DB cleanup, and the Zig stdio app-server
+smoke.
 
 ## Priority Rules
 

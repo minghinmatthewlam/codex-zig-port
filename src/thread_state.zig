@@ -181,6 +181,16 @@ const DELETE_THREAD_GOAL_QUERY =
     \\WHERE thread_id = ?
 ;
 
+const DELETE_THREAD_QUERY =
+    \\DELETE FROM threads
+    \\WHERE id = ?
+;
+
+const DELETE_THREAD_SPAWN_EDGES_QUERY =
+    \\DELETE FROM thread_spawn_edges
+    \\WHERE parent_thread_id = ? OR child_thread_id = ?
+;
+
 const UPDATE_ARCHIVE_QUERY =
     \\UPDATE threads
     \\SET rollout_path = ?, archived = 1, archived_at = ?, updated_at = ?, updated_at_ms = ?
@@ -695,6 +705,24 @@ pub fn deleteThreadGoal(allocator: std.mem.Allocator, sqlite_home: []const u8, t
     const statement = try prepareStateUpdate(allocator, sqlite_home, DELETE_THREAD_GOAL_QUERY) orelse return false;
     errdefer statement.deinit();
     try sqlite.bindText(statement.statement, 1, thread_id);
+    return try finishStateUpdate(statement);
+}
+
+pub fn deleteThreadState(allocator: std.mem.Allocator, sqlite_home: []const u8, thread_id: []const u8) !bool {
+    const edges_changed = try deleteThreadSpawnEdges(allocator, sqlite_home, thread_id);
+    const goal_changed = try deleteThreadGoal(allocator, sqlite_home, thread_id);
+    const statement = try prepareStateUpdate(allocator, sqlite_home, DELETE_THREAD_QUERY) orelse return edges_changed or goal_changed;
+    errdefer statement.deinit();
+    try sqlite.bindText(statement.statement, 1, thread_id);
+    const thread_changed = try finishStateUpdate(statement);
+    return edges_changed or goal_changed or thread_changed;
+}
+
+fn deleteThreadSpawnEdges(allocator: std.mem.Allocator, sqlite_home: []const u8, thread_id: []const u8) !bool {
+    const statement = try prepareStateUpdate(allocator, sqlite_home, DELETE_THREAD_SPAWN_EDGES_QUERY) orelse return false;
+    errdefer statement.deinit();
+    try sqlite.bindText(statement.statement, 1, thread_id);
+    try sqlite.bindText(statement.statement, 2, thread_id);
     return try finishStateUpdate(statement);
 }
 

@@ -20847,6 +20847,120 @@ def run_thread_resume_rpc_smoke(binary: Path) -> None:
             assert not loaded_unarchive_path.exists()
             assert loaded_unarchive_archived_path.exists()
 
+            delete_parent_thread_id = "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee"
+            delete_child_thread_id = "edededed-eded-4ded-8ded-edededededed"
+            delete_grandchild_thread_id = "efefefef-efef-4fef-8fef-efefefefefef"
+            delete_parent_rollout_path = (
+                sessions_dir / f"rollout-{delete_parent_thread_id}.jsonl"
+            )
+            delete_child_rollout_path = (
+                sessions_dir / f"rollout-{delete_child_thread_id}.jsonl"
+            )
+            delete_grandchild_rollout_path = (
+                codex_home
+                / "archived_sessions"
+                / "zig"
+                / f"rollout-{delete_grandchild_thread_id}.jsonl"
+            )
+            delete_grandchild_rollout_path.parent.mkdir(parents=True, exist_ok=True)
+            for delete_rollout_path, delete_title in [
+                (delete_parent_rollout_path, "Delete Parent Smoke"),
+                (delete_child_rollout_path, "Delete Child Smoke"),
+                (delete_grandchild_rollout_path, "Delete Grandchild Smoke"),
+            ]:
+                delete_rollout_path.write_text(
+                    "\n".join(
+                        [
+                            json.dumps(
+                                {"type": "metadata", "title": delete_title},
+                                separators=(",", ":"),
+                            ),
+                            "",
+                        ]
+                    ),
+                    encoding="utf-8",
+                )
+            with sqlite3.connect(state_db_path) as db:
+                db.executemany(
+                    "INSERT INTO threads (id, rollout_path, archived) VALUES (?, ?, ?)",
+                    [
+                        (delete_parent_thread_id, str(delete_parent_rollout_path), 0),
+                        (delete_child_thread_id, str(delete_child_rollout_path), 0),
+                        (
+                            delete_grandchild_thread_id,
+                            str(delete_grandchild_rollout_path),
+                            1,
+                        ),
+                    ],
+                )
+                db.executemany(
+                    """
+                    INSERT INTO thread_spawn_edges (
+                        parent_thread_id,
+                        child_thread_id,
+                        status
+                    ) VALUES (?, ?, ?)
+                    """,
+                    [
+                        (delete_parent_thread_id, delete_child_thread_id, "open"),
+                        (delete_child_thread_id, delete_grandchild_thread_id, "closed"),
+                    ],
+                )
+
+            write_json_line(
+                proc,
+                {
+                    "jsonrpc": "2.0",
+                    "id": "thread-delete-subtree",
+                    "method": "thread/delete",
+                    "params": {"threadId": delete_parent_thread_id},
+                },
+            )
+            delete_subtree_response = read_json_line(proc, 5)
+            assert delete_subtree_response["id"] == "thread-delete-subtree"
+            assert delete_subtree_response["result"] == {}
+            delete_notifications = [read_json_line(proc, 5) for _ in range(3)]
+            assert [item["method"] for item in delete_notifications] == [
+                "thread/deleted",
+                "thread/deleted",
+                "thread/deleted",
+            ]
+            assert [item["params"]["threadId"] for item in delete_notifications] == [
+                delete_grandchild_thread_id,
+                delete_child_thread_id,
+                delete_parent_thread_id,
+            ]
+            assert not delete_parent_rollout_path.exists()
+            assert not delete_child_rollout_path.exists()
+            assert not delete_grandchild_rollout_path.exists()
+            with sqlite3.connect(state_db_path) as db:
+                remaining_deleted_threads = db.execute(
+                    "SELECT COUNT(*) FROM threads WHERE id IN (?, ?, ?)",
+                    (
+                        delete_parent_thread_id,
+                        delete_child_thread_id,
+                        delete_grandchild_thread_id,
+                    ),
+                ).fetchone()[0]
+                remaining_deleted_edges = db.execute(
+                    """
+                    SELECT COUNT(*)
+                    FROM thread_spawn_edges
+                    WHERE parent_thread_id IN (?, ?, ?)
+                       OR child_thread_id IN (?, ?, ?)
+                    """,
+                    (
+                        delete_parent_thread_id,
+                        delete_child_thread_id,
+                        delete_grandchild_thread_id,
+                        delete_parent_thread_id,
+                        delete_child_thread_id,
+                        delete_grandchild_thread_id,
+                    ),
+                ).fetchone()[0]
+            assert remaining_deleted_threads == 0
+            assert remaining_deleted_edges == 0
+
             write_json_line(
                 proc,
                 {
@@ -51318,6 +51432,16 @@ def run_json_schema_smoke(binary: Path) -> None:
             == "ThreadArchivedNotification"
         )
         assert thread_archived_notification_schema["required"] == ["threadId"]
+        thread_deleted_notification_schema = json.loads(
+            (out_dir / "ThreadDeletedNotification.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        assert (
+            thread_deleted_notification_schema["title"]
+            == "ThreadDeletedNotification"
+        )
+        assert thread_deleted_notification_schema["required"] == ["threadId"]
         thread_unarchived_notification_schema = json.loads(
             (out_dir / "ThreadUnarchivedNotification.json").read_text(
                 encoding="utf-8"
@@ -51952,6 +52076,14 @@ def run_json_schema_smoke(binary: Path) -> None:
             (out_dir / "ThreadArchiveResponse.json").read_text(encoding="utf-8")
         )
         assert thread_archive_response["additionalProperties"] is False
+        thread_delete = json.loads(
+            (out_dir / "ThreadDeleteParams.json").read_text(encoding="utf-8")
+        )
+        assert thread_delete["required"] == ["threadId"]
+        thread_delete_response = json.loads(
+            (out_dir / "ThreadDeleteResponse.json").read_text(encoding="utf-8")
+        )
+        assert thread_delete_response["additionalProperties"] is False
         thread_unarchive = json.loads(
             (out_dir / "ThreadUnarchiveParams.json").read_text(encoding="utf-8")
         )
@@ -52581,6 +52713,7 @@ def run_json_schema_smoke(binary: Path) -> None:
         assert "ThreadLoadedListParams" in bundle["$defs"]
         assert "ThreadUnsubscribeResponse" in bundle["$defs"]
         assert "ThreadArchiveResponse" in bundle["$defs"]
+        assert "ThreadDeleteResponse" in bundle["$defs"]
         assert "ThreadUnarchiveResponse" in bundle["$defs"]
         assert "ThreadCompactStartResponse" in bundle["$defs"]
         assert "ThreadShellCommandResponse" in bundle["$defs"]
@@ -53439,6 +53572,7 @@ def run_json_schema_smoke(binary: Path) -> None:
             "turnId",
         ]
         assert "ThreadArchivedNotification" in bundle["$defs"]
+        assert "ThreadDeletedNotification" in bundle["$defs"]
         assert "ThreadUnarchivedNotification" in bundle["$defs"]
         assert "ThreadClosedNotification" in bundle["$defs"]
         assert "ThreadNameUpdatedNotification" in bundle["$defs"]
@@ -53911,6 +54045,8 @@ def run_typescript_generation_smoke(binary: Path) -> None:
         assert "params: ThreadUnsubscribeParams;" in client_request
         assert 'method: "thread/archive";' in client_request
         assert "params: ThreadArchiveParams;" in client_request
+        assert 'method: "thread/delete";' in client_request
+        assert "params: ThreadDeleteParams;" in client_request
         assert 'method: "thread/unarchive";' in client_request
         assert "params: ThreadUnarchiveParams;" in client_request
         assert 'method: "thread/compact/start";' in client_request
@@ -54788,6 +54924,10 @@ def run_typescript_generation_smoke(binary: Path) -> None:
             in server_notification
         )
         assert (
+            'import type { ThreadDeletedNotification } from "./v2/ThreadDeletedNotification";'
+            in server_notification
+        )
+        assert (
             'import type { ThreadUnarchivedNotification } from "./v2/ThreadUnarchivedNotification";'
             in server_notification
         )
@@ -54863,6 +55003,8 @@ def run_typescript_generation_smoke(binary: Path) -> None:
         assert "params: ThreadStatusChangedNotification;" in server_notification
         assert 'method: "thread/archived";' in server_notification
         assert "params: ThreadArchivedNotification;" in server_notification
+        assert 'method: "thread/deleted";' in server_notification
+        assert "params: ThreadDeletedNotification;" in server_notification
         assert 'method: "thread/unarchived";' in server_notification
         assert "params: ThreadUnarchivedNotification;" in server_notification
         assert 'method: "thread/closed";' in server_notification
@@ -55169,6 +55311,8 @@ def run_typescript_generation_smoke(binary: Path) -> None:
         assert "result: ThreadForkResponse;" in client_response
         assert 'method: "thread/archive";' in client_response
         assert "result: ThreadArchiveResponse;" in client_response
+        assert 'method: "thread/delete";' in client_response
+        assert "result: ThreadDeleteResponse;" in client_response
         assert 'method: "thread/unarchive";' in client_response
         assert "result: ThreadUnarchiveResponse;" in client_response
         assert 'method: "thread/compact/start";' in client_response
@@ -56416,6 +56560,11 @@ def run_typescript_generation_smoke(binary: Path) -> None:
         ).read_text(encoding="utf-8")
         assert "export interface ThreadArchivedNotification" in thread_archived_notification
         assert "threadId: string;" in thread_archived_notification
+        thread_deleted_notification = (
+            out_dir / "v2" / "ThreadDeletedNotification.ts"
+        ).read_text(encoding="utf-8")
+        assert "export interface ThreadDeletedNotification" in thread_deleted_notification
+        assert "threadId: string;" in thread_deleted_notification
         thread_unarchived_notification = (
             out_dir / "v2" / "ThreadUnarchivedNotification.ts"
         ).read_text(encoding="utf-8")
@@ -57004,6 +57153,14 @@ def run_typescript_generation_smoke(binary: Path) -> None:
             out_dir / "v2" / "ThreadArchiveResponse.ts"
         ).read_text(encoding="utf-8")
         assert "export interface ThreadArchiveResponse {}" in thread_archive_response
+        thread_delete = (
+            out_dir / "v2" / "ThreadDeleteParams.ts"
+        ).read_text(encoding="utf-8")
+        assert "threadId: string;" in thread_delete
+        thread_delete_response = (
+            out_dir / "v2" / "ThreadDeleteResponse.ts"
+        ).read_text(encoding="utf-8")
+        assert "export interface ThreadDeleteResponse {}" in thread_delete_response
         thread_unarchive = (
             out_dir / "v2" / "ThreadUnarchiveParams.ts"
         ).read_text(encoding="utf-8")
@@ -58053,6 +58210,10 @@ def run_typescript_generation_smoke(binary: Path) -> None:
             in v2_index
         )
         assert (
+            'export type { ThreadDeletedNotification } from "./ThreadDeletedNotification";'
+            in v2_index
+        )
+        assert (
             'export type { ThreadUnarchivedNotification } from "./ThreadUnarchivedNotification";'
             in v2_index
         )
@@ -58231,6 +58392,8 @@ def run_typescript_generation_smoke(binary: Path) -> None:
         assert 'export type { ThreadUnsubscribeResponse } from "./ThreadUnsubscribeResponse";' in v2_index
         assert 'export type { ThreadArchiveParams } from "./ThreadArchiveParams";' in v2_index
         assert 'export type { ThreadArchiveResponse } from "./ThreadArchiveResponse";' in v2_index
+        assert 'export type { ThreadDeleteParams } from "./ThreadDeleteParams";' in v2_index
+        assert 'export type { ThreadDeleteResponse } from "./ThreadDeleteResponse";' in v2_index
         assert 'export type { ThreadUnarchiveParams } from "./ThreadUnarchiveParams";' in v2_index
         assert 'export type { ThreadUnarchiveResponse } from "./ThreadUnarchiveResponse";' in v2_index
         assert 'export type { ThreadCompactStartResponse } from "./ThreadCompactStartResponse";' in v2_index
