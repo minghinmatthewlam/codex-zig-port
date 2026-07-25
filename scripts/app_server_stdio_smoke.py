@@ -7474,75 +7474,6 @@ def run_turn_start_rpc_smoke(binary: Path) -> None:
                     proc,
                     {
                         "jsonrpc": "2.0",
-                        "id": "thread-background-list-after-pty",
-                        "method": "thread/backgroundTerminals/list",
-                        "params": {"threadId": thread_id, "limit": 1},
-                    },
-                )
-                background_list = read_json_line(proc, 5)
-                assert background_list["id"] == "thread-background-list-after-pty"
-                background_terminals = background_list["result"]["data"]
-                assert len(background_terminals) == 1
-                background_terminal = background_terminals[0]
-                assert background_terminal["itemId"] == "background-tty-start"
-                assert background_terminal["processId"] == "1000"
-                assert background_terminal["command"] == "read line; printf '%s\\n' \"$line\""
-                assert background_terminal["cwd"] == thread["cwd"]
-                assert isinstance(background_terminal["osPid"], int)
-                assert background_terminal["cpuPercent"] is None
-                assert background_terminal["rssKb"] is None
-                assert background_list["result"]["nextCursor"] is None
-
-                write_json_line(
-                    proc,
-                    {
-                        "jsonrpc": "2.0",
-                        "id": "thread-background-list-invalid-cursor",
-                        "method": "thread/backgroundTerminals/list",
-                        "params": {"threadId": thread_id, "cursor": "not-a-cursor"},
-                    },
-                )
-                background_list_invalid_cursor = read_json_line(proc, 5)
-                assert (
-                    background_list_invalid_cursor["id"]
-                    == "thread-background-list-invalid-cursor"
-                )
-                assert background_list_invalid_cursor["error"]["code"] == -32600
-                assert (
-                    "invalid cursor: invalid digit found in string"
-                    in background_list_invalid_cursor["error"]["message"]
-                )
-
-                write_json_line(
-                    proc,
-                    {
-                        "jsonrpc": "2.0",
-                        "id": "thread-background-terminate-active",
-                        "method": "thread/backgroundTerminals/terminate",
-                        "params": {"threadId": thread_id, "processId": "1000"},
-                    },
-                )
-                background_terminate = read_json_line(proc, 5)
-                assert background_terminate["id"] == "thread-background-terminate-active"
-                assert background_terminate["result"] == {"terminated": True}
-
-                write_json_line(
-                    proc,
-                    {
-                        "jsonrpc": "2.0",
-                        "id": "thread-background-terminate-again",
-                        "method": "thread/backgroundTerminals/terminate",
-                        "params": {"threadId": thread_id, "processId": "1000"},
-                    },
-                )
-                background_terminate_again = read_json_line(proc, 5)
-                assert background_terminate_again["id"] == "thread-background-terminate-again"
-                assert background_terminate_again["result"] == {"terminated": False}
-
-                write_json_line(
-                    proc,
-                    {
-                        "jsonrpc": "2.0",
                         "id": "thread-read-after-provider-recovery",
                         "method": "thread/read",
                         "params": {"threadId": thread_id},
@@ -17829,6 +17760,75 @@ def run_thread_background_terminal_clean_smoke(binary: Path) -> None:
                 assert_thread_status_notification(
                     read_json_line(proc, 5), thread_id, "idle"
                 )
+
+                write_json_line(
+                    proc,
+                    {
+                        "jsonrpc": "2.0",
+                        "id": "thread-background-list-after-pty",
+                        "method": "thread/backgroundTerminals/list",
+                        "params": {"threadId": thread_id, "limit": 1},
+                    },
+                )
+                background_list = read_json_line(proc, 5)
+                assert background_list["id"] == "thread-background-list-after-pty"
+                background_terminals = background_list["result"]["data"]
+                assert len(background_terminals) == 1
+                background_terminal = background_terminals[0]
+                assert background_terminal["itemId"] == "background-tty-start"
+                assert background_terminal["processId"] == "1000"
+                assert background_terminal["command"] == "read line; printf '%s\\n' \"$line\""
+                assert background_terminal["cwd"] == thread["cwd"]
+                assert isinstance(background_terminal["osPid"], int)
+                assert background_terminal["cpuPercent"] is None
+                assert background_terminal["rssKb"] is None
+                assert background_list["result"]["nextCursor"] is None
+
+                write_json_line(
+                    proc,
+                    {
+                        "jsonrpc": "2.0",
+                        "id": "thread-background-list-invalid-cursor",
+                        "method": "thread/backgroundTerminals/list",
+                        "params": {"threadId": thread_id, "cursor": "not-a-cursor"},
+                    },
+                )
+                background_list_invalid_cursor = read_json_line(proc, 5)
+                assert (
+                    background_list_invalid_cursor["id"]
+                    == "thread-background-list-invalid-cursor"
+                )
+                assert background_list_invalid_cursor["error"]["code"] == -32600
+                assert (
+                    "invalid cursor: invalid digit found in string"
+                    in background_list_invalid_cursor["error"]["message"]
+                )
+
+                write_json_line(
+                    proc,
+                    {
+                        "jsonrpc": "2.0",
+                        "id": "thread-background-terminate-active",
+                        "method": "thread/backgroundTerminals/terminate",
+                        "params": {"threadId": thread_id, "processId": "1000"},
+                    },
+                )
+                background_terminate = read_json_line(proc, 5)
+                assert background_terminate["id"] == "thread-background-terminate-active"
+                assert background_terminate["result"] == {"terminated": True}
+
+                write_json_line(
+                    proc,
+                    {
+                        "jsonrpc": "2.0",
+                        "id": "thread-background-terminate-again",
+                        "method": "thread/backgroundTerminals/terminate",
+                        "params": {"threadId": thread_id, "processId": "1000"},
+                    },
+                )
+                background_terminate_again = read_json_line(proc, 5)
+                assert background_terminate_again["id"] == "thread-background-terminate-again"
+                assert background_terminate_again["result"] == {"terminated": False}
 
                 write_json_line(
                     proc,
