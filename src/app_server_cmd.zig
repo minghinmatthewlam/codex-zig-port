@@ -832,6 +832,8 @@ const LoadedThread = struct {
     summary_created_at_ms: ?i64 = null,
     summary_updated_at_ms: ?i64 = null,
     status: ThreadRuntimeStatus = .idle,
+    pending_permission_requests: u32 = 0,
+    pending_user_input_requests: u32 = 0,
     realtime_session: ?LoadedThreadRealtimeSession = null,
 
     fn deinit(self: *LoadedThread, allocator: std.mem.Allocator) void {
@@ -30501,6 +30503,7 @@ const AppServerMcpElicitationContext = struct {
     allocator: std.mem.Allocator,
     state: *AppServerState,
     transport: ServerRequestTransport,
+    thread: ?*LoadedThread = null,
     thread_id: []const u8,
     turn_id: ?[]const u8,
     auto_decline: bool = false,
@@ -30593,6 +30596,8 @@ fn handleAppServerApprovalRequest(ctx: *anyopaque, request: tool_runner.Approval
     defer context.allocator.free(request_json);
 
     try trackPendingServerRequest(context.allocator, context.state, request_json);
+    const active_wait_thread = try beginLoadedThreadActiveWait(context.allocator, context.state, context.transport, context.thread, .permission);
+    defer if (active_wait_thread) |thread| decrementLoadedThreadActiveWait(thread, .permission);
     var pending_tracked = true;
     defer if (pending_tracked) {
         if (takePendingServerRequest(context.state, request_id_json)) |pending_request| {
@@ -31348,6 +31353,8 @@ fn handleAppServerRequestPermissions(ctx: *anyopaque, request: session_mod.Reque
     defer context.allocator.free(request_json);
 
     try trackPendingServerRequest(context.allocator, context.state, request_json);
+    const active_wait_thread = try beginLoadedThreadActiveWait(context.allocator, context.state, context.transport, context.thread, .permission);
+    defer if (active_wait_thread) |thread| decrementLoadedThreadActiveWait(thread, .permission);
     var pending_tracked = true;
     defer if (pending_tracked) {
         if (takePendingServerRequest(context.state, request_id_json)) |pending_request| {
@@ -31654,6 +31661,8 @@ fn handleAppServerRequestUserInput(ctx: *anyopaque, request: session_mod.Request
     defer context.allocator.free(request_json);
 
     try trackPendingServerRequest(context.allocator, context.state, request_json);
+    const active_wait_thread = try beginLoadedThreadActiveWait(context.allocator, context.state, context.transport, context.thread, .user_input);
+    defer if (active_wait_thread) |thread| decrementLoadedThreadActiveWait(thread, .user_input);
     var pending_tracked = true;
     defer if (pending_tracked) {
         if (takePendingServerRequest(context.state, request_id_json)) |pending_request| {
@@ -32027,6 +32036,8 @@ fn handleAppServerMcpElicitation(ctx: *anyopaque, request: mcp_runtime.Elicitati
     defer context.allocator.free(request_json);
 
     try trackPendingServerRequest(context.allocator, context.state, request_json);
+    const active_wait_thread = try beginLoadedThreadActiveWait(context.allocator, context.state, context.transport, context.thread, .permission);
+    defer if (active_wait_thread) |thread| decrementLoadedThreadActiveWait(thread, .permission);
     var pending_tracked = true;
     defer if (pending_tracked) {
         if (takePendingServerRequest(context.state, request_id_json)) |pending_request| {
@@ -33419,6 +33430,7 @@ fn handleReviewStart(
             .allocator = allocator,
             .state = state,
             .transport = transport,
+            .thread = thread,
             .thread_id = thread.id,
             .turn_id = turn_id,
             .turn_start_response_payload = response_payload,
@@ -33503,6 +33515,7 @@ fn handleReviewStart(
             .allocator = allocator,
             .state = state,
             .transport = transport,
+            .thread = thread,
             .thread_id = thread.id,
             .turn_id = turn_id,
             .auto_decline = cfg.approval_policy == .never,
@@ -34565,6 +34578,7 @@ fn handleTurnStart(
             .allocator = allocator,
             .state = state,
             .transport = transport,
+            .thread = thread,
             .thread_id = thread.id,
             .turn_id = turn_id,
             .auto_decline = cfg.approval_policy == .never,
@@ -44955,6 +44969,53 @@ const ThreadRuntimeStatus = enum {
     system_error,
 };
 
+const LoadedThreadActiveWaitKind = enum {
+    permission,
+    user_input,
+};
+
+fn incrementLoadedThreadActiveWait(thread: *LoadedThread, kind: LoadedThreadActiveWaitKind) void {
+    switch (kind) {
+        .permission => thread.pending_permission_requests +|= 1,
+        .user_input => thread.pending_user_input_requests +|= 1,
+    }
+}
+
+fn decrementLoadedThreadActiveWait(thread: *LoadedThread, kind: LoadedThreadActiveWaitKind) void {
+    switch (kind) {
+        .permission => {
+            if (thread.pending_permission_requests > 0) thread.pending_permission_requests -= 1;
+        },
+        .user_input => {
+            if (thread.pending_user_input_requests > 0) thread.pending_user_input_requests -= 1;
+        },
+    }
+}
+
+fn beginLoadedThreadActiveWait(
+    allocator: std.mem.Allocator,
+    state: *AppServerState,
+    transport: ServerRequestTransport,
+    maybe_thread: ?*LoadedThread,
+    kind: LoadedThreadActiveWaitKind,
+) !?*LoadedThread {
+    const thread = maybe_thread orelse return null;
+    incrementLoadedThreadActiveWait(thread, kind);
+    errdefer decrementLoadedThreadActiveWait(thread, kind);
+    try queueAndFlushLoadedThreadActiveWaitStatus(allocator, state, transport, thread);
+    return thread;
+}
+
+fn queueAndFlushLoadedThreadActiveWaitStatus(
+    allocator: std.mem.Allocator,
+    state: *AppServerState,
+    transport: ServerRequestTransport,
+    thread: *LoadedThread,
+) !void {
+    try queueThreadStatusChangedNotification(allocator, state, thread.id, .active);
+    try flushPendingNotificationsToTransport(allocator, state, transport);
+}
+
 fn renderThreadLifecycleResponse(
     allocator: std.mem.Allocator,
     thread: *const LoadedThread,
@@ -45887,7 +45948,11 @@ fn queueThreadStatusChangedNotification(
     try notification.appendSlice(allocator, "{\"jsonrpc\":\"2.0\",\"method\":\"thread/status/changed\",\"params\":{\"threadId\":");
     try appendJsonString(allocator, &notification, thread_id);
     try notification.appendSlice(allocator, ",\"status\":");
-    try appendThreadRuntimeStatusJson(allocator, &notification, status);
+    if (findLoadedThreadIndex(state, thread_id)) |thread_index| {
+        try appendLoadedThreadRuntimeStatusJson(allocator, &notification, &state.loaded_threads.items[thread_index], status);
+    } else {
+        try appendThreadRuntimeStatusJson(allocator, &notification, status);
+    }
     try notification.appendSlice(allocator, "}}");
     const owned = try notification.toOwnedSlice(allocator);
     errdefer allocator.free(owned);
@@ -46446,7 +46511,7 @@ fn appendLoadedThreadJson(
     defer allocator.free(updated_at);
     try result.appendSlice(allocator, updated_at);
     try result.appendSlice(allocator, ",\"status\":");
-    try appendThreadRuntimeStatusJson(allocator, result, status);
+    try appendLoadedThreadRuntimeStatusJson(allocator, result, thread, status);
     try result.appendSlice(allocator, ",\"path\":");
     try appendOptionalJsonString(allocator, result, thread.path);
     try result.appendSlice(allocator, ",\"cwd\":");
@@ -46470,13 +46535,50 @@ fn appendLoadedThreadJson(
     try result.append(allocator, '}');
 }
 
+fn appendLoadedThreadRuntimeStatusJson(
+    allocator: std.mem.Allocator,
+    result: *std.ArrayList(u8),
+    thread: *const LoadedThread,
+    status: ThreadRuntimeStatus,
+) !void {
+    try appendThreadRuntimeStatusJsonWithFlags(
+        allocator,
+        result,
+        status,
+        thread.pending_permission_requests > 0,
+        thread.pending_user_input_requests > 0,
+    );
+}
+
 fn appendThreadRuntimeStatusJson(allocator: std.mem.Allocator, result: *std.ArrayList(u8), status: ThreadRuntimeStatus) !void {
+    try appendThreadRuntimeStatusJsonWithFlags(allocator, result, status, false, false);
+}
+
+fn appendThreadRuntimeStatusJsonWithFlags(
+    allocator: std.mem.Allocator,
+    result: *std.ArrayList(u8),
+    status: ThreadRuntimeStatus,
+    waiting_on_approval: bool,
+    waiting_on_user_input: bool,
+) !void {
     try result.appendSlice(allocator, switch (status) {
-        .active => "{\"type\":\"active\",\"activeFlags\":[]}",
+        .active => "{\"type\":\"active\",\"activeFlags\":[",
         .idle => "{\"type\":\"idle\"}",
         .not_loaded => "{\"type\":\"notLoaded\"}",
         .system_error => "{\"type\":\"systemError\"}",
     });
+    if (status == .active) {
+        var first = true;
+        if (waiting_on_approval) {
+            try appendJsonString(allocator, result, "waitingOnApproval");
+            first = false;
+        }
+        if (waiting_on_user_input) {
+            if (!first) try result.append(allocator, ',');
+            try appendJsonString(allocator, result, "waitingOnUserInput");
+        }
+        try result.appendSlice(allocator, "]}");
+    }
 }
 
 fn appendThreadListItemJson(allocator: std.mem.Allocator, result: *std.ArrayList(u8), thread: ThreadListItem) !void {

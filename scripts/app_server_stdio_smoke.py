@@ -2850,7 +2850,10 @@ def assert_thread_started_notification(notification: dict, expected_thread: dict
 
 
 def assert_thread_status_notification(
-    notification: dict, thread_id: str, status_type: str
+    notification: dict,
+    thread_id: str,
+    status_type: str,
+    active_flags: list[str] | None = None,
 ) -> None:
     assert notification["jsonrpc"] == "2.0"
     assert notification["method"] == "thread/status/changed"
@@ -2858,7 +2861,20 @@ def assert_thread_status_notification(
     status = notification["params"]["status"]
     assert status["type"] == status_type
     if status_type == "active":
-        assert status["activeFlags"] == []
+        assert status["activeFlags"] == (active_flags or [])
+
+
+def expected_active_wait_flags_for_request(method: str) -> list[str] | None:
+    if method in {
+        "item/commandExecution/requestApproval",
+        "item/fileChange/requestApproval",
+        "item/permissions/requestApproval",
+        "mcpServer/elicitation/request",
+    }:
+        return ["waitingOnApproval"]
+    if method == "item/tool/requestUserInput":
+        return ["waitingOnUserInput"]
+    return None
 
 
 def assert_turn_start_rpc_completed(
@@ -2925,6 +2941,12 @@ def read_turn_server_request_after_opening(
     assert started["params"]["threadId"] == thread_id
     assert started["params"]["turn"]["id"] == turn_id
     request = read_json_line(proc, 5)
+    expected_active_flags = expected_active_wait_flags_for_request(expected_method)
+    if expected_active_flags is not None:
+        assert_thread_status_notification(
+            request, thread_id, "active", expected_active_flags
+        )
+        request = read_json_line(proc, 5)
     assert request["method"] == expected_method
     return request
 

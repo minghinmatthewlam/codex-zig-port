@@ -58,8 +58,11 @@ the Zig stdio app-server smoke.
   JSON-RPC errors. Regular app-server turns can now accept `turn/steer` while a
   server-request approval, permission request, or `request_user_input` prompt is
   pending; accepted steer input is injected into the same model turn after the
-  pending tool/request result. True async turn state, provider-flight steering,
-  and broad same-turn control remain open.
+  pending tool/request result. Loaded-thread active status now reports Rust's
+  `waitingOnApproval` flag while command/file/permission/MCP elicitation
+  requests are pending and `waitingOnUserInput` while a `request_user_input`
+  prompt is pending. True async turn state, provider-flight steering, and broad
+  same-turn control remain open.
 - Local and remote TUI prompt submission now enforce the same 1 MiB
   text-character input limit before starting a model turn, with friendly
   terminal errors and pending image attachments preserved on rejection. Current
