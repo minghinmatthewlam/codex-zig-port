@@ -7,9 +7,9 @@ reference, not CI, release, OSS hygiene, byte-for-byte fixture parity, or
 purely internal generator parity. The current reference is:
 
 - Rust checkout: `/Users/matthewlam/dev/codex` at
-  `5381240f57fe326b13bc81325f3c61596592fc7a`
+  `9e552e9d15ba52bed7077d5357f3e18e330f8f38`
 - Installed Rust CLI: `codex-cli 0.145.0`
-- Zig checkout: `9b8b4581e5aa99cca294a5d1b1a18918b710fbb4`
+- Zig checkout: `542fe55554535a3c014cd2a77c6eaa1a4689a285`
 - Zig CLI: `codex-zig 0.0.1`
 
 The source evidence for this pass was the Rust and Zig root help output,
@@ -27,6 +27,11 @@ Rust CLI/session archive command sources, Zig storage helpers, and
 checked against Rust `doctor/system.rs` and `doctor/git.rs`, installed Rust/Zig
 `doctor --summary --ascii --no-color` output, and
 `cli-doctor-environment-e2e`.
+
+App-server background terminal control parity was checked against Rust
+`protocol/v2/thread.rs`, Rust `thread_processor.rs`, Zig loaded-thread
+background PTY runtime state, generated TypeScript/JSON Schema artifacts, and
+the Zig stdio app-server smoke.
 
 ## Priority Rules
 
@@ -67,6 +72,15 @@ checked against Rust `doctor/system.rs` and `doctor/git.rs`, installed Rust/Zig
   lifecycle gaps include robust user interruption and steering, queued input
   while a turn is running, `/compact` interactions, active tool interruption,
   and async background-process status depth.
+- App-server `thread/backgroundTerminals/clean|list|terminate` is implemented
+  for model-facing PTY sessions started by `exec_command` during loaded-thread
+  turns. `list` returns Rust-shaped `data` / `nextCursor` pages with
+  `itemId`, string `processId`, command, cwd, `osPid`, and null CPU/RSS
+  metrics; `terminate` removes the matching thread-owned session and returns
+  Rust-shaped `terminated`; all three methods keep the Rust experimental API
+  gate and invalid/missing-thread errors. Remaining depth is full Rust async
+  active-process tracking, non-PTY background process metadata, and live
+  CPU/RSS sampling.
 - Basic local TUI `/experimental` coverage is implemented as a text-mode
   feature browser/toggler: it lists Rust menu-visible experimental features
   with effective enabled state, menu label, description, and config key, and
