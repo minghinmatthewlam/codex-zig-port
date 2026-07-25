@@ -10797,7 +10797,7 @@ const THREAD_ROLLBACK_RESPONSE_TS =
 
 const THREAD_SORT_KEY_TS =
     GENERATED_TS_HEADER ++
-    \\export type ThreadSortKey = "created_at" | "updated_at";
+    \\export type ThreadSortKey = "created_at" | "updated_at" | "recency_at";
     \\
     ;
 
@@ -10840,6 +10840,90 @@ const THREAD_LIST_RESPONSE_TS =
     \\  data: unknown[];
     \\  nextCursor: string | null;
     \\  backwardsCursor: string | null;
+    \\}
+    \\
+    ;
+
+const THREAD_SEARCH_TEXT_RANGE_TS =
+    GENERATED_TS_HEADER ++
+    \\export interface ThreadSearchTextRange {
+    \\  start: number;
+    \\  end: number;
+    \\}
+    \\
+    ;
+
+const THREAD_SEARCH_RESULT_TS =
+    GENERATED_TS_HEADER ++
+    \\export interface ThreadSearchResult {
+    \\  thread: unknown;
+    \\  snippet: string;
+    \\}
+    \\
+    ;
+
+const THREAD_SEARCH_PARAMS_TS =
+    GENERATED_TS_HEADER ++
+    \\import type { SortDirection } from "./SortDirection";
+    \\import type { ThreadSortKey } from "./ThreadSortKey";
+    \\import type { ThreadSourceKind } from "./ThreadSourceKind";
+    \\
+    \\export interface ThreadSearchParams {
+    \\  cursor?: string | null;
+    \\  limit?: number | null;
+    \\  sortKey?: ThreadSortKey | null;
+    \\  sortDirection?: SortDirection | null;
+    \\  sourceKinds?: ThreadSourceKind[] | null;
+    \\  archived?: boolean | null;
+    \\  searchTerm: string;
+    \\}
+    \\
+    ;
+
+const THREAD_SEARCH_RESPONSE_TS =
+    GENERATED_TS_HEADER ++
+    \\import type { ThreadSearchResult } from "./ThreadSearchResult";
+    \\
+    \\export interface ThreadSearchResponse {
+    \\  data: ThreadSearchResult[];
+    \\  nextCursor: string | null;
+    \\  backwardsCursor: string | null;
+    \\}
+    \\
+    ;
+
+const THREAD_SEARCH_OCCURRENCE_TS =
+    GENERATED_TS_HEADER ++
+    \\import type { ThreadSearchTextRange } from "./ThreadSearchTextRange";
+    \\
+    \\export interface ThreadSearchOccurrence {
+    \\  turnId: string;
+    \\  itemId: string;
+    \\  snippet: string;
+    \\  snippetMatchRange: ThreadSearchTextRange;
+    \\  turnCursor: string;
+    \\}
+    \\
+    ;
+
+const THREAD_SEARCH_OCCURRENCES_PARAMS_TS =
+    GENERATED_TS_HEADER ++
+    \\export interface ThreadSearchOccurrencesParams {
+    \\  threadId: string;
+    \\  searchTerm: string;
+    \\  cursor?: string | null;
+    \\  limit?: number | null;
+    \\}
+    \\
+    ;
+
+const THREAD_SEARCH_OCCURRENCES_RESPONSE_TS =
+    GENERATED_TS_HEADER ++
+    \\import type { ThreadSearchOccurrence } from "./ThreadSearchOccurrence";
+    \\
+    \\export interface ThreadSearchOccurrencesResponse {
+    \\  data: ThreadSearchOccurrence[];
+    \\  nextCursor: string | null;
     \\}
     \\
     ;
@@ -11417,6 +11501,8 @@ const CLIENT_REQUEST_TS =
     \\import type { ThreadRealtimeStopParams } from "./v2/ThreadRealtimeStopParams";
     \\import type { ThreadResumeParams } from "./v2/ThreadResumeParams";
     \\import type { ThreadRollbackParams } from "./v2/ThreadRollbackParams";
+    \\import type { ThreadSearchOccurrencesParams } from "./v2/ThreadSearchOccurrencesParams";
+    \\import type { ThreadSearchParams } from "./v2/ThreadSearchParams";
     \\import type { ThreadSetNameParams } from "./v2/ThreadSetNameParams";
     \\import type { ThreadSettingsUpdateParams } from "./v2/ThreadSettingsUpdateParams";
     \\import type { ThreadShellCommandParams } from "./v2/ThreadShellCommandParams";
@@ -11801,6 +11887,14 @@ const CLIENT_REQUEST_TS =
     \\      params: ThreadListParams;
     \\    }
     \\  | {
+    \\      method: "thread/search";
+    \\      params: ThreadSearchParams;
+    \\    }
+    \\  | {
+    \\      method: "thread/searchOccurrences";
+    \\      params: ThreadSearchOccurrencesParams;
+    \\    }
+    \\  | {
     \\      method: "thread/inject_items";
     \\      params: ThreadInjectItemsParams;
     \\    }
@@ -11980,6 +12074,8 @@ const CLIENT_RESPONSE_TS =
     \\import type { ThreadRealtimeStopResponse } from "./v2/ThreadRealtimeStopResponse";
     \\import type { ThreadResumeResponse } from "./v2/ThreadResumeResponse";
     \\import type { ThreadRollbackResponse } from "./v2/ThreadRollbackResponse";
+    \\import type { ThreadSearchOccurrencesResponse } from "./v2/ThreadSearchOccurrencesResponse";
+    \\import type { ThreadSearchResponse } from "./v2/ThreadSearchResponse";
     \\import type { ThreadSetNameResponse } from "./v2/ThreadSetNameResponse";
     \\import type { ThreadSettingsUpdateResponse } from "./v2/ThreadSettingsUpdateResponse";
     \\import type { ThreadShellCommandResponse } from "./v2/ThreadShellCommandResponse";
@@ -12460,6 +12556,16 @@ const CLIENT_RESPONSE_TS =
     \\      id: RequestId;
     \\      method: "thread/list";
     \\      result: ThreadListResponse;
+    \\    }
+    \\  | {
+    \\      id: RequestId;
+    \\      method: "thread/search";
+    \\      result: ThreadSearchResponse;
+    \\    }
+    \\  | {
+    \\      id: RequestId;
+    \\      method: "thread/searchOccurrences";
+    \\      result: ThreadSearchOccurrencesResponse;
     \\    }
     \\  | {
     \\      id: RequestId;
@@ -13506,6 +13612,13 @@ const V2_INDEX_TS =
     \\export type { ThreadNameUpdatedNotification } from "./ThreadNameUpdatedNotification";
     \\export type { ThreadReadParams } from "./ThreadReadParams";
     \\export type { ThreadReadResponse } from "./ThreadReadResponse";
+    \\export type { ThreadSearchOccurrence } from "./ThreadSearchOccurrence";
+    \\export type { ThreadSearchOccurrencesParams } from "./ThreadSearchOccurrencesParams";
+    \\export type { ThreadSearchOccurrencesResponse } from "./ThreadSearchOccurrencesResponse";
+    \\export type { ThreadSearchParams } from "./ThreadSearchParams";
+    \\export type { ThreadSearchResponse } from "./ThreadSearchResponse";
+    \\export type { ThreadSearchResult } from "./ThreadSearchResult";
+    \\export type { ThreadSearchTextRange } from "./ThreadSearchTextRange";
     \\export type { ThreadRealtimeAppendAudioParams } from "./ThreadRealtimeAppendAudioParams";
     \\export type { ThreadRealtimeAppendAudioResponse } from "./ThreadRealtimeAppendAudioResponse";
     \\export type { ThreadRealtimeAppendTextParams } from "./ThreadRealtimeAppendTextParams";
@@ -13681,6 +13794,24 @@ const CLIENT_REQUEST_JSON_SCHEMA =
     \\      "properties": {
     \\        "method": { "const": "thread/settings/update" },
     \\        "params": { "$ref": "v2/ThreadSettingsUpdateParams.json" }
+    \\      },
+    \\      "additionalProperties": true
+    \\    },
+    \\    {
+    \\      "type": "object",
+    \\      "required": ["method", "params"],
+    \\      "properties": {
+    \\        "method": { "const": "thread/search" },
+    \\        "params": { "$ref": "v2/ThreadSearchParams.json" }
+    \\      },
+    \\      "additionalProperties": true
+    \\    },
+    \\    {
+    \\      "type": "object",
+    \\      "required": ["method", "params"],
+    \\      "properties": {
+    \\        "method": { "const": "thread/searchOccurrences" },
+    \\        "params": { "$ref": "v2/ThreadSearchOccurrencesParams.json" }
     \\      },
     \\      "additionalProperties": true
     \\    },
@@ -23206,7 +23337,7 @@ const THREAD_SORT_KEY_JSON_SCHEMA =
     \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
     \\  "title": "ThreadSortKey",
     \\  "type": "string",
-    \\  "enum": ["created_at", "updated_at"]
+    \\  "enum": ["created_at", "updated_at", "recency_at"]
     \\}
     \\
 ;
@@ -23308,6 +23439,132 @@ const THREAD_LIST_RESPONSE_JSON_SCHEMA =
     \\    "data": { "type": "array", "items": true },
     \\    "nextCursor": { "type": ["string", "null"] },
     \\    "backwardsCursor": { "type": ["string", "null"] }
+    \\  },
+    \\  "additionalProperties": false
+    \\}
+    \\
+;
+
+const THREAD_SEARCH_TEXT_RANGE_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "ThreadSearchTextRange",
+    \\  "type": "object",
+    \\  "required": ["start", "end"],
+    \\  "properties": {
+    \\    "start": { "type": "integer", "minimum": 0 },
+    \\    "end": { "type": "integer", "minimum": 0 }
+    \\  },
+    \\  "additionalProperties": false
+    \\}
+    \\
+;
+
+const THREAD_SEARCH_RESULT_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "ThreadSearchResult",
+    \\  "type": "object",
+    \\  "required": ["thread", "snippet"],
+    \\  "properties": {
+    \\    "thread": true,
+    \\    "snippet": { "type": "string" }
+    \\  },
+    \\  "additionalProperties": false
+    \\}
+    \\
+;
+
+const THREAD_SEARCH_PARAMS_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "ThreadSearchParams",
+    \\  "type": "object",
+    \\  "required": ["searchTerm"],
+    \\  "properties": {
+    \\    "cursor": { "type": ["string", "null"] },
+    \\    "limit": { "type": ["integer", "null"], "minimum": 0, "maximum": 4294967295 },
+    \\    "sortKey": {
+    \\      "anyOf": [
+    \\        { "$ref": "ThreadSortKey.json" },
+    \\        { "type": "null" }
+    \\      ]
+    \\    },
+    \\    "sortDirection": {
+    \\      "anyOf": [
+    \\        { "$ref": "SortDirection.json" },
+    \\        { "type": "null" }
+    \\      ]
+    \\    },
+    \\    "sourceKinds": { "type": ["array", "null"], "items": { "$ref": "ThreadSourceKind.json" } },
+    \\    "archived": { "type": ["boolean", "null"] },
+    \\    "searchTerm": { "type": "string" }
+    \\  },
+    \\  "additionalProperties": true
+    \\}
+    \\
+;
+
+const THREAD_SEARCH_RESPONSE_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "ThreadSearchResponse",
+    \\  "type": "object",
+    \\  "required": ["data", "nextCursor", "backwardsCursor"],
+    \\  "properties": {
+    \\    "data": { "type": "array", "items": { "$ref": "ThreadSearchResult.json" } },
+    \\    "nextCursor": { "type": ["string", "null"] },
+    \\    "backwardsCursor": { "type": ["string", "null"] }
+    \\  },
+    \\  "additionalProperties": false
+    \\}
+    \\
+;
+
+const THREAD_SEARCH_OCCURRENCE_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "ThreadSearchOccurrence",
+    \\  "type": "object",
+    \\  "required": ["turnId", "itemId", "snippet", "snippetMatchRange", "turnCursor"],
+    \\  "properties": {
+    \\    "turnId": { "type": "string" },
+    \\    "itemId": { "type": "string" },
+    \\    "snippet": { "type": "string" },
+    \\    "snippetMatchRange": { "$ref": "ThreadSearchTextRange.json" },
+    \\    "turnCursor": { "type": "string" }
+    \\  },
+    \\  "additionalProperties": false
+    \\}
+    \\
+;
+
+const THREAD_SEARCH_OCCURRENCES_PARAMS_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "ThreadSearchOccurrencesParams",
+    \\  "type": "object",
+    \\  "required": ["threadId", "searchTerm"],
+    \\  "properties": {
+    \\    "threadId": { "type": "string" },
+    \\    "searchTerm": { "type": "string" },
+    \\    "cursor": { "type": ["string", "null"] },
+    \\    "limit": { "type": ["integer", "null"], "minimum": 0, "maximum": 4294967295 }
+    \\  },
+    \\  "additionalProperties": true
+    \\}
+    \\
+;
+
+const THREAD_SEARCH_OCCURRENCES_RESPONSE_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "ThreadSearchOccurrencesResponse",
+    \\  "type": "object",
+    \\  "required": ["data", "nextCursor"],
+    \\  "properties": {
+    \\    "data": { "type": "array", "items": { "$ref": "ThreadSearchOccurrence.json" } },
+    \\    "nextCursor": { "type": ["string", "null"] }
     \\  },
     \\  "additionalProperties": false
     \\}
@@ -28495,7 +28752,7 @@ const APP_SERVER_PROTOCOL_SCHEMA_BUNDLE =
     \\    },
     \\    "ThreadSortKey": {
     \\      "type": "string",
-    \\      "enum": ["created_at", "updated_at"]
+    \\      "enum": ["created_at", "updated_at", "recency_at"]
     \\    },
     \\    "SortDirection": {
     \\      "type": "string",
@@ -28561,6 +28818,90 @@ const APP_SERVER_PROTOCOL_SCHEMA_BUNDLE =
     \\        "data": { "type": "array", "items": true },
     \\        "nextCursor": { "type": ["string", "null"] },
     \\        "backwardsCursor": { "type": ["string", "null"] }
+    \\      },
+    \\      "additionalProperties": false
+    \\    },
+    \\    "ThreadSearchTextRange": {
+    \\      "type": "object",
+    \\      "required": ["start", "end"],
+    \\      "properties": {
+    \\        "start": { "type": "integer", "minimum": 0 },
+    \\        "end": { "type": "integer", "minimum": 0 }
+    \\      },
+    \\      "additionalProperties": false
+    \\    },
+    \\    "ThreadSearchResult": {
+    \\      "type": "object",
+    \\      "required": ["thread", "snippet"],
+    \\      "properties": {
+    \\        "thread": true,
+    \\        "snippet": { "type": "string" }
+    \\      },
+    \\      "additionalProperties": false
+    \\    },
+    \\    "ThreadSearchParams": {
+    \\      "type": "object",
+    \\      "required": ["searchTerm"],
+    \\      "properties": {
+    \\        "cursor": { "type": ["string", "null"] },
+    \\        "limit": { "type": ["integer", "null"], "minimum": 0, "maximum": 4294967295 },
+    \\        "sortKey": {
+    \\          "anyOf": [
+    \\            { "$ref": "#/$defs/ThreadSortKey" },
+    \\            { "type": "null" }
+    \\          ]
+    \\        },
+    \\        "sortDirection": {
+    \\          "anyOf": [
+    \\            { "$ref": "#/$defs/SortDirection" },
+    \\            { "type": "null" }
+    \\          ]
+    \\        },
+    \\        "sourceKinds": { "type": ["array", "null"], "items": { "$ref": "#/$defs/ThreadSourceKind" } },
+    \\        "archived": { "type": ["boolean", "null"] },
+    \\        "searchTerm": { "type": "string" }
+    \\      },
+    \\      "additionalProperties": true
+    \\    },
+    \\    "ThreadSearchResponse": {
+    \\      "type": "object",
+    \\      "required": ["data", "nextCursor", "backwardsCursor"],
+    \\      "properties": {
+    \\        "data": { "type": "array", "items": { "$ref": "#/$defs/ThreadSearchResult" } },
+    \\        "nextCursor": { "type": ["string", "null"] },
+    \\        "backwardsCursor": { "type": ["string", "null"] }
+    \\      },
+    \\      "additionalProperties": false
+    \\    },
+    \\    "ThreadSearchOccurrence": {
+    \\      "type": "object",
+    \\      "required": ["turnId", "itemId", "snippet", "snippetMatchRange", "turnCursor"],
+    \\      "properties": {
+    \\        "turnId": { "type": "string" },
+    \\        "itemId": { "type": "string" },
+    \\        "snippet": { "type": "string" },
+    \\        "snippetMatchRange": { "$ref": "#/$defs/ThreadSearchTextRange" },
+    \\        "turnCursor": { "type": "string" }
+    \\      },
+    \\      "additionalProperties": false
+    \\    },
+    \\    "ThreadSearchOccurrencesParams": {
+    \\      "type": "object",
+    \\      "required": ["threadId", "searchTerm"],
+    \\      "properties": {
+    \\        "threadId": { "type": "string" },
+    \\        "searchTerm": { "type": "string" },
+    \\        "cursor": { "type": ["string", "null"] },
+    \\        "limit": { "type": ["integer", "null"], "minimum": 0, "maximum": 4294967295 }
+    \\      },
+    \\      "additionalProperties": true
+    \\    },
+    \\    "ThreadSearchOccurrencesResponse": {
+    \\      "type": "object",
+    \\      "required": ["data", "nextCursor"],
+    \\      "properties": {
+    \\        "data": { "type": "array", "items": { "$ref": "#/$defs/ThreadSearchOccurrence" } },
+    \\        "nextCursor": { "type": ["string", "null"] }
     \\      },
     \\      "additionalProperties": false
     \\    },
@@ -29423,6 +29764,13 @@ const APP_SERVER_JSON_SCHEMA_FILES = [_]SchemaFile{
     .{ .name = "ThreadRollbackResponse.json", .contents = THREAD_ROLLBACK_RESPONSE_JSON_SCHEMA },
     .{ .name = "ThreadListParams.json", .contents = THREAD_LIST_PARAMS_JSON_SCHEMA },
     .{ .name = "ThreadListResponse.json", .contents = THREAD_LIST_RESPONSE_JSON_SCHEMA },
+    .{ .name = "ThreadSearchTextRange.json", .contents = THREAD_SEARCH_TEXT_RANGE_JSON_SCHEMA },
+    .{ .name = "ThreadSearchResult.json", .contents = THREAD_SEARCH_RESULT_JSON_SCHEMA },
+    .{ .name = "ThreadSearchParams.json", .contents = THREAD_SEARCH_PARAMS_JSON_SCHEMA },
+    .{ .name = "ThreadSearchResponse.json", .contents = THREAD_SEARCH_RESPONSE_JSON_SCHEMA },
+    .{ .name = "ThreadSearchOccurrence.json", .contents = THREAD_SEARCH_OCCURRENCE_JSON_SCHEMA },
+    .{ .name = "ThreadSearchOccurrencesParams.json", .contents = THREAD_SEARCH_OCCURRENCES_PARAMS_JSON_SCHEMA },
+    .{ .name = "ThreadSearchOccurrencesResponse.json", .contents = THREAD_SEARCH_OCCURRENCES_RESPONSE_JSON_SCHEMA },
     .{ .name = "ThreadInjectItemsParams.json", .contents = THREAD_INJECT_ITEMS_PARAMS_JSON_SCHEMA },
     .{ .name = "ThreadInjectItemsResponse.json", .contents = THREAD_INJECT_ITEMS_RESPONSE_JSON_SCHEMA },
     .{ .name = "ThreadSetNameParams.json", .contents = THREAD_SET_NAME_PARAMS_JSON_SCHEMA },
@@ -29615,6 +29963,13 @@ const APP_SERVER_JSON_SCHEMA_VERSIONED_ALIASES = [_][]const u8{
     "v2/ThreadListResponse.json",
     "v2/ThreadLoadedListParams.json",
     "v2/ThreadLoadedListResponse.json",
+    "v2/ThreadSearchOccurrence.json",
+    "v2/ThreadSearchOccurrencesParams.json",
+    "v2/ThreadSearchOccurrencesResponse.json",
+    "v2/ThreadSearchParams.json",
+    "v2/ThreadSearchResponse.json",
+    "v2/ThreadSearchResult.json",
+    "v2/ThreadSearchTextRange.json",
     "v2/ThreadMetadataUpdateParams.json",
     "v2/ThreadMetadataUpdateResponse.json",
     "v2/ThreadNameUpdatedNotification.json",
@@ -30255,6 +30610,13 @@ const APP_SERVER_TS_FILES = [_]SchemaFile{
     .{ .name = "v2/ThreadRollbackResponse.ts", .contents = THREAD_ROLLBACK_RESPONSE_TS },
     .{ .name = "v2/ThreadListParams.ts", .contents = THREAD_LIST_PARAMS_TS },
     .{ .name = "v2/ThreadListResponse.ts", .contents = THREAD_LIST_RESPONSE_TS },
+    .{ .name = "v2/ThreadSearchTextRange.ts", .contents = THREAD_SEARCH_TEXT_RANGE_TS },
+    .{ .name = "v2/ThreadSearchResult.ts", .contents = THREAD_SEARCH_RESULT_TS },
+    .{ .name = "v2/ThreadSearchParams.ts", .contents = THREAD_SEARCH_PARAMS_TS },
+    .{ .name = "v2/ThreadSearchResponse.ts", .contents = THREAD_SEARCH_RESPONSE_TS },
+    .{ .name = "v2/ThreadSearchOccurrence.ts", .contents = THREAD_SEARCH_OCCURRENCE_TS },
+    .{ .name = "v2/ThreadSearchOccurrencesParams.ts", .contents = THREAD_SEARCH_OCCURRENCES_PARAMS_TS },
+    .{ .name = "v2/ThreadSearchOccurrencesResponse.ts", .contents = THREAD_SEARCH_OCCURRENCES_RESPONSE_TS },
     .{ .name = "v2/ThreadInjectItemsParams.ts", .contents = THREAD_INJECT_ITEMS_PARAMS_TS },
     .{ .name = "v2/ThreadInjectItemsResponse.ts", .contents = THREAD_INJECT_ITEMS_RESPONSE_TS },
     .{ .name = "v2/ThreadSetNameParams.ts", .contents = THREAD_SET_NAME_PARAMS_TS },
@@ -41421,6 +41783,8 @@ fn isThreadMethod(method: []const u8) bool {
         std.mem.eql(u8, method, "thread/decrement_elicitation") or
         std.mem.eql(u8, method, "thread/rollback") or
         std.mem.eql(u8, method, "thread/list") or
+        std.mem.eql(u8, method, "thread/search") or
+        std.mem.eql(u8, method, "thread/searchOccurrences") or
         std.mem.eql(u8, method, "thread/inject_items") or
         std.mem.eql(u8, method, "thread/name/set") or
         std.mem.eql(u8, method, "thread/goal/set") or
@@ -41851,6 +42215,33 @@ fn handleThreadMethod(
         };
         defer allocator.free(result);
         return renderJsonRpcResult(allocator, id_value, result);
+    }
+    if (std.mem.eql(u8, method, "thread/search")) {
+        if (validateThreadSearchParams(params_value)) |message| {
+            return renderJsonRpcError(allocator, id_value, -32600, message);
+        }
+        var cfg = loadAppServerConfig(allocator, state) catch |err| {
+            return renderJsonRpcErrorForFailure(allocator, id_value, "thread/search failed to load config", err);
+        };
+        defer cfg.deinit(allocator);
+        const result = renderThreadSearchResult(allocator, state, cfg, params_value.?) catch |err| switch (err) {
+            error.InvalidThreadListCursor => {
+                const params = params_value.?.object;
+                const cursor = optionalStringParam(params, "cursor") orelse "";
+                const message = try std.fmt.allocPrint(allocator, "invalid cursor: {s}", .{cursor});
+                defer allocator.free(message);
+                return renderJsonRpcError(allocator, id_value, -32600, message);
+            },
+            else => return err,
+        };
+        defer allocator.free(result);
+        return renderJsonRpcResult(allocator, id_value, result);
+    }
+    if (std.mem.eql(u8, method, "thread/searchOccurrences")) {
+        if (validateThreadSearchOccurrencesParams(params_value)) |message| {
+            return renderJsonRpcError(allocator, id_value, -32600, message);
+        }
+        return renderJsonRpcError(allocator, id_value, -32601, "thread/searchOccurrences is not supported yet");
     }
     if (std.mem.eql(u8, method, "thread/inject_items")) {
         const object = parseThreadObjectParams(params_value) catch |err| switch (err) {
@@ -45503,6 +45894,7 @@ fn renderThreadLoadedListResult(
 const ThreadListSortKey = enum {
     created_at,
     updated_at,
+    recency_at,
 };
 
 const ThreadListSortDirection = enum {
@@ -45533,9 +45925,23 @@ const ThreadListMatchContext = struct {
     params: std.json.ObjectMap,
     cwd_filters: ?[][]const u8 = null,
     source_kinds: ?[]ThreadListSourceKind = null,
+    apply_search_term_filter: bool = true,
+    apply_model_provider_filter: bool = true,
+    apply_cwd_filter: bool = true,
 
     fn init(allocator: std.mem.Allocator, params: std.json.ObjectMap) !ThreadListMatchContext {
-        const cwd_filters = try parseThreadListCwdFilters(allocator, params.get("cwd"));
+        return initWithOptions(allocator, params, .{});
+    }
+
+    fn initWithOptions(
+        allocator: std.mem.Allocator,
+        params: std.json.ObjectMap,
+        options: ThreadListCollectionOptions,
+    ) !ThreadListMatchContext {
+        const cwd_filters = if (options.apply_cwd_filter)
+            try parseThreadListCwdFilters(allocator, params.get("cwd"))
+        else
+            null;
         errdefer freeThreadListCwdFilters(allocator, cwd_filters);
 
         const source_kinds = try parseThreadListSourceKinds(allocator, params.get("sourceKinds"));
@@ -45545,6 +45951,9 @@ const ThreadListMatchContext = struct {
             .params = params,
             .cwd_filters = cwd_filters,
             .source_kinds = source_kinds,
+            .apply_search_term_filter = options.apply_search_term_filter,
+            .apply_model_provider_filter = options.apply_model_provider_filter,
+            .apply_cwd_filter = options.apply_cwd_filter,
         };
     }
 
@@ -45552,6 +45961,13 @@ const ThreadListMatchContext = struct {
         freeThreadListCwdFilters(allocator, self.cwd_filters);
         if (self.source_kinds) |values| allocator.free(values);
     }
+};
+
+const ThreadListCollectionOptions = struct {
+    apply_search_term_filter: bool = true,
+    apply_model_provider_filter: bool = true,
+    apply_cwd_filter: bool = true,
+    allow_state_db_only: bool = true,
 };
 
 const SavedThreadListItem = struct {
@@ -45738,40 +46154,8 @@ fn renderThreadListResult(
     params_value: std.json.Value,
 ) ![]const u8 {
     const params = params_value.object;
-    var match_context = try ThreadListMatchContext.init(allocator, params);
-    defer match_context.deinit(allocator);
-
-    var threads = std.ArrayList(ThreadListItem).empty;
-    defer {
-        for (threads.items) |*thread| thread.deinit(allocator);
-        threads.deinit(allocator);
-    }
-
-    const state_db_only = optionalBoolParam(params, "useStateDbOnly") orelse false;
-    const archived = optionalBoolParam(params, "archived") orelse false;
-    const thread_names = try session_store.loadThreadNameIndex(allocator, cfg.codex_home);
-    defer session_store.freeThreadNameIndex(allocator, thread_names);
-    const fallback_model_provider = try config.loadModelProviderId(allocator, cfg.active_profile);
-    defer if (fallback_model_provider) |value| allocator.free(value);
-    const default_model_provider = fallback_model_provider orelse "openai";
-    if (state_db_only) {
-        const rollout_files = try thread_state.listRolloutFiles(allocator, cfg.codex_home, configSqliteHome(cfg));
-        defer session_store.freeRolloutFiles(allocator, rollout_files);
-        try appendSavedThreadListItems(allocator, &threads, &match_context, rollout_files, default_model_provider, false, state, thread_names);
-    } else {
-        if (!archived) {
-            for (state.loaded_threads.items) |*thread| {
-                const item = ThreadListItem{ .loaded = thread };
-                if (try threadListItemMatchesParams(allocator, item, &match_context, default_model_provider)) {
-                    try threads.append(allocator, item);
-                }
-            }
-        }
-
-        const rollout_files = try session_store.listRolloutFiles(allocator, cfg.codex_home, archived);
-        defer session_store.freeRolloutFiles(allocator, rollout_files);
-        try appendSavedThreadListItems(allocator, &threads, &match_context, rollout_files, default_model_provider, !archived, state, thread_names);
-    }
+    var threads = try collectThreadListItems(allocator, state, cfg, params, .{});
+    defer deinitThreadListItems(allocator, &threads);
 
     const sort_context = threadListSortContext(params);
     std.mem.sort(ThreadListItem, threads.items, sort_context, threadListLessThan);
@@ -45827,6 +46211,207 @@ fn renderThreadListResult(
     return result.toOwnedSlice(allocator);
 }
 
+const ThreadSearchMatch = struct {
+    thread_index: usize,
+    snippet: []const u8,
+
+    fn deinit(self: *ThreadSearchMatch, allocator: std.mem.Allocator) void {
+        allocator.free(self.snippet);
+    }
+};
+
+fn renderThreadSearchResult(
+    allocator: std.mem.Allocator,
+    state: *const AppServerState,
+    cfg: config.Config,
+    params_value: std.json.Value,
+) ![]const u8 {
+    const params = params_value.object;
+    const search_term = std.mem.trim(u8, params.get("searchTerm").?.string, " \t\r\n");
+
+    var threads = try collectThreadListItems(allocator, state, cfg, params, .{
+        .apply_search_term_filter = false,
+        .apply_model_provider_filter = false,
+        .apply_cwd_filter = false,
+        .allow_state_db_only = false,
+    });
+    defer deinitThreadListItems(allocator, &threads);
+
+    const sort_context = threadListSortContext(params);
+    std.mem.sort(ThreadListItem, threads.items, sort_context, threadListLessThan);
+
+    const cursor_ms = if (optionalStringParam(params, "cursor")) |cursor_value|
+        parseThreadListCursorMilliseconds(cursor_value) orelse return error.InvalidThreadListCursor
+    else
+        null;
+    var start: usize = 0;
+    if (cursor_ms) |anchor_ms| {
+        for (threads.items, 0..) |thread, index| {
+            if (threadListItemIsPastCursor(thread, sort_context, anchor_ms)) {
+                start = index;
+                break;
+            }
+        } else {
+            start = threads.items.len;
+        }
+    }
+
+    const limit = threadListLimit(params);
+    const match_cap = limit + 1;
+    var matches = std.ArrayList(ThreadSearchMatch).empty;
+    defer {
+        for (matches.items) |*match| match.deinit(allocator);
+        matches.deinit(allocator);
+    }
+    for (threads.items[start..], start..) |thread, index| {
+        if (try threadSearchSnippetForItem(allocator, thread, search_term)) |snippet| {
+            try matches.append(allocator, .{ .thread_index = index, .snippet = snippet });
+            if (matches.items.len >= match_cap) break;
+        }
+    }
+
+    const capped_end = @min(matches.items.len, limit);
+    const page = matches.items[0..capped_end];
+
+    var result = std.ArrayList(u8).empty;
+    errdefer result.deinit(allocator);
+    try result.appendSlice(allocator, "{\"data\":[");
+    for (page, 0..) |match, out_index| {
+        if (out_index > 0) try result.appendSlice(allocator, ",");
+        try result.appendSlice(allocator, "{\"thread\":");
+        try appendThreadListItemJson(allocator, &result, threads.items[match.thread_index]);
+        try result.appendSlice(allocator, ",\"snippet\":");
+        try appendJsonString(allocator, &result, match.snippet);
+        try result.appendSlice(allocator, "}");
+    }
+    try result.appendSlice(allocator, "],\"nextCursor\":");
+    if (capped_end < matches.items.len and page.len > 0) {
+        const last_thread = threads.items[page[page.len - 1].thread_index];
+        const next_cursor = try formatThreadListCursorMilliseconds(allocator, threadListItemSortTimestampMs(last_thread, sort_context.key), false);
+        defer allocator.free(next_cursor);
+        try appendJsonString(allocator, &result, next_cursor);
+    } else {
+        try result.appendSlice(allocator, "null");
+    }
+    try result.appendSlice(allocator, ",\"backwardsCursor\":");
+    if (page.len > 0) {
+        const first_thread = threads.items[page[0].thread_index];
+        if (threadListBackwardsCursorTimestampMs(first_thread, sort_context)) |cursor_timestamp| {
+            const backwards_cursor = try formatThreadListCursorMilliseconds(allocator, cursor_timestamp, true);
+            defer allocator.free(backwards_cursor);
+            try appendJsonString(allocator, &result, backwards_cursor);
+        } else {
+            try result.appendSlice(allocator, "null");
+        }
+    } else {
+        try result.appendSlice(allocator, "null");
+    }
+    try result.appendSlice(allocator, "}");
+    return result.toOwnedSlice(allocator);
+}
+
+fn threadSearchSnippetForItem(
+    allocator: std.mem.Allocator,
+    thread: ThreadListItem,
+    search_term: []const u8,
+) !?[]const u8 {
+    switch (thread) {
+        .loaded => |loaded| {
+            if (try threadSearchSnippetForTranscript(allocator, &loaded.transcript, search_term)) |snippet| return snippet;
+        },
+        .saved => |saved| {
+            var transcript: ?session_mod.Transcript = session_store.loadTranscript(allocator, saved.path) catch |err| switch (err) {
+                error.OutOfMemory => return err,
+                else => null,
+            };
+            if (transcript) |*loaded_transcript| {
+                defer loaded_transcript.deinit(allocator);
+                if (try threadSearchSnippetForTranscript(allocator, loaded_transcript, search_term)) |snippet| return snippet;
+            }
+        },
+    }
+
+    if (threadListItemName(thread)) |name| {
+        if (threadSearchTextContains(name, search_term)) return try allocator.dupe(u8, name);
+    }
+    const preview = threadListItemPreview(thread);
+    if (threadSearchTextContains(preview, search_term)) return try allocator.dupe(u8, preview);
+    return null;
+}
+
+fn threadSearchSnippetForTranscript(
+    allocator: std.mem.Allocator,
+    transcript: *const session_mod.Transcript,
+    search_term: []const u8,
+) !?[]const u8 {
+    for (transcript.history.items) |item| {
+        if (item.kind != .message) continue;
+        const role = item.role orelse continue;
+        if (!threadSearchVisibleRole(role)) continue;
+        const text = item.text orelse continue;
+        if (threadSearchTextContains(text, search_term)) return try allocator.dupe(u8, text);
+    }
+    return null;
+}
+
+fn threadSearchVisibleRole(role: []const u8) bool {
+    return std.mem.eql(u8, role, "user") or std.mem.eql(u8, role, "assistant");
+}
+
+fn threadSearchTextContains(haystack: []const u8, needle: []const u8) bool {
+    return std.ascii.findIgnoreCase(haystack, needle) != null;
+}
+
+fn collectThreadListItems(
+    allocator: std.mem.Allocator,
+    state: *const AppServerState,
+    cfg: config.Config,
+    params: std.json.ObjectMap,
+    options: ThreadListCollectionOptions,
+) !std.ArrayList(ThreadListItem) {
+    var match_context = try ThreadListMatchContext.initWithOptions(allocator, params, options);
+    defer match_context.deinit(allocator);
+
+    var threads = std.ArrayList(ThreadListItem).empty;
+    errdefer deinitThreadListItems(allocator, &threads);
+
+    const state_db_only = if (options.allow_state_db_only)
+        optionalBoolParam(params, "useStateDbOnly") orelse false
+    else
+        false;
+    const archived = optionalBoolParam(params, "archived") orelse false;
+    const thread_names = try session_store.loadThreadNameIndex(allocator, cfg.codex_home);
+    defer session_store.freeThreadNameIndex(allocator, thread_names);
+    const fallback_model_provider = try config.loadModelProviderId(allocator, cfg.active_profile);
+    defer if (fallback_model_provider) |value| allocator.free(value);
+    const default_model_provider = fallback_model_provider orelse "openai";
+    if (state_db_only) {
+        const rollout_files = try thread_state.listRolloutFiles(allocator, cfg.codex_home, configSqliteHome(cfg));
+        defer session_store.freeRolloutFiles(allocator, rollout_files);
+        try appendSavedThreadListItems(allocator, &threads, &match_context, rollout_files, default_model_provider, false, state, thread_names);
+    } else {
+        if (!archived) {
+            for (state.loaded_threads.items) |*thread| {
+                const item = ThreadListItem{ .loaded = thread };
+                if (try threadListItemMatchesParams(allocator, item, &match_context, default_model_provider)) {
+                    try threads.append(allocator, item);
+                }
+            }
+        }
+
+        const rollout_files = try session_store.listRolloutFiles(allocator, cfg.codex_home, archived);
+        defer session_store.freeRolloutFiles(allocator, rollout_files);
+        try appendSavedThreadListItems(allocator, &threads, &match_context, rollout_files, default_model_provider, !archived, state, thread_names);
+    }
+
+    return threads;
+}
+
+fn deinitThreadListItems(allocator: std.mem.Allocator, threads: *std.ArrayList(ThreadListItem)) void {
+    for (threads.items) |*thread| thread.deinit(allocator);
+    threads.deinit(allocator);
+}
+
 fn threadListItemMatchesParams(
     allocator: std.mem.Allocator,
     thread: ThreadListItem,
@@ -45835,11 +46420,17 @@ fn threadListItemMatchesParams(
 ) !bool {
     const archived = optionalBoolParam(context.params, "archived") orelse false;
     if (threadListItemArchived(thread) != archived) return false;
-    if (!threadListModelProviderMatches(context.params.get("modelProviders"), threadListItemModelProvider(thread), default_model_provider)) return false;
+    if (context.apply_model_provider_filter) {
+        if (!threadListModelProviderMatches(context.params.get("modelProviders"), threadListItemModelProvider(thread), default_model_provider)) return false;
+    }
     if (!threadListSourceKindMatches(context, thread)) return false;
-    if (!try threadListCwdMatches(allocator, context, threadListItemCwd(thread))) return false;
-    if (optionalStringParam(context.params, "searchTerm")) |search| {
-        if (search.len > 0 and !threadListItemMatchesSearchTerm(thread, search)) return false;
+    if (context.apply_cwd_filter) {
+        if (!try threadListCwdMatches(allocator, context, threadListItemCwd(thread))) return false;
+    }
+    if (context.apply_search_term_filter) {
+        if (optionalStringParam(context.params, "searchTerm")) |search| {
+            if (search.len > 0 and !threadListItemMatchesSearchTerm(thread, search)) return false;
+        }
     }
     return true;
 }
@@ -46280,7 +46871,12 @@ fn threadListSortContext(params: std.json.ObjectMap) ThreadListSortContext {
     const key_text = optionalStringParam(params, "sortKey") orelse "created_at";
     const direction_text = optionalStringParam(params, "sortDirection") orelse "desc";
     return .{
-        .key = if (std.mem.eql(u8, key_text, "updated_at")) .updated_at else .created_at,
+        .key = if (std.mem.eql(u8, key_text, "updated_at"))
+            .updated_at
+        else if (std.mem.eql(u8, key_text, "recency_at"))
+            .recency_at
+        else
+            .created_at,
         .direction = if (std.mem.eql(u8, direction_text, "asc")) .asc else .desc,
     };
 }
@@ -46370,6 +46966,7 @@ fn threadListItemSortTimestampMs(thread: ThreadListItem, key: ThreadListSortKey)
     return switch (key) {
         .created_at => threadListItemCreatedAtMs(thread),
         .updated_at => threadListItemUpdatedAtMs(thread),
+        .recency_at => threadListItemUpdatedAtMs(thread),
     };
 }
 
@@ -49549,7 +50146,7 @@ fn validateThreadListParams(params_value: ?std.json.Value) ?[]const u8 {
         }
     }
     if (object.get("sortKey")) |value| {
-        if (!optionalEnumStringIsValid(value, &.{ "created_at", "updated_at" })) return "sortKey must be created_at or updated_at";
+        if (!optionalEnumStringIsValid(value, &.{ "created_at", "updated_at", "recency_at" })) return "sortKey must be created_at, updated_at, or recency_at";
     }
     if (object.get("sortDirection")) |value| {
         if (!optionalEnumStringIsValid(value, &.{ "asc", "desc" })) return "sortDirection must be asc or desc";
@@ -49573,6 +50170,61 @@ fn validateThreadListParams(params_value: ?std.json.Value) ?[]const u8 {
     }
     if (object.get("searchTerm")) |value| {
         if (value != .null and value != .string) return "searchTerm must be a string or null";
+    }
+    return null;
+}
+
+fn validateThreadSearchParams(params_value: ?std.json.Value) ?[]const u8 {
+    const params = params_value orelse return "thread/search params must be an object";
+    if (params != .object) return "thread/search params must be an object";
+    const object = params.object;
+    const search_term = object.get("searchTerm") orelse return "Invalid request: missing field `searchTerm`";
+    if (search_term != .string) return "searchTerm must be a string";
+    if (std.mem.trim(u8, search_term.string, " \t\r\n").len == 0) return "thread/search requires a non-empty searchTerm";
+    if (object.get("cursor")) |value| {
+        if (value != .null and value != .string) return "cursor must be a string or null";
+    }
+    if (object.get("limit")) |value| {
+        switch (value) {
+            .null => {},
+            .integer => |integer| if (integer < 0 or integer > std.math.maxInt(u32)) return "limit must be a non-negative integer or null",
+            else => return "limit must be a non-negative integer or null",
+        }
+    }
+    if (object.get("sortKey")) |value| {
+        if (!optionalEnumStringIsValid(value, &.{ "created_at", "updated_at", "recency_at" })) return "sortKey must be created_at, updated_at, or recency_at";
+    }
+    if (object.get("sortDirection")) |value| {
+        if (!optionalEnumStringIsValid(value, &.{ "asc", "desc" })) return "sortDirection must be asc or desc";
+    }
+    if (object.get("sourceKinds")) |value| {
+        if (!optionalEnumArrayIsValid(value, &.{ "cli", "vscode", "exec", "appServer", "subAgent", "subAgentReview", "subAgentCompact", "subAgentThreadSpawn", "subAgentOther", "unknown" })) {
+            return "sourceKinds must be an array of valid thread source kinds or null";
+        }
+    }
+    if (object.get("archived")) |value| {
+        if (value != .null and value != .bool) return "archived must be a boolean or null";
+    }
+    return null;
+}
+
+fn validateThreadSearchOccurrencesParams(params_value: ?std.json.Value) ?[]const u8 {
+    const params = params_value orelse return "thread/searchOccurrences params must be an object";
+    if (params != .object) return "thread/searchOccurrences params must be an object";
+    const object = params.object;
+    const thread_id = object.get("threadId") orelse return "threadId must be a string";
+    if (thread_id != .string) return "threadId must be a string";
+    const search_term = object.get("searchTerm") orelse return "Invalid request: missing field `searchTerm`";
+    if (search_term != .string) return "searchTerm must be a string";
+    if (object.get("cursor")) |value| {
+        if (value != .null and value != .string) return "cursor must be a string or null";
+    }
+    if (object.get("limit")) |value| {
+        switch (value) {
+            .null => {},
+            .integer => |integer| if (integer < 0 or integer > std.math.maxInt(u32)) return "limit must be a non-negative integer or null",
+            else => return "limit must be a non-negative integer or null",
+        }
     }
     return null;
 }

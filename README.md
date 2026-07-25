@@ -264,6 +264,9 @@ The first demo slice targets macOS and focuses on the interactive CLI surface:
 - update loaded app-server thread runtime settings through
   `thread/settings/update`, emit `thread/settings/updated`, and generate the
   corresponding TypeScript and JSON Schema protocol artifacts
+- search local app-server threads through `thread/search`, including
+  case-insensitive transcript snippets, generated `ThreadSearch*` protocol
+  artifacts, and Rust-shaped `thread/searchOccurrences` unsupported behavior
 - require `initialize.params.capabilities.experimentalApi` for implemented
   Rust experimental app-server request methods, including `memory/reset`,
   `thread/goal/*`, `thread/memoryMode/set`, `thread/settings/update`,

@@ -3717,7 +3717,10 @@ def exercise_json_rpc(write_line, read_line) -> None:
     bad_thread_list_sort = read_line()
     assert bad_thread_list_sort["id"] == "bad-thread-list-sort"
     assert bad_thread_list_sort["error"]["code"] == -32602
-    assert "sortKey must be created_at or updated_at" in bad_thread_list_sort["error"]["message"]
+    assert (
+        "sortKey must be created_at, updated_at, or recency_at"
+        in bad_thread_list_sort["error"]["message"]
+    )
 
     write_line(
         {
@@ -6156,6 +6159,209 @@ def run_thread_settings_update_smoke(binary: Path) -> None:
                 "developer_instructions": None,
             },
         }
+
+        assert proc.stdin is not None
+        proc.stdin.close()
+        proc.wait(timeout=5)
+        if proc.returncode != 0:
+            raise AssertionError(f"app-server exited {proc.returncode}: {proc.stderr.read()}")
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+            proc.wait(timeout=5)
+        shutil.rmtree(codex_home, ignore_errors=True)
+
+
+def run_thread_search_smoke(binary: Path) -> None:
+    codex_home = Path(tempfile.mkdtemp(prefix="codex-zig-thread-search-", dir="/tmp"))
+    env = os.environ.copy()
+    env["CODEX_HOME"] = str(codex_home)
+    proc = subprocess.Popen(
+        [str(binary), "app-server"],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        env=env,
+    )
+    try:
+        write_json_line(
+            proc,
+            {
+                "jsonrpc": "2.0",
+                "id": "initialize",
+                "method": "initialize",
+                "params": {
+                    "clientInfo": {"name": "app-server-smoke", "version": "0"},
+                    "capabilities": {
+                        "experimentalApi": True,
+                        "optOutNotificationMethods": [
+                            "thread/started",
+                            "configWarning",
+                            "remoteControl/status/changed",
+                        ],
+                    },
+                },
+            },
+        )
+        initialized = read_json_line(proc, 5)
+        assert initialized["id"] == "initialize"
+
+        write_json_line(
+            proc,
+            {
+                "jsonrpc": "2.0",
+                "id": "thread-start-search",
+                "method": "thread/start",
+                "params": {"ephemeral": False},
+            },
+        )
+        started = read_json_line(proc, 5)
+        assert started["id"] == "thread-start-search"
+        thread = started["result"]["thread"]
+        thread_id = thread["id"]
+
+        write_json_line(
+            proc,
+            {
+                "jsonrpc": "2.0",
+                "id": "thread-inject-search",
+                "method": "thread/inject_items",
+                "params": {
+                    "threadId": thread_id,
+                    "items": [
+                        {
+                            "type": "message",
+                            "role": "user",
+                            "content": [
+                                {
+                                    "type": "input_text",
+                                    "text": "Needle user prompt for app-server search",
+                                }
+                            ],
+                        }
+                    ],
+                },
+            },
+        )
+        injected = read_json_line(proc, 5)
+        assert injected == {"jsonrpc": "2.0", "id": "thread-inject-search", "result": {}}
+
+        write_json_line(
+            proc,
+            {
+                "jsonrpc": "2.0",
+                "id": "thread-search",
+                "method": "thread/search",
+                "params": {
+                    "searchTerm": "needle USER",
+                    "limit": 5,
+                },
+            },
+        )
+        searched = read_json_line(proc, 5)
+        assert searched["id"] == "thread-search"
+        assert searched["result"]["nextCursor"] is None
+        assert searched["result"]["backwardsCursor"] is not None
+        results = searched["result"]["data"]
+        assert len(results) == 1
+        assert results[0]["thread"]["id"] == thread_id
+        assert results[0]["snippet"] == "Needle user prompt for app-server search"
+
+        write_json_line(
+            proc,
+            {
+                "jsonrpc": "2.0",
+                "id": "thread-start-provider-search",
+                "method": "thread/start",
+                "params": {"ephemeral": False, "modelProvider": "mock_provider"},
+            },
+        )
+        provider_started = read_json_line(proc, 5)
+        assert provider_started["id"] == "thread-start-provider-search"
+        provider_thread = provider_started["result"]["thread"]
+        provider_thread_id = provider_thread["id"]
+
+        write_json_line(
+            proc,
+            {
+                "jsonrpc": "2.0",
+                "id": "thread-inject-provider-search",
+                "method": "thread/inject_items",
+                "params": {
+                    "threadId": provider_thread_id,
+                    "items": [
+                        {
+                            "type": "message",
+                            "role": "user",
+                            "content": [
+                                {
+                                    "type": "input_text",
+                                    "text": "Provider needle prompt for app-server search",
+                                }
+                            ],
+                        }
+                    ],
+                },
+            },
+        )
+        provider_injected = read_json_line(proc, 5)
+        assert provider_injected == {
+            "jsonrpc": "2.0",
+            "id": "thread-inject-provider-search",
+            "result": {},
+        }
+
+        write_json_line(
+            proc,
+            {
+                "jsonrpc": "2.0",
+                "id": "thread-search-provider",
+                "method": "thread/search",
+                "params": {
+                    "searchTerm": "provider needle",
+                    "limit": 5,
+                },
+            },
+        )
+        provider_searched = read_json_line(proc, 5)
+        assert provider_searched["id"] == "thread-search-provider"
+        provider_results = provider_searched["result"]["data"]
+        assert len(provider_results) == 1
+        assert provider_results[0]["thread"]["id"] == provider_thread_id
+        assert provider_results[0]["thread"]["modelProvider"] == "mock_provider"
+        assert (
+            provider_results[0]["snippet"]
+            == "Provider needle prompt for app-server search"
+        )
+
+        write_json_line(
+            proc,
+            {
+                "jsonrpc": "2.0",
+                "id": "thread-search-empty-term",
+                "method": "thread/search",
+                "params": {"searchTerm": ""},
+            },
+        )
+        empty_term = read_json_line(proc, 5)
+        assert empty_term["id"] == "thread-search-empty-term"
+        assert empty_term["error"]["code"] == -32600
+        assert empty_term["error"]["message"] == "thread/search requires a non-empty searchTerm"
+
+        write_json_line(
+            proc,
+            {
+                "jsonrpc": "2.0",
+                "id": "thread-search-occurrences",
+                "method": "thread/searchOccurrences",
+                "params": {"threadId": thread_id, "searchTerm": "needle"},
+            },
+        )
+        occurrences = read_json_line(proc, 5)
+        assert occurrences["id"] == "thread-search-occurrences"
+        assert occurrences["error"]["code"] == -32601
+        assert occurrences["error"]["message"] == "thread/searchOccurrences is not supported yet"
 
         assert proc.stdin is not None
         proc.stdin.close()
@@ -52577,7 +52783,7 @@ def run_json_schema_smoke(binary: Path) -> None:
         thread_sort_key = json.loads(
             (out_dir / "ThreadSortKey.json").read_text(encoding="utf-8")
         )
-        assert thread_sort_key["enum"] == ["created_at", "updated_at"]
+        assert thread_sort_key["enum"] == ["created_at", "updated_at", "recency_at"]
         thread_source_kind = json.loads(
             (out_dir / "ThreadSourceKind.json").read_text(encoding="utf-8")
         )
@@ -52606,6 +52812,37 @@ def run_json_schema_smoke(binary: Path) -> None:
             "backwardsCursor",
         ]
         assert thread_list_response["additionalProperties"] is False
+        thread_search = json.loads(
+            (out_dir / "ThreadSearchParams.json").read_text(encoding="utf-8")
+        )
+        assert thread_search["required"] == ["searchTerm"]
+        assert thread_search["properties"]["limit"]["maximum"] == 4294967295
+        thread_search_response = json.loads(
+            (out_dir / "ThreadSearchResponse.json").read_text(encoding="utf-8")
+        )
+        assert thread_search_response["required"] == [
+            "data",
+            "nextCursor",
+            "backwardsCursor",
+        ]
+        assert thread_search_response["properties"]["data"]["items"]["$ref"] == (
+            "ThreadSearchResult.json"
+        )
+        thread_search_occurrences = json.loads(
+            (out_dir / "ThreadSearchOccurrencesParams.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        assert thread_search_occurrences["required"] == ["threadId", "searchTerm"]
+        thread_search_occurrences_response = json.loads(
+            (out_dir / "ThreadSearchOccurrencesResponse.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        assert thread_search_occurrences_response["required"] == [
+            "data",
+            "nextCursor",
+        ]
         thread_inject_items = json.loads(
             (out_dir / "ThreadInjectItemsParams.json").read_text(encoding="utf-8")
         )
@@ -53131,6 +53368,11 @@ def run_json_schema_smoke(binary: Path) -> None:
         assert "ThreadDecrementElicitationResponse" in bundle["$defs"]
         assert "ThreadRollbackResponse" in bundle["$defs"]
         assert "ThreadListResponse" in bundle["$defs"]
+        assert "ThreadSearchResponse" in bundle["$defs"]
+        assert "ThreadSearchResult" in bundle["$defs"]
+        assert "ThreadSearchOccurrencesResponse" in bundle["$defs"]
+        assert "ThreadSearchOccurrence" in bundle["$defs"]
+        assert "ThreadSearchTextRange" in bundle["$defs"]
         assert "ThreadInjectItemsResponse" in bundle["$defs"]
         assert "ThreadSetNameResponse" in bundle["$defs"]
         assert "ThreadGoal" in bundle["$defs"]
@@ -54536,6 +54778,10 @@ def run_typescript_generation_smoke(binary: Path) -> None:
         assert "params: ThreadRollbackParams;" in client_request
         assert 'method: "thread/list";' in client_request
         assert "params: ThreadListParams;" in client_request
+        assert 'method: "thread/search";' in client_request
+        assert "params: ThreadSearchParams;" in client_request
+        assert 'method: "thread/searchOccurrences";' in client_request
+        assert "params: ThreadSearchOccurrencesParams;" in client_request
         assert 'method: "thread/inject_items";' in client_request
         assert "params: ThreadInjectItemsParams;" in client_request
         assert 'method: "thread/name/set";' in client_request
@@ -55818,6 +56064,10 @@ def run_typescript_generation_smoke(binary: Path) -> None:
         assert "result: ThreadRollbackResponse;" in client_response
         assert 'method: "thread/list";' in client_response
         assert "result: ThreadListResponse;" in client_response
+        assert 'method: "thread/search";' in client_response
+        assert "result: ThreadSearchResponse;" in client_response
+        assert 'method: "thread/searchOccurrences";' in client_response
+        assert "result: ThreadSearchOccurrencesResponse;" in client_response
         assert 'method: "thread/inject_items";' in client_response
         assert "result: ThreadInjectItemsResponse;" in client_response
         assert 'method: "thread/name/set";' in client_response
@@ -57806,7 +58056,10 @@ def run_typescript_generation_smoke(binary: Path) -> None:
         thread_sort_key = (out_dir / "v2" / "ThreadSortKey.ts").read_text(
             encoding="utf-8"
         )
-        assert 'export type ThreadSortKey = "created_at" | "updated_at";' in thread_sort_key
+        assert (
+            'export type ThreadSortKey = "created_at" | "updated_at" | "recency_at";'
+            in thread_sort_key
+        )
         thread_source_kind = (out_dir / "v2" / "ThreadSourceKind.ts").read_text(
             encoding="utf-8"
         )
@@ -57827,6 +58080,31 @@ def run_typescript_generation_smoke(binary: Path) -> None:
         assert "data: unknown[];" in thread_list_response
         assert "nextCursor: string | null;" in thread_list_response
         assert "backwardsCursor: string | null;" in thread_list_response
+        thread_search = (out_dir / "v2" / "ThreadSearchParams.ts").read_text(
+            encoding="utf-8"
+        )
+        assert 'import type { SortDirection } from "./SortDirection";' in thread_search
+        assert 'import type { ThreadSortKey } from "./ThreadSortKey";' in thread_search
+        assert 'import type { ThreadSourceKind } from "./ThreadSourceKind";' in thread_search
+        assert "searchTerm: string;" in thread_search
+        thread_search_response = (
+            out_dir / "v2" / "ThreadSearchResponse.ts"
+        ).read_text(encoding="utf-8")
+        assert 'import type { ThreadSearchResult } from "./ThreadSearchResult";' in thread_search_response
+        assert "data: ThreadSearchResult[];" in thread_search_response
+        thread_search_occurrences = (
+            out_dir / "v2" / "ThreadSearchOccurrencesParams.ts"
+        ).read_text(encoding="utf-8")
+        assert "threadId: string;" in thread_search_occurrences
+        assert "searchTerm: string;" in thread_search_occurrences
+        thread_search_occurrences_response = (
+            out_dir / "v2" / "ThreadSearchOccurrencesResponse.ts"
+        ).read_text(encoding="utf-8")
+        assert (
+            'import type { ThreadSearchOccurrence } from "./ThreadSearchOccurrence";'
+            in thread_search_occurrences_response
+        )
+        assert "data: ThreadSearchOccurrence[];" in thread_search_occurrences_response
         thread_inject_items = (
             out_dir / "v2" / "ThreadInjectItemsParams.ts"
         ).read_text(encoding="utf-8")
@@ -59024,6 +59302,13 @@ def run_typescript_generation_smoke(binary: Path) -> None:
         assert 'export type { ThreadSourceKind } from "./ThreadSourceKind";' in v2_index
         assert 'export type { ThreadListParams } from "./ThreadListParams";' in v2_index
         assert 'export type { ThreadListResponse } from "./ThreadListResponse";' in v2_index
+        assert 'export type { ThreadSearchParams } from "./ThreadSearchParams";' in v2_index
+        assert 'export type { ThreadSearchResponse } from "./ThreadSearchResponse";' in v2_index
+        assert 'export type { ThreadSearchResult } from "./ThreadSearchResult";' in v2_index
+        assert 'export type { ThreadSearchOccurrencesParams } from "./ThreadSearchOccurrencesParams";' in v2_index
+        assert 'export type { ThreadSearchOccurrencesResponse } from "./ThreadSearchOccurrencesResponse";' in v2_index
+        assert 'export type { ThreadSearchOccurrence } from "./ThreadSearchOccurrence";' in v2_index
+        assert 'export type { ThreadSearchTextRange } from "./ThreadSearchTextRange";' in v2_index
         assert 'export type { ThreadInjectItemsResponse } from "./ThreadInjectItemsResponse";' in v2_index
         assert 'export type { ThreadSetNameParams } from "./ThreadSetNameParams";' in v2_index
         assert 'export type { ThreadSetNameResponse } from "./ThreadSetNameResponse";' in v2_index
@@ -59301,6 +59586,8 @@ def main() -> None:
     print("app-server-thread-started-opt-out-e2e: ok")
     run_thread_settings_update_smoke(binary)
     print("app-server-thread-settings-update-e2e: ok")
+    run_thread_search_smoke(binary)
+    print("app-server-thread-search-e2e: ok")
     run_thread_idle_unload_smoke(binary)
     print("app-server-thread-idle-unload-e2e: ok")
     run_unix_idle_unload_after_disconnect_smoke(binary)

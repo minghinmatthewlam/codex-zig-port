@@ -1484,6 +1484,22 @@ Additional app-server thread delete coverage: `thread/delete` validates `threadI
 
 Additional app-server thread item-list coverage: `thread/items/list` is registered as an experimental request method, validates `threadId`, `turnId`, `cursor`, `limit`, and `sortDirection`, returns Rust's current local thread-store unsupported JSON-RPC error (`-32601`, `thread/items/list is not supported yet`) for valid requests, and is included in current TypeScript and JSON schema generation with `ThreadItemEntry`, `ThreadItemsListParams`, and `ThreadItemsListResponse`. Remote thread-store item pagination and full `ThreadItem` JSON schema parity remain planned.
 
+Additional app-server thread search coverage: `thread/search` validates
+`searchTerm`, cursor, limit, sorting, source, and archive params with
+Rust-shaped errors, rejects empty search terms, reuses the same local loaded
+thread plus active/archived saved rollout collection and pagination path as
+`thread/list`, searches loaded and stored transcript user/assistant message
+text with case-insensitive matching, falls back to thread title/preview
+matching, returns Rust-shaped `ThreadSearchResult` objects with snippets plus
+`nextCursor` / `backwardsCursor`, accepts Rust's `recency_at` sort-key enum
+using the current local recency timestamp, and is included in current
+TypeScript and JSON Schema generation with `ThreadSearch*` types.
+`thread/searchOccurrences` validates params and returns Rust's current local
+unsupported JSON-RPC error (`-32601`, `thread/searchOccurrences is not
+supported yet`) with generated `ThreadSearchOccurrences*`,
+`ThreadSearchOccurrence`, and `ThreadSearchTextRange` artifacts. Full
+occurrence pagination remains planned if Rust enables it.
+
 Additional app-server thread list coverage: `thread/list` validates cursor, limit, sorting, source/provider, archive, cwd, state-db, and search filters, returns currently loaded non-archived threads with Rust-shaped thread objects, scans active saved Zig/Rust/CLI/appServer rollout files from `$CODEX_HOME/sessions` and archived saved rollout files from `$CODEX_HOME/archived_sessions` with lightweight summary parsing, parses Rust structured `SessionSource` rollout metadata for subagent/custom/internal sources, supports `useStateDbOnly` for local `state_5.sqlite` `threads.rollout_path` rows that point to readable rollout files, surfaces local state-DB `title`, Git, timestamp, source, thread-source, agent nickname/role, model-provider, cwd, CLI-version, first-user-message preview, archived-row metadata columns, and loaded-vs-not-loaded status for saved and state-DB-only list rows when present, normalizes Rust state-DB JSON source strings such as `{"subagent":"review"}` before filtering/rendering, supports loaded and saved source/provider/cwd/search filtering including Rust-shaped default provider filtering when `modelProviders` is omitted, Rust-shaped default interactive source filtering for `cli`, `vscode`, `custom:atlas`, and `custom:chatgpt` when `sourceKinds` is omitted, null, or empty, explicit appServer/exec/cli/vscode/subagent source-kind filters, v2 thread/list source JSON for custom and known subagent sources, root `SessionSource` source JSON in `getConversationSummary`, relative `cwd` filters resolved against the app-server process cwd, Rust-shaped default and clamped limits, RFC3339 timestamp `nextCursor`, and millisecond-offset `backwardsCursor` pagination, and is included in current TypeScript and JSON schema generation with opaque thread items until full stored-thread schema parity lands. Remote thread-store listing and complete thread schema parity remain planned.
 
 Additional app-server Guardian approval coverage: `thread/approveGuardianDeniedAction` validates `threadId` and the basic serialized Guardian assessment event envelope, returns Rust-shaped `thread not found` responses for missing loaded threads, returns an empty Rust-shaped response for valid loaded-thread approval requests, and is included in current TypeScript and JSON schema generation with an opaque event payload until full Guardian event dispatch/lifecycle schema parity lands.

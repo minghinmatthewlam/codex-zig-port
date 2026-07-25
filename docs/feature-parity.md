@@ -50,6 +50,13 @@ local thread-store behavior, generated `ThreadItemEntry` / `ThreadItemsList*`
 protocol artifacts, experimental API gating, params validation, and the Zig
 stdio app-server smoke. It currently returns Rust's local unsupported
 `-32601` response; full item pagination remains planned.
+App-server `thread/search` parity was checked against installed Rust
+`codex app-server --stdio` behavior with an isolated `CODEX_HOME`, generated
+`ThreadSearch*` / `ThreadSearchOccurrences*` protocol artifacts,
+case-insensitive local transcript matching, and the Zig stdio app-server smoke.
+`thread/searchOccurrences` is registered and returns Rust's current local
+unsupported `-32601` response after params validation; full occurrence
+pagination remains planned if Rust enables it.
 App-server `app/read` and `app/installed` parity was checked against Rust's
 isolated local/offline behavior, generated `AppsRead*`, `ConnectorMetadata`,
 `AppsInstalled*`, and `InstalledApp` protocol artifacts, params validation, and
@@ -414,6 +421,13 @@ runtime override handling, and the Zig stdio app-server smoke.
   `thread/settings/updated`, honors experimental API gating, and is included in
   TypeScript/JSON Schema generation. Remaining depth is active permission
   profile rendering and Rust's arbitrary reasoning-effort / Ultra semantics.
+- Close remaining app-server thread-search depth: `thread/search` now validates
+  Rust-shaped params, uses the local thread-list source/archive/cursor pipeline,
+  searches loaded and stored transcript user/assistant messages with
+  case-insensitive matching, returns `ThreadSearchResult` snippets, supports
+  generated TypeScript/JSON Schema, and has stdio smoke coverage.
+  `thread/searchOccurrences` matches Rust's current unsupported local response;
+  full occurrence pagination remains planned if Rust ships it.
 - Close remaining app-server thread history depth: `thread/resume` now supports
   the experimental `initialTurnsPage` bootstrap field and explicit page
   `itemsView` handling, while standalone `thread/turns/list` now defaults to
@@ -515,8 +529,7 @@ runtime override handling, and the Zig stdio app-server smoke.
   `environment/status`, `externalAgentConfig/import/readHistories`,
   `mock/experimentalMethod`, `remoteControl/client/list`,
   `remoteControl/client/revoke`, `remoteControl/pairing/start`,
-  `remoteControl/pairing/status`, `thread/realtime/appendSpeech`,
-  `thread/search`, and `thread/searchOccurrences`.
+  `remoteControl/pairing/status`, and `thread/realtime/appendSpeech`.
 - Finish desktop app and remote-control user flows beyond launching/opening:
   phone fork/share flow, durable daemon control, and local browser controller
   parity.
