@@ -874,10 +874,11 @@ reuses the PID-backed managed app-server, sends `remoteControl/enable` over the
 control socket, and prints Rust-shaped JSON or human readiness output with
 daemon app-server path/version details. App-server RPC toggles also now persist
 non-ephemeral remote-control preference changes into matching existing state-DB
-enrollment rows while ephemeral toggles remain process-local. The updater
-loop's live standalone installer refresh/reexec behavior, state-DB enrollment
-creation, and the full Rust websocket/cloud remote-control backend remain
-planned.
+enrollment rows while ephemeral toggles remain process-local, and app-server
+startup resolves matching existing enabled enrollment rows into the initial
+remote-control `connecting` status. The updater loop's live standalone
+installer refresh/reexec behavior, state-DB enrollment creation, and the full
+Rust websocket/cloud remote-control backend remain planned.
 
 The high-level `app/list` summary in the table above is expanded by the
 detailed app-list note below: authenticated ChatGPT connector directory page
@@ -1027,7 +1028,9 @@ feature/config overrides and command-local feature/config child args into the
 managed daemon.
 `app-server --remote-control` now reports `remoteControl/status/changed` as
 `connecting`, includes `serverName` and a persisted `CODEX_HOME/installation_id`
-UUID as `installationId`, handles
+UUID as `installationId`, resolves existing enabled persisted state-DB
+enrollments during app-server initialization so the same status is reported
+without an explicit `--remote-control`, handles
 `remoteControl/enable`, `remoteControl/disable`, and
 `remoteControl/status/read` including nullable enable/disable params with
 Rust's optional `ephemeral` flag, validates `remoteControl/pairing/start`,

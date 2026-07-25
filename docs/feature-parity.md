@@ -67,9 +67,12 @@ flag, validates pairing/client params with Rust-shaped `-32600` errors
 including the conflicting-pairing-code rejection, and updates existing
 state-DB `remote_control_enrollments.remote_control_enabled` rows for
 non-ephemeral enable/disable while leaving that durable preference unchanged
-for `ephemeral: true`. It still returns Rust's local disabled, not-enrolled,
-and ChatGPT-auth-required errors until the full websocket/cloud backend and
-enrollment creation path are implemented.
+for `ephemeral: true`. App-server initialization also resolves an existing
+enabled state-DB remote-control enrollment for the authenticated account and
+client name, so a persisted preference reports the same `connecting` status as
+an explicit `--remote-control` startup. It still returns Rust's local disabled,
+not-enrolled, and ChatGPT-auth-required errors until the full websocket/cloud
+backend and enrollment creation path are implemented.
 App-server account usage, workspace-message, and rate-limit reset-credit
 parity was checked against installed Rust `codex app-server --stdio` behavior,
 isolated ChatGPT/no-auth/API-key homes, generated TypeScript/JSON Schema
@@ -431,8 +434,10 @@ runtime override handling, and the Zig stdio app-server smoke.
   conflicting-pairing-code, not-enrolled, or ChatGPT-auth-required errors,
   persists non-ephemeral remote-control preference changes into matching
   existing state-DB enrollment rows while preserving durable preference on
-  ephemeral toggles, and
-  exposes `remote_control` as enabled through app-server feature APIs.
+  ephemeral toggles, resolves existing enabled persisted enrollments during
+  app-server initialization so `status/read` and initial notifications report
+  `connecting` without an explicit `--remote-control`, and exposes
+  `remote_control` as enabled through app-server feature APIs.
   Normal config loading also creates/reuses the same persisted installation UUID
   instead of falling back to the old Zig placeholder.
   Remaining remote-control parity is the full Rust websocket/cloud connection
