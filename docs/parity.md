@@ -584,10 +584,18 @@ entries, hook errors, command hook rows, event/source/trust enums, and the
 current Rust-shaped `data` response envelope.
 
 Additional app-server skills generation coverage: `skills/list`,
-`skills/config/write`, and `skills/changed` now have generated TypeScript and
-JSON Schema artifacts for list params, per-cwd extra roots, skill metadata,
-interface and dependency blocks, list errors, config write params/responses, and
-the empty change-notification payload.
+`skills/extraRoots/set`, `skills/config/write`, and `skills/changed` now have
+generated TypeScript and JSON Schema artifacts for list params, per-cwd and
+setter-managed extra roots, skill metadata, interface and dependency blocks,
+list errors, extra-root setter params/responses, config write params/responses,
+and the empty change-notification payload.
+
+Additional app-server skills extra-root runtime coverage:
+`skills/extraRoots/set` now stores absolute extra skill roots for subsequent
+`skills/list` calls on the same app-server connection, emits `skills/changed`
+before the setter response, clears the connection-local skills-list cache,
+supports clearing roots with `extraRoots: []`, and rejects relative paths with
+the Rust-shaped AbsolutePathBuf JSON-RPC error.
 
 Additional app-server MCP status generation coverage: `mcpServerStatus/list`
 now has generated TypeScript and JSON Schema artifacts for cursor, limit, and

@@ -29675,7 +29675,12 @@ def run_skills_list_rpc_smoke(binary: Path) -> None:
         )
         try:
 
-            def rpc(request_id: str, method: str, params: dict) -> dict:
+            def rpc(
+                request_id: str,
+                method: str,
+                params: dict,
+                before_response_notifications: list[dict] | None = None,
+            ) -> dict:
                 write_json_line(
                     proc,
                     {
@@ -29685,9 +29690,12 @@ def run_skills_list_rpc_smoke(binary: Path) -> None:
                         "params": params,
                     },
                 )
-                response = read_json_line(proc, 5)
-                assert response["id"] == request_id
-                return response
+                while True:
+                    response = read_json_line(proc, 5)
+                    if response.get("id") == request_id:
+                        return response
+                    assert before_response_notifications is not None, response
+                    before_response_notifications.append(response)
 
             cached_initial = rpc(
                 "skills-cache-initial",
@@ -29699,6 +29707,59 @@ def run_skills_list_rpc_smoke(binary: Path) -> None:
                 for skill in cached_initial["result"]["data"][0]["skills"]
             }
             assert "late-extra-skill" not in initial_names
+            assert "user-skill" not in initial_names
+
+            set_notifications: list[dict] = []
+            set_extra_roots = rpc(
+                "skills-extra-roots-set",
+                "skills/extraRoots/set",
+                {"extraRoots": [str(extra_root)]},
+                set_notifications,
+            )
+            assert set_notifications == [
+                {
+                    "jsonrpc": "2.0",
+                    "method": "skills/changed",
+                    "params": {},
+                }
+            ]
+            assert set_extra_roots["result"] == {}
+
+            after_set = rpc(
+                "skills-extra-roots-after-set",
+                "skills/list",
+                {"cwds": [str(cwd)], "forceReload": True},
+            )
+            after_set_names = {
+                skill["name"] for skill in after_set["result"]["data"][0]["skills"]
+            }
+            assert "user-skill" in after_set_names
+
+            clear_notifications: list[dict] = []
+            clear_extra_roots = rpc(
+                "skills-extra-roots-clear",
+                "skills/extraRoots/set",
+                {"extraRoots": []},
+                clear_notifications,
+            )
+            assert clear_notifications == [
+                {
+                    "jsonrpc": "2.0",
+                    "method": "skills/changed",
+                    "params": {},
+                }
+            ]
+            assert clear_extra_roots["result"] == {}
+
+            after_clear = rpc(
+                "skills-extra-roots-after-clear",
+                "skills/list",
+                {"cwds": [str(cwd)], "forceReload": True},
+            )
+            after_clear_names = {
+                skill["name"] for skill in after_clear["result"]["data"][0]["skills"]
+            }
+            assert "user-skill" not in after_clear_names
 
             late_skill.mkdir(parents=True)
             (late_skill / "SKILL.md").write_text(
@@ -29981,6 +30042,23 @@ def run_skills_list_rpc_smoke(binary: Path) -> None:
         )
         assert invalid_extra_root["id"] == "skills-invalid-extra-root"
         assert invalid_extra_root["error"]["code"] == -32602
+
+        invalid_extra_roots_set = request_stdio_app_server(
+            binary,
+            {
+                "jsonrpc": "2.0",
+                "id": "skills-extra-roots-set-relative",
+                "method": "skills/extraRoots/set",
+                "params": {"extraRoots": ["relative-skills"]},
+            },
+            env,
+        )
+        assert invalid_extra_roots_set["id"] == "skills-extra-roots-set-relative"
+        assert invalid_extra_roots_set["error"]["code"] == -32600
+        assert (
+            "AbsolutePathBuf deserialized without a base path"
+            in invalid_extra_roots_set["error"]["message"]
+        )
     finally:
         shutil.rmtree(root, ignore_errors=True)
 
@@ -50547,6 +50625,22 @@ def run_json_schema_smoke(binary: Path) -> None:
             skills_list_params["properties"]["perCwdExtraUserRoots"]["items"]["$ref"]
             == "#/$defs/SkillsListExtraRootsForCwd"
         )
+        skills_extra_roots_set_params = json.loads(
+            (out_dir / "SkillsExtraRootsSetParams.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        assert skills_extra_roots_set_params["required"] == ["extraRoots"]
+        assert (
+            skills_extra_roots_set_params["properties"]["extraRoots"]["items"]["$ref"]
+            == "AbsolutePathBuf.json"
+        )
+        skills_extra_roots_set_response = json.loads(
+            (out_dir / "SkillsExtraRootsSetResponse.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        assert skills_extra_roots_set_response["additionalProperties"] is False
         skill_interface = json.loads(
             (out_dir / "SkillInterface.json").read_text(encoding="utf-8")
         )
@@ -52829,6 +52923,8 @@ def run_json_schema_smoke(binary: Path) -> None:
         assert "HooksListResponse" in bundle["$defs"]
         assert "SkillsListExtraRootsForCwd" in bundle["$defs"]
         assert "SkillsListParams" in bundle["$defs"]
+        assert "SkillsExtraRootsSetParams" in bundle["$defs"]
+        assert "SkillsExtraRootsSetResponse" in bundle["$defs"]
         assert "SkillInterface" in bundle["$defs"]
         assert "SkillToolDependency" in bundle["$defs"]
         assert "SkillDependencies" in bundle["$defs"]
@@ -53337,6 +53433,19 @@ def run_json_schema_smoke(binary: Path) -> None:
                 "perCwdExtraUserRoots"
             ]["items"]["$ref"]
             == "#/$defs/SkillsListExtraRootsForCwd"
+        )
+        assert bundle["$defs"]["SkillsExtraRootsSetParams"]["required"] == [
+            "extraRoots"
+        ]
+        assert (
+            bundle["$defs"]["SkillsExtraRootsSetParams"]["properties"][
+                "extraRoots"
+            ]["items"]["$ref"]
+            == "#/$defs/AbsolutePathBuf"
+        )
+        assert (
+            bundle["$defs"]["SkillsExtraRootsSetResponse"]["additionalProperties"]
+            is False
         )
         assert (
             bundle["$defs"]["Skill"]["properties"]["interface"]["$ref"]
@@ -54158,6 +54267,8 @@ def run_typescript_generation_smoke(binary: Path) -> None:
         assert "params?: HooksListParams | null;" in client_request
         assert 'method: "skills/list";' in client_request
         assert "params?: SkillsListParams | null;" in client_request
+        assert 'method: "skills/extraRoots/set";' in client_request
+        assert "params: SkillsExtraRootsSetParams;" in client_request
         assert 'method: "skills/config/write";' in client_request
         assert "params: SkillsConfigWriteParams;" in client_request
         for method, params_type in [
@@ -55451,6 +55562,8 @@ def run_typescript_generation_smoke(binary: Path) -> None:
         assert "result: HooksListResponse;" in client_response
         assert 'method: "skills/list";' in client_response
         assert "result: SkillsListResponse;" in client_response
+        assert 'method: "skills/extraRoots/set";' in client_response
+        assert "result: SkillsExtraRootsSetResponse;" in client_response
         assert 'method: "skills/config/write";' in client_response
         assert "result: SkillsConfigWriteResponse;" in client_response
         assert 'method: "account/read";' in client_response
@@ -56278,6 +56391,21 @@ def run_typescript_generation_smoke(binary: Path) -> None:
         assert (
             "perCwdExtraUserRoots?: SkillsListExtraRootsForCwd[] | null;"
             in skills_list_params
+        )
+        skills_extra_roots_set_params = (
+            out_dir / "v2" / "SkillsExtraRootsSetParams.ts"
+        ).read_text(encoding="utf-8")
+        assert (
+            'import type { AbsolutePathBuf } from "../AbsolutePathBuf";'
+            in skills_extra_roots_set_params
+        )
+        assert "extraRoots: AbsolutePathBuf[];" in skills_extra_roots_set_params
+        skills_extra_roots_set_response = (
+            out_dir / "v2" / "SkillsExtraRootsSetResponse.ts"
+        ).read_text(encoding="utf-8")
+        assert (
+            "export type SkillsExtraRootsSetResponse = Record<string, never>;"
+            in skills_extra_roots_set_response
         )
         skill_interface = (out_dir / "v2" / "SkillInterface.ts").read_text(
             encoding="utf-8"
@@ -58402,6 +58530,14 @@ def run_typescript_generation_smoke(binary: Path) -> None:
         )
         assert (
             'export type { SkillsConfigWriteResponse } from "./SkillsConfigWriteResponse";'
+            in v2_index
+        )
+        assert (
+            'export type { SkillsExtraRootsSetParams } from "./SkillsExtraRootsSetParams";'
+            in v2_index
+        )
+        assert (
+            'export type { SkillsExtraRootsSetResponse } from "./SkillsExtraRootsSetResponse";'
             in v2_index
         )
         assert (

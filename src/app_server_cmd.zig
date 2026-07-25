@@ -539,6 +539,7 @@ const AppServerState = struct {
     fs_watches: std.ArrayList(FsWatchEntry) = .empty,
     fuzzy_search_sessions: std.ArrayList(FuzzySearchSessionEntry) = .empty,
     skill_watch_roots: std.ArrayList([]const u8) = .empty,
+    skills_extra_roots: std.ArrayList([]const u8) = .empty,
     skills_list_cache: std.ArrayList(SkillsListCacheEntry) = .empty,
     subscribed_thread_ids: std.ArrayList([]const u8) = .empty,
     opt_out_notification_methods: std.ArrayList([]const u8) = .empty,
@@ -563,6 +564,7 @@ const AppServerState = struct {
         self.fs_watches.deinit(allocator);
         self.fuzzy_search_sessions.deinit(allocator);
         self.skill_watch_roots.deinit(allocator);
+        self.skills_extra_roots.deinit(allocator);
         self.skills_list_cache.deinit(allocator);
         self.subscribed_thread_ids.deinit(allocator);
         self.opt_out_notification_methods.deinit(allocator);
@@ -634,6 +636,7 @@ fn clearAppServerConnectionState(allocator: std.mem.Allocator, state: *AppServer
     state.fuzzy_search_sessions.clearRetainingCapacity();
     for (state.skill_watch_roots.items) |root| allocator.free(root);
     state.skill_watch_roots.clearRetainingCapacity();
+    clearSkillsExtraRoots(allocator, state);
     clearSkillsListCache(allocator, state);
     for (state.subscribed_thread_ids.items) |thread_id| allocator.free(thread_id);
     state.subscribed_thread_ids.clearRetainingCapacity();
@@ -6488,6 +6491,16 @@ const SKILLS_LIST_PARAMS_TS =
     \\
     ;
 
+const SKILLS_EXTRA_ROOTS_SET_PARAMS_TS =
+    GENERATED_TS_HEADER ++
+    \\import type { AbsolutePathBuf } from "../AbsolutePathBuf";
+    \\
+    \\export type SkillsExtraRootsSetParams = {
+    \\  extraRoots: AbsolutePathBuf[];
+    \\};
+    \\
+    ;
+
 const SKILL_INTERFACE_TS =
     GENERATED_TS_HEADER ++
     \\export interface SkillInterface {
@@ -6606,6 +6619,12 @@ const SKILLS_LIST_RESPONSE_TS =
     \\export interface SkillsListResponse {
     \\  data: SkillsListEntry[];
     \\}
+    \\
+    ;
+
+const SKILLS_EXTRA_ROOTS_SET_RESPONSE_TS =
+    GENERATED_TS_HEADER ++
+    \\export type SkillsExtraRootsSetResponse = Record<string, never>;
     \\
     ;
 
@@ -11241,6 +11260,7 @@ const CLIENT_REQUEST_TS =
     \\import type { ReviewStartParams } from "./v2/ReviewStartParams";
     \\import type { SendAddCreditsNudgeEmailParams } from "./v2/SendAddCreditsNudgeEmailParams";
     \\import type { SkillsConfigWriteParams } from "./v2/SkillsConfigWriteParams";
+    \\import type { SkillsExtraRootsSetParams } from "./v2/SkillsExtraRootsSetParams";
     \\import type { SkillsListParams } from "./v2/SkillsListParams";
     \\import type { ThreadApproveGuardianDeniedActionParams } from "./v2/ThreadApproveGuardianDeniedActionParams";
     \\import type { ThreadArchiveParams } from "./v2/ThreadArchiveParams";
@@ -11332,6 +11352,10 @@ const CLIENT_REQUEST_TS =
     \\  | {
     \\      method: "skills/list";
     \\      params?: SkillsListParams | null;
+    \\    }
+    \\  | {
+    \\      method: "skills/extraRoots/set";
+    \\      params: SkillsExtraRootsSetParams;
     \\    }
     \\  | {
     \\      method: "skills/config/write";
@@ -11794,6 +11818,7 @@ const CLIENT_RESPONSE_TS =
     \\import type { RemoteControlStatusReadResponse } from "./v2/RemoteControlStatusReadResponse";
     \\import type { SendAddCreditsNudgeEmailResponse } from "./v2/SendAddCreditsNudgeEmailResponse";
     \\import type { SkillsConfigWriteResponse } from "./v2/SkillsConfigWriteResponse";
+    \\import type { SkillsExtraRootsSetResponse } from "./v2/SkillsExtraRootsSetResponse";
     \\import type { SkillsListResponse } from "./v2/SkillsListResponse";
     \\import type { ThreadApproveGuardianDeniedActionResponse } from "./v2/ThreadApproveGuardianDeniedActionResponse";
     \\import type { ThreadArchiveResponse } from "./v2/ThreadArchiveResponse";
@@ -11901,6 +11926,11 @@ const CLIENT_RESPONSE_TS =
     \\      id: RequestId;
     \\      method: "skills/list";
     \\      result: SkillsListResponse;
+    \\    }
+    \\  | {
+    \\      id: RequestId;
+    \\      method: "skills/extraRoots/set";
+    \\      result: SkillsExtraRootsSetResponse;
     \\    }
     \\  | {
     \\      id: RequestId;
@@ -13171,6 +13201,8 @@ const V2_INDEX_TS =
     \\export type { SkillsChangedNotification } from "./SkillsChangedNotification";
     \\export type { SkillsConfigWriteParams } from "./SkillsConfigWriteParams";
     \\export type { SkillsConfigWriteResponse } from "./SkillsConfigWriteResponse";
+    \\export type { SkillsExtraRootsSetParams } from "./SkillsExtraRootsSetParams";
+    \\export type { SkillsExtraRootsSetResponse } from "./SkillsExtraRootsSetResponse";
     \\export type { SkillsListEntry } from "./SkillsListEntry";
     \\export type { SkillsListExtraRootsForCwd } from "./SkillsListExtraRootsForCwd";
     \\export type { SkillsListParams } from "./SkillsListParams";
@@ -17358,6 +17390,20 @@ const SKILLS_LIST_PARAMS_JSON_SCHEMA =
     \\
 ;
 
+const SKILLS_EXTRA_ROOTS_SET_PARAMS_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "SkillsExtraRootsSetParams",
+    \\  "type": "object",
+    \\  "required": ["extraRoots"],
+    \\  "properties": {
+    \\    "extraRoots": { "type": "array", "items": { "$ref": "AbsolutePathBuf.json" } }
+    \\  },
+    \\  "additionalProperties": true
+    \\}
+    \\
+;
+
 const SKILL_INTERFACE_JSON_SCHEMA =
     \\{
     \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -17648,6 +17694,16 @@ const SKILLS_LIST_RESPONSE_JSON_SCHEMA =
     \\      "additionalProperties": false
     \\    }
     \\  },
+    \\  "additionalProperties": false
+    \\}
+    \\
+;
+
+const SKILLS_EXTRA_ROOTS_SET_RESPONSE_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "SkillsExtraRootsSetResponse",
+    \\  "type": "object",
     \\  "additionalProperties": false
     \\}
     \\
@@ -24822,6 +24878,18 @@ const APP_SERVER_PROTOCOL_SCHEMA_BUNDLE =
     \\      },
     \\      "additionalProperties": true
     \\    },
+    \\    "SkillsExtraRootsSetParams": {
+    \\      "type": "object",
+    \\      "required": ["extraRoots"],
+    \\      "properties": {
+    \\        "extraRoots": { "type": "array", "items": { "$ref": "#/$defs/AbsolutePathBuf" } }
+    \\      },
+    \\      "additionalProperties": true
+    \\    },
+    \\    "SkillsExtraRootsSetResponse": {
+    \\      "type": "object",
+    \\      "additionalProperties": false
+    \\    },
     \\    "SkillInterface": {
     \\      "type": "object",
     \\      "properties": {
@@ -28657,6 +28725,8 @@ const APP_SERVER_JSON_SCHEMA_FILES = [_]SchemaFile{
     .{ .name = "HooksListResponse.json", .contents = HOOKS_LIST_RESPONSE_JSON_SCHEMA },
     .{ .name = "SkillsListExtraRootsForCwd.json", .contents = SKILLS_LIST_EXTRA_ROOTS_FOR_CWD_JSON_SCHEMA },
     .{ .name = "SkillsListParams.json", .contents = SKILLS_LIST_PARAMS_JSON_SCHEMA },
+    .{ .name = "SkillsExtraRootsSetParams.json", .contents = SKILLS_EXTRA_ROOTS_SET_PARAMS_JSON_SCHEMA },
+    .{ .name = "SkillsExtraRootsSetResponse.json", .contents = SKILLS_EXTRA_ROOTS_SET_RESPONSE_JSON_SCHEMA },
     .{ .name = "SkillInterface.json", .contents = SKILL_INTERFACE_JSON_SCHEMA },
     .{ .name = "SkillToolDependency.json", .contents = SKILL_TOOL_DEPENDENCY_JSON_SCHEMA },
     .{ .name = "SkillDependencies.json", .contents = SKILL_DEPENDENCIES_JSON_SCHEMA },
@@ -29064,6 +29134,8 @@ const APP_SERVER_JSON_SCHEMA_VERSIONED_ALIASES = [_][]const u8{
     "v2/SkillsChangedNotification.json",
     "v2/SkillsConfigWriteParams.json",
     "v2/SkillsConfigWriteResponse.json",
+    "v2/SkillsExtraRootsSetParams.json",
+    "v2/SkillsExtraRootsSetResponse.json",
     "v2/SkillsListParams.json",
     "v2/SkillsListResponse.json",
     "v2/TerminalInteractionNotification.json",
@@ -29358,6 +29430,8 @@ const APP_SERVER_TS_FILES = [_]SchemaFile{
     .{ .name = "v2/HooksListResponse.ts", .contents = HOOKS_LIST_RESPONSE_TS },
     .{ .name = "v2/SkillsListExtraRootsForCwd.ts", .contents = SKILLS_LIST_EXTRA_ROOTS_FOR_CWD_TS },
     .{ .name = "v2/SkillsListParams.ts", .contents = SKILLS_LIST_PARAMS_TS },
+    .{ .name = "v2/SkillsExtraRootsSetParams.ts", .contents = SKILLS_EXTRA_ROOTS_SET_PARAMS_TS },
+    .{ .name = "v2/SkillsExtraRootsSetResponse.ts", .contents = SKILLS_EXTRA_ROOTS_SET_RESPONSE_TS },
     .{ .name = "v2/SkillInterface.ts", .contents = SKILL_INTERFACE_TS },
     .{ .name = "v2/SkillToolDependency.ts", .contents = SKILL_TOOL_DEPENDENCY_TS },
     .{ .name = "v2/SkillDependencies.ts", .contents = SKILL_DEPENDENCIES_TS },
@@ -30951,6 +31025,9 @@ fn handleJsonRpcLine(allocator: std.mem.Allocator, state: *AppServerState, line:
     }
     if (std.mem.eql(u8, method, "skills/list")) {
         return try handleSkillsList(allocator, state, id_value.?, object.get("params"));
+    }
+    if (std.mem.eql(u8, method, "skills/extraRoots/set")) {
+        return try handleSkillsExtraRootsSet(allocator, state, id_value.?, object.get("params"));
     }
     if (std.mem.eql(u8, method, "skills/config/write")) {
         return try handleSkillsConfigWrite(allocator, state, id_value.?, object.get("params"));
@@ -50653,6 +50730,15 @@ const ParsedSkillsListParams = struct {
     }
 };
 
+const EffectiveSkillsListExtraRoots = struct {
+    values: []const skills_list.ExtraRootsForCwd,
+    owned_entries: bool = false,
+
+    fn deinit(self: EffectiveSkillsListExtraRoots, allocator: std.mem.Allocator) void {
+        if (self.owned_entries) allocator.free(self.values);
+    }
+};
+
 const ParsedHooksListParams = struct {
     cwds: []const []const u8,
 
@@ -50728,16 +50814,24 @@ fn handleSkillsList(allocator: std.mem.Allocator, state: *AppServerState, id_val
         }
     }
 
+    const effective_extra_roots = try buildEffectiveSkillsListExtraRoots(
+        allocator,
+        state,
+        request_cwds.values,
+        params.extra_roots_by_cwd,
+    );
+    defer effective_extra_roots.deinit(allocator);
+
     var listed = skills_list.listForProduct(
         allocator,
         request_cwds.values,
-        params.extra_roots_by_cwd,
+        effective_extra_roots.values,
         pluginProductRestrictionForSessionSource(state.session_source),
     ) catch |err| {
         return renderJsonRpcErrorForFailure(allocator, id_value, "skills/list failed", err);
     };
     defer listed.deinit(allocator);
-    try registerSkillWatchRoots(allocator, state, listed, params.extra_roots_by_cwd);
+    try registerSkillWatchRoots(allocator, state, listed, effective_extra_roots.values);
     try updateSkillsListCache(allocator, state, listed);
 
     const result = try renderSkillsListResponse(allocator, listed);
@@ -50778,6 +50872,26 @@ fn parseSkillsListParams(allocator: std.mem.Allocator, params_value: ?std.json.V
     }
 
     return .{ .cwds = cwds, .extra_roots_by_cwd = extra_roots, .force_reload = force_reload };
+}
+
+fn buildEffectiveSkillsListExtraRoots(
+    allocator: std.mem.Allocator,
+    state: *const AppServerState,
+    cwds: []const []const u8,
+    request_extra_roots: []const skills_list.ExtraRootsForCwd,
+) !EffectiveSkillsListExtraRoots {
+    if (state.skills_extra_roots.items.len == 0) return .{ .values = request_extra_roots };
+
+    const entries = try allocator.alloc(skills_list.ExtraRootsForCwd, request_extra_roots.len + cwds.len);
+    errdefer allocator.free(entries);
+    for (request_extra_roots, 0..) |entry, index| entries[index] = entry;
+    for (cwds, 0..) |cwd, index| {
+        entries[request_extra_roots.len + index] = .{
+            .cwd = cwd,
+            .roots = state.skills_extra_roots.items,
+        };
+    }
+    return .{ .values = entries, .owned_entries = true };
 }
 
 fn parseOptionalStringArray(
@@ -50827,6 +50941,52 @@ fn parseSkillsListExtraRoots(allocator: std.mem.Allocator, value_opt: ?std.json.
     }
 
     return entries;
+}
+
+fn handleSkillsExtraRootsSet(allocator: std.mem.Allocator, state: *AppServerState, id_value: std.json.Value, params_value: ?std.json.Value) ![]const u8 {
+    const roots = parseSkillsExtraRootsSetParams(allocator, params_value) catch |err| switch (err) {
+        error.MissingSkillsExtraRootsSetParams => return renderJsonRpcError(allocator, id_value, -32600, "Invalid request: missing field `params`"),
+        error.InvalidSkillsExtraRootsSetParams => return renderJsonRpcError(allocator, id_value, -32600, "Invalid request: invalid type, expected object"),
+        error.MissingSkillsExtraRootsSetRoots => return renderJsonRpcError(allocator, id_value, -32600, "Invalid request: missing field `extraRoots`"),
+        error.InvalidSkillsExtraRootsSetRoots => return renderJsonRpcError(allocator, id_value, -32600, "Invalid request: invalid type, expected a sequence"),
+        error.InvalidSkillsExtraRootsSetPath => return renderJsonRpcError(allocator, id_value, -32600, "Invalid request: invalid type, expected path string"),
+        error.InvalidSkillsExtraRootsSetAbsolutePath => return renderJsonRpcError(allocator, id_value, -32600, FS_ABSOLUTE_PATH_MESSAGE),
+        else => return err,
+    };
+    var state_owns_roots = false;
+    errdefer if (!state_owns_roots) freeOwnedStringSlice(allocator, roots);
+
+    clearSkillsExtraRoots(allocator, state);
+    state.skills_extra_roots.deinit(allocator);
+    state.skills_extra_roots = std.ArrayList([]const u8).fromOwnedSlice(roots);
+    state_owns_roots = true;
+    try queueSkillsChangedNotificationBeforeResponse(allocator, state);
+    return renderJsonRpcResult(allocator, id_value, "{}");
+}
+
+fn parseSkillsExtraRootsSetParams(allocator: std.mem.Allocator, params_value: ?std.json.Value) ![][]const u8 {
+    const params = params_value orelse return error.MissingSkillsExtraRootsSetParams;
+    if (params == .null) return error.MissingSkillsExtraRootsSetParams;
+    if (params != .object) return error.InvalidSkillsExtraRootsSetParams;
+
+    const extra_roots_value = params.object.get("extraRoots") orelse return error.MissingSkillsExtraRootsSetRoots;
+    if (extra_roots_value != .array) return error.InvalidSkillsExtraRootsSetRoots;
+    if (extra_roots_value.array.items.len == 0) return &.{};
+
+    const roots = try allocator.alloc([]const u8, extra_roots_value.array.items.len);
+    errdefer allocator.free(roots);
+    var initialized: usize = 0;
+    errdefer {
+        for (roots[0..initialized]) |root| allocator.free(root);
+    }
+
+    for (extra_roots_value.array.items, 0..) |root_value, index| {
+        if (root_value != .string) return error.InvalidSkillsExtraRootsSetPath;
+        if (!std.fs.path.isAbsolute(root_value.string)) return error.InvalidSkillsExtraRootsSetAbsolutePath;
+        roots[index] = try allocator.dupe(u8, root_value.string);
+        initialized += 1;
+    }
+    return roots;
 }
 
 fn renderSkillsListResponse(allocator: std.mem.Allocator, result: skills_list.Result) ![]const u8 {
@@ -50939,6 +51099,11 @@ fn findSkillsListCacheEntryIndex(state: *const AppServerState, cwd: []const u8) 
         if (std.mem.eql(u8, entry.cwd, cwd)) return index;
     }
     return null;
+}
+
+fn clearSkillsExtraRoots(allocator: std.mem.Allocator, state: *AppServerState) void {
+    for (state.skills_extra_roots.items) |root| allocator.free(root);
+    state.skills_extra_roots.clearRetainingCapacity();
 }
 
 fn clearSkillsListCache(allocator: std.mem.Allocator, state: *AppServerState) void {
@@ -51104,10 +51269,22 @@ fn queueSkillsChangedNotificationForPath(allocator: std.mem.Allocator, state: *A
 }
 
 fn queueSkillsChangedNotification(allocator: std.mem.Allocator, state: *AppServerState) !void {
+    try queueSkillsChangedNotificationTo(allocator, state, &state.pending_notifications);
+}
+
+fn queueSkillsChangedNotificationBeforeResponse(allocator: std.mem.Allocator, state: *AppServerState) !void {
+    try queueSkillsChangedNotificationTo(allocator, state, &state.pre_response_notifications);
+}
+
+fn queueSkillsChangedNotificationTo(
+    allocator: std.mem.Allocator,
+    state: *AppServerState,
+    notifications: *std.ArrayList([]const u8),
+) !void {
     clearSkillsListCache(allocator, state);
     const notification = try allocator.dupe(u8, "{\"jsonrpc\":\"2.0\",\"method\":\"skills/changed\",\"params\":{}}");
     errdefer allocator.free(notification);
-    try state.pending_notifications.append(
+    try notifications.append(
         allocator,
         notification,
     );

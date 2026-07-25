@@ -56,6 +56,13 @@ isolated local/offline behavior, generated `AppsRead*`, `ConnectorMetadata`,
 the Zig stdio app-server smoke. They currently expose Rust-shaped empty
 hosted-connector metadata/runtime snapshots for local no-runtime setups; hosted
 connector metadata and installed runtime snapshot population remain planned.
+App-server `skills/extraRoots/set` parity was checked against installed Rust
+`codex app-server --stdio` behavior with an isolated `CODEX_HOME`, generated
+`SkillsExtraRootsSet*` protocol artifacts, and the Zig stdio app-server smoke.
+It stores extra skill roots for subsequent `skills/list` calls on the
+connection, emits `skills/changed` before the setter response, clears the
+skills-list cache, supports clearing roots with an empty list, and rejects
+relative paths with the Rust-shaped AbsolutePathBuf error.
 
 ## Priority Rules
 
