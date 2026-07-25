@@ -57,13 +57,16 @@ case-insensitive local transcript matching, and the Zig stdio app-server smoke.
 `thread/searchOccurrences` is registered and returns Rust's current local
 unsupported `-32601` response after params validation; full occurrence
 pagination remains planned if Rust enables it.
-App-server remote-control pairing/client method parity was checked against
-installed Rust `codex app-server --stdio` local disabled and enabled-without-auth
-behavior, generated `RemoteControlPairing*`, `RemoteControlClients*`, and
-`RemoteControlClient` protocol artifacts, and the Zig stdio app-server smoke.
-Zig now validates pairing/client params with Rust-shaped `-32600` errors and
-returns Rust's local disabled, not-enrolled, and ChatGPT-auth-required errors
-until the full websocket/cloud backend is implemented.
+App-server remote-control method parity was checked against installed Rust
+`codex app-server --stdio` local disabled and enabled-without-auth behavior,
+generated `RemoteControlEnableParams`, `RemoteControlDisableParams`,
+`RemoteControlPairing*`, `RemoteControlClients*`, and `RemoteControlClient`
+protocol artifacts, and the Zig stdio app-server smoke. Zig now accepts
+nullable `remoteControl/enable|disable` params with Rust's optional `ephemeral`
+flag, validates pairing/client params with Rust-shaped `-32600` errors
+including the conflicting-pairing-code rejection, and returns Rust's local
+disabled, not-enrolled, and ChatGPT-auth-required errors until the full
+websocket/cloud backend is implemented.
 App-server account usage, workspace-message, and rate-limit reset-credit
 parity was checked against installed Rust `codex app-server --stdio` behavior,
 isolated ChatGPT/no-auth/API-key homes, generated TypeScript/JSON Schema
@@ -417,11 +420,12 @@ runtime override handling, and the Zig stdio app-server smoke.
   Rust-shaped JSON or human text. `app-server --remote-control` now reports
   `connecting`, includes remote-control identity fields backed by the persisted
   `CODEX_HOME/installation_id` UUID in status notifications, handles
-  `remoteControl/enable|disable|status/read`, validates
+  `remoteControl/enable|disable|status/read` including nullable
+  enable/disable params with Rust's optional `ephemeral` flag, validates
   `remoteControl/pairing/start`, `remoteControl/pairing/status`,
   `remoteControl/client/list`, and `remoteControl/client/revoke` with generated
   TypeScript/JSON Schema artifacts and Rust-shaped local disabled,
-  not-enrolled, or ChatGPT-auth-required errors, and
+  conflicting-pairing-code, not-enrolled, or ChatGPT-auth-required errors, and
   exposes `remote_control` as enabled through app-server feature APIs.
   Normal config loading also creates/reuses the same persisted installation UUID
   instead of falling back to the old Zig placeholder.

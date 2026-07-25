@@ -1026,14 +1026,16 @@ managed daemon.
 `connecting`, includes `serverName` and a persisted `CODEX_HOME/installation_id`
 UUID as `installationId`, handles
 `remoteControl/enable`, `remoteControl/disable`, and
-`remoteControl/status/read`, validates `remoteControl/pairing/start`,
+`remoteControl/status/read` including nullable enable/disable params with
+Rust's optional `ephemeral` flag, validates `remoteControl/pairing/start`,
 `remoteControl/pairing/status`, `remoteControl/client/list`, and
 `remoteControl/client/revoke`, emits Rust-shaped local disabled,
-not-enrolled, and ChatGPT-auth-required errors for those backend-dependent
-methods, includes generated `RemoteControlPairing*`, `RemoteControlClients*`,
-and `RemoteControlClient` protocol artifacts, and exposes `remote_control` as
-enabled through app-server feature APIs while the full Rust websocket/cloud
-remote-control backend remains planned.
+conflicting-pairing-code, not-enrolled, and ChatGPT-auth-required errors for
+those backend-dependent methods, includes generated `RemoteControlEnableParams`,
+`RemoteControlDisableParams`, `RemoteControlPairing*`,
+`RemoteControlClients*`, and `RemoteControlClient` protocol artifacts, and
+exposes `remote_control` as enabled through app-server feature APIs while the
+full Rust websocket/cloud remote-control backend remains planned.
 Config loading now creates, canonicalizes, and reuses the same persisted
 `CODEX_HOME/installation_id` UUID that Rust uses for client metadata instead of
 falling back to the old Zig placeholder when the file is missing.
