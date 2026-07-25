@@ -52747,6 +52747,23 @@ def run_json_schema_smoke(binary: Path) -> None:
             ]
             == "#/$defs/ModelVerification"
         )
+        model_safety_buffering = json.loads(
+            (
+                out_dir / "ModelSafetyBufferingUpdatedNotification.json"
+            ).read_text(encoding="utf-8")
+        )
+        assert model_safety_buffering["required"] == [
+            "model",
+            "reasons",
+            "showBufferingUi",
+            "threadId",
+            "turnId",
+            "useCases",
+        ]
+        assert model_safety_buffering["properties"]["fasterModel"]["type"] == [
+            "string",
+            "null",
+        ]
         permission_profile_list_params = json.loads(
             (out_dir / "PermissionProfileListParams.json").read_text(
                 encoding="utf-8"
@@ -53604,6 +53621,19 @@ def run_json_schema_smoke(binary: Path) -> None:
         assert (
             raw_response_item_completed_notification_schema["properties"]["item"]
             is True
+        )
+        turn_moderation_metadata_notification = json.loads(
+            (
+                out_dir / "TurnModerationMetadataNotification.json"
+            ).read_text(encoding="utf-8")
+        )
+        assert turn_moderation_metadata_notification["required"] == [
+            "metadata",
+            "threadId",
+            "turnId",
+        ]
+        assert (
+            turn_moderation_metadata_notification["properties"]["metadata"] is True
         )
         agent_message_delta_notification_schema = json.loads(
             (out_dir / "AgentMessageDeltaNotification.json").read_text(encoding="utf-8")
@@ -55047,6 +55077,17 @@ def run_json_schema_smoke(binary: Path) -> None:
             == "#/$defs/ModelVerification"
         )
         assert (
+            bundle["$defs"]["ModelSafetyBufferingUpdatedNotification"]["required"]
+            == [
+                "model",
+                "reasons",
+                "showBufferingUi",
+                "threadId",
+                "turnId",
+                "useCases",
+            ]
+        )
+        assert (
             bundle["$defs"]["MemoryResetResponse"]["additionalProperties"] is False
         )
         assert bundle["$defs"]["GitDiffToRemoteParams"]["properties"]["cwd"][
@@ -55512,6 +55553,12 @@ def run_json_schema_smoke(binary: Path) -> None:
         assert (
             bundle["$defs"]["RawResponseItemCompletedNotification"]["properties"][
                 "item"
+            ]
+            is True
+        )
+        assert (
+            bundle["$defs"]["TurnModerationMetadataNotification"]["properties"][
+                "metadata"
             ]
             is True
         )
@@ -56967,6 +57014,7 @@ def run_typescript_generation_smoke(binary: Path) -> None:
                 in server_notification
             )
         for turn_update_import in [
+            "TurnModerationMetadataNotification",
             "TurnDiffUpdatedNotification",
             "TurnPlanUpdatedNotification",
         ]:
@@ -57041,6 +57089,7 @@ def run_typescript_generation_smoke(binary: Path) -> None:
             )
         for model_notification_import in [
             "ModelReroutedNotification",
+            "ModelSafetyBufferingUpdatedNotification",
             "ModelVerificationNotification",
         ]:
             assert (
@@ -57186,6 +57235,12 @@ def run_typescript_generation_smoke(binary: Path) -> None:
         assert "params: ModelReroutedNotification;" in server_notification
         assert 'method: "model/verification";' in server_notification
         assert "params: ModelVerificationNotification;" in server_notification
+        assert 'method: "turn/moderationMetadata";' in server_notification
+        assert "params: TurnModerationMetadataNotification;" in server_notification
+        assert 'method: "model/safetyBuffering/updated";' in server_notification
+        assert (
+            "params: ModelSafetyBufferingUpdatedNotification;" in server_notification
+        )
         assert 'method: "item/started";' in server_notification
         assert "params: ItemStartedNotification;" in server_notification
         assert 'method: "item/completed";' in server_notification
@@ -57749,6 +57804,16 @@ def run_typescript_generation_smoke(binary: Path) -> None:
         assert "verifications: ModelVerification[];" in (
             model_verification_notification
         )
+        model_safety_buffering = (
+            out_dir / "v2" / "ModelSafetyBufferingUpdatedNotification.ts"
+        ).read_text(encoding="utf-8")
+        assert "export type ModelSafetyBufferingUpdatedNotification" in (
+            model_safety_buffering
+        )
+        assert "useCases: string[];" in model_safety_buffering
+        assert "reasons: string[];" in model_safety_buffering
+        assert "showBufferingUi: boolean;" in model_safety_buffering
+        assert "fasterModel: string | null;" in model_safety_buffering
         apps_list_params = (out_dir / "v2" / "AppsListParams.ts").read_text(
             encoding="utf-8"
         )
@@ -59419,6 +59484,14 @@ def run_typescript_generation_smoke(binary: Path) -> None:
         assert "threadId: string;" in raw_response_item_completed_notification
         assert "turnId: string;" in raw_response_item_completed_notification
         assert "item: ResponseItem;" in raw_response_item_completed_notification
+        turn_moderation_metadata = (
+            out_dir / "v2" / "TurnModerationMetadataNotification.ts"
+        ).read_text(encoding="utf-8")
+        assert (
+            'import type { JsonValue } from "../serde_json/JsonValue";'
+            in turn_moderation_metadata
+        )
+        assert "metadata: JsonValue;" in turn_moderation_metadata
         agent_message_delta_notification = (
             out_dir / "v2" / "AgentMessageDeltaNotification.ts"
         ).read_text(encoding="utf-8")
@@ -60743,6 +60816,7 @@ def run_typescript_generation_smoke(binary: Path) -> None:
         for model_notification_export in [
             "ModelRerouteReason",
             "ModelReroutedNotification",
+            "ModelSafetyBufferingUpdatedNotification",
             "ModelVerification",
             "ModelVerificationNotification",
         ]:
@@ -60889,6 +60963,7 @@ def run_typescript_generation_smoke(binary: Path) -> None:
         )
         for turn_update_export in [
             "TurnDiffUpdatedNotification",
+            "TurnModerationMetadataNotification",
             "TurnPlanStepStatus",
             "TurnPlanStep",
             "TurnPlanUpdatedNotification",

@@ -8277,6 +8277,20 @@ const MODEL_VERIFICATION_NOTIFICATION_TS =
     \\
     ;
 
+const MODEL_SAFETY_BUFFERING_UPDATED_NOTIFICATION_TS =
+    GENERATED_TS_HEADER ++
+    \\export type ModelSafetyBufferingUpdatedNotification = {
+    \\  threadId: string;
+    \\  turnId: string;
+    \\  model: string;
+    \\  useCases: string[];
+    \\  reasons: string[];
+    \\  showBufferingUi: boolean;
+    \\  fasterModel: string | null;
+    \\};
+    \\
+    ;
+
 const EXPERIMENTAL_FEATURE_LIST_PARAMS_TS =
     GENERATED_TS_HEADER ++
     \\export interface ExperimentalFeatureListParams {
@@ -9799,6 +9813,18 @@ const TURN_PLAN_UPDATED_NOTIFICATION_TS =
     \\  explanation: string | null;
     \\  plan: TurnPlanStep[];
     \\}
+    \\
+    ;
+
+const TURN_MODERATION_METADATA_NOTIFICATION_TS =
+    GENERATED_TS_HEADER ++
+    \\import type { JsonValue } from "../serde_json/JsonValue";
+    \\
+    \\export type TurnModerationMetadataNotification = {
+    \\  threadId: string;
+    \\  turnId: string;
+    \\  metadata: JsonValue;
+    \\};
     \\
     ;
 
@@ -13324,6 +13350,7 @@ const SERVER_NOTIFICATION_TS =
     \\import type { McpServerStatusUpdatedNotification } from "./v2/McpServerStatusUpdatedNotification";
     \\import type { McpToolCallProgressNotification } from "./v2/McpToolCallProgressNotification";
     \\import type { ModelReroutedNotification } from "./v2/ModelReroutedNotification";
+    \\import type { ModelSafetyBufferingUpdatedNotification } from "./v2/ModelSafetyBufferingUpdatedNotification";
     \\import type { ModelVerificationNotification } from "./v2/ModelVerificationNotification";
     \\import type { PlanDeltaNotification } from "./v2/PlanDeltaNotification";
     \\import type { ProcessExitedNotification } from "./v2/ProcessExitedNotification";
@@ -13357,6 +13384,7 @@ const SERVER_NOTIFICATION_TS =
     \\import type { ThreadUnarchivedNotification } from "./v2/ThreadUnarchivedNotification";
     \\import type { TurnCompletedNotification } from "./v2/TurnCompletedNotification";
     \\import type { TurnDiffUpdatedNotification } from "./v2/TurnDiffUpdatedNotification";
+    \\import type { TurnModerationMetadataNotification } from "./v2/TurnModerationMetadataNotification";
     \\import type { TurnPlanUpdatedNotification } from "./v2/TurnPlanUpdatedNotification";
     \\import type { TurnStartedNotification } from "./v2/TurnStartedNotification";
     \\import type { WarningNotification } from "./v2/WarningNotification";
@@ -13639,6 +13667,14 @@ const SERVER_NOTIFICATION_TS =
     \\  | {
     \\      method: "model/verification";
     \\      params: ModelVerificationNotification;
+    \\    }
+    \\  | {
+    \\      method: "turn/moderationMetadata";
+    \\      params: TurnModerationMetadataNotification;
+    \\    }
+    \\  | {
+    \\      method: "model/safetyBuffering/updated";
+    \\      params: ModelSafetyBufferingUpdatedNotification;
     \\    };
     \\
     ;
@@ -14159,6 +14195,7 @@ const V2_INDEX_TS =
     \\export type { ModelProviderCapabilitiesReadResponse } from "./ModelProviderCapabilitiesReadResponse";
     \\export type { ModelRerouteReason } from "./ModelRerouteReason";
     \\export type { ModelReroutedNotification } from "./ModelReroutedNotification";
+    \\export type { ModelSafetyBufferingUpdatedNotification } from "./ModelSafetyBufferingUpdatedNotification";
     \\export type { ModelReasoningEffort } from "./ModelReasoningEffort";
     \\export type { ModelServiceTier } from "./ModelServiceTier";
     \\export type { ModelUpgradeInfo } from "./ModelUpgradeInfo";
@@ -14313,6 +14350,7 @@ const V2_INDEX_TS =
     \\export type { TurnInterruptParams } from "./TurnInterruptParams";
     \\export type { TurnInterruptResponse } from "./TurnInterruptResponse";
     \\export type { TurnItemsView } from "./TurnItemsView";
+    \\export type { TurnModerationMetadataNotification } from "./TurnModerationMetadataNotification";
     \\export type { TurnPlanStep } from "./TurnPlanStep";
     \\export type { TurnPlanStepStatus } from "./TurnPlanStepStatus";
     \\export type { TurnPlanUpdatedNotification } from "./TurnPlanUpdatedNotification";
@@ -21169,6 +21207,26 @@ const MODEL_VERIFICATION_NOTIFICATION_JSON_SCHEMA =
     \\
 ;
 
+const MODEL_SAFETY_BUFFERING_UPDATED_NOTIFICATION_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "ModelSafetyBufferingUpdatedNotification",
+    \\  "type": "object",
+    \\  "required": ["model", "reasons", "showBufferingUi", "threadId", "turnId", "useCases"],
+    \\  "properties": {
+    \\    "threadId": { "type": "string" },
+    \\    "turnId": { "type": "string" },
+    \\    "model": { "type": "string" },
+    \\    "useCases": { "type": "array", "items": { "type": "string" } },
+    \\    "reasons": { "type": "array", "items": { "type": "string" } },
+    \\    "showBufferingUi": { "type": "boolean" },
+    \\    "fasterModel": { "type": ["string", "null"] }
+    \\  },
+    \\  "additionalProperties": true
+    \\}
+    \\
+;
+
 const EXPERIMENTAL_FEATURE_LIST_PARAMS_JSON_SCHEMA =
     \\{
     \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -23566,6 +23624,22 @@ const TURN_PLAN_UPDATED_NOTIFICATION_JSON_SCHEMA =
     \\      },
     \\      "additionalProperties": true
     \\    }
+    \\  },
+    \\  "additionalProperties": true
+    \\}
+    \\
+;
+
+const TURN_MODERATION_METADATA_NOTIFICATION_JSON_SCHEMA =
+    \\{
+    \\  "$schema": "https://json-schema.org/draft/2020-12/schema",
+    \\  "title": "TurnModerationMetadataNotification",
+    \\  "type": "object",
+    \\  "required": ["metadata", "threadId", "turnId"],
+    \\  "properties": {
+    \\    "metadata": true,
+    \\    "threadId": { "type": "string" },
+    \\    "turnId": { "type": "string" }
     \\  },
     \\  "additionalProperties": true
     \\}
@@ -27480,6 +27554,20 @@ const APP_SERVER_PROTOCOL_SCHEMA_BUNDLE =
     \\      },
     \\      "additionalProperties": true
     \\    },
+    \\    "ModelSafetyBufferingUpdatedNotification": {
+    \\      "type": "object",
+    \\      "required": ["model", "reasons", "showBufferingUi", "threadId", "turnId", "useCases"],
+    \\      "properties": {
+    \\        "threadId": { "type": "string" },
+    \\        "turnId": { "type": "string" },
+    \\        "model": { "type": "string" },
+    \\        "useCases": { "type": "array", "items": { "type": "string" } },
+    \\        "reasons": { "type": "array", "items": { "type": "string" } },
+    \\        "showBufferingUi": { "type": "boolean" },
+    \\        "fasterModel": { "type": ["string", "null"] }
+    \\      },
+    \\      "additionalProperties": true
+    \\    },
     \\    "PermissionProfileListParams": {
     \\      "type": "object",
     \\      "properties": {
@@ -29796,6 +29884,16 @@ const APP_SERVER_PROTOCOL_SCHEMA_BUNDLE =
     \\      },
     \\      "additionalProperties": true
     \\    },
+    \\    "TurnModerationMetadataNotification": {
+    \\      "type": "object",
+    \\      "required": ["metadata", "threadId", "turnId"],
+    \\      "properties": {
+    \\        "metadata": true,
+    \\        "threadId": { "type": "string" },
+    \\        "turnId": { "type": "string" }
+    \\      },
+    \\      "additionalProperties": true
+    \\    },
     \\    "ItemStartedNotification": {
     \\      "type": "object",
     \\      "required": ["item", "threadId", "turnId", "startedAtMs"],
@@ -31343,6 +31441,7 @@ const APP_SERVER_JSON_SCHEMA_FILES = [_]SchemaFile{
     .{ .name = "ModelListResponse.json", .contents = MODEL_LIST_RESPONSE_JSON_SCHEMA },
     .{ .name = "ModelRerouteReason.json", .contents = MODEL_REROUTE_REASON_JSON_SCHEMA },
     .{ .name = "ModelReroutedNotification.json", .contents = MODEL_REROUTED_NOTIFICATION_JSON_SCHEMA },
+    .{ .name = "ModelSafetyBufferingUpdatedNotification.json", .contents = MODEL_SAFETY_BUFFERING_UPDATED_NOTIFICATION_JSON_SCHEMA },
     .{ .name = "ModelVerification.json", .contents = MODEL_VERIFICATION_JSON_SCHEMA },
     .{ .name = "ModelVerificationNotification.json", .contents = MODEL_VERIFICATION_NOTIFICATION_JSON_SCHEMA },
     .{ .name = "ExperimentalFeatureListParams.json", .contents = EXPERIMENTAL_FEATURE_LIST_PARAMS_JSON_SCHEMA },
@@ -31465,6 +31564,7 @@ const APP_SERVER_JSON_SCHEMA_FILES = [_]SchemaFile{
     .{ .name = "TurnPlanStepStatus.json", .contents = TURN_PLAN_STEP_STATUS_JSON_SCHEMA },
     .{ .name = "TurnPlanStep.json", .contents = TURN_PLAN_STEP_JSON_SCHEMA },
     .{ .name = "TurnPlanUpdatedNotification.json", .contents = TURN_PLAN_UPDATED_NOTIFICATION_JSON_SCHEMA },
+    .{ .name = "TurnModerationMetadataNotification.json", .contents = TURN_MODERATION_METADATA_NOTIFICATION_JSON_SCHEMA },
     .{ .name = "ItemStartedNotification.json", .contents = ITEM_STARTED_NOTIFICATION_JSON_SCHEMA },
     .{ .name = "ItemCompletedNotification.json", .contents = ITEM_COMPLETED_NOTIFICATION_JSON_SCHEMA },
     .{ .name = "RawResponseItemCompletedNotification.json", .contents = RAW_RESPONSE_ITEM_COMPLETED_NOTIFICATION_JSON_SCHEMA },
@@ -31697,6 +31797,7 @@ const APP_SERVER_JSON_SCHEMA_VERSIONED_ALIASES = [_][]const u8{
     "v2/ModelProviderCapabilitiesReadParams.json",
     "v2/ModelProviderCapabilitiesReadResponse.json",
     "v2/ModelReroutedNotification.json",
+    "v2/ModelSafetyBufferingUpdatedNotification.json",
     "v2/ModelVerificationNotification.json",
     "v2/PermissionProfileListParams.json",
     "v2/PermissionProfileListResponse.json",
@@ -31803,6 +31904,7 @@ const APP_SERVER_JSON_SCHEMA_VERSIONED_ALIASES = [_][]const u8{
     "v2/TurnInterruptParams.json",
     "v2/TurnInterruptResponse.json",
     "v2/TurnPlanUpdatedNotification.json",
+    "v2/TurnModerationMetadataNotification.json",
     "v2/TurnStartParams.json",
     "v2/TurnStartResponse.json",
     "v2/TurnStartedNotification.json",
@@ -32191,6 +32293,7 @@ const APP_SERVER_TS_FILES = [_]SchemaFile{
     .{ .name = "v2/ModelListResponse.ts", .contents = MODEL_LIST_RESPONSE_TS },
     .{ .name = "v2/ModelRerouteReason.ts", .contents = MODEL_REROUTE_REASON_TS },
     .{ .name = "v2/ModelReroutedNotification.ts", .contents = MODEL_REROUTED_NOTIFICATION_TS },
+    .{ .name = "v2/ModelSafetyBufferingUpdatedNotification.ts", .contents = MODEL_SAFETY_BUFFERING_UPDATED_NOTIFICATION_TS },
     .{ .name = "v2/ModelVerification.ts", .contents = MODEL_VERIFICATION_TS },
     .{ .name = "v2/ModelVerificationNotification.ts", .contents = MODEL_VERIFICATION_NOTIFICATION_TS },
     .{ .name = "v2/ExperimentalFeatureListParams.ts", .contents = EXPERIMENTAL_FEATURE_LIST_PARAMS_TS },
@@ -32318,6 +32421,7 @@ const APP_SERVER_TS_FILES = [_]SchemaFile{
     .{ .name = "v2/TurnPlanStepStatus.ts", .contents = TURN_PLAN_STEP_STATUS_TS },
     .{ .name = "v2/TurnPlanStep.ts", .contents = TURN_PLAN_STEP_TS },
     .{ .name = "v2/TurnPlanUpdatedNotification.ts", .contents = TURN_PLAN_UPDATED_NOTIFICATION_TS },
+    .{ .name = "v2/TurnModerationMetadataNotification.ts", .contents = TURN_MODERATION_METADATA_NOTIFICATION_TS },
     .{ .name = "v2/ItemStartedNotification.ts", .contents = ITEM_STARTED_NOTIFICATION_TS },
     .{ .name = "v2/ItemCompletedNotification.ts", .contents = ITEM_COMPLETED_NOTIFICATION_TS },
     .{ .name = "v2/RawResponseItemCompletedNotification.ts", .contents = RAW_RESPONSE_ITEM_COMPLETED_NOTIFICATION_TS },
@@ -51329,6 +51433,7 @@ fn experimentalReasonForServerNotificationMethod(method: []const u8) ?[]const u8
         .{ .method = "thread/realtime/sdp", .reason = "thread/realtime/sdp" },
         .{ .method = "thread/realtime/error", .reason = "thread/realtime/error" },
         .{ .method = "thread/realtime/closed", .reason = "thread/realtime/closed" },
+        .{ .method = "turn/moderationMetadata", .reason = "turn/moderationMetadata" },
     }) |experimental_notification| {
         if (std.mem.eql(u8, method, experimental_notification.method)) return experimental_notification.reason;
     }
