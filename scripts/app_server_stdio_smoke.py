@@ -48354,6 +48354,70 @@ def run_remote_control_status_notification_smoke(binary: Path) -> None:
         )
         assert env_ws_status["result"] == {"status": "pending"}
 
+        stalled_listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        stalled_listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        stalled_listener.bind(("127.0.0.1", 0))
+        stalled_listener.listen(1)
+        stalled_listener.settimeout(5)
+        stalled_host, stalled_port = stalled_listener.getsockname()
+        stalled_closed = threading.Event()
+        stalled_errors: queue.Queue[BaseException] = queue.Queue()
+
+        def stalled_exec_server() -> None:
+            try:
+                conn, _ = stalled_listener.accept()
+                with conn:
+                    conn.settimeout(5)
+                    received = bytearray()
+                    while True:
+                        try:
+                            chunk = conn.recv(4096)
+                        except socket.timeout as exc:
+                            raise AssertionError(
+                                "app-server did not close stalled exec-server connection"
+                            ) from exc
+                        if not chunk:
+                            break
+                        received.extend(chunk)
+                    assert b"Upgrade: websocket" in received
+                    assert b"Sec-WebSocket-Key" in received
+                    stalled_closed.set()
+            except BaseException as exc:
+                stalled_errors.put(exc)
+            finally:
+                stalled_listener.close()
+
+        stalled_thread = threading.Thread(target=stalled_exec_server, daemon=True)
+        stalled_thread.start()
+
+        env_add_stalled = rpc(
+            "environment-add-stalled",
+            "environment/add",
+            {
+                "environmentId": "env-stalled",
+                "execServerUrl": f"ws://{stalled_host}:{stalled_port}",
+                "connectTimeoutMs": 200,
+            },
+        )
+        assert env_add_stalled["result"] == {}
+        stalled_started = time.monotonic()
+        env_stalled_info = rpc(
+            "environment-info-stalled",
+            "environment/info",
+            {"environmentId": "env-stalled"},
+        )
+        stalled_elapsed = time.monotonic() - stalled_started
+        assert env_stalled_info["error"]["code"] == -32603
+        assert "timed out connecting to exec-server websocket" in env_stalled_info[
+            "error"
+        ]["message"]
+        assert stalled_elapsed < 3
+        stalled_thread.join(timeout=5)
+        assert not stalled_thread.is_alive()
+        if not stalled_errors.empty():
+            raise stalled_errors.get()
+        assert stalled_closed.is_set()
+
         exec_server_proc = subprocess.Popen(
             [str(binary), "exec-server"],
             stdin=subprocess.DEVNULL,

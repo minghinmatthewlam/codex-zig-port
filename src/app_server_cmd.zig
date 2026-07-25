@@ -529,6 +529,7 @@ const PendingThreadUnload = struct {
 const EnvironmentEntry = struct {
     environment_id: []const u8,
     exec_server_url: []const u8,
+    connect_timeout_ms: u64,
     disconnected_error: ?[]const u8,
 
     fn deinit(self: *EnvironmentEntry, allocator: std.mem.Allocator) void {
@@ -537,6 +538,10 @@ const EnvironmentEntry = struct {
         if (self.disconnected_error) |error_message| allocator.free(error_message);
     }
 };
+
+const default_exec_server_connect_timeout_ms: u64 = 10 * std.time.ms_per_s;
+const default_exec_server_initialize_timeout_ms: u64 = 10 * std.time.ms_per_s;
+const default_exec_server_environment_info_timeout_ms: u64 = 30 * std.time.ms_per_s;
 
 const AppServerState = struct {
     deferred_command_exec_stdio: bool = false,
@@ -43752,6 +43757,16 @@ fn validateEnvironmentOptionalU64Field(allocator: std.mem.Allocator, value: std.
     }
 }
 
+fn environmentOptionalU64Value(value: ?std.json.Value) ?u64 {
+    const raw = value orelse return null;
+    if (raw == .null) return null;
+    return switch (raw) {
+        .integer => |integer| if (integer < 0) null else @intCast(integer),
+        .number_string => |number| std.fmt.parseUnsigned(u64, number, 10) catch null,
+        else => null,
+    };
+}
+
 fn handleEnvironmentMethod(
     allocator: std.mem.Allocator,
     state: *AppServerState,
@@ -43764,7 +43779,8 @@ fn handleEnvironmentMethod(
 
     if (std.mem.eql(u8, method, "environment/add")) {
         const exec_server_url = params.get("execServerUrl").?.string;
-        try upsertEnvironmentEntry(allocator, state, environment_id, exec_server_url);
+        const connect_timeout_ms = environmentOptionalU64Value(params.get("connectTimeoutMs")) orelse default_exec_server_connect_timeout_ms;
+        try upsertEnvironmentEntry(allocator, state, environment_id, exec_server_url, connect_timeout_ms);
         return renderJsonRpcResult(allocator, id_value, "{}");
     }
 
@@ -43798,7 +43814,7 @@ fn handleEnvironmentMethod(
     }
 
     const result = fetchExecServerEnvironmentInfoResult(allocator, entry) catch |err| {
-        const connection_error = try execServerEnvironmentInfoErrorMessage(allocator, entry.exec_server_url, err);
+        const connection_error = try execServerEnvironmentInfoErrorMessage(allocator, entry, err);
         defer allocator.free(connection_error);
         const message = try std.fmt.allocPrint(
             allocator,
@@ -43824,10 +43840,12 @@ fn upsertEnvironmentEntry(
     state: *AppServerState,
     environment_id: []const u8,
     exec_server_url: []const u8,
+    connect_timeout_ms: u64,
 ) !void {
     var entry = EnvironmentEntry{
         .environment_id = try allocator.dupe(u8, environment_id),
         .exec_server_url = try allocator.dupe(u8, exec_server_url),
+        .connect_timeout_ms = connect_timeout_ms,
         .disconnected_error = try environmentInitialDisconnectedError(allocator, exec_server_url),
     };
     errdefer entry.deinit(allocator);
@@ -43882,37 +43900,69 @@ fn fetchExecServerEnvironmentInfoResult(allocator: std.mem.Allocator, entry: *co
     const parts = try parseExecServerWebSocketUrl(entry.exec_server_url);
     const io = std.Io.Threaded.global_single_threaded.io();
     var connection: remote_ws_client.Connection = undefined;
+    var read_fd: std.posix.fd_t = undefined;
     switch (parts.scheme) {
         .ws => {
             const connect_host = remote_ws_client.remoteWebSocketConnectHost(parts.host);
             const stream = try connectExecServerWebSocketTcp(io, connect_host, parts.port);
+            read_fd = stream.socket.handle;
             connection.initPlain(allocator, io, stream);
         },
-        .wss => try connection.initTls(allocator, io, parts.host, parts.port),
+        .wss => {
+            try connection.initTls(allocator, io, parts.host, parts.port);
+            read_fd = connection.stream.socket.handle;
+        },
     }
     defer connection.deinit();
 
     const reader = connection.reader();
     const writer = connection.writer();
-    try performExecServerEnvironmentWebSocketHandshake(allocator, reader, writer, parts);
+    const connect_deadline_ms = appServerAwakeDeadlineMs(entry.connect_timeout_ms);
+    try performExecServerEnvironmentWebSocketHandshake(allocator, reader, writer, parts, read_fd, connect_deadline_ms);
 
     try writeExecServerClientWebSocketTextFrame(allocator, writer, "{\"jsonrpc\":\"2.0\",\"id\":\"initialize\",\"method\":\"initialize\",\"params\":{\"clientName\":\"codex-zig-app-server\"}}");
-    const initialize_response = try readExecServerServerWebSocketTextFrame(allocator, reader, writer) orelse return error.ExecServerWebSocketClosed;
+    const initialize_deadline_ms = appServerAwakeDeadlineMs(default_exec_server_initialize_timeout_ms);
+    const initialize_response = readExecServerServerWebSocketTextFrame(allocator, reader, writer, read_fd, initialize_deadline_ms) catch |err| switch (err) {
+        error.ExecServerWebSocketReadTimedOut => return error.ExecServerInitializeTimedOut,
+        else => return err,
+    } orelse return error.ExecServerWebSocketClosed;
     defer allocator.free(initialize_response);
     try validateExecServerJsonRpcResult(allocator, initialize_response, "initialize");
 
     try writeExecServerClientWebSocketTextFrame(allocator, writer, "{\"jsonrpc\":\"2.0\",\"method\":\"initialized\"}");
     try writeExecServerClientWebSocketTextFrame(allocator, writer, "{\"jsonrpc\":\"2.0\",\"id\":\"environment-info\",\"method\":\"environment/info\",\"params\":{}}");
-    const info_response = try readExecServerServerWebSocketTextFrame(allocator, reader, writer) orelse return error.ExecServerWebSocketClosed;
+    const info_deadline_ms = appServerAwakeDeadlineMs(default_exec_server_environment_info_timeout_ms);
+    const info_response = readExecServerServerWebSocketTextFrame(allocator, reader, writer, read_fd, info_deadline_ms) catch |err| switch (err) {
+        error.ExecServerWebSocketReadTimedOut => return error.ExecServerEnvironmentInfoTimedOut,
+        else => return err,
+    } orelse return error.ExecServerWebSocketClosed;
     defer allocator.free(info_response);
     return renderEnvironmentInfoResultFromExecServerResponse(allocator, info_response);
 }
 
 fn execServerEnvironmentInfoErrorMessage(
     allocator: std.mem.Allocator,
-    exec_server_url: []const u8,
+    entry: *const EnvironmentEntry,
     err: anyerror,
 ) ![]const u8 {
+    switch (err) {
+        error.ExecServerWebSocketConnectTimedOut => return std.fmt.allocPrint(
+            allocator,
+            "exec-server connection attempt failed: timed out connecting to exec-server websocket `{s}` after {d}ms",
+            .{ entry.exec_server_url, entry.connect_timeout_ms },
+        ),
+        error.ExecServerInitializeTimedOut => return std.fmt.allocPrint(
+            allocator,
+            "exec-server connection attempt failed: timed out waiting for exec-server initialize response after {d}ms",
+            .{default_exec_server_initialize_timeout_ms},
+        ),
+        error.ExecServerEnvironmentInfoTimedOut => return std.fmt.allocPrint(
+            allocator,
+            "exec-server connection attempt failed: timed out waiting for exec-server environment/info response after {d}ms",
+            .{default_exec_server_environment_info_timeout_ms},
+        ),
+        else => {},
+    }
     const reason = switch (err) {
         error.UnsupportedExecServerWebSocketScheme => "URL error: URL scheme not supported",
         error.InvalidExecServerWebSocketUrl => "URL error: URL is invalid",
@@ -43925,7 +43975,7 @@ fn execServerEnvironmentInfoErrorMessage(
     return std.fmt.allocPrint(
         allocator,
         "exec-server connection attempt failed: failed to connect to exec-server websocket `{s}`: {s}",
-        .{ exec_server_url, reason },
+        .{ entry.exec_server_url, reason },
     );
 }
 
@@ -43995,6 +44045,8 @@ fn performExecServerEnvironmentWebSocketHandshake(
     reader: *std.Io.Reader,
     writer: *std.Io.Writer,
     parts: ExecServerWebSocketUrl,
+    read_fd: std.posix.fd_t,
+    deadline_ms: i64,
 ) !void {
     var nonce: [16]u8 = undefined;
     try std.Io.Threaded.global_single_threaded.io().randomSecure(&nonce);
@@ -44014,7 +44066,7 @@ fn performExecServerEnvironmentWebSocketHandshake(
     }
     try writer.flush();
 
-    const response = try readExecServerHttpHeaderBlock(allocator, reader);
+    const response = try readExecServerHttpHeaderBlock(allocator, reader, read_fd, deadline_ms);
     defer allocator.free(response);
     if (!execServerWebSocketStatusIsSwitchingProtocols(response)) return error.RemoteWebSocketHandshakeFailed;
     const expected_accept = try websocketAcceptValue(allocator, key);
@@ -44023,11 +44075,20 @@ fn performExecServerEnvironmentWebSocketHandshake(
     if (!std.mem.eql(u8, actual_accept, expected_accept)) return error.RemoteWebSocketHandshakeFailed;
 }
 
-fn readExecServerHttpHeaderBlock(allocator: std.mem.Allocator, reader: *std.Io.Reader) ![]u8 {
+fn readExecServerHttpHeaderBlock(
+    allocator: std.mem.Allocator,
+    reader: *std.Io.Reader,
+    read_fd: std.posix.fd_t,
+    deadline_ms: i64,
+) ![]u8 {
     var out = std.ArrayList(u8).empty;
     errdefer out.deinit(allocator);
     while (out.items.len < 64 * 1024) {
-        const byte = try reader.takeByte();
+        const byte = switch (try takeExecServerReaderByteWithDeadline(reader, read_fd, deadline_ms)) {
+            .byte => |value| value,
+            .closed => return error.ExecServerWebSocketClosed,
+            .timed_out => return error.ExecServerWebSocketConnectTimedOut,
+        };
         try out.append(allocator, byte);
         if (out.items.len >= 4 and std.mem.eql(u8, out.items[out.items.len - 4 ..], "\r\n\r\n")) {
             return out.toOwnedSlice(allocator);
@@ -44093,34 +44154,133 @@ fn writeExecServerClientWebSocketFrame(
     try writer.flush();
 }
 
+const ExecServerTimedByte = union(enum) {
+    byte: u8,
+    closed,
+    timed_out,
+};
+
+fn takeExecServerReaderByteWithDeadline(
+    reader: *std.Io.Reader,
+    read_fd: std.posix.fd_t,
+    deadline_ms: i64,
+) !ExecServerTimedByte {
+    if (!readerHasBufferedTransportBytes(reader)) {
+        if (!try execServerSocketPayloadReady(read_fd, deadline_ms)) return .timed_out;
+    }
+    const byte = reader.takeByte() catch |err| switch (err) {
+        error.EndOfStream => return .closed,
+        else => return err,
+    };
+    return .{ .byte = byte };
+}
+
+fn execServerSocketPayloadReady(read_fd: std.posix.fd_t, deadline_ms: i64) !bool {
+    const remaining_ms = remainingAppServerAwakeMillis(deadline_ms) orelse return false;
+    var fds = [_]std.posix.pollfd{
+        .{ .fd = read_fd, .events = @intCast(relay_poll_read_events), .revents = 0 },
+    };
+    const max_poll_timeout_ms: u64 = @intCast(std.math.maxInt(i32));
+    const poll_timeout: i32 = if (remaining_ms > max_poll_timeout_ms) std.math.maxInt(i32) else @intCast(remaining_ms);
+    const ready = try std.posix.poll(&fds, poll_timeout);
+    if (ready == 0) return false;
+    return pollReventsInclude(fds[0].revents, relay_poll_read_events);
+}
+
+fn readExecServerReaderBytesWithDeadline(
+    reader: *std.Io.Reader,
+    read_fd: std.posix.fd_t,
+    deadline_ms: i64,
+    dest: []u8,
+) !TimedTransportReadStatus {
+    for (dest) |*byte| {
+        byte.* = switch (try takeExecServerReaderByteWithDeadline(reader, read_fd, deadline_ms)) {
+            .byte => |value| value,
+            .closed => return .closed,
+            .timed_out => return .timed_out,
+        };
+    }
+    return .ok;
+}
+
+fn ExecServerTimedValue(comptime T: type) type {
+    return union(enum) {
+        value: T,
+        closed,
+        timed_out,
+    };
+}
+
+fn readExecServerReaderIntWithDeadline(
+    comptime T: type,
+    reader: *std.Io.Reader,
+    read_fd: std.posix.fd_t,
+    deadline_ms: i64,
+) !ExecServerTimedValue(T) {
+    var bytes: [@sizeOf(T)]u8 = undefined;
+    switch (try readExecServerReaderBytesWithDeadline(reader, read_fd, deadline_ms, &bytes)) {
+        .ok => {},
+        .closed => return .closed,
+        .timed_out => return .timed_out,
+    }
+    return .{ .value = std.mem.readInt(T, &bytes, .big) };
+}
+
 fn readExecServerServerWebSocketTextFrame(
     allocator: std.mem.Allocator,
     reader: *std.Io.Reader,
     writer: *std.Io.Writer,
+    read_fd: std.posix.fd_t,
+    deadline_ms: i64,
 ) !?[]u8 {
     while (true) {
-        const first = reader.takeByte() catch |err| switch (err) {
-            error.EndOfStream => return null,
-            else => return err,
+        const first = switch (try takeExecServerReaderByteWithDeadline(reader, read_fd, deadline_ms)) {
+            .byte => |value| value,
+            .closed => return null,
+            .timed_out => return error.ExecServerWebSocketReadTimedOut,
         };
-        const second = try reader.takeByte();
+        const second = switch (try takeExecServerReaderByteWithDeadline(reader, read_fd, deadline_ms)) {
+            .byte => |value| value,
+            .closed => return null,
+            .timed_out => return error.ExecServerWebSocketReadTimedOut,
+        };
         const fin = (first & 0x80) != 0;
         const opcode = first & 0x0f;
         const masked = (second & 0x80) != 0;
         var payload_len: u64 = second & 0x7f;
         if (payload_len == 126) {
-            payload_len = try reader.takeInt(u16, .big);
+            payload_len = switch (try readExecServerReaderIntWithDeadline(u16, reader, read_fd, deadline_ms)) {
+                .value => |value| value,
+                .closed => return null,
+                .timed_out => return error.ExecServerWebSocketReadTimedOut,
+            };
         } else if (payload_len == 127) {
-            payload_len = try reader.takeInt(u64, .big);
+            payload_len = switch (try readExecServerReaderIntWithDeadline(u64, reader, read_fd, deadline_ms)) {
+                .value => |value| value,
+                .closed => return null,
+                .timed_out => return error.ExecServerWebSocketReadTimedOut,
+            };
         }
         if (!fin) return error.UnsupportedWebSocketFragment;
         if (payload_len > max_app_server_json_rpc_line_bytes) return error.WebSocketFrameTooLarge;
 
         var zero_mask = [4]u8{ 0, 0, 0, 0 };
-        const mask: *const [4]u8 = if (masked) try reader.takeArray(4) else &zero_mask;
+        var mask_buffer: [4]u8 = undefined;
+        const mask: *const [4]u8 = if (masked) blk: {
+            switch (try readExecServerReaderBytesWithDeadline(reader, read_fd, deadline_ms, &mask_buffer)) {
+                .ok => {},
+                .closed => return null,
+                .timed_out => return error.ExecServerWebSocketReadTimedOut,
+            }
+            break :blk &mask_buffer;
+        } else &zero_mask;
         const payload = try allocator.alloc(u8, @intCast(payload_len));
         errdefer allocator.free(payload);
-        try reader.readSliceAll(payload);
+        switch (try readExecServerReaderBytesWithDeadline(reader, read_fd, deadline_ms, payload)) {
+            .ok => {},
+            .closed => return null,
+            .timed_out => return error.ExecServerWebSocketReadTimedOut,
+        }
         if (masked) {
             for (payload, 0..) |*byte, index| {
                 byte.* ^= mask[index % mask.len];
